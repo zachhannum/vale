@@ -28,9 +28,9 @@ use crate::gpkg::{
     remove_image_tiles, v14_bands,
 };
 use crate::{
-    BlendMode, Feature, Field, FieldType, GeometryKind, Hillshade, Image, ImageId, Layer, LayerId,
-    LayerKind, Project, Raster, RasterDisplay, RasterId, Rgba, Smoothing, Stop, StopLine, Units,
-    Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
+    BlendMode, Collection, CollectionId, Feature, Field, FieldType, GeometryKind, Hillshade, Image,
+    ImageId, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId, Rgba, Smoothing,
+    Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -44,6 +44,7 @@ const RASTER: &str = "raster";
 const IMAGE: &str = "image";
 const LAYER: &str = "layer";
 const ATLAS: &str = "atlas";
+const COLLECTIONS: &str = "collections";
 
 /// The log tables.
 pub(crate) fn v3(tx: &Transaction) -> rusqlite::Result<()> {
@@ -229,6 +230,9 @@ pub(crate) fn keep_records(
     if old.atlas != new.atlas {
         changed.push((ATLAS, 0));
     }
+    if old.collections != new.collections {
+        changed.push((COLLECTIONS, 0));
+    }
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
         let rasters = a.rasters.iter().filter(|r| b.raster(r.id) != Some(r));
         rasters.map(|r| r.id.0).collect()
@@ -368,6 +372,12 @@ pub(crate) fn swap_records(
                 atlas.map_styles = styles;
                 atlas.next_map_style_id = atlas.next_map_style_id.max(next_style);
             }
+            COLLECTIONS => {
+                let image = payload.is_some().then(|| collections(&mut r)).flatten();
+                let (list, next_id) = image.ok_or_else(bad)?;
+                next.collections = list;
+                next.next_collection_id = next.next_collection_id.max(next_id);
+            }
             _ => return Err(bad()),
         }
     }
@@ -381,6 +391,7 @@ pub(crate) fn swap_records(
         next.layers.insert(at, layer);
     }
     next.prune_snap_targets();
+    next.prune_collections();
     Ok(next)
 }
 
@@ -527,6 +538,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
         RASTER => put_raster(&mut out, project.raster(RasterId(id))?),
         IMAGE => put_image(&mut out, project.image(ImageId(id))?),
         ATLAS => put_atlas(&mut out, &project.atlas),
+        COLLECTIONS => put_collections(&mut out, project),
         _ => {
             let at = project.layers.iter().position(|l| l.id.0 == id)?;
             put_layer(&mut out, at, &project.layers[at]);
@@ -579,6 +591,35 @@ fn string(r: &mut Reader) -> Option<String> {
 
 fn count(r: &mut Reader) -> Option<usize> {
     r.u32().map(|n| n as usize)
+}
+
+fn put_collections(out: &mut Vec<u8>, project: &Project) {
+    put_u32(out, project.next_collection_id as usize);
+    put_u32(out, project.collections.len());
+    for c in &project.collections {
+        put_u32(out, c.id.0 as usize);
+        put_bytes(out, c.name.as_bytes());
+        put_u32(out, c.layers.len());
+        for layer in &c.layers {
+            put_u32(out, layer.0 as usize);
+        }
+    }
+}
+
+/// The collections and the next collection ID.
+fn collections(r: &mut Reader) -> Option<(Vec<Collection>, u32)> {
+    let next_id = r.u32()?;
+    let n = count(r)?;
+    let mut list = Vec::new();
+    for _ in 0..n {
+        let id = CollectionId(r.u32()?);
+        let name = string(r)?;
+        let layers = (0..count(r)?)
+            .map(|_| r.u32().map(LayerId))
+            .collect::<Option<_>>()?;
+        list.push(Collection { id, name, layers });
+    }
+    Some((list, next_id))
 }
 
 fn put_world(out: &mut Vec<u8>, world: &World) {

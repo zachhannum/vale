@@ -29,14 +29,14 @@ use crate::image_tile::image_levels;
 use crate::tile::{self, TILE_SIZE};
 use crate::undo::{self, StepSelection, UNDO_LIMIT};
 use crate::{
-    BlendMode, Feature, Field, FieldType, Geometry, GeometryKind, Hillshade, Image, ImageId, Layer,
-    LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay, RasterId, Rgb, Rgba, Smoothing,
-    SnapTypes, Stop, StopLine, SymbolRecord, Units, Uuid, Value, World, clamp_feature_size,
-    clamp_opacity,
+    BlendMode, Collection, CollectionId, Feature, Field, FieldType, Geometry, GeometryKind,
+    Hillshade, Image, ImageId, Layer, LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay,
+    RasterId, Rgb, Rgba, Smoothing, SnapTypes, Stop, StopLine, SymbolRecord, Units, Uuid, Value,
+    World, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 40;
+pub const FORMAT_VERSION: u32 = 41;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -81,6 +81,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v38,
     v39,
     v40,
+    v41,
 ];
 
 /// `GPKG` in ASCII.
@@ -518,6 +519,17 @@ impl ProjectFile {
         Ok(())
     }
 
+    /// Writes the collection that the Layers panel shows. This is not an
+    /// edit, so it gets no undo step.
+    pub fn set_shown_collection(&mut self, project: &Project) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        write_shown_collection(&tx, project)?;
+        tx.commit()?;
+        self.project.shown_collection = project.shown_collection;
+        self.project.prune_collections();
+        Ok(())
+    }
+
     /// Writes the project as one edit. Each feature keeps its UUID, and each
     /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
@@ -595,6 +607,11 @@ impl ProjectFile {
         write_records(&tx, &project)?;
         if project.snap_targets != self.project.snap_targets {
             write_snap_targets(&tx, &project)?;
+        }
+        if project.collections != self.project.collections
+            || project.shown_collection != self.project.shown_collection
+        {
+            write_collections(&tx, &project)?;
         }
         let tiles = undo::swap_tiles(&tx, step)?;
         let selection = undo::selection(&tx, step, redo)?;
@@ -752,6 +769,31 @@ fn optional_meta(conn: &Connection, key: &str) -> Result<Option<String>, StoreEr
             r.get(0)
         })
         .optional()?)
+}
+
+/// The collections of layers. An older file has none.
+fn v41(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS vale_collection (
+           id INTEGER PRIMARY KEY,
+           position INTEGER NOT NULL,
+           name TEXT NOT NULL UNIQUE);
+         CREATE TABLE IF NOT EXISTS vale_collection_layer (
+           collection_id INTEGER NOT NULL,
+           layer_id INTEGER NOT NULL,
+           PRIMARY KEY (collection_id, layer_id));
+         INSERT OR IGNORE INTO vale_meta (key, value) VALUES ('next_collection_id', '0');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_collection', 'vale', 'vale_collection');
+         INSERT OR IGNORE INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_collection_layer', 'vale', 'vale_collection_layer');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_collection', NULL, 'vale_project', 'Records of the Vale app',
+                   'read-write');
+         INSERT OR IGNORE INTO gpkg_extensions
+           VALUES ('vale_collection_layer', NULL, 'vale_project', 'Records of the Vale app',
+                   'read-write');",
+    )
 }
 
 /// Adds the seed of the world.
@@ -1879,6 +1921,13 @@ fn write_edit(
     if old.is_none_or(|old| old.snap_targets != project.snap_targets) {
         write_snap_targets(tx, project)?;
     }
+    if old.is_none_or(|old| {
+        old.collections != project.collections
+            || old.next_collection_id != project.next_collection_id
+            || old.shown_collection != project.shown_collection
+    }) {
+        write_collections(tx, project)?;
+    }
     remove_rasters(tx, project)?;
     remove_images(tx, project)?;
     for change in changes {
@@ -2144,6 +2193,39 @@ fn write_snap_targets(tx: &Transaction, project: &Project) -> Result<(), StoreEr
             insert.execute(params![layer.0, target.0, t.vertices, t.edges, t.stops])?;
         }
     }
+    Ok(())
+}
+
+/// Writes the collections in their order, the next collection ID, and the
+/// shown collection.
+fn write_collections(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    tx.execute_batch("DELETE FROM vale_collection; DELETE FROM vale_collection_layer;")?;
+    let mut insert =
+        tx.prepare("INSERT INTO vale_collection (id, position, name) VALUES (?1, ?2, ?3)")?;
+    let mut member =
+        tx.prepare("INSERT INTO vale_collection_layer (collection_id, layer_id) VALUES (?1, ?2)")?;
+    for (position, c) in project.collections.iter().enumerate() {
+        insert.execute(params![c.id.0, position, c.name])?;
+        for layer in &c.layers {
+            member.execute(params![c.id.0, layer.0])?;
+        }
+    }
+    tx.execute(
+        "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_collection_id', ?1)",
+        [project.next_collection_id.to_string()],
+    )?;
+    write_shown_collection(tx, project)
+}
+
+/// Writes the shown collection. No record means all layers.
+fn write_shown_collection(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
+    match project.shown_collection {
+        Some(id) => tx.execute(
+            "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('shown_collection', ?1)",
+            [id.0.to_string()],
+        )?,
+        None => tx.execute("DELETE FROM vale_meta WHERE key = 'shown_collection'", [])?,
+    };
     Ok(())
 }
 
@@ -2998,6 +3080,33 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     for (layer, target, types) in rows {
         snap_targets.entry(layer).or_default().insert(target, types);
     }
+    let mut collections: Vec<Collection> = conn
+        .prepare("SELECT id, name FROM vale_collection ORDER BY position")?
+        .query_map([], |r| {
+            Ok(Collection {
+                id: CollectionId(r.get(0)?),
+                name: r.get(1)?,
+                layers: BTreeSet::new(),
+            })
+        })?
+        .collect::<Result<_, _>>()?;
+    let members = conn
+        .prepare("SELECT collection_id, layer_id FROM vale_collection_layer")?
+        .query_map([], |r| Ok((CollectionId(r.get(0)?), LayerId(r.get(1)?))))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (id, layer) in members {
+        if let Some(c) = collections.iter_mut().find(|c| c.id == id) {
+            c.layers.insert(layer);
+        }
+    }
+    let shown_collection = match optional_meta(conn, "shown_collection")? {
+        Some(text) => {
+            Some(CollectionId(text.parse().map_err(|_| {
+                corrupt(format!("shown_collection {text:?}"))
+            })?))
+        }
+        None => None,
+    };
     let mut project = Project {
         atlas: load_atlas(conn, units)?,
         world,
@@ -3009,9 +3118,13 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         images,
         next_image_id,
         snap_targets,
+        collections,
+        next_collection_id: counter(conn, "next_collection_id")?,
+        shown_collection,
     };
     // A row of a removed layer stays in the file until the next write.
     project.prune_snap_targets();
+    project.prune_collections();
     Ok(project)
 }
 
@@ -3674,6 +3787,8 @@ mod tests {
                  ORDER BY c.table_name"
             ),
             [
+                "vale_collection",
+                "vale_collection_layer",
                 "vale_field",
                 "vale_frame",
                 "vale_furniture",
@@ -8033,5 +8148,152 @@ mod tests {
         assert!(file.redo().unwrap().is_some());
         assert_eq!(file.project().snap_targets(towns), [(towns, VECTOR)]);
         assert_eq!(file.project().snap_targets(roads), [(roads, VECTOR)]);
+    }
+
+    #[test]
+    fn collections_survive_a_save_and_a_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        let lakes = project.add_layer("Lakes".into(), GeometryKind::Polygon, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let a = project.add_collection("Travel").unwrap();
+        let b = project.add_collection("Places").unwrap();
+        project.set_in_collection(a, roads, true);
+        project.set_in_collection(a, towns, true);
+        project.set_in_collection(b, towns, true);
+        project.set_shown_collection(Some(b));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        assert_eq!(loaded.shown_collection(), Some(b));
+        let names: Vec<&str> = loaded
+            .collections()
+            .iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["Travel", "Places"]);
+        assert_eq!(loaded.collections_of(towns).len(), 2);
+        assert!(loaded.collections_of(lakes).is_empty());
+        let shown: Vec<LayerId> = loaded.shown_layers().iter().map(|l| l.id).collect();
+        assert_eq!(shown, [towns]);
+    }
+
+    #[test]
+    fn each_change_of_a_collection_is_one_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let mut states = vec![project.clone()];
+        let c = project.add_collection("Travel").unwrap();
+        file.save(&project).unwrap();
+        states.push(project.clone());
+        project.rename_collection(c, "Trade");
+        file.save(&project).unwrap();
+        states.push(project.clone());
+        project.set_in_collection(c, roads, true);
+        file.save(&project).unwrap();
+        states.push(project.clone());
+        project.remove_collection(c);
+        file.save(&project).unwrap();
+        states.push(project.clone());
+
+        // An undo does not put back the next collection ID.
+        for state in states.iter().rev().skip(1) {
+            assert!(file.undo().unwrap().is_some());
+            assert_eq!(file.project().collections(), state.collections());
+        }
+        assert!(!file.can_undo());
+        for state in states.iter().skip(1) {
+            assert!(file.redo().unwrap().is_some());
+            assert_eq!(file.project(), state);
+        }
+        // A delete keeps the layers.
+        assert_eq!(file.project().layers().len(), 1);
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+    }
+
+    #[test]
+    fn removing_a_layer_takes_it_out_of_each_collection_and_undo_puts_it_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let c = project.add_collection("Travel").unwrap();
+        project.set_in_collection(c, roads, true);
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.remove_layer(roads);
+        file.save(&project).unwrap();
+        assert!(file.project().collection(c).unwrap().layers.is_empty());
+
+        assert!(file.undo().unwrap().is_some());
+        assert!(
+            file.project()
+                .collection(c)
+                .unwrap()
+                .layers
+                .contains(&roads)
+        );
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(loaded.collection(c).unwrap().layers.contains(&roads));
+    }
+
+    #[test]
+    fn the_shown_collection_is_not_an_edit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let c = project.add_collection("Travel").unwrap();
+        file.save(&project).unwrap();
+        project.set_shown_collection(Some(c));
+        file.set_shown_collection(&project).unwrap();
+        file.save(&project).unwrap();
+        assert_eq!(file.project().shown_collection(), Some(c));
+        drop(file);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded.shown_collection(), Some(c));
+        // The one step is the new collection. Its undo shows all layers.
+        assert!(file.undo().unwrap().is_some());
+        assert!(!file.can_undo());
+        assert_eq!(file.project().shown_collection(), None);
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(file.project().shown_collection(), None);
+        assert!(file.project().collection(c).is_some());
+    }
+
+    #[test]
+    fn a_file_of_version_40_has_no_collections() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let file = ProjectFile::create(&path(&dir), &project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_collection;
+             DROP TABLE vale_collection_layer;
+             DELETE FROM vale_meta WHERE key = 'next_collection_id';
+             DELETE FROM gpkg_extensions WHERE table_name LIKE 'vale_collection%';
+             DELETE FROM gpkg_contents WHERE table_name LIKE 'vale_collection%';",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 40);
+
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        assert_eq!(loaded.collections(), []);
+        assert_eq!(loaded.shown_collection(), None);
+        project.add_collection("Travel").unwrap();
+        file.save(&project).unwrap();
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
     }
 }
