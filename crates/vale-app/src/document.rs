@@ -406,6 +406,24 @@ impl Document {
         self.move_layer(id, if up { i + 1 } else { i - 1 })
     }
 
+    /// Moves a layer to index `to` of the list `shown`, a part of the draw
+    /// order that holds the layer. Index 0 is the bottom. Each layer that
+    /// is not in `shown` keeps its place.
+    pub fn move_in(&mut self, id: LayerId, shown: &[LayerId], to: usize) -> bool {
+        let rest: Vec<LayerId> = shown.iter().copied().filter(|l| *l != id).collect();
+        let order: Vec<LayerId> = self.project.layers().iter().map(|l| l.id).collect();
+        let others: Vec<LayerId> = order.iter().copied().filter(|l| *l != id).collect();
+        let at = |l: LayerId| others.iter().position(|o| *o == l);
+        let index = match to.min(rest.len()).checked_sub(1) {
+            Some(below) => at(rest[below]).map(|i| i + 1),
+            None => rest.first().and_then(|l| at(*l)),
+        };
+        match index {
+            Some(index) => self.move_layer(id, index),
+            None => false,
+        }
+    }
+
     /// Moves a layer to this index of the draw order. Index 0 is the bottom.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.project.move_layer(id, to);

@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{GeometryKind, LayerId, World};
+use vale_store::{CollectionId, GeometryKind, LayerId, World};
 
 use super::export_form::{self, ExportForm};
 use super::number;
@@ -588,7 +588,9 @@ fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) 
 /// move it in the draw order. The arrow at the end of the row of a raster
 /// layer opens its panel.
 fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    let layers = state.doc.project.layers().iter().rev();
+    collection_rows(ui, state);
+    let shown = state.shown_layer_ids();
+    let layers = state.doc.project.shown_layers().into_iter().rev();
     let rows: Vec<_> = layers
         .map(|l| (l.id, LayerRef::of(l), l.name.clone(), l.visible))
         .collect();
@@ -616,7 +618,9 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
                     format!("Move {name} {way}"),
                 );
                 if button.clicked() {
-                    state.move_layer_by_one(id, up);
+                    let at = count - 1 - index;
+                    let to = if up { at + 1 } else { at.saturating_sub(1) };
+                    state.move_layer_in(id, &shown, to);
                 }
             }
             let kind = match layer {
@@ -658,6 +662,86 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
+/// The collection menu of the layer list, the name field of the shown
+/// collection, and the buttons that add and delete a collection.
+fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
+    use super::pad::collection::{ALL_LAYERS, COLLECTION_MENU, COLLECTION_NAME, NEW_COLLECTION};
+    let project = &state.doc.project;
+    let shown = project.shown_collection();
+    let names: Vec<(CollectionId, String)> = (project.collections().iter())
+        .map(|c| (c.id, c.name.clone()))
+        .collect();
+    let text = (names.iter())
+        .find(|(id, _)| Some(*id) == shown)
+        .map_or(ALL_LAYERS, |(_, name)| name.as_str());
+    let mut pick = shown;
+    ui.horizontal(|ui| {
+        let combo = egui::ComboBox::from_id_salt(COLLECTION_MENU)
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut pick, None, ALL_LAYERS);
+                for (id, name) in &names {
+                    ui.selectable_value(&mut pick, Some(*id), name);
+                }
+            });
+        named(
+            &combo.response,
+            egui::WidgetType::ComboBox,
+            false,
+            COLLECTION_MENU.to_string(),
+        );
+        let add = ui.button(NEW_COLLECTION);
+        named(
+            &add,
+            egui::WidgetType::Button,
+            false,
+            NEW_COLLECTION.to_string(),
+        );
+        if add.clicked() {
+            let name = state.doc.project.free_collection_name();
+            pick = state.add_collection(&name).or(pick);
+        }
+    });
+    if pick != shown {
+        state.show_collection(pick);
+    }
+    let Some((id, name)) = (names.into_iter()).find(|(id, _)| Some(*id) == pick) else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        // The field keeps its text while it has the focus, and the name
+        // changes when it loses the focus.
+        let key = ui.id().with(COLLECTION_NAME).with(id);
+        let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| name.clone());
+        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
+        named(
+            &field,
+            egui::WidgetType::TextEdit,
+            false,
+            COLLECTION_NAME.to_string(),
+        );
+        if field.lost_focus() {
+            state.rename_collection(id, &text);
+            ui.data_mut(|d| d.remove::<String>(key));
+        } else if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, text));
+        }
+        let delete = ui.button(DELETE_COLLECTION);
+        named(
+            &delete,
+            egui::WidgetType::Button,
+            false,
+            DELETE_COLLECTION.to_string(),
+        );
+        if delete.clicked() {
+            state.delete_collection(id);
+        }
+    });
+}
+
+/// The name of the button that deletes the shown collection.
+pub const DELETE_COLLECTION: &str = "Delete collection";
+
 /// The controls of the selected layer: its name, the opacity of a raster
 /// layer, and the button that deletes the layer.
 fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
@@ -679,6 +763,22 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     );
     if field.changed() && state.doc.rename_layer(id, &text) {
         state.touch();
+    }
+    let member: Vec<(CollectionId, String, bool)> = (state.doc.project.collections().iter())
+        .map(|c| (c.id, c.name.clone(), c.layers.contains(&id)))
+        .collect();
+    if !member.is_empty() {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(super::pad::collection::COLLECTIONS);
+            for (collection, name, mut on) in member {
+                let check = ui.checkbox(&mut on, &name);
+                let switch = super::pad::collection::switch_name(&name);
+                named(&check, egui::WidgetType::Checkbox, on, switch);
+                if check.changed() {
+                    state.set_in_collection(collection, id, on);
+                }
+            }
+        });
     }
     let project = &state.doc.project;
     let look = match layer {
