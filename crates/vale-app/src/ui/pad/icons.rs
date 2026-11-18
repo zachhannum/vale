@@ -434,6 +434,29 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, size: f32, color: 
     }
 }
 
+/// Paints the pin icon as `paint` does. A filled pin has its head filled.
+pub fn paint_pin(painter: &egui::Painter, rect: Rect, size: f32, color: Color32, filled: bool) {
+    if filled {
+        let color = opaque(color);
+        let scale = size / 24.0;
+        let origin = rect.center() - egui::vec2(size, size) / 2.0;
+        let place = |(x, y): (f32, f32)| origin + egui::vec2(x, y) * scale;
+        // The head of the pin is not convex, so it is two convex parts.
+        for part in [
+            [(9.0, 3.0), (15.0, 3.0), (14.0, 9.0), (10.0, 9.0)],
+            [(10.0, 9.0), (14.0, 9.0), (17.5, 12.5), (6.5, 12.5)],
+        ] {
+            let points = part.into_iter().map(place).collect();
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    paint(painter, rect, Icon::Pin, size, color);
+}
+
 /// The color that a translucent color gives over the fill of a card. The
 /// strokes of an icon overlap, and a translucent color is darker where they
 /// overlap.

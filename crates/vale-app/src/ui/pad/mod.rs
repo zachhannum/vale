@@ -28,6 +28,7 @@ use crate::globe::line::{DEFAULT_SMOOTHING, LineSettings};
 use crate::globe::snap;
 use crate::globe::sweep;
 use crate::session::{WorldFile, worlds_of};
+use crate::strip::{self, Slider};
 use crate::world;
 
 pub mod atlas;
@@ -1158,7 +1159,7 @@ fn column_input(state: &AppState) -> ColumnInput {
     let (cells, sliders, brush_button) = if card_cells(globe) > 0 {
         (card_cells(globe), 0, false)
     } else if has_strip(globe) {
-        let (cells, sliders) = strip_counts(globe);
+        let (cells, sliders) = strip_counts(state);
         (cells, sliders, true)
     } else {
         (0, 0, false)
@@ -1176,7 +1177,8 @@ fn column_input(state: &AppState) -> ColumnInput {
 }
 
 /// The number of cells and of sliders that `strip_controls` adds.
-fn strip_counts(globe: &crate::globe::Globe) -> (usize, usize) {
+fn strip_counts(state: &AppState) -> (usize, usize) {
+    let globe = &state.globe;
     if globe.sweeping() {
         // The mode cell, and the Smoothing slider and the Size slider.
         (1, 2)
@@ -1187,7 +1189,7 @@ fn strip_counts(globe: &crate::globe::Globe) -> (usize, usize) {
             + usize::from(globe.lining());
         (cells, usize::from(globe.stroking()))
     } else if globe.brushing() {
-        (0, 2)
+        (0, strip_sliders(state).len())
     } else {
         (0, 0)
     }
@@ -1596,18 +1598,19 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             }
         }
     } else if paint {
-        // The outline sets the size of a basin, and a basin has no flow.
-        // The sliders keep their place.
-        let on = state.globe.brush.mode != Mode::Basin;
-        brush_size(state, "Size", |n| {
-            slide(n.enabled(on), ui, controls, height)
-        });
-        let flow = &mut state.globe.brush.flow;
-        let number = Number::new("Flow", *flow, FLOW).percent().enabled(on);
-        if let Some(value) = slide(number, ui, controls, height) {
-            *flow = value;
+        let mut control = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls| {
+            slide(number, ui, controls, height)
+        };
+        for slider in strip_sliders(state) {
+            brush_slider(ui, controls, state, slider, &mut Place::Strip(&mut control));
         }
     }
+}
+
+/// The sliders of the brush that the strip shows.
+fn strip_sliders(state: &AppState) -> Vec<Slider> {
+    let globe = &state.globe;
+    state.tools.pins.strip(globe.brush.mode, globe.is_height())
 }
 
 /// The card of cells of the Measure tool, the Vertex tool, or the Select
@@ -2795,194 +2798,130 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         return;
     }
     let unit = state.shown_unit().to_string();
-    if state.globe.brush.mode == Mode::OceanRidge {
+    let mode = state.globe.brush.mode;
+    if mode == Mode::OceanRidge {
         ridge_hint_rows(ui, &state.globe);
     }
     // The outline sets the size of a basin.
-    if state.globe.brush.mode == Mode::Basin {
+    if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
-    } else {
-        brush_size(state, "Brush size", |n| n.slider(ui, controls));
     }
     let world_km = state.doc.project.world.radius_km;
     let radius_km = state.globe.brush.radius_km(state.globe.radius(), world_km);
-    let height = state.globe.is_height();
-    let defaults = BrushSettings::default();
+    let row = |ui: &mut egui::Ui, controls: &mut Controls, state: &mut AppState, slider| {
+        brush_slider(ui, controls, state, slider, &mut Place::Panel);
+    };
+    for slider in [Slider::Size, Slider::Hardness, Slider::Flow] {
+        if strip::sliders(mode, true).contains(&slider) {
+            row(ui, controls, state, slider);
+        }
+    }
+    match mode {
+        Mode::OceanRidge => {
+            let brush = &mut state.globe.brush;
+            let number = Number::new("Brush crest", brush.ridge_crest_m, RIDGE_CREST_M)
+                .label("Crest")
+                .step(50.0)
+                .unit("m");
+            apply(number.stepper(ui, controls), &mut brush.ridge_crest_m);
+            let number = Number::new("Brush spreading", brush.ridge_spread_mm, RIDGE_SPREAD_MM)
+                .label("Spreading")
+                .step(1.0)
+                .unit("mm/yr");
+            apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
+            row(ui, controls, state, Slider::Magma);
+            let brush = &mut state.globe.brush;
+            let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
+                .label("Segment")
+                .step(10.0)
+                .unit("km");
+            apply(number.stepper(ui, controls), &mut brush.ridge_segment_km);
+            let number = Number::new("Brush offset", brush.ridge_offset_km, RIDGE_OFFSET_KM)
+                .label("Offset")
+                .step(1.0)
+                .unit("km");
+            apply(number.stepper(ui, controls), &mut brush.ridge_offset_km);
+            raster::note(ui, &panels::edge_age_text(brush, radius_km));
+        }
+        Mode::Warp => {
+            row(ui, controls, state, Slider::Strength);
+            row(ui, controls, state, Slider::Scale);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        // The motion of the pen and the flow set the distance of a push.
+        Mode::Push => {}
+        Mode::Flatten => row(ui, controls, state, Slider::Rate),
+        Mode::Paint => {
+            row(ui, controls, state, Slider::Opacity);
+            row(ui, controls, state, Slider::Value);
+        }
+        Mode::Noise => {
+            for slider in [Slider::Raise, Slider::Lower, Slider::Scale, Slider::Grain] {
+                row(ui, controls, state, slider);
+            }
+            let brush = &mut state.globe.brush;
+            let ridged = &mut brush.noise_ridged;
+            widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);
+            if brush.noise_ridged {
+                let inverted = &mut brush.noise_inverted;
+                widgets::switch_row(ui, controls, "Brush invert", "Invert", inverted);
+            }
+            // The relief follows the height above sea level.
+            if state.globe.is_height() {
+                row(ui, controls, state, Slider::Relief);
+            }
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        Mode::Terrace => row(ui, controls, state, Slider::Step),
+        Mode::Shape => row(ui, controls, state, Slider::Shape),
+        mode if strip::sliders(mode, true).contains(&Slider::Strength) => {
+            row(ui, controls, state, Slider::Strength);
+        }
+        _ => {}
+    }
+    if mode == Mode::Range {
+        row(ui, controls, state, Slider::Spacing);
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
+    if mode == Mode::Basin {
+        for slider in [Slider::Density, Slider::Age, Slider::Lakes] {
+            row(ui, controls, state, slider);
+        }
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
     let brush = &mut state.globe.brush;
-    let world = &mut state.doc.project.world;
-    // A height in meters as a value of the layer.
-    let factor = brush.meters_value(1.0);
-    let span = brush.value_range.1 - brush.value_range.0;
-    let layer_text = |meters: f64| world::value_text(meters * factor, span, &unit);
-    let meters = |name: &'static str, label: &'static str, value, range| {
-        Number::new(name, value, range)
-            .label(label)
-            .shown(factor, &unit)
-            .text(layer_text)
-    };
-    let km = |name: &'static str, label: &'static str, value, range| {
-        Number::new(name, value, range).label(label).unit("km")
-    };
-    // The ocean ridge mode has no falloff and no strength, the range mode
-    // has no falloff, and the basin mode has no falloff and no flow.
-    let ridge = brush.mode == Mode::OceanRidge;
-    if !matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
-        let number = percent("Brush hardness", brush.hardness)
-            .label("Hardness")
-            .default(defaults.hardness);
-        apply(number.slider(ui, controls), &mut brush.hardness);
-    }
-    if brush.mode != Mode::Basin {
-        let number = Number::new("Brush flow", brush.flow, FLOW)
-            .label("Flow")
-            .percent();
-        apply(number.slider(ui, controls), &mut brush.flow);
-    }
-    if ridge {
-        ridge_rows(ui, controls, brush, radius_km);
-    } else if brush.mode == Mode::Warp {
-        let number = km("Brush strength", "Strength", brush.warp_km, WARP_KM)
-            .log()
-            .default(defaults.warp_km);
-        apply(number.slider(ui, controls), &mut brush.warp_km);
-        let number = km("Brush scale", "Scale", brush.scale_km, SCALE_KM)
-            .log()
-            .default(defaults.scale_km);
-        apply(number.slider(ui, controls), &mut brush.scale_km);
-        seed_stepper(ui, controls, &mut world.seed);
-    } else if brush.mode == Mode::Push {
-        // The motion of the pen and the flow set the distance.
-    } else if brush.mode == Mode::Flatten {
-        let number = Number::new("Brush rate", brush.flatten_rate, FLATTEN_RATE)
-            .label("Rate")
-            .percent()
-            .default(defaults.flatten_rate);
-        apply(number.slider(ui, controls), &mut brush.flatten_rate);
-    } else if brush.mode == Mode::Paint {
-        let number = percent("Brush opacity", brush.opacity)
-            .label("Opacity")
-            .default(defaults.opacity);
-        apply(number.slider(ui, controls), &mut brush.opacity);
-        let value = brush.value(brush.paint_level);
-        let number = level(PAINT_VALUE, value, brush.value_range, &unit).label("Value");
-        if let Some(value) = number.slider(ui, controls) {
-            brush.paint_level = brush.level(value);
-        }
-    } else if brush.mode == Mode::Noise {
-        let number = meters("Brush raise", "Raise", brush.noise_raise_m, NOISE_M)
-            .scale(Scale::Square)
-            .default(defaults.noise_raise_m);
-        apply(number.slider(ui, controls), &mut brush.noise_raise_m);
-        let number = meters("Brush lower", "Lower", brush.noise_lower_m, NOISE_M)
-            .scale(Scale::Square)
-            .default(defaults.noise_lower_m);
-        apply(number.slider(ui, controls), &mut brush.noise_lower_m);
-    } else if brush.mode == Mode::Terrace {
-        let value = brush.terrace_step_m;
-        let number = meters("Brush step", "Step", value, TERRACE_STEP_M)
-            .log()
-            .default(defaults.terrace_step_m);
-        apply(number.slider(ui, controls), &mut brush.terrace_step_m);
-    } else if brush.mode == Mode::Shape {
-        let number = Number::new("Brush shape", brush.shape, SHAPE)
-            .label("Shape")
-            .text(shape_text)
-            .default(defaults.shape);
-        apply(number.slider(ui, controls), &mut brush.shape);
-    } else {
-        let name = panels::strength_name(brush.mode);
-        let number = meters("Brush strength", name, brush.strength_m, STRENGTH_M)
-            .log()
-            .default(defaults.strength_m);
-        apply(number.slider(ui, controls), &mut brush.strength_m);
-    }
-    if brush.mode == Mode::Noise {
-        let number = km("Brush scale", "Scale", brush.scale_km, SCALE_KM)
-            .log()
-            .default(defaults.scale_km);
-        apply(number.slider(ui, controls), &mut brush.scale_km);
-        let number = Number::new("Brush grain", brush.noise_grain, NOISE_GRAIN)
-            .label("Grain")
-            .text(|grain| format!("{:.1}×", 1.0 + grain));
-        apply(number.slider(ui, controls), &mut brush.noise_grain);
-        let ridged = &mut brush.noise_ridged;
-        widgets::switch_row(ui, controls, "Brush ridged", "Ridged", ridged);
-        if brush.noise_ridged {
-            let inverted = &mut brush.noise_inverted;
-            widgets::switch_row(ui, controls, "Brush invert", "Invert", inverted);
-        }
-        // The relief follows the height above sea level.
-        if height {
-            let number = percent("Brush relief", brush.noise_relief)
-                .label("Relief")
-                .default(defaults.noise_relief);
-            apply(number.slider(ui, controls), &mut brush.noise_relief);
-        }
-        seed_stepper(ui, controls, &mut world.seed);
-    }
-    if brush.mode == Mode::Range {
-        let value = brush.range_spacing_km;
-        let number = km("Brush spacing", "Spacing", value, RANGE_SPACING_KM)
-            .log()
-            .default(defaults.range_spacing_km);
-        apply(number.slider(ui, controls), &mut brush.range_spacing_km);
-        seed_stepper(ui, controls, &mut world.seed);
-    }
-    if brush.mode == Mode::Basin {
-        let value = brush.basin_density_km;
-        let number = km("Brush density", "Density", value, BASIN_DENSITY)
-            .log()
-            .default(defaults.basin_density_km);
-        apply(number.slider(ui, controls), &mut brush.basin_density_km);
-        let number = Number::new("Brush age", brush.basin_age, BASIN_AGE)
-            .label("Age")
-            .percent()
-            .default(defaults.basin_age);
-        apply(number.slider(ui, controls), &mut brush.basin_age);
-        let number = Number::new("Brush lakes", brush.basin_lakes, BASIN_LAKES)
-            .label("Lakes")
-            .percent()
-            .default(defaults.basin_lakes);
-        apply(number.slider(ui, controls), &mut brush.basin_lakes);
-        seed_stepper(ui, controls, &mut world.seed);
-    }
-    if matches!(brush.mode, Mode::Carve | Mode::Erode) {
+    if matches!(mode, Mode::Carve | Mode::Erode) {
         let name = "Brush channel width";
-        let number = km(name, "Channel width", brush.channel_km, CHANNEL_KM).nice();
+        let number = Number::new(name, brush.channel_km, CHANNEL_KM)
+            .label("Channel width")
+            .unit("km")
+            .nice();
         apply(number.stepper(ui, controls), &mut brush.channel_km);
     }
-    if brush.mode == Mode::Carve {
+    if mode == Mode::Carve {
         let value = brush.floodplain_km;
-        let number = km("Brush floodplain", "Floodplain", value, FLOODPLAIN_WIDTH_KM).step(1.0);
+        let number = Number::new("Brush floodplain", value, FLOODPLAIN_WIDTH_KM)
+            .label("Floodplain")
+            .unit("km")
+            .step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
-    if matches!(brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
-        let number = Number::new("Brush erosion", brush.erosion, EROSION)
-            .label("Erosion")
-            .percent()
-            .default(defaults.erosion);
-        apply(number.slider(ui, controls), &mut brush.erosion);
+    if matches!(mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+        row(ui, controls, state, Slider::Erosion);
     }
-    if matches!(brush.mode, Mode::Erode | Mode::Uplift) {
-        let number = Number::new("Brush branching", brush.branching, BRANCHING)
-            .label("Branching")
-            .percent()
-            .default(defaults.branching);
-        apply(number.slider(ui, controls), &mut brush.branching);
+    if matches!(mode, Mode::Erode | Mode::Uplift) {
+        row(ui, controls, state, Slider::Branching);
     }
-    if matches!(
-        brush.mode,
-        Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin
-    ) {
+    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {
+        let world = &mut state.doc.project.world;
         let mut degrees = world.wind_deg as f32;
         if widgets::compass_row(ui, controls, "Brush wind", "Wind", &mut degrees) {
             world.wind_deg = f64::from(degrees.round());
         }
-        let shadow = world.rain_shadow.clamp(0.0, 1.0);
-        let number = percent("Brush rain shadow", shadow).label("Rain shadow");
-        apply(number.slider(ui, controls), &mut world.rain_shadow);
+        row(ui, controls, state, Slider::RainShadow);
     }
-    if matches!(brush.mode, Mode::Weather | Mode::Uplift) {
+    let brush = &mut state.globe.brush;
+    if matches!(mode, Mode::Weather | Mode::Uplift) {
         let number = Number::new("Brush angle", brush.talus_deg, TALUS_DEG)
             .label("Angle")
             .unit("°")
@@ -3012,6 +2951,241 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
     }
     flatten_rows(ui, controls, &mut state.globe, &unit);
+}
+
+/// Where `brush_slider` adds a slider: as a row of the Brush panel with a
+/// pin, or in the strip with the control that the closure adds.
+pub(super) enum Place<'f> {
+    Panel,
+    Strip(&'f mut dyn for<'n> FnMut(Number<'n>, &mut egui::Ui, &mut Controls) -> Option<f64>),
+}
+
+/// The name of a slider of the Brush panel.
+pub fn slider_name(slider: Slider) -> &'static str {
+    match slider {
+        Slider::Size => "Brush size",
+        Slider::Hardness => "Brush hardness",
+        Slider::Flow => "Brush flow",
+        Slider::Strength => "Brush strength",
+        Slider::Scale => "Brush scale",
+        Slider::Rate => "Brush rate",
+        Slider::Opacity => "Brush opacity",
+        Slider::Value => PAINT_VALUE,
+        Slider::Raise => "Brush raise",
+        Slider::Lower => "Brush lower",
+        Slider::Grain => "Brush grain",
+        Slider::Relief => "Brush relief",
+        Slider::Step => "Brush step",
+        Slider::Shape => "Brush shape",
+        Slider::Spacing => "Brush spacing",
+        Slider::Density => "Brush density",
+        Slider::Age => "Brush age",
+        Slider::Lakes => "Brush lakes",
+        Slider::Erosion => "Brush erosion",
+        Slider::Branching => "Brush branching",
+        Slider::RainShadow => "Brush rain shadow",
+        Slider::Magma => "Brush magma",
+    }
+}
+
+/// The label of a slider of the brush in `mode`.
+pub fn slider_label(mode: Mode, slider: Slider) -> &'static str {
+    match slider {
+        Slider::Size => "Size",
+        Slider::Hardness => "Hardness",
+        Slider::Flow => "Flow",
+        Slider::Strength => panels::strength_name(mode),
+        Slider::Scale => "Scale",
+        Slider::Rate => "Rate",
+        Slider::Opacity => "Opacity",
+        Slider::Value => "Value",
+        Slider::Raise => "Raise",
+        Slider::Lower => "Lower",
+        Slider::Grain => "Grain",
+        Slider::Relief => "Relief",
+        Slider::Step => "Step",
+        Slider::Shape => "Shape",
+        Slider::Spacing => "Spacing",
+        Slider::Density => "Density",
+        Slider::Age => "Age",
+        Slider::Lakes => "Lakes",
+        Slider::Erosion => "Erosion",
+        Slider::Branching => "Branching",
+        Slider::RainShadow => "Rain shadow",
+        Slider::Magma => "Magma",
+    }
+}
+
+/// The name of a strip slider of the brush in `mode`.
+pub fn strip_name(mode: Mode, slider: Slider) -> String {
+    format!("Strip {}", slider_label(mode, slider).to_lowercase())
+}
+
+/// Adds a slider of the brush at `place`, and sets the setting that it
+/// changes. A tap on the label of a slider of the panel pins it to the strip
+/// or unpins it.
+pub(super) fn brush_slider(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    state: &mut AppState,
+    slider: Slider,
+    place: &mut Place<'_>,
+) {
+    let mode = state.globe.brush.mode;
+    let label = slider_label(mode, slider);
+    let strip_name = strip_name(mode, slider);
+    let name = match place {
+        Place::Panel => slider_name(slider),
+        Place::Strip(_) => strip_name.as_str(),
+    };
+    let pinned = state.tools.pins.is_pinned(mode, slider);
+    let mut toggled = false;
+    let mut show = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls| match place {
+        Place::Panel => {
+            let (value, tap) = number.pin(pinned).slider_pin(ui, controls);
+            toggled |= tap;
+            value
+        }
+        Place::Strip(control) => control(number, ui, controls),
+    };
+    if slider == Slider::Size {
+        brush_size(state, name, |number| show(number, ui, controls));
+    } else {
+        let unit = state.shown_unit().to_string();
+        let defaults = BrushSettings::default();
+        let brush = &mut state.globe.brush;
+        let world = &mut state.doc.project.world;
+        // A height in meters as a value of the layer.
+        let factor = brush.meters_value(1.0);
+        let span = brush.value_range.1 - brush.value_range.0;
+        let layer_text = |meters: f64| world::value_text(meters * factor, span, &unit);
+        let meters = |value, range| {
+            Number::new(name, value, range)
+                .label(label)
+                .shown(factor, &unit)
+                .text(layer_text)
+        };
+        let km = |value, range| Number::new(name, value, range).label(label).unit("km");
+        let fraction = |value, range| Number::new(name, value, range).label(label).percent();
+        let mut set =
+            |number: Number<'_>, value: &mut f64| apply(show(number, ui, controls), value);
+        match slider {
+            Slider::Size => {}
+            Slider::Hardness => {
+                let number = fraction(brush.hardness, 0.0..=1.0).default(defaults.hardness);
+                set(number, &mut brush.hardness);
+            }
+            Slider::Flow => set(fraction(brush.flow, FLOW), &mut brush.flow),
+            Slider::Strength if mode == Mode::Warp => {
+                let number = km(brush.warp_km, WARP_KM).log().default(defaults.warp_km);
+                set(number, &mut brush.warp_km);
+            }
+            Slider::Strength => {
+                let number = meters(brush.strength_m, STRENGTH_M)
+                    .log()
+                    .default(defaults.strength_m);
+                set(number, &mut brush.strength_m);
+            }
+            Slider::Scale => {
+                let number = km(brush.scale_km, SCALE_KM)
+                    .log()
+                    .default(defaults.scale_km);
+                set(number, &mut brush.scale_km);
+            }
+            Slider::Rate => {
+                let number =
+                    fraction(brush.flatten_rate, FLATTEN_RATE).default(defaults.flatten_rate);
+                set(number, &mut brush.flatten_rate);
+            }
+            Slider::Opacity => {
+                let number = fraction(brush.opacity, 0.0..=1.0).default(defaults.opacity);
+                set(number, &mut brush.opacity);
+            }
+            Slider::Value => {
+                let value = brush.value(brush.paint_level);
+                let number = level(name, value, brush.value_range, &unit).label(label);
+                if let Some(value) = show(number, ui, controls) {
+                    brush.paint_level = brush.level(value);
+                }
+            }
+            Slider::Raise => {
+                let number = meters(brush.noise_raise_m, NOISE_M)
+                    .scale(Scale::Square)
+                    .default(defaults.noise_raise_m);
+                set(number, &mut brush.noise_raise_m);
+            }
+            Slider::Lower => {
+                let number = meters(brush.noise_lower_m, NOISE_M)
+                    .scale(Scale::Square)
+                    .default(defaults.noise_lower_m);
+                set(number, &mut brush.noise_lower_m);
+            }
+            Slider::Grain => {
+                let number = Number::new(name, brush.noise_grain, NOISE_GRAIN)
+                    .label(label)
+                    .text(|grain| format!("{:.1}×", 1.0 + grain));
+                set(number, &mut brush.noise_grain);
+            }
+            Slider::Relief => {
+                let number = fraction(brush.noise_relief, 0.0..=1.0).default(defaults.noise_relief);
+                set(number, &mut brush.noise_relief);
+            }
+            Slider::Step => {
+                let number = meters(brush.terrace_step_m, TERRACE_STEP_M)
+                    .log()
+                    .default(defaults.terrace_step_m);
+                set(number, &mut brush.terrace_step_m);
+            }
+            Slider::Shape => {
+                let number = Number::new(name, brush.shape, SHAPE)
+                    .label(label)
+                    .text(shape_text)
+                    .default(defaults.shape);
+                set(number, &mut brush.shape);
+            }
+            Slider::Spacing => {
+                let number = km(brush.range_spacing_km, RANGE_SPACING_KM)
+                    .log()
+                    .default(defaults.range_spacing_km);
+                set(number, &mut brush.range_spacing_km);
+            }
+            Slider::Density => {
+                let number = km(brush.basin_density_km, BASIN_DENSITY)
+                    .log()
+                    .default(defaults.basin_density_km);
+                set(number, &mut brush.basin_density_km);
+            }
+            Slider::Age => {
+                let number = fraction(brush.basin_age, BASIN_AGE).default(defaults.basin_age);
+                set(number, &mut brush.basin_age);
+            }
+            Slider::Lakes => {
+                let number = fraction(brush.basin_lakes, BASIN_LAKES).default(defaults.basin_lakes);
+                set(number, &mut brush.basin_lakes);
+            }
+            Slider::Erosion => {
+                let number = fraction(brush.erosion, EROSION).default(defaults.erosion);
+                set(number, &mut brush.erosion);
+            }
+            Slider::Branching => {
+                let number = fraction(brush.branching, BRANCHING).default(defaults.branching);
+                set(number, &mut brush.branching);
+            }
+            Slider::RainShadow => {
+                let number = fraction(world.rain_shadow.clamp(0.0, 1.0), 0.0..=1.0);
+                set(number, &mut world.rain_shadow);
+            }
+            Slider::Magma => {
+                let number = fraction(brush.ridge_magma, RIDGE_MAGMA)
+                    .text(panels::signed_percent)
+                    .default(0.0);
+                set(number, &mut brush.ridge_magma);
+            }
+        }
+    }
+    if toggled {
+        state.tools.pins.toggle(mode, slider);
+    }
 }
 
 /// Sets `value` to a new value of a control.
@@ -3046,43 +3220,6 @@ fn seed_stepper(ui: &mut egui::Ui, controls: &mut Controls, seed: &mut u32) {
     if let Some(value) = number.stepper(ui, controls) {
         *seed = value as u32;
     }
-}
-
-/// The settings of the ocean ridge mode, and the age of the crust at the
-/// edge of the stroke. `radius_km` is the brush radius on the ground.
-fn ridge_rows(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    brush: &mut BrushSettings,
-    radius_km: f64,
-) {
-    let number = Number::new("Brush crest", brush.ridge_crest_m, RIDGE_CREST_M)
-        .label("Crest")
-        .step(50.0)
-        .unit("m");
-    apply(number.stepper(ui, controls), &mut brush.ridge_crest_m);
-    let number = Number::new("Brush spreading", brush.ridge_spread_mm, RIDGE_SPREAD_MM)
-        .label("Spreading")
-        .step(1.0)
-        .unit("mm/yr");
-    apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
-    let number = Number::new("Brush magma", brush.ridge_magma, RIDGE_MAGMA)
-        .label("Magma")
-        .percent()
-        .text(panels::signed_percent)
-        .default(0.0);
-    apply(number.slider(ui, controls), &mut brush.ridge_magma);
-    let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
-        .label("Segment")
-        .step(10.0)
-        .unit("km");
-    apply(number.stepper(ui, controls), &mut brush.ridge_segment_km);
-    let number = Number::new("Brush offset", brush.ridge_offset_km, RIDGE_OFFSET_KM)
-        .label("Offset")
-        .step(1.0)
-        .unit("km");
-    apply(number.stepper(ui, controls), &mut brush.ridge_offset_km);
-    raster::note(ui, &panels::edge_age_text(brush, radius_km));
 }
 
 /// The name of the switch that keeps the brush size on the ground.

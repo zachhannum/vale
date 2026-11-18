@@ -1198,7 +1198,8 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Shape", &mut brush.shape, SHAPE)
                 .format(shape_text)
                 .show(ui);
-        } else {
+        } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
+        {
             let name = strength_name(brush.mode);
             number::slider(name, &mut brush.strength_m, STRENGTH_M)
                 .log()

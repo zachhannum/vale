@@ -8,6 +8,7 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
+use vale_app::globe::brush::STRENGTH_M;
 use vale_app::globe::select::FeatureRef;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{StackItem, Tool, WorldView};
@@ -20,7 +21,7 @@ use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
-use vale_app::ui::pad::number::{LABEL_COLUMN, TRACK_INSET};
+use vale_app::ui::pad::number::TRACK_INSET;
 use vale_app::ui::pad::raster;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
@@ -167,6 +168,10 @@ fn open_panel(h: &mut Pad, name: &str) {
     tap(h, vale_app::ui::pad::PANELS);
     tap(h, name);
 }
+
+/// The strip sliders of the Raise mode.
+const STRIP_SIZE: &str = "Strip size";
+const STRIP_STRENGTH: &str = "Strip strength";
 
 /// A tap of a finger on the middle of a control.
 fn tap(h: &mut Pad, name: &str) {
@@ -776,7 +781,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
 #[test]
 fn the_brush_cells_are_on_for_a_selected_raster_layer_only() {
     let mut h = pad(BOARDS[0]);
-    let cells = [SCULPT, TERRAIN, "Size", "Flow"];
+    let cells = [SCULPT, TERRAIN, STRIP_SIZE, STRIP_STRENGTH];
     let on = |h: &Pad| cells.map(|name| control(h, name).is_some());
     assert_eq!(on(&h), [true; 4]);
     assert_eq!(h.state().globe.tool, Tool::Brush);
@@ -2101,8 +2106,9 @@ fn a_finger_hits_each_control_at_the_first_try() {
     assert!(h.state().pad.is_open(Panel::Layers));
 
     // A touch at the top of a slider sets its largest value.
-    h.state_mut().globe.brush.flow = 0.2;
-    for (name, at) in [("Flow", 0.0), ("Brush hardness", 1.0)] {
+    h.state_mut().globe.brush.strength_m = 3000.0;
+    h.state_mut().globe.brush.hardness = 0.6;
+    for (name, at) in [(STRIP_STRENGTH, 0.0), ("Brush hardness", 1.0)] {
         let rect = control(&h, name).unwrap();
         let (from, to) = if at == 0.0 {
             (rect.center(), rect.center_top())
@@ -2111,10 +2117,10 @@ fn a_finger_hits_each_control_at_the_first_try() {
         };
         drag(&mut h, from, to, None);
     }
-    assert_eq!(h.state().globe.brush.flow, 1.0);
+    assert_eq!(h.state().globe.brush.strength_m, *STRENGTH_M.end());
     assert_eq!(h.state().globe.brush.hardness, 1.0);
     let size = h.state().globe.brush.size_points;
-    let rect = control(&h, "Size").unwrap();
+    let rect = control(&h, STRIP_SIZE).unwrap();
     drag(&mut h, rect.center(), rect.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
 
@@ -2261,13 +2267,13 @@ fn the_small_ipads_show_the_sliders_in_the_tool_column() {
         let rects = h.state().pad.rects.unwrap();
         assert_eq!(rects.brush_card, BrushCard::Full(track), "{what}");
         assert_eq!(rects.tools.height(), rects.column_content, "{what}");
-        for name in ["Size", "Flow", "Brush settings"] {
+        for name in [STRIP_SIZE, STRIP_STRENGTH, "Brush settings"] {
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(rects.tools.contains_rect(rect), "{what}: {name}");
         }
         // The value is above the track, and the name is below it.
         assert_eq!(
-            control(&h, "Size").unwrap().height(),
+            control(&h, STRIP_SIZE).unwrap().height(),
             track + 44.0,
             "{what}"
         );
@@ -2709,7 +2715,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         // stepper of the level ends at the right of the row.
         let switch = control(&h, SWITCHES[0]).unwrap();
         let plus = control(&h, &format!("Increase {}", LEVELS[0])).unwrap();
-        let size = control(&h, "Brush size").unwrap();
+        let size = control(&h, "Brush size pin").unwrap();
         let below = plus.center().y - switch.center().y;
         assert_eq!(below, switch.height(), "{what}");
         assert_eq!(switch.left(), size.left(), "{what}");
@@ -2808,15 +2814,16 @@ fn sizes_along(h: &mut Pad, path: &[Pos2]) -> Vec<f32> {
 /// The distance on the track that moves the size of the Brush panel from
 /// `from` to `to`, in points.
 fn size_distance(h: &Pad, from: f32, to: f32) -> f32 {
-    // The track has a log scale. It starts LABEL_COLUMN points from the left
-    // of the row and ends 8 points from the value field, and the handle
-    // stays TRACK_INSET from each end.
+    // The track has a log scale. It starts 4 points right of the control
+    // of the slider, which starts at the end of the label and its pin, and
+    // it ends 8 points from the value field. The handle stays TRACK_INSET
+    // from each end.
     let globe = &h.state().globe;
     let world_km = h.state().doc.project.world.radius_km;
     let range = globe.brush.radius_km_range(globe.radius(), world_km);
     let span = (range.end() / range.start()).ln() as f32;
-    let row = control(h, "Brush size").unwrap();
-    let length = row.width() - LABEL_COLUMN - 8.0 - 2.0 * TRACK_INSET;
+    let body = control(h, "Brush size").unwrap();
+    let length = body.width() - 4.0 - 8.0 - 2.0 * TRACK_INSET;
     (to / from).ln() / span * length
 }
 
@@ -3362,12 +3369,8 @@ fn the_basin_panel_shows_the_step_of_the_outline() {
         choose_mode(&mut h, "Basin");
         assert!(h.query_by_label(panels::BASIN_OUTLINE_HINT).is_some());
         assert!(control(&h, panels::CLEAR_OUTLINE).is_none());
-        // The outline sets the size, so the size slider of the brush card is off.
-        if let Some(rect) = control(&h, "Size") {
-            let points = h.state().globe.brush.size_points;
-            drag(&mut h, rect.center(), rect.center_top(), None);
-            assert_eq!(h.state().globe.brush.size_points, points, "{size:?}");
-        }
+        // The outline sets the size, so the strip has no size slider.
+        assert!(control(&h, STRIP_SIZE).is_none(), "{size:?}");
         // An outline waits for its main river.
         let outline = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)];
         let outline = outline.map(|(lon, lat)| lonlat_to_dir(lon, lat)).to_vec();
@@ -4657,22 +4660,22 @@ fn a_short_window_makes_the_sliders_short_and_then_leaves_them_out() {
     let r = column(&h);
     assert_eq!(r.brush_card, BrushCard::Full(101.5));
     assert_eq!(r.tools.height(), r.column_content);
-    let slider = control(&h, "Size").unwrap();
+    let slider = control(&h, STRIP_SIZE).unwrap();
     assert!(slider.height() > slider.width());
     assert!(r.tools.contains_rect(slider));
     let size = h.state().globe.brush.size_points;
     drag(&mut h, slider.center(), slider.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
-    slide_to_end(&mut h, "Flow", false);
-    let flow = h.state().globe.brush.flow;
-    slide_to_end(&mut h, "Flow", true);
-    assert!(h.state().globe.brush.flow > flow);
+    slide_to_end(&mut h, STRIP_STRENGTH, false);
+    let flow = h.state().globe.brush.strength_m;
+    slide_to_end(&mut h, STRIP_STRENGTH, true);
+    assert!(h.state().globe.brush.strength_m > flow);
     check_controls(&h, "744 high");
 
     // With less room, the Brush panel holds the two sliders.
     let mut h = pad((1024.0, 600.0));
     assert_eq!(column(&h).brush_card, BrushCard::Button);
-    assert!(control(&h, "Size").is_none() && control(&h, "Flow").is_none());
+    assert!(control(&h, STRIP_SIZE).is_none() && control(&h, STRIP_STRENGTH).is_none());
     check_controls(&h, "600 high");
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush size").is_some() && control(&h, "Brush flow").is_some());
@@ -7358,7 +7361,7 @@ fn the_vector_cell_is_the_line_cell_for_a_line_layer() {
     h.run_steps(2);
     assert_eq!(control(&h, VECTOR), Some(draw));
     assert_eq!(h.state().pad.vector_face, Some(LINE));
-    for name in [SCULPT, TERRAIN, "Size", "Flow"] {
+    for name in [SCULPT, TERRAIN, STRIP_SIZE, STRIP_STRENGTH] {
         assert!(control(&h, name).is_none(), "{name}");
     }
     // The context strip shows the controls of the line tool only while it
@@ -13282,8 +13285,8 @@ fn the_context_strip_shows_only_the_controls_of_the_tool() {
         TERRAIN_FIT,
         POLYGON_MODE,
         "Brush settings",
-        "Size",
-        "Flow",
+        STRIP_SIZE,
+        STRIP_STRENGTH,
     ];
     let check = |h: &Pad, shown: &[&str], what: &str| {
         for name in all {
@@ -14133,7 +14136,7 @@ fn manual_the_number_controls_of_the_brush_panel() {
     screenshot::save(&mut h, "numbers-keypad");
     tap(&mut h, "Brush size value");
     // The bubble of the card goes past the open Brush panel.
-    let from = control(&h, "Size").unwrap().center();
+    let from = control(&h, STRIP_SIZE).unwrap().center();
     touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();
     for at in [vec2(0.0, -20.0), vec2(0.0, -40.0)] {
@@ -15294,8 +15297,8 @@ fn on_an_iphone_the_sliders_and_the_brush_button_are_a_row_above_the_strip() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
     let strip = h.state().pad.rects.unwrap().tools;
-    let size = control(&h, "Size").unwrap();
-    let flow = control(&h, "Flow").unwrap();
+    let size = control(&h, STRIP_SIZE).unwrap();
+    let flow = control(&h, STRIP_STRENGTH).unwrap();
     let brush = control(&h, "Brush settings").unwrap();
     for c in [size, flow, brush] {
         assert!(c.bottom() <= strip.top(), "{c:?}");
@@ -15314,24 +15317,27 @@ fn on_an_iphone_the_sliders_and_the_brush_button_are_a_row_above_the_strip() {
     assert_eq!(smoothing.left(), size.left());
     assert!(smoothing.right() <= snap.left());
     assert_eq!(snap.center().y, brush.center().y);
-    assert!(control(&h, "Size").is_none());
+    assert!(control(&h, STRIP_SIZE).is_none());
 }
 
 #[test]
 fn a_drag_along_a_slider_of_the_row_moves_its_value() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
-    let flow = control(&h, "Flow").unwrap();
-    let before = h.state().globe.brush.flow;
+    // The flyout of the modes covers the row.
+    h.state_mut().pad.flyouts.open = None;
+    h.run_steps(2);
+    let flow = control(&h, STRIP_STRENGTH).unwrap();
+    let before = h.state().globe.brush.strength_m;
     // A tap on the track does not move the value.
     let pos = pos2(flow.left() + 10.0, flow.bottom() - 10.0);
     touch(&mut h, egui::TouchPhase::Start, pos, None);
     h.step();
     touch(&mut h, egui::TouchPhase::End, pos, None);
     h.run_steps(2);
-    assert_eq!(h.state().globe.brush.flow, before);
+    assert_eq!(h.state().globe.brush.strength_m, before);
     drag(&mut h, pos, pos - vec2(40.0, 0.0), None);
-    assert!(h.state().globe.brush.flow < before);
+    assert!(h.state().globe.brush.strength_m < before);
 }
 
 #[test]
@@ -16676,9 +16682,9 @@ fn the_tool_column_holds_the_tools_a_divider_and_the_controls_of_the_tool() {
     }
     // Below a divider, the controls of the brush: the two sliders and the
     // Brush button.
-    let size = control(&h, "Size").unwrap();
+    let size = control(&h, STRIP_SIZE).unwrap();
     assert_eq!(size.top(), last.bottom() + 13.0);
-    let flow = control(&h, "Flow").unwrap();
+    let flow = control(&h, STRIP_STRENGTH).unwrap();
     assert_eq!(flow.top(), size.bottom());
     let button = control(&h, "Brush settings").unwrap();
     assert_eq!(button.top(), flow.bottom());
@@ -17037,12 +17043,12 @@ fn the_inner_screen_of_iphone_duo_in_landscape_has_the_brush_sliders_in_the_colu
     let r = h.state().pad.rects.unwrap();
     assert_eq!(r.brush_card, BrushCard::Bare(93.0));
     assert_eq!(r.tools.height(), r.column_content);
-    for name in ["Size", "Flow"] {
+    for name in [STRIP_SIZE, STRIP_STRENGTH] {
         let rect = control(&h, name).unwrap_or_else(|| panic!("{name}"));
         assert!(r.tools.contains_rect(rect), "{name}");
         assert!(rect.height() > rect.width(), "{name}");
     }
-    let slider = control(&h, "Size").unwrap();
+    let slider = control(&h, STRIP_SIZE).unwrap();
     let size = h.state().globe.brush.size_points;
     drag(&mut h, slider.center(), slider.center_bottom(), None);
     assert!(h.state().globe.brush.size_points < size);
@@ -18405,4 +18411,83 @@ fn a_slow_pull_of_a_third_of_the_dock_shows_it() {
         h.run_steps(120);
         assert_eq!(!h.state().pad.docks.world.collapsed, shows, "{reach}");
     }
+}
+
+#[test]
+fn each_slider_of_the_brush_panel_has_a_pin_in_the_order_of_the_strip() {
+    use vale_app::strip::{self, Slider};
+    use vale_app::ui::pad::{SCULPT_MODES, TERRAIN_MODES, slider_name, strip_name};
+    let mut h = pad((1366.0, 1024.0));
+    tap(&mut h, "Brush settings");
+    let modes = SCULPT_MODES.iter().chain(&TERRAIN_MODES).map(|m| m.2);
+    for mode in modes {
+        h.state_mut().globe.brush.mode = mode;
+        h.run_steps(3);
+        let all = strip::sliders(mode, true);
+        let mut pins: Vec<(f32, Slider)> = all
+            .iter()
+            .map(|&s| {
+                let name = format!("{} pin", slider_name(s));
+                let rect = control(&h, &name).unwrap_or_else(|| panic!("{mode:?}: {name}"));
+                (rect.top(), s)
+            })
+            .collect();
+        pins.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let order: Vec<Slider> = pins.into_iter().map(|p| p.1).collect();
+        assert_eq!(order, all, "{mode:?}");
+        // The strip shows the pinned sliders, in the same order.
+        let strip = h.state().tools.pins.strip(mode, true);
+        let mut shown: Vec<(f32, Slider)> = strip
+            .iter()
+            .map(|&s| {
+                let name = strip_name(mode, s);
+                let rect = control(&h, &name).unwrap_or_else(|| panic!("{mode:?}: {name}"));
+                (rect.top(), s)
+            })
+            .collect();
+        shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+        assert_eq!(shown.into_iter().map(|p| p.1).collect::<Vec<_>>(), strip);
+    }
+}
+
+#[test]
+fn a_tap_on_the_label_of_a_slider_pins_it_to_the_strip() {
+    let mut h = pad((1366.0, 1024.0));
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, STRIP_SIZE).is_some() && control(&h, STRIP_STRENGTH).is_some());
+    assert!(control(&h, "Strip hardness").is_none());
+    let hardness = h.state().globe.brush.hardness;
+    tap(&mut h, "Brush hardness pin");
+    // Hardness replaces Strength, the slider that was pinned last, and the
+    // tap does not change the hardness.
+    assert!(control(&h, "Strip hardness").is_some());
+    assert!(control(&h, STRIP_STRENGTH).is_none());
+    assert_eq!(h.state().globe.brush.hardness, hardness);
+    // The strip keeps the order of the panel.
+    let size = control(&h, STRIP_SIZE).unwrap();
+    assert!(size.top() < control(&h, "Strip hardness").unwrap().top());
+    // The strip sets the hardness.
+    let rect = control(&h, "Strip hardness").unwrap();
+    drag(&mut h, rect.center(), rect.center_top(), None);
+    assert!(h.state().globe.brush.hardness > hardness);
+    // A second tap unpins it.
+    tap(&mut h, "Brush hardness pin");
+    assert!(control(&h, "Strip hardness").is_none());
+    assert!(control(&h, STRIP_SIZE).is_some());
+    // Each mode keeps its pins.
+    choose_mode(&mut h, "Lower");
+    assert!(control(&h, STRIP_SIZE).is_some() && control(&h, STRIP_STRENGTH).is_some());
+    choose_mode(&mut h, "Raise");
+    assert!(control(&h, STRIP_STRENGTH).is_none());
+}
+
+#[test]
+fn the_basin_mode_has_the_height_and_the_density_in_the_strip() {
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().globe.brush.mode = Mode::Basin;
+    h.run_steps(3);
+    assert!(control(&h, STRIP_SIZE).is_none());
+    let height = control(&h, "Strip height").unwrap();
+    let density = control(&h, "Strip density").unwrap();
+    assert!(height.top() < density.top());
 }
