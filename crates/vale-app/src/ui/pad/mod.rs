@@ -2225,8 +2225,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         state.pad.layer_list.shut();
     }
     let scroll = egui::scroll_area::ScrollSource::default();
+    let mode = state.globe.brush.mode;
     let action = match panel {
         Panel::Attributes => Some((select::FOCUS_NEW, Icon::TextCursor, state.tools.focus_new)),
+        // The button shows while the pins of the mode are not its default
+        // pins.
+        Panel::Brush => {
+            (brush_settings(state) && state.globe.brushing() && state.tools.pins.is_changed(mode))
+                .then_some((RESET_PINS, Icon::ResetPins, false))
+        }
         _ => list.then_some((ADD_LAYER, Icon::Plus, state.pad.add)),
     };
     let subtitle = match panel {
@@ -2304,6 +2311,11 @@ pub(super) fn panel_title(
         return;
     }
     match action {
+        Some(reset) if panel == Panel::Brush => {
+            if reset.clicked() {
+                state.tools.pins.reset(state.globe.brush.mode);
+            }
+        }
         Some(focus) if panel == Panel::Attributes => {
             if focus.clicked() {
                 state.tools.focus_new = !state.tools.focus_new;
@@ -2959,6 +2971,10 @@ pub(super) enum Place<'f> {
     Panel,
     Strip(&'f mut dyn for<'n> FnMut(Number<'n>, &mut egui::Ui, &mut Controls) -> Option<f64>),
 }
+
+/// The name of the button in the header of the Brush panel that gives the
+/// mode its default pins.
+pub const RESET_PINS: &str = "Reset pins";
 
 /// The name of a slider of the Brush panel.
 pub fn slider_name(slider: Slider) -> &'static str {

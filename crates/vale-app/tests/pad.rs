@@ -18491,3 +18491,27 @@ fn the_basin_mode_has_the_height_and_the_density_in_the_strip() {
     let density = control(&h, "Strip density").unwrap();
     assert!(height.top() < density.top());
 }
+
+#[test]
+fn reset_pins_shows_while_the_pins_change_and_gives_the_default_pins() {
+    use vale_app::ui::pad::RESET_PINS;
+    let mut h = pad((1366.0, 1024.0));
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, RESET_PINS).is_none());
+    tap(&mut h, "Brush hardness pin");
+    assert!(control(&h, "Strip hardness").is_some());
+    let reset = control(&h, RESET_PINS).unwrap();
+    // The button is in the header of the Brush panel.
+    assert!(reset.bottom() <= control(&h, "Brush size pin").unwrap().top());
+    screenshot::save(&mut h, "reset-pins");
+    tap(&mut h, RESET_PINS);
+    assert!(control(&h, STRIP_SIZE).is_some() && control(&h, STRIP_STRENGTH).is_some());
+    assert!(control(&h, "Strip hardness").is_none());
+    assert!(control(&h, RESET_PINS).is_none());
+    // The other modes keep their pins.
+    tap(&mut h, "Brush flow pin");
+    choose_mode(&mut h, "Lower");
+    assert!(control(&h, RESET_PINS).is_none());
+    choose_mode(&mut h, "Raise");
+    assert!(control(&h, RESET_PINS).is_some());
+}

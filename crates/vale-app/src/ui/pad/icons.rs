@@ -90,6 +90,8 @@ pub enum Icon {
     Eyedropper,
     /// A push pin.
     Pin,
+    /// A small push pin in the circular arrow of `Reset`.
+    ResetPins,
     /// A window with a header and a column at the left.
     Panels,
     /// A window with a column at the right.
@@ -251,6 +253,10 @@ impl Icon {
             }
             Icon::Reset => {
                 "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"
+            }
+            Icon::ResetPins => {
+                "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4\
+                 M10.5 7.5h3l-.5 3 1.75 1.75h-5.5L11 10.5zM12 12.25V16.5"
             }
         }
     }
@@ -606,6 +612,7 @@ mod tests {
             Icon::Grip,
             Icon::Eyedropper,
             Icon::Pin,
+            Icon::ResetPins,
             Icon::Panels,
             Icon::Dock,
             Icon::Pages,

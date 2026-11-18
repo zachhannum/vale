@@ -178,6 +178,19 @@ impl Pins {
         }
     }
 
+    /// The pins of `mode` are not its default pins. The order of the pins
+    /// does not count.
+    pub fn is_changed(&self, mode: Mode) -> bool {
+        let pins = self.of(mode);
+        let default = default_pins(mode);
+        pins.len() != default.len() || default.iter().any(|d| !pins.contains(d))
+    }
+
+    /// Gives `mode` its default pins.
+    pub fn reset(&mut self, mode: Mode) {
+        self.modes.retain(|(m, _)| *m != mode);
+    }
+
     pub fn is_pinned(&self, mode: Mode, slider: Slider) -> bool {
         self.of(mode).contains(&slider)
     }
@@ -283,6 +296,22 @@ mod tests {
         pins.toggle(Mode::Raise, Hardness);
         pins.toggle(Mode::Raise, Flow);
         assert!(pins.strip(Mode::Raise, true).is_empty());
+    }
+
+    #[test]
+    fn a_reset_gives_a_mode_its_default_pins() {
+        let mut pins = Pins::default();
+        assert!(!pins.is_changed(Mode::Raise));
+        pins.toggle(Mode::Raise, Slider::Hardness);
+        pins.toggle(Mode::Lower, Slider::Flow);
+        assert!(pins.is_changed(Mode::Raise));
+        pins.reset(Mode::Raise);
+        assert!(!pins.is_changed(Mode::Raise));
+        assert_eq!(pins.of(Mode::Raise), default_pins(Mode::Raise));
+        assert!(pins.is_changed(Mode::Lower));
+        // The default sliders in another order are not a change.
+        pins.set(Mode::Lower, &[Slider::Strength, Slider::Size]);
+        assert!(!pins.is_changed(Mode::Lower));
     }
 
     #[test]
