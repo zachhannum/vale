@@ -14,6 +14,8 @@ fn invalid_features_are_reported() {
     let pt = Geometry::Point {
         position: Point::new(10.0, 10.0),
         symbol_radius: 2.0,
+        angle: None,
+        outline: None,
     };
     let feat = |id, class, text: &str, geometry| Feature {
         id,
@@ -85,6 +87,8 @@ fn point(id: u64, class: usize, text: &str, x: f64, y: f64, priority: f64) -> Fe
         geometry: Geometry::Point {
             position: Point::new(x, y),
             symbol_radius: 2.0,
+            angle: None,
+            outline: None,
         },
     }
 }
@@ -592,6 +596,8 @@ fn symbol_on_line_moves_label() {
                 geometry: Geometry::Point {
                     position: p(400.0, 295.0),
                     symbol_radius: 6.0,
+                    angle: None,
+                    outline: None,
                 },
             },
         ],
@@ -695,6 +701,7 @@ fn assert_valid(inp: &LabelInput, out: &Labeling) {
             let Geometry::Point {
                 position,
                 symbol_radius: r,
+                ..
             } = f.geometry
             else {
                 continue;

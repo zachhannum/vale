@@ -205,6 +205,8 @@ pub fn place(
                             push(Geometry::Point {
                                 position: *p,
                                 symbol_radius,
+                                angle: None,
+                                outline: None,
                             });
                         }
                     }
@@ -448,6 +450,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             offset: c.offset,
             graticule: c.graticule,
             no_flip: c.no_flip,
+            ..Default::default()
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),

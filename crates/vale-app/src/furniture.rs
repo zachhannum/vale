@@ -96,6 +96,8 @@ pub fn scale_bar(
             geometry: Geometry::Point {
                 position: Point::new(x0, y - 7.0),
                 symbol_radius: 0.0,
+                angle: None,
+                outline: None,
             },
         }],
         obstacles: vec![],
@@ -182,6 +184,8 @@ pub(crate) fn glyph_line(
             geometry: Geometry::Point {
                 position: Point::ZERO,
                 symbol_radius: 0.0,
+                angle: None,
+                outline: None,
             },
         }],
         obstacles: vec![],

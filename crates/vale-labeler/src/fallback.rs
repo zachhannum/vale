@@ -1,7 +1,7 @@
 //! The fallbacks of a label that does not fit: the text, the style, and the placement that each
 //! one tries.
 
-use crate::model::{Fallback, Fallbacks, LabelClass, Placement, PolygonMode};
+use crate::model::{AmbiguousLabels, Fallback, Fallbacks, LabelClass, Placement, PolygonMode};
 use crate::text::{Fonts, ShapedText};
 
 /// The space between the baselines of stacked lines, as a multiple of the font size.
@@ -131,7 +131,14 @@ pub(crate) fn attempts(
         Fallback::Leader => {
             let mut c = class.clone();
             match &mut c.placement {
-                Placement::Point(pp) => pp.offset += fb.leader_distance.max(0.0),
+                Placement::Point(pp) => {
+                    let grow = fb.leader_distance.max(0.0);
+                    pp.offset += grow;
+                    if let Some(max) = &mut pp.max_offset {
+                        *max += grow;
+                    }
+                    pp.ambiguous = AmbiguousLabels::Keep;
+                }
                 Placement::Polygon(pp) => {
                     // A class that blocks every zone outside gets all of them for the fallback.
                     if pp.zones.outside.iter().all(|r| *r == 0) {
