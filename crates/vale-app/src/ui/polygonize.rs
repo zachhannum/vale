@@ -23,13 +23,13 @@ pub const POLYGONIZE_ABOUT: &str = "Makes a polygon for each band of a raster la
 /// The hint of the operation when the world has no raster layer.
 pub const NEEDS_RASTER: &str = "Add a raster layer.";
 pub const INPUT: &str = "Input";
-pub const BREAKS: &str = "Breaks";
+pub const LEVELS: &str = "Levels";
 pub const COLOR_STOPS: &str = "Color stops";
 pub const INTERVAL: &str = "Interval";
 pub const BASE: &str = "Base";
 pub const SMOOTH: &str = "Smooth";
 pub const SIMPLIFY: &str = "Simplify";
-/// The hint of breaks that give too many bands.
+/// The hint of levels that give too many bands.
 pub const TOO_MANY_BANDS: &str = "Too many bands. Use a larger interval.";
 pub const SPLIT: &str = "Split into two layers at 0 m";
 pub const ABOVE: &str = "Above";
@@ -48,7 +48,7 @@ pub const MAX_RUN_BANDS: usize = 256;
 
 /// Where the limits of the bands come from.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Breaks {
+pub enum Levels {
     /// The color stops of the layer, with the colors and the names of its
     /// bands.
     Stops,
@@ -73,12 +73,12 @@ pub struct RunBands {
 }
 
 impl RunBands {
-    /// The bands of a layer with the bands `bands` and the breaks `breaks`.
+    /// The bands of a layer with the bands `bands` and the levels `levels`.
     /// `None` for an interval that is not positive, or that gives more than
     /// `MAX_RUN_BANDS` bands.
-    pub fn of(bands: &Bands, breaks: Breaks) -> Option<RunBands> {
+    pub fn of(bands: &Bands, levels: Levels) -> Option<RunBands> {
         let (min, max) = (bands.min(), bands.max());
-        let Breaks::Interval { step, base } = breaks else {
+        let Levels::Interval { step, base } = levels else {
             return Some(RunBands {
                 min,
                 max,
@@ -155,7 +155,7 @@ pub struct PolygonizeState {
     /// The largest distance of a removed vertex from the outline, in
     /// texels.
     pub simplify: f64,
-    pub breaks: Breaks,
+    pub levels: Levels,
     /// Split the output of a height layer at sea level.
     pub split: bool,
     pub above: String,
@@ -171,7 +171,7 @@ impl Default for PolygonizeState {
             raster: None,
             smooth: 0.6,
             simplify: *SIMPLIFY_RANGE.start(),
-            breaks: Breaks::Stops,
+            levels: Levels::Stops,
             split: true,
             above: TOPOGRAPHY.to_owned(),
             below: BATHYMETRY.to_owned(),
@@ -429,11 +429,11 @@ impl AppState {
         self.globe.bands_mut(id).map(|b| b.clone())
     }
 
-    /// The bands of a run of "Polygonize" on its input with its breaks.
-    /// `None` with no input, or with breaks that give no bands.
+    /// The bands of a run of "Polygonize" on its input with its levels.
+    /// `None` with no input, or with levels that give no bands.
     pub fn polygonize_bands(&mut self) -> Option<RunBands> {
         let id = self.polygonize_input()?;
-        RunBands::of(&self.raster_bands(id)?, self.polygonize.breaks)
+        RunBands::of(&self.raster_bands(id)?, self.polygonize.levels)
     }
 
     /// The size of one texel of the input of "Polygonize" on the ground, in
@@ -454,9 +454,9 @@ impl AppState {
         if height { " m" } else { "" }
     }
 
-    /// Breaks at an interval of about a tenth of the range of the input,
+    /// Levels at an interval of about a tenth of the range of the input,
     /// rounded to 1, 2, or 5 times a power of ten, from 0.
-    pub fn default_interval(&mut self) -> Breaks {
+    pub fn default_interval(&mut self) -> Levels {
         let (min, max) = self.polygonize_range().unwrap_or((0.0, 1000.0));
         let rough = ((max - min) / 10.0).max(1e-9);
         let power = 10f64.powf(rough.log10().floor());
@@ -465,10 +465,10 @@ impl AppState {
             .map(|m| m * power)
             .find(|s| *s >= rough)
             .unwrap_or(10.0 * power);
-        Breaks::Interval { step, base: 0.0 }
+        Levels::Interval { step, base: 0.0 }
     }
 
-    /// A value range that the breaks of "Polygonize" can cover: the range
+    /// A value range that the levels of "Polygonize" can cover: the range
     /// of the bands of its input.
     pub fn polygonize_range(&mut self) -> Option<(f64, f64)> {
         let id = self.polygonize_input()?;
@@ -652,7 +652,7 @@ impl AppState {
         let height = self.doc.project.raster(raster).is_some_and(is_height);
         let name = self.doc.project.raster_layer(raster)?.name.clone();
         let input = self.raster_bands(raster)?;
-        let bands = RunBands::of(&input, self.polygonize.breaks)?;
+        let bands = RunBands::of(&input, self.polygonize.levels)?;
         let split = self.polygonize.split && self.polygonize_can_split();
         let clean = |text: &str, default: &str| match text.trim() {
             "" => default.to_owned(),

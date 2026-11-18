@@ -12,7 +12,7 @@ use super::{TOOLBOX, filter, panels, theme};
 use crate::ui::AppState;
 use crate::ui::orient::{self, ORIENT_ABOUT, ORIENT_DOWNHILL};
 use crate::ui::polygonize::{
-    self, ABOVE, BASE, BELOW, BREAKS, Breaks, CANCEL, COLOR_STOPS, INPUT, INTERVAL, NEEDS_RASTER,
+    self, ABOVE, BASE, BELOW, CANCEL, COLOR_STOPS, INPUT, INTERVAL, LEVELS, Levels, NEEDS_RASTER,
     POLYGONIZE, POLYGONIZE_ABOUT, SIMPLIFY, SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
 };
 
@@ -72,7 +72,7 @@ pub enum ToolPage {
     /// The raster layers that "Polygonize" can take.
     PolygonizeInput,
     /// The limits of the bands of "Polygonize".
-    PolygonizeBreaks,
+    PolygonizeLevels,
 }
 
 /// The state of the Toolbox panel.
@@ -93,7 +93,7 @@ pub(super) fn head(page: Option<ToolPage>) -> (&'static str, &'static str, Optio
         Some(ToolPage::OrientHeight) => ("pad-orient-height", HEIGHT_LAYER, Some(ORIENT_DOWNHILL)),
         Some(ToolPage::Polygonize) => ("pad-polygonize", POLYGONIZE, Some(TOOLBOX)),
         Some(ToolPage::PolygonizeInput) => ("pad-polygonize-input", INPUT, Some(POLYGONIZE)),
-        Some(ToolPage::PolygonizeBreaks) => ("pad-polygonize-breaks", BREAKS, Some(POLYGONIZE)),
+        Some(ToolPage::PolygonizeLevels) => ("pad-polygonize-levels", LEVELS, Some(POLYGONIZE)),
     }
 }
 
@@ -102,7 +102,7 @@ pub(super) fn back(state: &mut AppState) {
     let page = &mut state.pad.toolbox.page;
     *page = match page {
         Some(ToolPage::OrientLines | ToolPage::OrientHeight) => Some(ToolPage::Orient),
-        Some(ToolPage::PolygonizeInput | ToolPage::PolygonizeBreaks) => Some(ToolPage::Polygonize),
+        Some(ToolPage::PolygonizeInput | ToolPage::PolygonizeLevels) => Some(ToolPage::Polygonize),
         _ => None,
     };
 }
@@ -116,7 +116,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         Some(ToolPage::OrientHeight) => height_body(ui, state, controls),
         Some(ToolPage::Polygonize) => polygonize_body(ui, state, controls),
         Some(ToolPage::PolygonizeInput) => input_body(ui, state, controls),
-        Some(ToolPage::PolygonizeBreaks) => breaks_body(ui, state, controls),
+        Some(ToolPage::PolygonizeLevels) => levels_body(ui, state, controls),
     }
 }
 
@@ -326,9 +326,9 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     if widgets::open_row(ui, controls, INPUT, &input_name).clicked() {
         state.pad.toolbox.page = Some(ToolPage::PolygonizeInput);
     }
-    let breaks = breaks_text(state);
-    if widgets::open_row(ui, controls, BREAKS, &breaks).clicked() {
-        state.pad.toolbox.page = Some(ToolPage::PolygonizeBreaks);
+    let levels = levels_text(state);
+    if widgets::open_row(ui, controls, LEVELS, &levels).clicked() {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeLevels);
     }
     let smooth = Number::new(SMOOTH, state.polygonize.smooth, 0.0..=1.0)
         .shown(100.0, "%")
@@ -399,29 +399,29 @@ fn progress_bar(ui: &mut egui::Ui, share: f32) {
     ui.painter().rect_filled(fill, radius, theme::ACCENT);
 }
 
-/// The value of the Breaks row.
-fn breaks_text(state: &mut AppState) -> String {
-    match state.polygonize.breaks {
-        Breaks::Stops => COLOR_STOPS.to_owned(),
-        Breaks::Interval { step, .. } => {
+/// The value of the Levels row.
+fn levels_text(state: &mut AppState) -> String {
+    match state.polygonize.levels {
+        Levels::Stops => COLOR_STOPS.to_owned(),
+        Levels::Interval { step, .. } => {
             let unit = state.polygonize_unit();
             format!("Every {}{unit}", crate::color_key::number_text(step))
         }
     }
 }
 
-fn breaks_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+fn levels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
     ui.add_space(8.0);
-    let stops = state.polygonize.breaks == Breaks::Stops;
+    let stops = state.polygonize.levels == Levels::Stops;
     if widgets::option_row(ui, controls, COLOR_STOPS, COLOR_STOPS, &[], stops).clicked() {
-        state.polygonize.breaks = Breaks::Stops;
+        state.polygonize.levels = Levels::Stops;
     }
     if widgets::option_row(ui, controls, INTERVAL, INTERVAL, &[], !stops).clicked() && stops {
-        state.polygonize.breaks = state.default_interval();
+        state.polygonize.levels = state.default_interval();
     }
     let range = state.polygonize_range();
-    if let (Breaks::Interval { step, base }, Some((min, max))) = (state.polygonize.breaks, range) {
+    if let (Levels::Interval { step, base }, Some((min, max))) = (state.polygonize.levels, range) {
         let unit = state.polygonize_unit();
         let span = (max - min).max(1.0);
         let new_step = Number::new(INTERVAL, step, span / 1000.0..=span)
@@ -433,7 +433,7 @@ fn breaks_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
             .unit(unit.trim())
             .stepper(ui, controls);
         if new_step.is_some() || new_base.is_some() {
-            state.polygonize.breaks = Breaks::Interval {
+            state.polygonize.levels = Levels::Interval {
                 step: new_step.unwrap_or(step),
                 base: new_base.unwrap_or(base),
             };

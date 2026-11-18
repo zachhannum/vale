@@ -19222,7 +19222,7 @@ fn polygonize_shows_its_progress_and_stops_on_cancel() {
     use vale_app::globe::DISPLAY_CAP;
     use vale_app::ui::RasterSpec;
     use vale_app::ui::pad::toolbox::RUN;
-    use vale_app::ui::polygonize::{BREAKS, CANCEL, STOPPED};
+    use vale_app::ui::polygonize::{CANCEL, LEVELS, STOPPED};
     let mut h = empty_pad(BOARDS[1]);
     let state = h.state_mut();
     let n = 2 * DISPLAY_CAP as usize;
@@ -19233,7 +19233,7 @@ fn polygonize_shows_its_progress_and_stops_on_cancel() {
     map.fill(meters_to_level(-3000.0));
     h.run_steps(2);
     open_polygonize(&mut h);
-    assert!(h.query_by_label_contains(BREAKS).is_some());
+    assert!(h.query_by_label_contains(LEVELS).is_some());
     let before = h.state().doc.project.layers().len();
     // The run does not wait for the worker outside of the tests.
     h.state_mut().headless = false;
@@ -19330,20 +19330,20 @@ fn a_layer_too_large_to_show_shows_an_error_and_can_be_deleted() {
 }
 
 #[test]
-fn polygonize_makes_bands_at_an_interval_from_the_breaks_page() {
-    use vale_app::ui::polygonize::{BREAKS, INTERVAL};
+fn polygonize_makes_bands_at_an_interval_from_the_levels_page() {
+    use vale_app::ui::polygonize::{INTERVAL, LEVELS};
     let (mut h, _) = islands_pad();
     open_polygonize(&mut h);
-    tap(&mut h, BREAKS);
+    tap(&mut h, LEVELS);
     tap(&mut h, INTERVAL);
-    h.state_mut().polygonize.breaks = vale_app::ui::polygonize::Breaks::Interval {
+    h.state_mut().polygonize.levels = vale_app::ui::polygonize::Levels::Interval {
         step: 1000.0,
         base: 0.0,
     };
     h.run_steps(2);
     let count = h.state_mut().polygonize_bands().unwrap().len();
     assert!(h.query_by_label(&format!("{count} bands.")).is_some());
-    screenshot::save(&mut h, "polygonize-breaks");
+    screenshot::save(&mut h, "polygonize-levels");
     tap(
         &mut h,
         &format!("Back to {}", vale_app::ui::polygonize::POLYGONIZE),

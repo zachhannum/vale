@@ -1517,7 +1517,7 @@ fn orient_form(ui: &mut egui::Ui, state: &mut AppState) {
 fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
     use pad::toolbox::{NONE, RUN};
     use polygonize::{
-        ABOVE, BASE, BELOW, BREAKS, Breaks, COLOR_STOPS, INPUT, INTERVAL, NEEDS_RASTER, SIMPLIFY,
+        ABOVE, BASE, BELOW, COLOR_STOPS, INPUT, INTERVAL, LEVELS, Levels, NEEDS_RASTER, SIMPLIFY,
         SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
     };
     ui.indent("polygonize", |ui| {
@@ -1537,21 +1537,21 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
             state.polygonize.raster = chosen;
             state.toolbox_note = None;
         }
-        let stops = state.polygonize.breaks == Breaks::Stops;
+        let stops = state.polygonize.levels == Levels::Stops;
         let mut interval = !stops;
-        egui::ComboBox::from_label(BREAKS)
+        egui::ComboBox::from_label(LEVELS)
             .selected_text(if stops { COLOR_STOPS } else { INTERVAL })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut interval, false, COLOR_STOPS);
                 ui.selectable_value(&mut interval, true, INTERVAL);
             });
         if interval != !stops {
-            state.polygonize.breaks = match interval {
+            state.polygonize.levels = match interval {
                 true => state.default_interval(),
-                false => Breaks::Stops,
+                false => Levels::Stops,
             };
         }
-        if let Breaks::Interval { mut step, mut base } = state.polygonize.breaks {
+        if let Levels::Interval { mut step, mut base } = state.polygonize.levels {
             let unit = state.polygonize_unit();
             ui.horizontal(|ui| {
                 ui.label(INTERVAL);
@@ -1563,7 +1563,7 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.label(BASE);
                 ui.add(egui::DragValue::new(&mut base).suffix(unit));
             });
-            state.polygonize.breaks = Breaks::Interval { step, base };
+            state.polygonize.levels = Levels::Interval { step, base };
             if state.polygonize_bands().is_none() {
                 ui.weak(TOO_MANY_BANDS);
             }
