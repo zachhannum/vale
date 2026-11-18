@@ -1589,9 +1589,10 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         let slider = control(&h, OPACITY).unwrap();
         let card = panel(&h, Panel::Layers).unwrap();
         assert!(card.contains_rect(slider), "{what}: {slider:?}");
-        // The row is below the rows of the values and of the face size.
+        // The row is below the rows of the values, of the face size, and
+        // of the collections.
         let name = control(&h, LAYER_NAME).unwrap();
-        assert_eq!(slider.top(), name.bottom() + 96.0, "{what}");
+        assert_eq!(slider.top(), name.bottom() + 144.0, "{what}");
         let saved = saves(&h);
 
         // One drag has many values and one save.
@@ -1997,6 +1998,7 @@ fn height_pad(size: (f32, f32)) -> Pad {
     h.run_steps(2);
     open_panel(&mut h, "Layers");
     tap(&mut h, "Open Height");
+    scroll_to_control(&mut h, EXPORT_GEOTIFF);
     h
 }
 
@@ -4502,8 +4504,9 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The dock is on the right edge, below the top row.
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(854.0, 92.0), 340.0));
-    // The header, the import row, and the three layers of the sample.
-    assert_eq!(layers.height(), 52.0 + 4.0 * 48.0 + 10.0);
+    // The header, the collection menu, the import row, and the three layers
+    // of the sample.
+    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 10.0);
     // The action button is at the right end of the header.
     assert_eq!(control(&h, ADD_LAYER).unwrap().min, pos2(1146.0, 96.0));
     // The Brush panel is a pane below a bar.
@@ -9502,6 +9505,7 @@ fn a_drag_on_a_rule_row_scrolls_as_a_drag_between_rows() {
         open_panel(&mut h, "Layers");
         tap(&mut h, "Open Land");
         scroll_to_control(&mut h, "Default");
+        scroll_to_control(&mut h, "Rule 2");
         let row = control(&h, "Rule 2").unwrap();
         // The heading "Style" is above the first rule and takes no touch.
         let heading = control(&h, "Default").unwrap().center_top() - vec2(0.0, 20.0);
