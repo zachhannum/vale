@@ -86,7 +86,9 @@ fn roots() -> impl Iterator<Item = TileKey> {
 enum Job {
     Snapshot {
         id: LayerId,
-        geometries: Arc<Vec<Geometry>>,
+        geometries: Arc<Vec<Arc<Geometry>>>,
+        /// The snapshot of the tiles on screen.
+        old: Option<Arc<Snapshot>>,
     },
     Tile {
         id: LayerId,
@@ -100,8 +102,12 @@ enum Job {
 enum Done {
     Snapshot {
         id: LayerId,
-        geometries: Arc<Vec<Geometry>>,
+        geometries: Arc<Vec<Arc<Geometry>>>,
         snapshot: Arc<Snapshot>,
+        old: Option<Arc<Snapshot>>,
+        /// The caps around the features that differ from `old`. `None`:
+        /// each tile renders again.
+        changed: Option<Vec<(V3, f64)>>,
     },
     Tile {
         id: LayerId,
@@ -147,11 +153,21 @@ impl Pool {
                         }
                     };
                     let done = match job {
-                        Job::Snapshot { id, geometries } => Done::Snapshot {
+                        Job::Snapshot {
                             id,
-                            snapshot: Arc::new(Snapshot::new(geometries.clone())),
                             geometries,
-                        },
+                            old,
+                        } => {
+                            let snapshot = Snapshot::new(geometries.clone());
+                            let changed = old.as_ref().and_then(|o| snapshot.changed_caps(o));
+                            Done::Snapshot {
+                                id,
+                                snapshot: Arc::new(snapshot),
+                                geometries,
+                                old,
+                                changed,
+                            }
+                        }
                         Job::Tile {
                             id,
                             generation,
@@ -214,8 +230,12 @@ struct StyleKey {
 /// The state of one layer that draws from tiles.
 struct Tiled {
     /// The geometry of the snapshot, or of the snapshot that builds.
-    geometries: Option<Arc<Vec<Geometry>>>,
+    geometries: Option<Arc<Vec<Arc<Geometry>>>>,
     snapshot: Option<Arc<Snapshot>>,
+    /// A snapshot of `geometries` builds.
+    building: bool,
+    /// An edit changed the layer, so it needs a new snapshot.
+    edited_since: bool,
     /// The snapshot is the same as the layer. After an undo, the next use
     /// compares them.
     checked: bool,
@@ -243,8 +263,12 @@ pub struct VectorTiles {
     frame: u64,
     pool: Option<Pool>,
     pub min_points: usize,
+    /// The time from an edit of a layer to its new snapshot.
+    pub quiet: std::time::Duration,
     /// The points of each layer, for its features at the count.
     counts: HashMap<LayerId, ((usize, usize), usize)>,
+    /// The count of the tiles that arrived.
+    arrived: u64,
 }
 
 impl Default for VectorTiles {
@@ -257,7 +281,9 @@ impl Default for VectorTiles {
             frame: 0,
             pool: None,
             min_points: MIN_POINTS,
+            quiet: crate::lod::QUIET,
             counts: HashMap::new(),
+            arrived: 0,
         }
     }
 }
@@ -299,6 +325,8 @@ impl VectorTiles {
         let tiled = self.layers.entry(id).or_insert_with(|| Tiled {
             geometries: None,
             snapshot: None,
+            building: false,
+            edited_since: false,
             checked: true,
             edited: None,
             style: None,
@@ -321,29 +349,49 @@ impl VectorTiles {
         }
         self.shown.push(id);
         // A new snapshot starts after an edit stops.
-        if tiled
-            .edited
-            .is_some_and(|at| at.elapsed() < crate::lod::QUIET)
-        {
+        let quiet = self.quiet;
+        if tiled.edited.is_some_and(|at| at.elapsed() < quiet) {
             return true;
         }
         tiled.edited = None;
-        let same = tiled.geometries.as_ref().is_some_and(|g| {
-            if g.len() != layer.features.len() {
-                return false;
-            }
-            if !tiled.checked {
-                tiled.checked = g.iter().zip(&layer.features).all(|(g, f)| *g == f.geometry);
-            }
-            tiled.checked
-        });
+        let same = !tiled.edited_since
+            && tiled.geometries.as_ref().is_some_and(|g| {
+                if g.len() != layer.features.len() {
+                    return false;
+                }
+                if !tiled.checked {
+                    tiled.checked = g
+                        .iter()
+                        .zip(&layer.features)
+                        .all(|(g, f)| **g == f.geometry);
+                }
+                tiled.checked
+            });
         if !same {
-            let geometries: Arc<Vec<Geometry>> =
-                Arc::new(layer.features.iter().map(|f| f.geometry.clone()).collect());
+            // A feature that did not change keeps the geometry of the last
+            // snapshot.
+            let old = tiled.geometries.as_deref();
+            let geometries: Arc<Vec<Arc<Geometry>>> = Arc::new(
+                (layer.features.iter().enumerate())
+                    .map(|(i, f)| match old.and_then(|o| o.get(i)) {
+                        Some(g) if **g == f.geometry => g.clone(),
+                        _ => Arc::new(f.geometry.clone()),
+                    })
+                    .collect(),
+            );
             tiled.geometries = Some(geometries.clone());
             tiled.checked = true;
+            tiled.building = true;
+            tiled.edited_since = false;
+            let old = tiled.snapshot.clone();
             let pool = self.pool.get_or_insert_with(Pool::new);
-            pool.jobs(|jobs| jobs.push_front(Job::Snapshot { id, geometries }));
+            pool.jobs(|jobs| {
+                jobs.push_front(Job::Snapshot {
+                    id,
+                    geometries,
+                    old,
+                });
+            });
         }
         true
     }
@@ -356,7 +404,7 @@ impl VectorTiles {
     /// Renders the tiles of layer `id` again after the quiet time.
     pub fn forget(&mut self, id: LayerId) {
         if let Some(tiled) = self.layers.get_mut(&id) {
-            tiled.checked = false;
+            tiled.edited_since = true;
             tiled.edited = Some(Instant::now());
         }
     }
@@ -372,8 +420,12 @@ impl VectorTiles {
     /// True while a tile or a snapshot waits.
     pub fn loading(&self) -> bool {
         !self.pending.is_empty()
-            || (self.shown.iter())
-                .any(|id| self.layers.get(id).is_some_and(|t| t.snapshot.is_none()))
+            || (self.shown.iter()).any(|id| self.layers.get(id).is_some_and(|t| t.building))
+    }
+
+    /// The count of the tiles that the workers finished.
+    pub fn arrived(&self) -> u64 {
+        self.arrived
     }
 
     /// The number of the tiles in the atlas.
@@ -481,8 +533,7 @@ impl VectorTiles {
             let Some(pool) = &self.pool else {
                 return;
             };
-            let waiting =
-                !self.pending.is_empty() || self.layers.values().any(|t| t.snapshot.is_none());
+            let waiting = !self.pending.is_empty() || self.layers.values().any(|t| t.building);
             let done = if block && waiting {
                 match pool.done.recv() {
                     Ok(done) => done,
@@ -499,6 +550,8 @@ impl VectorTiles {
                     id,
                     geometries,
                     snapshot,
+                    old,
+                    changed,
                 } => {
                     let Some(tiled) = self.layers.get_mut(&id) else {
                         continue;
@@ -508,8 +561,22 @@ impl VectorTiles {
                         .as_ref()
                         .is_some_and(|g| Arc::ptr_eq(g, &geometries));
                     if current {
+                        let generation = tiled.generation + 1;
+                        // A tile away from each change keeps its picture.
+                        let base = match (&old, &tiled.snapshot) {
+                            (Some(old), Some(now)) => Arc::ptr_eq(old, now),
+                            _ => false,
+                        };
+                        if let Some(caps) = changed.filter(|_| base) {
+                            for (key, r) in &mut tiled.tiles {
+                                if r.generation == tiled.generation && !touches(*key, &caps) {
+                                    r.generation = generation;
+                                }
+                            }
+                        }
                         tiled.snapshot = Some(snapshot);
-                        tiled.generation += 1;
+                        tiled.generation = generation;
+                        tiled.building = false;
                     }
                     if block {
                         // The tiles of the new snapshot go to the workers.
@@ -523,6 +590,7 @@ impl VectorTiles {
                     rgba,
                 } => {
                     self.pending.remove(&(id, key, generation));
+                    self.arrived += 1;
                     self.store(id, generation, key, rgba, link);
                 }
             }
@@ -625,6 +693,15 @@ impl VectorTiles {
             link.push_vtile(VTileUpload { slot, rgba });
         }
     }
+}
+
+/// True if a cap of `caps` reaches the picture of tile `key`, or the
+/// strokes near it.
+fn touches(key: TileKey, caps: &[(V3, f64)]) -> bool {
+    let (center, radius) = crate::vector_tiles::tile_cap(key);
+    // The strokes reach this many texels past their lines.
+    let margin = 16.0 * crate::vector_tiles::texel_angle(key.level);
+    (caps.iter()).any(|&(c, r)| angle(c, center) <= r + radius + margin)
 }
 
 /// The tiles under the view of `grid`, each at the level of the pixels
@@ -740,6 +817,45 @@ mod tests {
         assert!(!fine.is_empty());
         let center = lonlat_to_dir(0.0, 0.0);
         assert!(fine.iter().all(|k| angle(tile_middle(*k), center) < 0.1));
+    }
+
+    #[test]
+    fn an_edit_renders_only_the_tiles_near_it() {
+        let (mut doc, mut pipeline, id, grid) = tiled(1.0);
+        pipeline.vtiles_mut().quiet = std::time::Duration::ZERO;
+        let near = view(16.0);
+        pipeline.vtiles_mut().plan(&near, None, true);
+        let shown = pipeline.vtiles().tiles(id).len();
+        let before = pipeline.vtiles().arrived();
+        // The last square, far from the middle of the view, moves north.
+        let layer = doc.layer(id).unwrap();
+        let feature = layer.features.last().unwrap();
+        let uuid = feature.uuid();
+        let Geometry::Polygons(mut polygons) = feature.geometry.clone() else {
+            panic!("a polygon");
+        };
+        for p in polygons[0][0].iter_mut() {
+            p[1] += 1.0;
+        }
+        assert!(
+            doc.project
+                .set_geometry(id, uuid, Geometry::Polygons(polygons))
+        );
+        pipeline.forget(id);
+        pipeline.vtiles_mut().begin();
+        assert!(pipeline.show_tiles(&doc, id, 1.0));
+        pipeline.vtiles_mut().plan(&near, None, true);
+        let again = pipeline.vtiles().arrived() - before;
+        // The tiles of level 0 under the square render again.
+        assert!(again >= 1 && again < shown as u64 / 2, "{again} of {shown}");
+        let _ = grid;
+        let tiled = &pipeline.vtiles().layers[&id];
+        assert!(
+            tiled
+                .tiles
+                .values()
+                .all(|r| r.generation == tiled.generation)
+        );
     }
 
     #[test]

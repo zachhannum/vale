@@ -19137,11 +19137,14 @@ fn manual_tile_the_polygonize_output_of_a_painted_world() {
     let id = state.polygonize().unwrap()[0];
     h.run_steps(2);
     let state = h.state_mut();
+    state.globe.view = GlobeView::centered(10.0, 20.0);
     let ppp = 2.0;
     let plan = |state: &mut AppState, what: &str| {
         let start = Instant::now();
         state.pipeline.vtiles_mut().begin();
+        let shown = Instant::now();
         assert!(state.pipeline.show_tiles(&state.doc, id, ppp));
+        let shown = shown.elapsed();
         state
             .globe
             .set_vector_tiles(state.pipeline.vtiles().shown());
@@ -19151,7 +19154,7 @@ fn manual_tile_the_polygonize_output_of_a_painted_world() {
         let tiles = state.pipeline.vtiles().tiles(id);
         let finest = tiles.iter().map(|k| k.level).max().unwrap_or(0);
         eprintln!(
-            "{what}: {:?}, {} tiles, finest level {finest}",
+            "{what}: {:?} ({shown:?} on the UI thread), {} tiles, finest level {finest}",
             start.elapsed(),
             tiles.len()
         );
@@ -19162,6 +19165,50 @@ fn manual_tile_the_polygonize_output_of_a_painted_world() {
         state.globe.view.zoom = zoom;
         plan(state, &format!("zoom {zoom}"));
     }
+    // An edit moves one point of the ring nearest the middle of the view.
+    state.pipeline.vtiles_mut().quiet = std::time::Duration::ZERO;
+    let middle = vale_app::globe::math::lonlat_to_dir(10.0, 20.0);
+    let layer = state.doc.layer(id).unwrap();
+    let (mut best, mut at) = (f64::MAX, (0, 0, 0, 0));
+    for (f, feature) in layer.features.iter().enumerate() {
+        let vale_store::Geometry::Polygons(polygons) = &feature.geometry else {
+            continue;
+        };
+        for (p, rings) in polygons.iter().enumerate() {
+            for (r, ring) in rings.iter().enumerate() {
+                for (i, q) in ring.iter().enumerate().step_by(16) {
+                    let d = vale_app::globe::math::angle(
+                        vale_app::globe::math::lonlat_to_dir(q[0], q[1]),
+                        middle,
+                    );
+                    if d < best {
+                        (best, at) = (d, (f, p, r, i));
+                    }
+                }
+            }
+        }
+    }
+    let feature = &layer.features[at.0];
+    let uuid = feature.uuid();
+    let vale_store::Geometry::Polygons(mut polygons) = feature.geometry.clone() else {
+        panic!("a polygon");
+    };
+    polygons[at.1][at.2][at.3][0] += 0.001;
+    let arrived = state.pipeline.vtiles().arrived();
+    let start = Instant::now();
+    assert!(
+        state
+            .doc
+            .project
+            .set_geometry(id, uuid, vale_store::Geometry::Polygons(polygons))
+    );
+    state.pipeline.forget(id);
+    plan(state, "edit");
+    eprintln!(
+        "edit: {:?}, {} tiles again",
+        start.elapsed(),
+        state.pipeline.vtiles().arrived() - arrived
+    );
     let style = &mut state.doc.entry_mut(id).unwrap().style.style;
     for rule in &mut style.rules {
         rule.symbolizers

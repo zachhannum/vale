@@ -305,7 +305,7 @@ The globe and the flat view draw a line or polygon layer with more than 1,000,00
 
 The view wants the tiles under it at the level that has one texel or more in each pixel, and the six tiles of level 0. Worker threads render the tiles with the map renderer, coarse levels first and then from the middle of the view. A tile reads only the parts of the rings near it, so a tile needs no simplified copy. The tiles of all layers share one atlas of 360 tiles on the GPU. Each layer has a table of the places of its tiles in the atlas. Where a tile is missing, the shader draws the nearest coarser tile that is there.
 
-A change of the style renders the tiles again. After an edit stops, the layer waits for the quiet time, and then its tiles render again. An old tile stays on screen until its new tile arrives. While you edit, the edit tools draw the feature that you change.
+A change of the style renders the tiles again. After an edit stops, the layer waits for the quiet time. Then a worker compares the new geometry with the old one, and only the tiles near the changed points render again. An old tile stays on screen until its new tile arrives. While you edit, the edit tools draw the feature that you change.
 
 egui puts the meshes of one frame in one GPU buffer. The globe and the flat view add up the size of the meshes of the vector layers in each frame. A layer that does not fit in the rest of the frame does not draw. Its row in the Layers panel shows "Too large to show", and its panel says why. The layer stays in the project, and you can still delete it.
 

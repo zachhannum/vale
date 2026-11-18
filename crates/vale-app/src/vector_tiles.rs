@@ -96,9 +96,15 @@ struct Path {
     chunks: std::ops::Range<usize>,
 }
 
+/// A path that a snapshot finds: its feature, its part, whether it closes,
+/// and its points.
+type Found<'a> = (usize, (usize, usize), bool, &'a [LonLat]);
+
 /// The geometry of a layer with the chunks of its paths.
 pub struct Snapshot {
-    geometries: Arc<Vec<Geometry>>,
+    /// The geometry of each feature. A snapshot shares the geometry of a
+    /// feature that did not change with the snapshot before it.
+    geometries: Arc<Vec<Arc<Geometry>>>,
     paths: Vec<Path>,
     chunks: Vec<Chunk>,
     /// The kind of the layer.
@@ -106,71 +112,172 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
-    pub fn new(geometries: Arc<Vec<Geometry>>) -> Snapshot {
-        let mut paths = Vec::new();
-        let mut chunks = Vec::new();
-        let mut add_path = |feature, part, closed, points: &[LonLat]| {
-            if points.len() < 2 {
-                return;
-            }
-            let first = chunks.len();
-            let mut start = 0;
-            while start < points.len() - 1 {
-                let end = (start + CHUNK).min(points.len() - 1);
-                let dirs: Vec<V3> = (points[start..=end].iter())
-                    .map(|p| lonlat_to_dir(p[0], p[1]))
-                    .collect();
-                let center = normalize(dirs.iter().fold([0.0; 3], |a, d| add(a, *d)));
-                let radius = dirs.iter().map(|d| angle(center, *d)).fold(0.0, f64::max);
-                chunks.push(Chunk {
-                    start,
-                    center,
-                    radius: if radius.is_finite() { radius } else { 4.0 },
-                });
-                start = end;
-            }
-            paths.push(Path {
-                feature,
-                part,
-                closed,
-                chunks: first..chunks.len(),
-            });
-        };
+    /// The snapshot of `geometries`. The chunks build on all cores.
+    pub fn new(geometries: Arc<Vec<Arc<Geometry>>>) -> Snapshot {
+        let mut found: Vec<Found<'_>> = Vec::new();
         let mut kind = None;
         for (i, geometry) in geometries.iter().enumerate() {
-            match geometry {
+            match &**geometry {
                 Geometry::Points(_) => {}
                 Geometry::Lines(lines) => {
                     kind.get_or_insert(GeometryKind::Line);
                     for (l, line) in lines.iter().enumerate() {
-                        add_path(i, (l, 0), false, line);
+                        found.push((i, (l, 0), false, line));
                     }
                 }
                 Geometry::Polygons(polygons) => {
                     kind.get_or_insert(GeometryKind::Polygon);
                     for (p, rings) in polygons.iter().enumerate() {
                         for (r, ring) in rings.iter().enumerate() {
-                            add_path(i, (p, r), true, ring);
+                            found.push((i, (p, r), true, ring));
                         }
                     }
                 }
             }
         }
+        found.retain(|f| f.3.len() >= 2);
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let total: usize = found.iter().map(|f| f.3.len()).sum();
+        // Runs of paths with about the same number of points.
+        let mut runs: Vec<&[Found<'_>]> = Vec::new();
+        let (mut start, mut sum) = (0, 0);
+        for (k, f) in found.iter().enumerate() {
+            sum += f.3.len();
+            if sum * threads >= total * (runs.len() + 1) {
+                runs.push(&found[start..=k]);
+                start = k + 1;
+            }
+        }
+        runs.push(&found[start..]);
+        let parts: Vec<Vec<Vec<Chunk>>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (runs.iter())
+                .map(|run| scope.spawn(move || run.iter().map(|f| path_chunks(f.3)).collect()))
+                .collect();
+            (handles.into_iter())
+                .map(|h| h.join().unwrap_or_default())
+                .collect()
+        });
+        let mut paths = Vec::with_capacity(found.len());
+        let mut chunks = Vec::new();
+        for (f, path) in found.iter().zip(parts.into_iter().flatten()) {
+            let first = chunks.len();
+            chunks.extend(path);
+            paths.push(Path {
+                feature: f.0,
+                part: f.1,
+                closed: f.2,
+                chunks: first..chunks.len(),
+            });
+        }
         Snapshot {
-            geometries,
+            geometries: geometries.clone(),
             paths,
             chunks,
             kind,
         }
     }
 
+    /// The caps around the points that differ from `old`, in this snapshot
+    /// and in `old`. A ring or a line that changed gives the caps of the
+    /// chunks between its first and its last changed point. `None`: the
+    /// features are not the same list, or too many points changed.
+    pub fn changed_caps(&self, old: &Snapshot) -> Option<Vec<(V3, f64)>> {
+        if self.geometries.len() != old.geometries.len() {
+            return None;
+        }
+        let mut caps = Vec::new();
+        for (i, (a, b)) in self
+            .geometries
+            .iter()
+            .zip(old.geometries.iter())
+            .enumerate()
+        {
+            if Arc::ptr_eq(a, b) || a == b {
+                continue;
+            }
+            let (new_paths, old_paths) = (self.feature_paths(i), old.feature_paths(i));
+            if new_paths.len() != old_paths.len() {
+                for (snap, paths) in [(self, new_paths), (old, old_paths)] {
+                    for path in paths {
+                        caps.extend(snap.caps_between(path, 0, usize::MAX));
+                    }
+                }
+                continue;
+            }
+            for (n, o) in new_paths.iter().zip(old_paths) {
+                let (pn, po) = (self.points(n), old.points(o));
+                if pn == po {
+                    continue;
+                }
+                let head = pn.iter().zip(po).take_while(|(x, y)| x == y).count();
+                let tail = (pn.iter().rev().zip(po.iter().rev()))
+                    .take_while(|(x, y)| x == y)
+                    .count();
+                let tail = tail.min(pn.len().min(po.len()) - head.min(pn.len().min(po.len())));
+                caps.extend(self.caps_between(n, head, pn.len() - tail));
+                caps.extend(old.caps_between(o, head, po.len() - tail));
+            }
+            if caps.len() > 16_384 {
+                return None;
+            }
+        }
+        Some(caps)
+    }
+
+    /// The paths of feature `i`.
+    fn feature_paths(&self, i: usize) -> &[Path] {
+        let start = self.paths.partition_point(|p| p.feature < i);
+        let end = self.paths.partition_point(|p| p.feature <= i);
+        &self.paths[start..end]
+    }
+
+    /// The caps of the chunks of `path` that hold a point from `from` to
+    /// before `to`, and the chunk before, which ends at `from`.
+    fn caps_between(&self, path: &Path, from: usize, to: usize) -> impl Iterator<Item = (V3, f64)> {
+        let chunks = &self.chunks[path.chunks.clone()];
+        (0..chunks.len())
+            .filter(move |&k| {
+                let end = chunks.get(k + 1).map_or(usize::MAX, |c| c.start);
+                chunks[k].start <= to && end >= from
+            })
+            .map(move |k| (chunks[k].center, chunks[k].radius))
+    }
+
     fn points(&self, path: &Path) -> &[LonLat] {
-        match &self.geometries[path.feature] {
+        match &*self.geometries[path.feature] {
             Geometry::Lines(lines) => &lines[path.part.0],
             Geometry::Polygons(polygons) => &polygons[path.part.0][path.part.1],
             Geometry::Points(_) => &[],
         }
     }
+}
+
+/// The middle of the picture of tile `key` and the angle from it to the
+/// farthest corner.
+pub fn tile_cap(key: TileKey) -> (V3, f64) {
+    let frame = Frame::new(key);
+    (frame.center, frame.radius)
+}
+
+/// The chunks of a path of two points or more.
+fn path_chunks(points: &[LonLat]) -> Vec<Chunk> {
+    let mut chunks = Vec::with_capacity(points.len() / CHUNK + 1);
+    let mut start = 0;
+    while start < points.len() - 1 {
+        let end = (start + CHUNK).min(points.len() - 1);
+        let dirs: Vec<V3> = (points[start..=end].iter())
+            .map(|p| lonlat_to_dir(p[0], p[1]))
+            .collect();
+        let center = normalize(dirs.iter().fold([0.0; 3], |a, d| add(a, *d)));
+        let radius = dirs.iter().map(|d| angle(center, *d)).fold(0.0, f64::max);
+        chunks.push(Chunk {
+            start,
+            center,
+            radius: if radius.is_finite() { radius } else { 4.0 },
+        });
+        start = end;
+    }
+    chunks
 }
 
 /// The place of a tile on its face.
@@ -622,7 +729,7 @@ mod tests {
     }
 
     fn snap(geometry: Geometry) -> Snapshot {
-        Snapshot::new(Arc::new(vec![geometry]))
+        Snapshot::new(Arc::new(vec![Arc::new(geometry)]))
     }
 
     #[test]
