@@ -878,6 +878,8 @@ pub struct Look<'a> {
     pub text: &'a str,
     /// A gray text at the right of the text.
     pub note: Option<&'a str>,
+    /// The note is a warning, in the warning color.
+    pub warn: bool,
     /// A check column at the left. `Some(true)`: the row has the check.
     pub check: Option<bool>,
     /// The eye that shows or hides the row, at the right.
@@ -925,7 +927,8 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
         rect.right() + moved.x - 4.0
     };
     if let Some(note) = look.note {
-        let galley = painter.layout_no_wrap(note.to_owned(), theme::body(), theme::MUTE);
+        let color = if look.warn { theme::WARN } else { theme::MUTE };
+        let galley = painter.layout_no_wrap(note.to_owned(), theme::body(), color);
         let width = galley.size().x.ceil();
         let place = Rect::from_min_max(
             pos2(name_right - width - 2.0, rect.top()),
@@ -933,9 +936,7 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
         );
         name_right = place.left() - 8.0;
         // The note is a label, so a screen reader and a test can read it.
-        let text = egui::RichText::new(note)
-            .font(theme::body())
-            .color(theme::MUTE);
+        let text = egui::RichText::new(note).font(theme::body()).color(color);
         let layout = egui::Layout::right_to_left(egui::Align::Center);
         let builder = egui::UiBuilder::new().max_rect(place).layout(layout);
         let mut child = ui.new_child(builder);

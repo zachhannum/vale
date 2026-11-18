@@ -254,6 +254,53 @@ impl Grid {
         least.filter(|l| *l > 0.0)
     }
 
+    /// Calls `each` with directions under the grid and the radians of one
+    /// pixel there, along the axis with fewer radians: the points of each
+    /// cell, and points between them closer
+    /// than half of `span` for that pixel. A cell at the edge of the world
+    /// gives its points with the pixel of their side that shows.
+    pub(super) fn sample(&self, mut each: impl FnMut(V3, f64), span: impl Fn(f64) -> f64) {
+        for row in 0..self.rows - 1 {
+            for col in 0..self.cols - 1 {
+                let corners = [
+                    self.at(col, row),
+                    self.at(col + 1, row),
+                    self.at(col, row + 1),
+                    self.at(col + 1, row + 1),
+                ];
+                let along = |p: Option<V3>, q: Option<V3>, step: f64| Some(angle(p?, q?) / step);
+                let px = [
+                    along(corners[0], corners[1], self.step[0]),
+                    along(corners[2], corners[3], self.step[0]),
+                    along(corners[0], corners[2], self.step[1]),
+                    along(corners[1], corners[3], self.step[1]),
+                ];
+                let Some(px) = px.into_iter().flatten().reduce(f64::min) else {
+                    continue;
+                };
+                let [Some(a), Some(b), Some(c), Some(d)] = corners else {
+                    corners.into_iter().flatten().for_each(|p| each(p, px));
+                    continue;
+                };
+                let widest = angle(a, d).max(angle(b, c));
+                let n = ((2.0 * widest / span(px)).ceil() as usize).clamp(1, CELL_MAX);
+                for i in 0..=n {
+                    for j in 0..=n {
+                        let (u, v) = (i as f64 / n as f64, j as f64 / n as f64);
+                        let top = add(scale(a, 1.0 - u), scale(b, u));
+                        let bottom = add(scale(c, 1.0 - u), scale(d, u));
+                        each(normalize(add(scale(top, 1.0 - v), scale(bottom, v))), px);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The direction under the middle of the grid, if it shows the world.
+    pub(super) fn middle(&self) -> Option<V3> {
+        self.at(self.cols / 2, self.rows / 2)
+    }
+
     /// The tiles of a detail map with a face of `face_size` texels under the
     /// grid, sorted. With `margin`, one tile more on each side.
     fn tiles(&self, face_size: u32, margin: bool) -> Vec<TileKey> {

@@ -5,11 +5,16 @@ use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
+use super::number::Number;
 use super::rules::HEIGHT_LAYER;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{TOOLBOX, filter, panels, theme};
 use crate::ui::AppState;
 use crate::ui::orient::{self, ORIENT_ABOUT, ORIENT_DOWNHILL};
+use crate::ui::polygonize::{
+    self, ABOVE, BASE, BELOW, CANCEL, COLOR_STOPS, INPUT, INTERVAL, LEVELS, Levels, NEEDS_RASTER,
+    POLYGONIZE, POLYGONIZE_ABOUT, SIMPLIFY, SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
+};
 
 /// The hint of the search field of the grid.
 pub const SEARCH: &str = "Search operations";
@@ -31,7 +36,7 @@ pub const GROUPS: [(&str, &[(&str, Icon)]); 3] = [
     (
         "Terrain",
         &[
-            ("Polygonize", Icon::Polygonize),
+            (POLYGONIZE, Icon::Polygonize),
             ("Contour lines", Icon::Contours),
         ],
     ),
@@ -52,7 +57,7 @@ pub const GROUPS: [(&str, &[(&str, Icon)]); 3] = [
 /// True for an operation that exists. The tile of another operation is
 /// faded and takes no tap.
 pub fn exists(name: &str) -> bool {
-    name == ORIENT_DOWNHILL
+    name == ORIENT_DOWNHILL || name == POLYGONIZE
 }
 
 /// A page of the Toolbox panel.
@@ -63,6 +68,11 @@ pub enum ToolPage {
     OrientLines,
     /// The height layers that "Orient lines downhill" can take.
     OrientHeight,
+    Polygonize,
+    /// The raster layers that "Polygonize" can take.
+    PolygonizeInput,
+    /// The limits of the bands of "Polygonize".
+    PolygonizeLevels,
 }
 
 /// The state of the Toolbox panel.
@@ -81,6 +91,9 @@ pub(super) fn head(page: Option<ToolPage>) -> (&'static str, &'static str, Optio
         Some(ToolPage::Orient) => ("pad-orient", ORIENT_DOWNHILL, Some(TOOLBOX)),
         Some(ToolPage::OrientLines) => ("pad-orient-lines", LINES, Some(ORIENT_DOWNHILL)),
         Some(ToolPage::OrientHeight) => ("pad-orient-height", HEIGHT_LAYER, Some(ORIENT_DOWNHILL)),
+        Some(ToolPage::Polygonize) => ("pad-polygonize", POLYGONIZE, Some(TOOLBOX)),
+        Some(ToolPage::PolygonizeInput) => ("pad-polygonize-input", INPUT, Some(POLYGONIZE)),
+        Some(ToolPage::PolygonizeLevels) => ("pad-polygonize-levels", LEVELS, Some(POLYGONIZE)),
     }
 }
 
@@ -89,6 +102,7 @@ pub(super) fn back(state: &mut AppState) {
     let page = &mut state.pad.toolbox.page;
     *page = match page {
         Some(ToolPage::OrientLines | ToolPage::OrientHeight) => Some(ToolPage::Orient),
+        Some(ToolPage::PolygonizeInput | ToolPage::PolygonizeLevels) => Some(ToolPage::Polygonize),
         _ => None,
     };
 }
@@ -100,6 +114,9 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         Some(ToolPage::Orient) => orient_body(ui, state, controls),
         Some(ToolPage::OrientLines) => lines_body(ui, state, controls),
         Some(ToolPage::OrientHeight) => height_body(ui, state, controls),
+        Some(ToolPage::Polygonize) => polygonize_body(ui, state, controls),
+        Some(ToolPage::PolygonizeInput) => input_body(ui, state, controls),
+        Some(ToolPage::PolygonizeLevels) => levels_body(ui, state, controls),
     }
 }
 
@@ -127,8 +144,14 @@ fn grid_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
     for (group, ops) in groups {
         widgets::list_heading(ui, group);
-        if tiles(ui, controls, &ops) == Some(ORIENT_DOWNHILL) {
-            state.pad.toolbox.page = Some(ToolPage::Orient);
+        let page = match tiles(ui, controls, &ops) {
+            Some(ORIENT_DOWNHILL) => Some(ToolPage::Orient),
+            Some(POLYGONIZE) => Some(ToolPage::Polygonize),
+            _ => None,
+        };
+        if page.is_some() {
+            state.pad.toolbox.page = page;
+            state.toolbox_note = None;
         }
     }
     ui.add_space(16.0);
@@ -291,6 +314,156 @@ fn output_row(ui: &mut egui::Ui, controls: &mut Controls) {
         pos2(row.right(), row.center().y + TOUCH / 2.0),
     );
     widgets::segmented_at(ui, controls, field, &choices, Some(1), |i| i == 1);
+}
+
+fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    hero(ui, Icon::Polygonize, POLYGONIZE_ABOUT);
+    let input = state.polygonize_input();
+    let input_name = (state.held_rasters().into_iter())
+        .find(|(id, _)| Some(*id) == input)
+        .map_or(NONE.to_owned(), |(_, name)| name);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    if widgets::open_row(ui, controls, INPUT, &input_name).clicked() {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeInput);
+    }
+    let levels = levels_text(state);
+    if widgets::open_row(ui, controls, LEVELS, &levels).clicked() {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeLevels);
+    }
+    let smooth = Number::new(SMOOTH, state.polygonize.smooth, 0.0..=1.0)
+        .shown(100.0, "%")
+        .step(0.01)
+        .slider(ui, controls);
+    if let Some(smooth) = smooth {
+        state.polygonize.smooth = smooth;
+    }
+    // The tolerance is in texels, and it shows as a distance on the ground.
+    let texel = state.polygonize_texel_m().unwrap_or(1.0);
+    let simplify = Number::new(SIMPLIFY, state.polygonize.simplify, SIMPLIFY_RANGE)
+        .log()
+        .text(move |px| polygonize::distance_text(px * texel))
+        .slider(ui, controls);
+    if let Some(simplify) = simplify {
+        state.polygonize.simplify = simplify;
+    }
+    widgets::list_heading(ui, OUTPUT);
+    if state.polygonize_can_split() {
+        widgets::switch_row(ui, controls, SPLIT, SPLIT, &mut state.polygonize.split);
+        if state.polygonize.split {
+            let p = &mut state.polygonize;
+            widgets::text_field(ui, controls, ABOVE, ABOVE, None, &mut p.above, true);
+            widgets::text_field(ui, controls, BELOW, BELOW, None, &mut p.below, true);
+        }
+    }
+    let stale = state.polygonize_stale();
+    if let Some(names) = &stale {
+        let text = polygonize::stale_text(names);
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(text).color(theme::MUTE));
+    }
+    ui.add_space(12.0);
+    if let Some((share, text)) = state.polygonize_progress() {
+        progress_bar(ui, share);
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(text).color(theme::MUTE));
+        ui.add_space(8.0);
+        if widgets::button_row(ui, controls, CANCEL, true).clicked() {
+            state.cancel_polygonize();
+        }
+        return;
+    }
+    if widgets::button_row(ui, controls, RUN, state.can_polygonize()).clicked() {
+        state.run_polygonize();
+    }
+    ui.add_space(8.0);
+    let note = match input {
+        None => Some(NEEDS_RASTER),
+        Some(_) => state.toolbox_note.as_deref().filter(|_| stale.is_none()),
+    };
+    if let Some(note) = note {
+        ui.label(egui::RichText::new(note).color(theme::MUTE));
+    }
+}
+
+/// The height of the bar of the progress of a run.
+const PROGRESS_HEIGHT: f32 = 6.0;
+
+/// A bar that fills from the left with the share of the work that is done.
+fn progress_bar(ui: &mut egui::Ui, share: f32) {
+    let size = vec2(ui.available_width(), PROGRESS_HEIGHT);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let radius = PROGRESS_HEIGHT / 2.0;
+    ui.painter().rect_filled(rect, radius, theme::raise());
+    let mut fill = rect;
+    fill.set_width(rect.width() * share.clamp(0.0, 1.0));
+    ui.painter().rect_filled(fill, radius, theme::ACCENT);
+}
+
+/// The value of the Levels row.
+fn levels_text(state: &mut AppState) -> String {
+    match state.polygonize.levels {
+        Levels::Stops => COLOR_STOPS.to_owned(),
+        Levels::Interval { step, .. } => {
+            let unit = state.polygonize_unit();
+            format!("Every {}{unit}", crate::color_key::number_text(step))
+        }
+    }
+}
+
+fn levels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    let stops = state.polygonize.levels == Levels::Stops;
+    if widgets::option_row(ui, controls, COLOR_STOPS, COLOR_STOPS, &[], stops).clicked() {
+        state.polygonize.levels = Levels::Stops;
+    }
+    if widgets::option_row(ui, controls, INTERVAL, INTERVAL, &[], !stops).clicked() && stops {
+        state.polygonize.levels = state.default_interval();
+    }
+    let range = state.polygonize_range();
+    if let (Levels::Interval { step, base }, Some((min, max))) = (state.polygonize.levels, range) {
+        let unit = state.polygonize_unit();
+        let span = (max - min).max(1.0);
+        let new_step = Number::new(INTERVAL, step, span / 1000.0..=span)
+            .nice()
+            .unit(unit.trim())
+            .stepper(ui, controls);
+        let new_base = Number::new(BASE, base, min.min(0.0)..=max.max(0.0))
+            .step(step)
+            .unit(unit.trim())
+            .stepper(ui, controls);
+        if new_step.is_some() || new_base.is_some() {
+            state.polygonize.levels = Levels::Interval {
+                step: new_step.unwrap_or(step),
+                base: new_base.unwrap_or(base),
+            };
+        }
+    }
+    ui.add_space(8.0);
+    let note = match state.polygonize_bands() {
+        Some(bands) if bands.len() == 1 => "1 band.".to_owned(),
+        Some(bands) => format!("{} bands.", bands.len()),
+        None if state.polygonize_input().is_some() => TOO_MANY_BANDS.to_owned(),
+        None => NEEDS_RASTER.to_owned(),
+    };
+    ui.label(egui::RichText::new(note).color(theme::MUTE));
+}
+
+fn input_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let current = state.polygonize_input();
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    let layers = state.held_rasters();
+    if layers.is_empty() {
+        ui.label(egui::RichText::new(NEEDS_RASTER).color(theme::MUTE));
+    }
+    for (id, name) in layers {
+        let on = current == Some(id);
+        if widgets::option_row(ui, controls, &name, &name, &[], on).clicked() && !on {
+            state.polygonize.raster = Some(id);
+            state.toolbox_note = None;
+        }
+    }
 }
 
 fn lines_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {

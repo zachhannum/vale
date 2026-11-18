@@ -955,8 +955,11 @@ fn paint_out(
     format: Option<egui_wgpu::wgpu::TextureFormat>,
     mut cut: Option<&mut Vec<Cut>>,
     mut tee: Option<&mut Vec<Cut>>,
-    out: &[Out],
+    (layer, out): (LayerId, &[Out]),
 ) -> Option<egui::layers::ShapeIdx> {
+    if !super::budget::spend(painter.ctx(), layer, out_cost(out)) {
+        return None;
+    }
     let mut slot = None;
     for out in out {
         if let Some(tee) = &mut tee {
@@ -997,6 +1000,19 @@ fn paint_out(
         }
     }
     slot
+}
+
+/// The size of the meshes of the shapes of a sink, as `budget::cost` gives
+/// it.
+fn out_cost(out: &[Out]) -> super::budget::Cost {
+    use super::budget::{add, cost};
+    let shapes = |shapes: &[egui::Shape]| shapes.iter().map(cost).fold((0, 0), add);
+    (out.iter())
+        .map(|out| match out {
+            Out::Shape(shape) | Out::Cut(Cut::Shape(shape)) => cost(shape),
+            Out::Faded(_, s) | Out::Group(_, s) | Out::Cut(Cut::Group(_, s)) => shapes(s),
+        })
+        .fold((0, 0), add)
 }
 
 fn color(c: vale_style::Color) -> egui::Color32 {
@@ -1274,7 +1290,6 @@ pub fn vector_layer_cut(
     pipeline: &mut Pipeline,
 ) -> Option<egui::layers::ShapeIdx> {
     let layer = doc.layer(id)?;
-    let masked = pipeline.masked(doc, id);
     let radius = view.radius(rect);
     let radius_m = doc.project.world.radius_km * 1000.0;
     let scale = scale_denominator(radius_m / radius);
@@ -1333,16 +1348,20 @@ pub fn vector_layer_cut(
     let pixel = 1.0 / (radius * f64::from(pixels_per_point));
     // A masked layer draws the paints that the mask does not cut from the
     // whole geometry.
+    // A large layer draws when its first level is ready. A mask cuts the
+    // level.
+    let detail = match pipeline.lod_mut().level_or_wait(layer, pixel) {
+        Ok(detail) => detail,
+        Err(crate::lod::Wait) => return None,
+    };
+    let masked = pipeline.masked(doc, id, detail.as_ref());
     let whole = masked.is_some()
         && (key.batches.iter().flatten())
             .any(|b| !b.masked && matches!(b.paint, StylePaint::Fill(_) | StylePaint::Stroke(_)));
-    let detail = (masked.is_none() || whole)
-        .then(|| pipeline.lod_mut().level(layer, pixel))
-        .flatten();
     let (scatter, cache) = pipeline.globe_caches_mut();
     let (shapes, whole_shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref(), whole);
     if let Some(out) = shapes.drawn(&key) {
-        return paint_out(painter, format, cut, tee, out);
+        return paint_out(painter, format, cut, tee, (id, out));
     }
     work.draws += 1;
     let step = vector::step(radius * f64::from(pixels_per_point));
@@ -1531,7 +1550,7 @@ pub fn vector_layer_cut(
         }
     }
     let out = sink.finish();
-    let slot = paint_out(painter, format, cut, tee, &out);
+    let slot = paint_out(painter, format, cut, tee, (id, &out));
     shapes.keep(key, out);
     slot
 }
@@ -1693,7 +1712,6 @@ pub fn flat_vector_layer_cut(
 ) -> Option<egui::layers::ShapeIdx> {
     let entry = doc.entry(id)?;
     let layer = doc.layer(id).filter(|l| l.visible)?;
-    let masked = pipeline.masked(doc, id);
     let projection = flat.projection();
     let radius_km = doc.project.world.radius_km;
     let scale = scale_denominator(radius_km * 1000.0 / flat.scale(rect));
@@ -1715,15 +1733,20 @@ pub fn flat_vector_layer_cut(
         (features, height),
         &batches.iter().collect::<Vec<_>>(),
     );
+    let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point());
+    // A large layer draws when its first level is ready. A mask cuts the
+    // level.
+    let detail = match pixel {
+        Some(pixel) => match pipeline.lod_mut().level_or_wait(layer, pixel) {
+            Ok(detail) => detail,
+            Err(crate::lod::Wait) => return None,
+        },
+        None => None,
+    };
+    let masked = pipeline.masked(doc, id, detail.as_ref());
     // A masked layer draws the paints that the mask does not cut from the
     // whole geometry.
     let on_whole = |batch: &pipeline::Batch| masked.is_some() && !batch.masked;
-    let detail = (masked.is_none() || batches.iter().any(on_whole))
-        .then(|| {
-            let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point())?;
-            pipeline.lod_mut().level(layer, pixel)
-        })
-        .flatten();
     let to_screen = |p: &vale_sphere::Point| flat.screen(rect, *p);
     let measured = |lines: Vec<Vec<vale_sphere::Point>>| -> Vec<Vec<(kurbo::Point, f64)>> {
         (lines.into_iter())
@@ -1849,7 +1872,7 @@ pub fn flat_vector_layer_cut(
         }
         sink.end_group();
     }
-    paint_out(painter, format, cut, None, &sink.finish())
+    paint_out(painter, format, cut, None, (id, &sink.finish()))
 }
 
 /// The smallest pixel of the flat view in radians, from the center, the
@@ -2142,6 +2165,18 @@ pub(super) fn paint_canvas(
     (pipeline.scatter_cache_mut()).retain(|id| doc.layer(id).is_some());
     (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
+    // A large vector layer draws from tiles.
+    pipeline.vtiles_mut().begin();
+    for layer in doc.project.layers() {
+        if matches!(layer.kind, vale_store::LayerKind::Vector(_)) {
+            pipeline.show_tiles(doc, layer.id, pixels_per_point);
+        }
+    }
+    globe.set_vector_tiles(pipeline.vtiles().shown());
+    globe.plan_vector_tiles(pipeline.vtiles_mut(), pixels_per_point, false);
+    if pipeline.vtiles().loading() {
+        ui.ctx().request_repaint();
+    }
     let format = globe.format;
     match globe.paint(canvas) {
         Some(paints) => {

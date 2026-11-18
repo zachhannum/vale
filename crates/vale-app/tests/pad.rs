@@ -18076,7 +18076,7 @@ fn the_toolbox_shows_the_operations_that_do_not_exist_yet_as_faded_tiles() {
         .flat_map(|(_, ops)| ops.iter().map(|(name, _)| *name))
         .filter(|name| !exists(name))
         .collect();
-    assert_eq!(names.len(), 6);
+    assert_eq!(names.len(), 5);
     for name in names {
         assert!(control(&h, name).is_none(), "{name}");
         assert!(h.query_all_by_label(name).next().is_some(), "{name}");
@@ -18514,4 +18514,945 @@ fn reset_pins_shows_while_the_pins_change_and_gives_the_default_pins() {
     assert!(control(&h, RESET_PINS).is_none());
     choose_mode(&mut h, "Raise");
     assert!(control(&h, RESET_PINS).is_some());
+}
+
+/// A pad with a height layer: an island around a cube corner with a lake
+/// that holds a small island, an island over the 180 degree meridian, and
+/// sea elsewhere.
+fn islands_pad() -> (Pad, RasterId) {
+    use vale_app::ui::RasterSpec;
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", 128)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    paint_world(map, |d| meters_to_level(island_meters(d)));
+    h.run_steps(2);
+    (h, height)
+}
+
+/// The center of the island at the cube corner, and of the small island.
+const CORNER: [f64; 3] = [0.577_350_269_189_625_8; 3];
+
+fn island_meters(d: [f64; 3]) -> f64 {
+    use vale_terrain::math::{angle, lonlat_to_dir};
+    match angle(d, CORNER) {
+        a if a < 0.12 => 300.0,
+        a if a < 0.3 => -200.0,
+        a if a < 0.6 => 700.0,
+        _ if angle(d, lonlat_to_dir(180.0, 0.0)) < 0.4 => 1500.0,
+        _ => -3000.0,
+    }
+}
+
+fn paint_world(map: &mut vale_terrain::Heightmap, level: impl Fn([f64; 3]) -> u16) {
+    let n = map.face_size();
+    for face in 0..vale_terrain::FACES {
+        for y in 0..n {
+            for x in 0..n {
+                let l = level(map.texel_dir(face, x, y));
+                map.set(face, x, y, l);
+            }
+        }
+    }
+}
+
+/// True if a point is inside a polygon in longitude and latitude, by the
+/// even-odd rule over its rings.
+fn flat_inside(polygon: &[Vec<[f64; 2]>], p: [f64; 2]) -> bool {
+    let mut inside = false;
+    for ring in polygon {
+        for w in ring.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+            {
+                inside = !inside;
+            }
+        }
+    }
+    inside
+}
+
+/// The `elev_min` or `value_min` of each feature of the layers that holds
+/// the point.
+fn bands_at(state: &AppState, layers: &[vale_store::LayerId], p: [f64; 2]) -> Vec<f64> {
+    let mut out = Vec::new();
+    for id in layers {
+        let layer = state.doc.layer(*id).unwrap();
+        for f in &layer.features {
+            let vale_store::Geometry::Polygons(polygons) = &f.geometry else {
+                panic!("a polygon");
+            };
+            if polygons.iter().any(|poly| flat_inside(poly, p)) {
+                let value = (f.attributes.iter())
+                    .find_map(|(k, v)| match v {
+                        vale_store::Value::Number(n) if k.ends_with("_min") => Some(*n),
+                        _ => None,
+                    })
+                    .unwrap();
+                out.push(value);
+            }
+        }
+    }
+    out
+}
+
+/// The points to test: a grid over the globe, and points around each cube
+/// corner and along the face edges near it.
+fn test_points() -> Vec<[f64; 2]> {
+    use vale_terrain::math::{dir_to_lonlat, normalize};
+    let mut out = Vec::new();
+    for i in 0..90 {
+        for j in 0..60 {
+            let lon = -179.3 + i as f64 * 3.97;
+            let lat = -88.7 + j as f64 * 2.99;
+            out.push([lon, lat]);
+        }
+    }
+    for sx in [-1.0, 1.0] {
+        for sy in [-1.0, 1.0] {
+            for sz in [-1.0, 1.0] {
+                for r in [0.003, 0.01, 0.02, 0.04] {
+                    for k in 0..24 {
+                        let t = k as f64 / 24.0 * std::f64::consts::TAU + 0.1;
+                        let (u, v) = (r * t.cos(), r * t.sin());
+                        let d = normalize([sx + u, sy + v, sz - u - v]);
+                        let (lon, lat) = dir_to_lonlat(d);
+                        out.push([lon, lat]);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Opens the Toolbox panel and the page of "Polygonize".
+fn open_polygonize(h: &mut Pad) {
+    use vale_app::ui::polygonize::POLYGONIZE;
+    h.state_mut().pad.open(Panel::Toolbox);
+    h.run_steps(2);
+    tap(h, POLYGONIZE);
+}
+
+#[test]
+fn polygonize_splits_a_heightmap_into_topography_and_bathymetry() {
+    use vale_app::ui::pad::toolbox::RUN;
+    use vale_app::ui::polygonize::{ABOVE, BATHYMETRY, BELOW, INPUT, SMOOTH, SPLIT, TOPOGRAPHY};
+    let (mut h, _) = islands_pad();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("w.gpkg");
+    let state = h.state_mut();
+    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    open_polygonize(&mut h);
+    check_controls(&h, "the page of Polygonize");
+    screenshot::save(&mut h, "pad-polygonize");
+    for name in [INPUT, SMOOTH, SPLIT, ABOVE, BELOW, RUN] {
+        assert!(h.query_by_label(name).is_some(), "{name}");
+    }
+    let before = h.state().doc.project.layers().len();
+    tap(&mut h, RUN);
+    screenshot::save(&mut h, "pad-polygonize-run");
+    let state = h.state();
+    let names: Vec<&str> = (state.doc.project.layers().iter())
+        .map(|l| l.name.as_str())
+        .collect();
+    assert_eq!(names.len(), before + 2);
+    assert!(names.contains(&TOPOGRAPHY) && names.contains(&BATHYMETRY));
+    let note = h.query_by_label_contains("Made Bathymetry and Topography in");
+    assert!(note.is_some());
+    // Each polygon of a heightmap has an elev_min attribute, and the style
+    // has a rule for each band with the color of the band.
+    let topo = (state.doc.project.layers().iter())
+        .find(|l| l.name == TOPOGRAPHY)
+        .unwrap();
+    assert!(topo.fields.iter().any(|f| f.name == "elev_min"));
+    let mins: Vec<f64> = (topo.features.iter())
+        .map(|f| match f.attributes["elev_min"] {
+            vale_store::Value::Number(n) => n,
+            _ => panic!("a number"),
+        })
+        .collect();
+    assert!(mins.iter().all(|m| *m >= 0.0));
+    let rules = &state.doc.entry(topo.id).unwrap().style.style.rules;
+    assert_eq!(rules.len(), topo.features.len());
+    // The project file holds both layers as feature tables, so QGIS opens
+    // them.
+    drop(h);
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for name in [TOPOGRAPHY, BATHYMETRY] {
+        let (table, kind): (String, String) = conn
+            .query_row(
+                "SELECT c.table_name, g.geometry_type_name FROM gpkg_contents c
+                   JOIN gpkg_geometry_columns g ON g.table_name = c.table_name
+                   WHERE c.identifier = ?1 AND c.data_type = 'features'",
+                [name],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "MULTIPOLYGON");
+        let blob: Vec<u8> = conn
+            .query_row(&format!("SELECT geom FROM \"{table}\" LIMIT 1"), [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(&blob[..2], b"GP");
+    }
+}
+
+#[test]
+fn polygonize_matches_the_bands_with_no_gap_or_overlap() {
+    use vale_terrain::math::{angle, dir_to_lonlat, lonlat_to_dir};
+    let (mut h, height) = islands_pad();
+    let state = h.state_mut();
+    state.polygonize.smooth = 0.0;
+    let layers = state.polygonize().unwrap();
+    let bands = state.globe.bands_mut(height).unwrap().clone();
+    let map = state.globe.value_map(height).unwrap();
+    let step = std::f64::consts::FRAC_PI_2 / 128.0;
+    let band_at = |d: [f64; 3]| {
+        let value = bands.value(map.sample(d));
+        let stops = bands.stops();
+        stops[stops
+            .partition_point(|s| s.value <= value)
+            .clamp(1, stops.len() - 1)
+            - 1]
+        .value
+    };
+    let mut checked = 0;
+    for p in test_points() {
+        let found = bands_at(state, &layers, p);
+        assert_eq!(found.len(), 1, "{p:?} is in {found:?}");
+        // Away from a band limit, the polygon has the band of the preview.
+        let d = lonlat_to_dir(p[0], p[1]);
+        let band = band_at(d);
+        let near = (0..8).all(|k| {
+            let t = k as f64 / 8.0 * std::f64::consts::TAU;
+            let (lon, lat) = (p[0] + 2.5 * step.to_degrees() * t.cos(), p[1]);
+            let lat = (lat + 2.5 * step.to_degrees() * t.sin()).clamp(-90.0, 90.0);
+            let q = lonlat_to_dir(lon, lat);
+            angle(q, d) < 4.0 * step && band_at(q) == band
+        });
+        if near {
+            assert_eq!(found[0], band, "{p:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 4000, "{checked}");
+    // An island in a lake on an island: the small island, the lake, and the
+    // island around it each have their own band.
+    let at = |d: [f64; 3]| {
+        let (lon, lat) = dir_to_lonlat(d);
+        bands_at(state, &layers, [lon, lat])
+    };
+    assert_eq!(at(CORNER), [band_at(CORNER)]);
+    let toward = |a: f64| {
+        let off = lonlat_to_dir(10.0, 10.0);
+        let axis = vale_terrain::math::normalize(vale_terrain::math::cross(CORNER, off));
+        let (c, s) = (a.cos(), a.sin());
+        let k = vale_terrain::math::cross(axis, CORNER);
+        [0, 1, 2].map(|i| CORNER[i] * c + k[i] * s)
+    };
+    let (small, lake, island) = (at(toward(0.05)), at(toward(0.2)), at(toward(0.45)));
+    assert!(small[0] >= 0.0 && lake[0] < 0.0 && island[0] >= 0.0);
+    assert_ne!(small, island);
+}
+
+#[test]
+fn polygonize_runs_on_a_raster_layer_that_is_not_a_heightmap() {
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::pad::toolbox::RUN;
+    use vale_app::ui::polygonize::SPLIT;
+    use vale_terrain::math::{angle, lonlat_to_dir};
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let spec = RasterSpec {
+        name: "Rain".into(),
+        unit: "mm".into(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    let rain = state.add_raster(spec).unwrap();
+    let map = state.globe.raster_map_mut(rain).unwrap();
+    let wet = lonlat_to_dir(30.0, 0.0);
+    paint_world(map, |d| (65535.0 * (1.0 - angle(d, wet) / 3.2)) as u16);
+    h.run_steps(2);
+    open_polygonize(&mut h);
+    assert!(h.query_by_label(SPLIT).is_none());
+    tap(&mut h, RUN);
+    let bands = h.state_mut().globe.bands_mut(rain).unwrap().clone();
+    let layer = (h.state().doc.project.layers().iter())
+        .find(|l| l.name == "Rain polygons")
+        .unwrap();
+    assert!(layer.fields.iter().any(|f| f.name == "value_min"));
+    assert_eq!(layer.features.len(), bands.colors().len());
+}
+
+#[test]
+fn polygonize_marks_its_layers_out_of_date_and_a_new_run_replaces_them() {
+    use vale_app::ui::pad::toolbox::RUN;
+    use vale_terrain::math::lonlat_to_dir;
+    let (mut h, height) = islands_pad();
+    let dir = tempfile::tempdir().unwrap();
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    state.save_waiting().unwrap();
+    open_polygonize(&mut h);
+    tap(&mut h, RUN);
+    let first = h.state().polygonize_outputs();
+    assert_eq!(first.len(), 2);
+    assert!(h.state_mut().polygonize_stale().is_none());
+    let count = h.state().doc.project.layers().len();
+    // Paint a new island.
+    let map = h.state_mut().globe.raster_map_mut(height).unwrap();
+    let (face, x, y) = map.texel_of(lonlat_to_dir(-60.0, -20.0));
+    map.set(face, x, y, meters_to_level(800.0));
+    h.run_steps(2);
+    let stale = "Bathymetry and Topography are out of date. This run replaces them.";
+    assert!(h.query_by_label(stale).is_some());
+    screenshot::save(&mut h, "pad-polygonize-stale");
+    tap(&mut h, RUN);
+    let second = h.state().polygonize_outputs();
+    assert_eq!(second.len(), 2);
+    assert!(first.iter().all(|id| h.state().doc.layer(*id).is_none()));
+    assert_eq!(h.state().doc.project.layers().len(), count);
+    assert!(h.query_by_label(stale).is_none());
+    // One undo puts back the layers of the first run.
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert!(first.iter().all(|id| h.state().doc.layer(*id).is_some()));
+    assert!(second.iter().all(|id| h.state().doc.layer(*id).is_none()));
+}
+
+#[test]
+fn an_out_of_date_polygonize_layer_runs_again_from_its_panel() {
+    use vale_app::ui::polygonize::{RUN_AGAIN, STALE_LAYER, TOPOGRAPHY};
+    use vale_terrain::math::lonlat_to_dir;
+    let (mut h, height) = islands_pad();
+    h.state_mut().polygonize().unwrap();
+    let first = h.state().polygonize_outputs();
+    let topo = |h: &Pad| {
+        (h.state().doc.project.layers().iter())
+            .find(|l| l.name == TOPOGRAPHY)
+            .map(|l| l.id)
+            .unwrap()
+    };
+    let old = topo(&h);
+    let pad = &mut h.state_mut().pad;
+    pad.layer = Some(LayerRef::Vector(old));
+    pad.open(Panel::Layers);
+    h.run_steps(2);
+    assert!(h.query_by_label(STALE_LAYER).is_none());
+    let map = h.state_mut().globe.raster_map_mut(height).unwrap();
+    let (face, x, y) = map.texel_of(lonlat_to_dir(-60.0, -20.0));
+    map.set(face, x, y, meters_to_level(800.0));
+    h.run_steps(2);
+    assert!(h.query_by_label(STALE_LAYER).is_some());
+    check_controls(&h, "the panel of an out-of-date layer");
+    tap(&mut h, RUN_AGAIN);
+    assert!(first.iter().all(|id| h.state().doc.layer(*id).is_none()));
+    let new = topo(&h);
+    assert_ne!(new, old);
+    assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(new)));
+    assert!(h.query_by_label(STALE_LAYER).is_none());
+}
+
+#[test]
+fn polygonize_reads_the_whole_heightmap_of_a_large_layer() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::polygonize::TOPOGRAPHY;
+    use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    // An island of 2 by 2 texels. The reduced copy takes the mean of 2 by 2
+    // texels at most, so the island is in a lower band there.
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
+    let (x, y) = (x | 1, y | 1);
+    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+        map.set(face, x + dx, y + dy, meters_to_level(900.0));
+    }
+    let middle = dir_to_lonlat(map.texel_dir(face, x, y));
+    h.run_steps(2);
+    let state = h.state_mut();
+    state.polygonize.smooth = 0.0;
+    let layers = state.polygonize().unwrap();
+    let topo = (layers.iter())
+        .find(|id| state.doc.layer(**id).unwrap().name == TOPOGRAPHY)
+        .unwrap();
+    let found = bands_at(state, &[*topo], [middle.0, middle.1]);
+    assert_eq!(found, [500.0]);
+}
+
+/// A level of value noise with coasts at each scale, from the face and the
+/// texel, with no trigonometry, so a large map paints fast.
+fn noise_level(face: usize, x: usize, y: usize, n: usize) -> u16 {
+    let hash = |a: u64, b: u64, c: u64| {
+        let mut h = a.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ b.wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+        h ^= c.wrapping_mul(0x1656_67b1_9e37_79f9);
+        h ^= h >> 29;
+        h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        ((h >> 40) as f64) / (1u64 << 24) as f64 - 0.5
+    };
+    let mut s = 0.0;
+    let mut cell = n / 4;
+    let mut amp = 1.0;
+    while cell >= 4 {
+        let (gx, gy) = (x / cell, y / cell);
+        let (fx, fy) = (
+            (x % cell) as f64 / cell as f64,
+            (y % cell) as f64 / cell as f64,
+        );
+        let at = |i: usize, j: usize| {
+            hash(
+                face as u64 * 7 + cell as u64,
+                (gx + i) as u64,
+                (gy + j) as u64,
+            )
+        };
+        let top = at(0, 0) * (1.0 - fx) + at(1, 0) * fx;
+        let bottom = at(0, 1) * (1.0 - fx) + at(1, 1) * fx;
+        s += amp * (top * (1.0 - fy) + bottom * fy);
+        cell /= 2;
+        amp *= 0.6;
+    }
+    meters_to_level(s * 9000.0)
+}
+
+#[test]
+#[ignore]
+fn manual_polygonize_a_painted_world_of_8192_pixel_faces() {
+    use vale_app::ui::RasterSpec;
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 8192;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    let start = std::time::Instant::now();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    eprintln!(
+        "paint {:?}, heap {} MB",
+        start.elapsed(),
+        vale_app::log_file::heap_bytes() >> 20
+    );
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = {
+        let (peak, done) = (peak.clone(), done.clone());
+        std::thread::spawn(move || {
+            while !done.load(std::sync::atomic::Ordering::Relaxed) {
+                peak.fetch_max(
+                    vale_app::log_file::heap_bytes(),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+        })
+    };
+    let status = || std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = |key: &str| {
+        status()
+            .lines()
+            .find(|l| l.starts_with(key))
+            .unwrap_or("")
+            .to_owned()
+    };
+    // The painting above leaves its peak, so the peak of the run starts here.
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+    eprintln!("before: {} {}", line("VmRSS"), line("VmHWM"));
+    let start = std::time::Instant::now();
+    let layers = h.state_mut().polygonize().unwrap();
+    eprintln!("polygonize {:?}", start.elapsed());
+    eprintln!("after: {} {}", line("VmRSS"), line("VmHWM"));
+    let start = std::time::Instant::now();
+    h.run_steps(2);
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    watch.join().unwrap();
+    eprintln!("two frames {:?}", start.elapsed());
+    let points: usize = (layers.iter())
+        .flat_map(|id| &h.state().doc.layer(*id).unwrap().features)
+        .map(|f| match &f.geometry {
+            vale_store::Geometry::Polygons(p) => p.iter().flatten().map(Vec::len).sum::<usize>(),
+            _ => 0,
+        })
+        .sum();
+    eprintln!(
+        "{points} points, peak heap {} MB",
+        peak.load(std::sync::atomic::Ordering::Relaxed) >> 20
+    );
+}
+
+/// Times the draws of the Polygonize output of a painted world: the build
+/// of its levels, the draws of the globe at each zoom, and a style change.
+/// `VALE_FACE` sets the face size.
+#[test]
+#[ignore = "manual"]
+fn manual_draw_the_polygonize_output_of_a_painted_world() {
+    use std::time::Instant;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::budget;
+    use vale_app::ui::globe::vector_layer;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    let start = Instant::now();
+    let layers = state.polygonize().unwrap();
+    eprintln!("polygonize {:?}", start.elapsed());
+    let id = layers[0];
+    for other in state
+        .doc
+        .project
+        .layers()
+        .iter()
+        .map(|l| l.id)
+        .collect::<Vec<_>>()
+    {
+        if other != id && state.doc.layer(other).is_some() {
+            state.doc.set_visible(other, false);
+        }
+    }
+    let state = h.state_mut();
+    let (doc, pipeline) = (&state.doc, &mut state.pipeline);
+    let layer = doc.layer(id).unwrap();
+    let points: usize = layer
+        .features
+        .iter()
+        .map(|f| vale_app::lod::points(&f.geometry))
+        .sum();
+    let rings: usize = (layer.features.iter())
+        .map(|f| match &f.geometry {
+            vale_store::Geometry::Polygons(p) => p.iter().map(Vec::len).sum::<usize>(),
+            _ => 0,
+        })
+        .sum();
+    eprintln!(
+        "{} features, {rings} rings, {points} points",
+        layer.features.len()
+    );
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(1194.0, 834.0));
+    let ctx = egui::Context::default();
+    ctx.set_pixels_per_point(2.0);
+    let draw = |pipeline: &mut vale_app::pipeline::Pipeline, doc: &Document, view: &GlobeView| {
+        let start = Instant::now();
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            vector_layer(&painter, None, rect, doc, view, id, pipeline);
+        });
+        let time = start.elapsed();
+        out.textures_delta.clear();
+        let cost = (out.shapes.iter())
+            .map(|s| budget::cost(&s.shape))
+            .fold((0, 0), budget::add);
+        (time, cost, budget::too_large(&ctx, id))
+    };
+    let start = Instant::now();
+    draw(pipeline, doc, &GlobeView::centered(10.0, 20.0));
+    pipeline.poll_lod(true);
+    eprintln!("levels {:?}", start.elapsed());
+    let mut view = GlobeView::centered(10.0, 20.0);
+    for zoom in [1.0, 2.0, 4.0, 8.0, 16.0, 64.0] {
+        view.zoom = zoom;
+        let first = draw(pipeline, doc, &view);
+        let again = draw(pipeline, doc, &view);
+        view.rot = view.rot.mul(&vale_app::globe::math::Mat3::axis_angle(
+            [0.0, 1.0, 0.0],
+            0.002,
+        ));
+        let turned = draw(pipeline, doc, &view);
+        eprintln!(
+            "zoom {zoom}: first {:?} {:?} large {}, same {:?}, turned {:?} {:?} large {}",
+            first.0, first.1, first.2, again.0, turned.0, turned.1, turned.2
+        );
+    }
+    // The style loses its strokes.
+    view.zoom = 1.0;
+    draw(pipeline, doc, &view);
+    let state = h.state_mut();
+    let style = &mut state.doc.entry_mut(id).unwrap().style.style;
+    for rule in &mut style.rules {
+        rule.symbolizers
+            .retain(|s| !matches!(s, vale_style::Symbolizer::Stroke(_)));
+    }
+    let (doc, pipeline) = (&state.doc, &mut state.pipeline);
+    let restyled = draw(pipeline, doc, &view);
+    eprintln!(
+        "no strokes: {:?} {:?} large {}",
+        restyled.0, restyled.1, restyled.2
+    );
+    // The frames of the app after a style change, with no globe.
+    let step = |h: &mut Pad, what: &str| {
+        let start = Instant::now();
+        h.step();
+        eprintln!("{what} {:?}", start.elapsed());
+    };
+    step(&mut h, "step");
+    step(&mut h, "step");
+    let style = &mut h.state_mut().doc.entry_mut(id).unwrap().style.style;
+    style.rules[0].symbolizers.clear();
+    step(&mut h, "restyled step");
+    step(&mut h, "step");
+    step(&mut h, "step");
+}
+
+/// The peak heap of each step with a large Polygonize output: the run, the
+/// tiles of the globe, the simplified copies, and the Atlas workspace.
+/// `VALE_FACE` sets the face size, and `VALE_SIMPLIFY` the Simplify in
+/// texels.
+#[test]
+#[ignore = "manual"]
+fn manual_memory_of_a_large_polygonize_output() {
+    use vale_app::ui::RasterSpec;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let simplify: f64 = std::env::var("VALE_SIMPLIFY").map_or(0.5, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    state.polygonize.simplify = simplify;
+    // The resident memory and its peak since the last reset, in MB.
+    let status = |key: &str| -> usize {
+        let text = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let line = text.lines().find(|l| l.starts_with(key)).unwrap_or("");
+        let kb: usize = (line.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        kb >> 10
+    };
+    let step = |what: &str, run: &mut dyn FnMut()| {
+        let _ = std::fs::write("/proc/self/clear_refs", "5");
+        let base = status("VmRSS");
+        let start = std::time::Instant::now();
+        run();
+        eprintln!(
+            "{what}: {:?}, resident {base} MB before, peak {} MB, after {} MB",
+            start.elapsed(),
+            status("VmHWM"),
+            status("VmRSS")
+        );
+    };
+    let mut id = None;
+    step("polygonize", &mut || {
+        id = h.state_mut().polygonize().unwrap().first().copied()
+    });
+    let id = id.unwrap();
+    let points: usize = (h.state().doc.layer(id).unwrap().features.iter())
+        .map(|f| vale_app::lod::points(&f.geometry))
+        .sum();
+    eprintln!("{points} points");
+    step("frames", &mut || h.run_steps(3));
+    step("tiles", &mut || {
+        let state = h.state_mut();
+        state.pipeline.vtiles_mut().begin();
+        state.pipeline.show_tiles(&state.doc, id, 2.0);
+        state
+            .globe
+            .set_vector_tiles(state.pipeline.vtiles().shown());
+        state
+            .globe
+            .plan_vector_tiles(state.pipeline.vtiles_mut(), 2.0, true);
+    });
+    step("simplified copies", &mut || {
+        let state = h.state_mut();
+        let layer = state.doc.layer(id).unwrap().clone();
+        state.pipeline.lod_mut().level(&layer, 1e-3);
+        state.pipeline.poll_lod(true);
+    });
+    step("atlas", &mut || {
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(5);
+    });
+}
+
+/// Times the tiles of the Polygonize output of a painted world: the tiles
+/// of the whole globe, of closer views, and of a style change.
+/// `VALE_FACE` sets the face size.
+#[test]
+#[ignore = "manual"]
+fn manual_tile_the_polygonize_output_of_a_painted_world() {
+    use std::time::Instant;
+    use vale_app::ui::RasterSpec;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    let id = state.polygonize().unwrap()[0];
+    h.run_steps(2);
+    let state = h.state_mut();
+    state.globe.view = GlobeView::centered(10.0, 20.0);
+    let ppp = 2.0;
+    let plan = |state: &mut AppState, what: &str| {
+        let start = Instant::now();
+        state.pipeline.vtiles_mut().begin();
+        let shown = Instant::now();
+        assert!(state.pipeline.show_tiles(&state.doc, id, ppp));
+        let shown = shown.elapsed();
+        state
+            .globe
+            .set_vector_tiles(state.pipeline.vtiles().shown());
+        state
+            .globe
+            .plan_vector_tiles(state.pipeline.vtiles_mut(), ppp, true);
+        let tiles = state.pipeline.vtiles().tiles(id);
+        let finest = tiles.iter().map(|k| k.level).max().unwrap_or(0);
+        eprintln!(
+            "{what}: {:?} ({shown:?} on the UI thread), {} tiles, finest level {finest}",
+            start.elapsed(),
+            tiles.len()
+        );
+    };
+    plan(state, "globe");
+    plan(state, "globe again");
+    for zoom in [4.0, 16.0, 64.0, 256.0] {
+        state.globe.view.zoom = zoom;
+        plan(state, &format!("zoom {zoom}"));
+    }
+    // An edit moves one point of the ring nearest the middle of the view.
+    state.pipeline.vtiles_mut().quiet = std::time::Duration::ZERO;
+    let middle = vale_app::globe::math::lonlat_to_dir(10.0, 20.0);
+    let layer = state.doc.layer(id).unwrap();
+    let (mut best, mut at) = (f64::MAX, (0, 0, 0, 0));
+    for (f, feature) in layer.features.iter().enumerate() {
+        let vale_store::Geometry::Polygons(polygons) = &feature.geometry else {
+            continue;
+        };
+        for (p, rings) in polygons.iter().enumerate() {
+            for (r, ring) in rings.iter().enumerate() {
+                for (i, q) in ring.iter().enumerate().step_by(16) {
+                    let d = vale_app::globe::math::angle(
+                        vale_app::globe::math::lonlat_to_dir(q[0], q[1]),
+                        middle,
+                    );
+                    if d < best {
+                        (best, at) = (d, (f, p, r, i));
+                    }
+                }
+            }
+        }
+    }
+    let feature = &layer.features[at.0];
+    let uuid = feature.uuid();
+    let vale_store::Geometry::Polygons(mut polygons) = feature.geometry.clone() else {
+        panic!("a polygon");
+    };
+    polygons[at.1][at.2][at.3][0] += 0.001;
+    let arrived = state.pipeline.vtiles().arrived();
+    let start = Instant::now();
+    assert!(
+        state
+            .doc
+            .project
+            .set_geometry(id, uuid, vale_store::Geometry::Polygons(polygons))
+    );
+    state.pipeline.forget(id);
+    plan(state, "edit");
+    eprintln!(
+        "edit: {:?}, {} tiles again",
+        start.elapsed(),
+        state.pipeline.vtiles().arrived() - arrived
+    );
+    let style = &mut state.doc.entry_mut(id).unwrap().style.style;
+    for rule in &mut style.rules {
+        rule.symbolizers
+            .retain(|s| !matches!(s, vale_style::Symbolizer::Stroke(_)));
+    }
+    plan(state, "no strokes");
+}
+
+#[test]
+fn polygonize_shows_its_progress_and_stops_on_cancel() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::pad::toolbox::RUN;
+    use vale_app::ui::polygonize::{CANCEL, LEVELS, STOPPED};
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    // The trace goes over each cell of a face, so a plain map takes as long
+    // as a painted one.
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    h.run_steps(2);
+    open_polygonize(&mut h);
+    assert!(h.query_by_label_contains(LEVELS).is_some());
+    let before = h.state().doc.project.layers().len();
+    // The run does not wait for the worker outside of the tests.
+    h.state_mut().headless = false;
+    tap(&mut h, RUN);
+    h.state_mut().headless = true;
+    assert!(h.state().polygonize.job.is_some());
+    assert!(h.state().polygonize_progress().is_some());
+    h.run_steps(1);
+    assert!(control(&h, RUN).is_none());
+    check_controls(&h, "the page of a run of Polygonize");
+    screenshot::save(&mut h, "pad-polygonize-progress");
+    tap(&mut h, CANCEL);
+    h.state_mut().poll_polygonize(true);
+    h.run_steps(2);
+    assert!(h.state().polygonize.job.is_none());
+    assert_eq!(h.state().doc.project.layers().len(), before);
+    assert!(h.query_by_label(STOPPED).is_some());
+    assert!(control(&h, RUN).is_some());
+}
+
+#[test]
+fn polygonize_reads_a_layer_that_is_not_active_from_the_project_file() {
+    use vale_app::globe::DISPLAY_CAP;
+    use vale_app::ui::RasterSpec;
+    use vale_app::ui::polygonize::TOPOGRAPHY;
+    use vale_terrain::math::{dir_to_lonlat, lonlat_to_dir};
+    let mut h = empty_pad(BOARDS[1]);
+    let dir = tempfile::tempdir().unwrap();
+    let state = h.state_mut();
+    state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
+    let n = 2 * DISPLAY_CAP as usize;
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    map.fill(meters_to_level(-3000.0));
+    let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
+    for dy in 0..8 {
+        for dx in 0..8 {
+            map.set(face, x + dx, y + dy, meters_to_level(900.0));
+        }
+    }
+    let middle = dir_to_lonlat(map.texel_dir(face, x + 4, y + 4));
+    h.run_steps(2);
+    h.state_mut().save_waiting().unwrap();
+    let other = h
+        .state_mut()
+        .add_raster(RasterSpec::height("Other", 64))
+        .unwrap();
+    let state = h.state_mut();
+    state.select(Some(LayerRef::Raster(other)));
+    state.polygonize.raster = Some(height);
+    h.run_steps(4);
+    assert!(
+        h.state().globe.raster_map(height).is_none(),
+        "the globe holds the layer"
+    );
+    let state = h.state_mut();
+    let layers = state.polygonize().unwrap();
+    let topo = (layers.iter())
+        .find(|id| state.doc.layer(**id).unwrap().name == TOPOGRAPHY)
+        .unwrap();
+    assert_eq!(bands_at(state, &[*topo], [middle.0, middle.1]), [500.0]);
+}
+
+#[test]
+fn a_layer_too_large_to_show_shows_an_error_and_can_be_deleted() {
+    use vale_app::ui::budget::{self, TOO_LARGE, TOO_LARGE_ABOUT};
+    let (mut h, _) = islands_pad();
+    let outputs = h.state_mut().polygonize().unwrap();
+    let topo = outputs[0];
+    // The harness paints no globe, so each frame takes the draw of the
+    // layer by hand. Nothing fits in the frame.
+    budget::set_limit(&h.ctx, (0, 0));
+    let steps = |h: &mut Pad, n: usize| {
+        for _ in 0..n {
+            if h.state().doc.layer(topo).is_some() {
+                budget::spend(&h.ctx, topo, (1, 1));
+            }
+            h.step();
+        }
+    };
+    h.state_mut().pad.open(Panel::Layers);
+    steps(&mut h, 3);
+    let marks = |h: &Pad| h.query_all_by_label(TOO_LARGE).count();
+    assert_eq!(marks(&h), 1);
+    h.state_mut().pad.layer = Some(LayerRef::Vector(topo));
+    steps(&mut h, 2);
+    assert!(h.query_by_label(TOO_LARGE_ABOUT).is_some());
+    // The layer goes, and the project keeps the other layers.
+    let before = h.state().doc.project.layers().len();
+    assert!(h.state_mut().remove_layer(topo));
+    steps(&mut h, 3);
+    assert_eq!(h.state().doc.project.layers().len(), before - 1);
+    assert_eq!(marks(&h), 0);
+}
+
+#[test]
+fn polygonize_makes_bands_at_an_interval_from_the_levels_page() {
+    use vale_app::ui::polygonize::{INTERVAL, LEVELS};
+    let (mut h, _) = islands_pad();
+    open_polygonize(&mut h);
+    tap(&mut h, LEVELS);
+    tap(&mut h, INTERVAL);
+    h.state_mut().polygonize.levels = vale_app::ui::polygonize::Levels::Interval {
+        step: 1000.0,
+        base: 0.0,
+    };
+    h.run_steps(2);
+    let count = h.state_mut().polygonize_bands().unwrap().len();
+    assert!(h.query_by_label(&format!("{count} bands.")).is_some());
+    screenshot::save(&mut h, "polygonize-levels");
+    tap(
+        &mut h,
+        &format!("Back to {}", vale_app::ui::polygonize::POLYGONIZE),
+    );
+    screenshot::save(&mut h, "polygonize-page");
+    let (low, high) = h.state_mut().polygonize_range().unwrap();
+    let layers = h.state_mut().polygonize().unwrap();
+    let state = h.state();
+    let mins: Vec<f64> = (layers.iter())
+        .flat_map(|id| &state.doc.layer(*id).unwrap().features)
+        .filter_map(|f| match f.attributes.get("elev_min") {
+            Some(vale_store::Value::Number(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert!(!mins.is_empty());
+    for v in mins {
+        assert!(v == low || (v / 1000.0).fract() == 0.0, "{v} of {high}");
+    }
+}
+
+#[test]
+fn a_larger_simplify_gives_fewer_points() {
+    let (mut h, _) = islands_pad();
+    let points = |h: &mut Pad, simplify: f64| -> usize {
+        h.state_mut().polygonize.simplify = simplify;
+        let layers = h.state_mut().polygonize().unwrap();
+        (layers.iter())
+            .flat_map(|id| &h.state().doc.layer(*id).unwrap().features)
+            .map(|f| vale_app::lod::points(&f.geometry))
+            .sum()
+    };
+    let fine = points(&mut h, 0.5);
+    let coarse = points(&mut h, 4.0);
+    assert!(coarse * 2 < fine, "{coarse} and {fine}");
 }

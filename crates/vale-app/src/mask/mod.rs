@@ -16,6 +16,7 @@ use vale_style::Mask;
 
 use crate::document::Document;
 use crate::globe::mask::{Region, clip_lines, clip_polygons, polygon_outlines};
+use crate::lod::{self, Detail};
 
 /// Polygons in longitude and latitude.
 pub type Polygons = Vec<Vec<Vec<LonLat>>>;
@@ -51,11 +52,13 @@ struct Key {
     mask: Mask,
     features: usize,
     mask_features: usize,
+    /// The level of detail of the layer, as `lod::key` gives it.
+    detail: usize,
 }
 
 /// The most cuts of one layer that the cache keeps. Each map can have its
-/// own mask for a layer.
-const MAX_CUTS: usize = 4;
+/// own mask for a layer, and each level of detail has its own cut.
+const MAX_CUTS: usize = 8;
 
 /// The cuts of the masked layers. The last cut of a layer is first.
 #[derive(Default)]
@@ -64,15 +67,16 @@ pub struct MaskCache {
 }
 
 impl MaskCache {
-    /// The parts of the features of layer `id` inside `mask`. `None`: no
-    /// mask or a raster mask, so the layer draws whole.
+    /// The parts of the features of layer `id` at `detail` inside `mask`.
+    /// `None`: no mask or a raster mask, so the layer draws whole.
     pub fn layer(
         &mut self,
         doc: &Document,
         id: LayerId,
         mask: Option<Mask>,
+        detail: Option<&Arc<Detail>>,
     ) -> Option<Arc<MaskedLayer>> {
-        let key = key(doc, id, mask?)?;
+        let key = key(doc, id, mask?, detail)?;
         let cuts = self.entries.entry(id).or_default();
         if let Some(i) = cuts.iter().position(|(old, _)| *old == key) {
             let cut = cuts.remove(i);
@@ -82,20 +86,21 @@ impl MaskCache {
         }
         let layer = doc.layer(id)?;
         let region = Region::new(&region_polygons(doc, &key.mask)?);
-        let features = layer
-            .features
-            .iter()
-            .map(|f| match &f.geometry {
-                Geometry::Points(_) => None,
-                Geometry::Lines(lines) => Some(MaskedFeature {
-                    polygons: Vec::new(),
-                    lines: clip_lines(&region, lines),
-                }),
-                Geometry::Polygons(polygons) => Some(MaskedFeature {
-                    polygons: clip_polygons(&region, polygons),
-                    lines: clip_lines(&region, &polygon_outlines(polygons)),
-                }),
-            })
+        let features = (layer.features.iter().enumerate())
+            .map(
+                |(i, f)| match lod::geometry(detail.map(Arc::as_ref), i, &f.geometry) {
+                    None => Some(MaskedFeature::default()),
+                    Some(Geometry::Points(_)) => None,
+                    Some(Geometry::Lines(lines)) => Some(MaskedFeature {
+                        polygons: Vec::new(),
+                        lines: clip_lines(&region, lines),
+                    }),
+                    Some(Geometry::Polygons(polygons)) => Some(MaskedFeature {
+                        polygons: clip_polygons(&region, polygons),
+                        lines: clip_lines(&region, &polygon_outlines(polygons)),
+                    }),
+                },
+            )
             .collect();
         let masked = Arc::new(MaskedLayer {
             features,
@@ -123,7 +128,7 @@ impl MaskCache {
 
 /// What the cut of layer `id` by `mask` comes from. `None`: the layer
 /// draws whole.
-fn key(doc: &Document, id: LayerId, mask: Mask) -> Option<Key> {
+fn key(doc: &Document, id: LayerId, mask: Mask, detail: Option<&Arc<Detail>>) -> Option<Key> {
     let layer = doc.layer(id)?;
     layer.geometry()?;
     let mask_features = match mask {
@@ -134,6 +139,7 @@ fn key(doc: &Document, id: LayerId, mask: Mask) -> Option<Key> {
         mask,
         features: layer.features.len(),
         mask_features,
+        detail: lod::key(detail),
     })
 }
 

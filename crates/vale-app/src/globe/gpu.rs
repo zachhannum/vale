@@ -12,7 +12,7 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use std::collections::HashMap;
 
-use vale_store::{ImageId, RasterId};
+use vale_store::{ImageId, LayerId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
     Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, StampPipeline,
@@ -199,6 +199,21 @@ pub struct ImageUpload {
     pub rgba: Vec<u8>,
 }
 
+/// The pixels of one tile of a vector layer for a slot of the atlas.
+pub struct VTileUpload {
+    pub slot: u32,
+    /// `vtiles::TILE_PX` squared premultiplied RGBA8 pixels.
+    pub rgba: Vec<u8>,
+}
+
+/// A change of an entry of the page table of a vector layer: the slot of
+/// a tile plus 1, or 0 for no tile.
+pub struct VTilePage {
+    pub layer: LayerId,
+    pub index: u32,
+    pub value: u32,
+}
+
 /// What one pass draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pass {
@@ -208,6 +223,8 @@ pub enum Pass {
     Layer(LayerKey),
     /// One image layer.
     Image(ImageId),
+    /// One vector layer from its tiles.
+    VectorTiles(LayerId),
     /// The graticule above the raster layers.
     Graticule,
     /// The soft edge of the globe. The other passes have a hard edge, so
@@ -270,6 +287,7 @@ struct Layouts {
     with_tiles: wgpu::PipelineLayout,
     no_tiles: wgpu::PipelineLayout,
     with_image: wgpu::PipelineLayout,
+    with_vtiles: wgpu::PipelineLayout,
     composite: wgpu::PipelineLayout,
     vector: wgpu::BindGroupLayout,
     vector_group: wgpu::BindGroupLayout,
@@ -305,17 +323,19 @@ fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 impl Layouts {
-    /// The module of `globe.wgsl`, with `edges.wgsl` and `image.wgsl`.
+    /// The module of `globe.wgsl`, with `edges.wgsl`, `image.wgsl`, and
+    /// `vtiles.wgsl`.
     fn shader(&self) -> wgpu::ShaderModule {
         self.device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("globe"),
                 source: wgpu::ShaderSource::Wgsl(
                     format!(
-                        "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}",
+                        "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}\n{}",
                         include_str!("globe.wgsl"),
                         include_str!("edges.wgsl"),
-                        include_str!("image.wgsl")
+                        include_str!("image.wgsl"),
+                        include_str!("vtiles.wgsl")
                     )
                     .into(),
                 ),
@@ -491,6 +511,33 @@ impl Layouts {
         ]
     }
 
+    /// The passes of the vector layers from their tiles: on the globe and
+    /// in the flat view.
+    fn vtiles(&self) -> [wgpu::RenderPipeline; 2] {
+        let shader = self.shader();
+        let layout = &self.with_vtiles;
+        [
+            self.pipeline(
+                &shader,
+                "vtiles",
+                layout,
+                "vs_main",
+                "fs_vtiles",
+                false,
+                false,
+            ),
+            self.pipeline(
+                &shader,
+                "flat vtiles",
+                layout,
+                "vs_flat",
+                "fs_flat_vtiles",
+                true,
+                false,
+            ),
+        ]
+    }
+
     fn masks(&self) -> Masks {
         let shader = self.shader();
         let cover = |label, vertex, fragment, flat: bool, format| {
@@ -656,6 +703,15 @@ struct Resources {
     image_sampler: wgpu::Sampler,
     /// The copies of the images that the globe draws.
     images: HashMap<ImageKey, GpuImage>,
+    vtile_pipelines: Compiled<[wgpu::RenderPipeline; 2]>,
+    vtile_layout: wgpu::BindGroupLayout,
+    vtile_sampler: wgpu::Sampler,
+    /// The atlas of the tiles of the vector layers, while a layer draws
+    /// from tiles.
+    vtile_atlas: Option<(wgpu::Texture, wgpu::TextureView)>,
+    /// The page table of each vector layer that draws from tiles, with its
+    /// bind group.
+    vtile_pages: HashMap<LayerId, (wgpu::Texture, wgpu::BindGroup)>,
     /// The passes of a mask: the value range of a raster mask, and the
     /// meshes of egui shapes in the target of a group.
     masks: Compiled<Masks>,
@@ -790,6 +846,50 @@ impl Resources {
             bind_group_layouts: &[Some(&layout), Some(&image_layout)],
             immediate_size: 0,
         });
+        // The bindings of `vtiles.wgsl`: the atlas and its sampler at the
+        // places of those of an image, and the page table.
+        let vtile_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("vtiles"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let with_vtiles = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("vtiles"),
+            bind_group_layouts: &[Some(&layout), Some(&vtile_layout)],
+            immediate_size: 0,
+        });
+        let vtile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("vtiles"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
         // The longitude wraps, and the latitude stops at the poles.
         let image_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("image"),
@@ -843,6 +943,7 @@ impl Resources {
             with_tiles,
             no_tiles,
             with_image,
+            with_vtiles,
             composite,
             vector: vector_layout.clone(),
             vector_group: vector_group_layout.clone(),
@@ -854,6 +955,7 @@ impl Resources {
             core_layouts.core()
         });
         let (blend_layouts, mask_layouts) = (layouts.clone(), layouts.clone());
+        let vtile_layouts = layouts.clone();
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -882,6 +984,11 @@ impl Resources {
             image_layout,
             image_sampler,
             images: HashMap::new(),
+            vtile_pipelines: Compiled::lazy(move || vtile_layouts.vtiles()),
+            vtile_layout,
+            vtile_sampler,
+            vtile_atlas: None,
+            vtile_pages: HashMap::new(),
             masks: Compiled::lazy(move || mask_layouts.masks()),
             vector_layout,
             vector_group_layout,
@@ -979,12 +1086,134 @@ impl Resources {
                 full || copy || frame.details.iter().any(|key| key.layer == *layer)
             }
             Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
+            Pass::VectorTiles(id) => frame.vector_tiles.contains(id),
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
         };
         self.slots.retain(|(_, pass), _| live(pass));
+        self.sync_vtiles(device, frame);
         self.edges.retain(|layer| live(&Pass::Layer(*layer)));
         self.channels
             .retain(|layer, _| frame.rivers.contains(layer));
+    }
+
+    /// Keeps the atlas while a layer draws from tiles, and a page table with
+    /// no tiles for each new layer that does.
+    fn sync_vtiles(&mut self, device: &wgpu::Device, frame: &Frame) {
+        use super::vtiles::{ATLAS, PAGE_SIZE};
+        self.vtile_pages
+            .retain(|id, _| frame.vector_tiles.contains(id));
+        if frame.vector_tiles.is_empty() {
+            self.vtile_atlas = None;
+            return;
+        }
+        let texture = |label, [width, height]: [u32; 2], format| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let (_, atlas) = self.vtile_atlas.get_or_insert_with(|| {
+            let atlas = texture("vtile atlas", ATLAS, wgpu::TextureFormat::Rgba8Unorm);
+            let view = atlas.create_view(&wgpu::TextureViewDescriptor::default());
+            (atlas, view)
+        });
+        for id in &frame.vector_tiles {
+            if self.vtile_pages.contains_key(id) {
+                continue;
+            }
+            let pages = texture("vtile pages", PAGE_SIZE, wgpu::TextureFormat::R32Uint);
+            let view = pages.create_view(&wgpu::TextureViewDescriptor::default());
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("vtiles"),
+                layout: &self.vtile_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(atlas),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::Sampler(&self.vtile_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                ],
+            });
+            self.vtile_pages.insert(*id, (pages, bind_group));
+        }
+    }
+
+    /// Writes the tiles and the entries of the page tables that wait.
+    fn upload_vtiles(&self, queue: &wgpu::Queue, tiles: Vec<VTileUpload>, pages: Vec<VTilePage>) {
+        use super::vtiles::{PAGE_SIZE, SLOT_COLS, TILE_PX};
+        if let Some((atlas, _)) = &self.vtile_atlas {
+            for tile in tiles {
+                let side = TILE_PX as u32;
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: atlas,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: tile.slot % SLOT_COLS * side,
+                            y: tile.slot / SLOT_COLS * side,
+                            z: 0,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &tile.rgba,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(side * 4),
+                        rows_per_image: Some(side),
+                    },
+                    wgpu::Extent3d {
+                        width: side,
+                        height: side,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+        }
+        for page in pages {
+            let Some((texture, _)) = self.vtile_pages.get(&page.layer) else {
+                continue;
+            };
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: page.index % PAGE_SIZE[0],
+                        y: page.index / PAGE_SIZE[0],
+                        z: 0,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &page.value.to_le_bytes(),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
     }
 
     /// A copy of an image with no pixels, which is transparent.
@@ -1328,7 +1557,7 @@ impl Resources {
             Pass::Ground => Some(GROUND),
             Pass::Graticule => Some(GRATICULE),
             Pass::Rim => Some(RIM),
-            Pass::Layer(_) | Pass::Image(_) => None,
+            Pass::Layer(_) | Pass::Image(_) | Pass::VectorTiles(_) => None,
         };
         // The flat view has no edge of a globe.
         if flat && kind == Some(RIM) {
@@ -1365,6 +1594,16 @@ impl Resources {
                 return;
             };
             pipeline = &pipelines[usize::from(flat) * 2 + usize::from(blend)];
+        }
+        if let Pass::VectorTiles(id) = draw.pass {
+            let Some((_, group)) = self.vtile_pages.get(&id) else {
+                return;
+            };
+            let Some(pipelines) = self.vtile_pipelines.get() else {
+                return;
+            };
+            pass.set_bind_group(1, group, &[]);
+            pipeline = &pipelines[usize::from(flat)];
         }
         pass.set_bind_group(0, &slot.bind_group, &[]);
         pass.set_pipeline(pipeline);
@@ -2668,6 +2907,9 @@ pub struct Link {
     ops: Arc<Mutex<Vec<(MapKey, Op)>>>,
     /// The tiles of the image copies that wait for the GPU.
     images: Arc<Mutex<Vec<ImageUpload>>>,
+    /// The tiles of the vector layers and the changes of their page tables
+    /// that wait for the GPU.
+    vtiles: Arc<Mutex<(Vec<VTileUpload>, Vec<VTilePage>)>>,
     events: mpsc::Sender<Event>,
     pub busy: Arc<Busy>,
     /// True when the core pipelines of the globe are ready, or when their
@@ -2684,6 +2926,7 @@ impl Link {
         let link = Link {
             ops: Arc::default(),
             images: Arc::default(),
+            vtiles: Arc::default(),
             events,
             busy: Arc::default(),
             ready: Arc::default(),
@@ -2705,6 +2948,18 @@ impl Link {
     pub fn push_image(&self, upload: ImageUpload) {
         let mut images = self.images.lock().expect("no panic holds the lock");
         images.push(upload);
+    }
+
+    /// Sends the pixels of a tile of a vector layer to a slot of the atlas.
+    pub fn push_vtile(&self, upload: VTileUpload) {
+        let mut vtiles = self.vtiles.lock().expect("no panic holds the lock");
+        vtiles.0.push(upload);
+    }
+
+    /// Sends a change of the page table of a vector layer.
+    pub fn push_vpage(&self, page: VTilePage) {
+        let mut vtiles = self.vtiles.lock().expect("no panic holds the lock");
+        vtiles.1.push(page);
     }
 
     /// The number of tiles of image copies that wait for the GPU.
@@ -2862,6 +3117,8 @@ pub struct Frame {
     pub rivers: Vec<LayerKey>,
     /// The copies of the images that the globe draws.
     pub images: Vec<ImageKey>,
+    /// The vector layers that draw from tiles.
+    pub vector_tiles: Vec<LayerId>,
     /// `Some`: the canvas shows the flat view with this mesh.
     pub flat: Option<Arc<FlatMesh>>,
     /// The count of the sets of reduced copies before this one.
@@ -3184,6 +3441,8 @@ fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, fram
     let link = &frame.link;
     let images = std::mem::take(&mut *link.images.lock().expect("no panic holds the lock"));
     res.upload_images(queue, images);
+    let (tiles, pages) = std::mem::take(&mut *link.vtiles.lock().expect("no panic holds the lock"));
+    res.upload_vtiles(queue, tiles, pages);
     let mut ops = std::mem::take(&mut *link.ops.lock().expect("no panic holds the lock"));
     if !ops.is_empty() {
         res.version += 1;

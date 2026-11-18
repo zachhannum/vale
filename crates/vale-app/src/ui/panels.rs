@@ -14,7 +14,8 @@ use super::pad::atlas::{
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{
-    Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, select,
+    Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, polygonize,
+    select,
 };
 use vale_terrain::Mode;
 
@@ -1448,8 +1449,10 @@ fn toolbox_section(ui: &mut egui::Ui, state: &mut AppState) {
         for &(name, _) in ops {
             let ready = toolbox::exists(name);
             ui.add_enabled(ready, egui::Label::new(name));
-            if ready {
-                orient_form(ui, state);
+            match name {
+                orient::ORIENT_DOWNHILL => orient_form(ui, state),
+                polygonize::POLYGONIZE => polygonize_form(ui, state),
+                _ => {}
             }
         }
     }
@@ -1504,6 +1507,112 @@ fn orient_form(ui: &mut egui::Ui, state: &mut AppState) {
         if let Some(hint) = state.orient_hint() {
             ui.weak(hint);
         } else if let Some(note) = &state.toolbox_note {
+            ui.weak(note);
+        }
+    });
+}
+
+/// The input and the parameters of "Polygonize", its Run button, and its
+/// result.
+fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
+    use pad::toolbox::{NONE, RUN};
+    use polygonize::{
+        ABOVE, BASE, BELOW, COLOR_STOPS, INPUT, INTERVAL, LEVELS, Levels, NEEDS_RASTER, SIMPLIFY,
+        SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
+    };
+    ui.indent("polygonize", |ui| {
+        let input = state.polygonize_input();
+        let mut chosen = input;
+        let layers = state.held_rasters();
+        let found = layers.iter().find(|(r, _)| Some(*r) == input);
+        let text = found.map_or(NONE, |(_, name)| name.as_str()).to_owned();
+        egui::ComboBox::from_label(INPUT)
+            .selected_text(text)
+            .show_ui(ui, |ui| {
+                for (id, layer) in &layers {
+                    ui.selectable_value(&mut chosen, Some(*id), layer);
+                }
+            });
+        if chosen != input {
+            state.polygonize.raster = chosen;
+            state.toolbox_note = None;
+        }
+        let stops = state.polygonize.levels == Levels::Stops;
+        let mut interval = !stops;
+        egui::ComboBox::from_label(LEVELS)
+            .selected_text(if stops { COLOR_STOPS } else { INTERVAL })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut interval, false, COLOR_STOPS);
+                ui.selectable_value(&mut interval, true, INTERVAL);
+            });
+        if interval != !stops {
+            state.polygonize.levels = match interval {
+                true => state.default_interval(),
+                false => Levels::Stops,
+            };
+        }
+        if let Levels::Interval { mut step, mut base } = state.polygonize.levels {
+            let unit = state.polygonize_unit();
+            ui.horizontal(|ui| {
+                ui.label(INTERVAL);
+                ui.add(
+                    egui::DragValue::new(&mut step)
+                        .range(1e-6..=f64::MAX)
+                        .suffix(unit),
+                );
+                ui.label(BASE);
+                ui.add(egui::DragValue::new(&mut base).suffix(unit));
+            });
+            state.polygonize.levels = Levels::Interval { step, base };
+            if state.polygonize_bands().is_none() {
+                ui.weak(TOO_MANY_BANDS);
+            }
+        }
+        let mut smooth = state.polygonize.smooth * 100.0;
+        let slider = egui::Slider::new(&mut smooth, 0.0..=100.0)
+            .suffix("%")
+            .text(SMOOTH);
+        if ui.add(slider).changed() {
+            state.polygonize.smooth = smooth / 100.0;
+        }
+        let texel = state.polygonize_texel_m().unwrap_or(1.0);
+        let slider = egui::Slider::new(&mut state.polygonize.simplify, SIMPLIFY_RANGE)
+            .logarithmic(true)
+            .custom_formatter(|px, _| polygonize::distance_text(px * texel))
+            .text(SIMPLIFY);
+        ui.add(slider);
+        if state.polygonize_can_split() {
+            ui.checkbox(&mut state.polygonize.split, SPLIT);
+            if state.polygonize.split {
+                let p = &mut state.polygonize;
+                ui.horizontal(|ui| {
+                    ui.label(ABOVE);
+                    ui.text_edit_singleline(&mut p.above);
+                });
+                ui.horizontal(|ui| {
+                    ui.label(BELOW);
+                    ui.text_edit_singleline(&mut p.below);
+                });
+            }
+        }
+        let stale = state.polygonize_stale();
+        if let Some(names) = &stale {
+            ui.weak(polygonize::stale_text(names));
+        }
+        if let Some((share, text)) = state.polygonize_progress() {
+            ui.add(egui::ProgressBar::new(share).text(text));
+            if ui.button(polygonize::CANCEL).clicked() {
+                state.cancel_polygonize();
+            }
+            return;
+        }
+        let run = egui::Button::new(RUN);
+        if ui.add_enabled(state.can_polygonize(), run).clicked() {
+            state.run_polygonize();
+        }
+        if input.is_none() {
+            ui.weak(NEEDS_RASTER);
+        } else if let Some(note) = state.toolbox_note.as_ref().filter(|_| stale.is_none()) {
             ui.weak(note);
         }
     });

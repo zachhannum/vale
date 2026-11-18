@@ -3361,6 +3361,9 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         .iter()
         .map(|l| (LayerRef::of(l), layer_icon(l), l.visible))
         .collect();
+    let large: Vec<bool> = (layers.iter())
+        .map(|l| crate::ui::budget::too_large(ui.ctx(), l.id))
+        .collect();
     let rows: Vec<list::Row<LayerId>> = layers
         .iter()
         .map(|l| list::Row {
@@ -3383,6 +3386,8 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let look = list::Look {
             icon: Some(looks[i].1),
             text: &rows[i].name,
+            note: large[i].then_some(crate::ui::budget::TOO_LARGE),
+            warn: large[i],
             eye: Some(looks[i].2),
             open: true,
             ..list::Look::default()
@@ -3583,6 +3588,29 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
+    if crate::ui::budget::too_large(ui.ctx(), id) {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(crate::ui::budget::TOO_LARGE_ABOUT).color(theme::WARN));
+        ui.add_space(8.0);
+    }
+    if state.is_stale_output(id) {
+        use crate::ui::polygonize::{RUN_AGAIN, STALE_LAYER};
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(STALE_LAYER).color(theme::MUTE));
+        ui.add_space(8.0);
+        if widgets::button_row(ui, controls, RUN_AGAIN, state.can_polygonize()).clicked() {
+            let old = state.doc.layer(id).map(|l| l.name.clone());
+            state.run_polygonize_again();
+            // The panel shows the new layer of the same name.
+            let outputs = state.polygonize_outputs();
+            let named = |o: &&LayerId| state.doc.layer(**o).map(|l| l.name.clone()) == old;
+            let same = outputs.iter().find(named);
+            if let Some(&new) = same.or(outputs.last()) {
+                state.pad.layer = Some(LayerRef::Vector(new));
+            }
+        }
+        ui.add_space(8.0);
+    }
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
     }

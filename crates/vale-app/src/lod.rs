@@ -14,6 +14,15 @@ use vale_store::{Geometry, Layer, LayerId};
 /// A layer with fewer points draws its full geometry.
 pub const MIN_POINTS: usize = 20_000;
 
+/// A layer with more points never draws its full geometry at a scale that
+/// a level is for. Until its first level is ready, it draws nothing, because
+/// the meshes of one frame must fit in one GPU buffer.
+pub const MAX_FULL_POINTS: usize = 1_000_000;
+
+/// The views draw nothing of a layer for now: its levels are not ready.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wait;
+
 /// The time from an edit of a layer to the start of its build. A drag
 /// changes the layer in each frame, and it starts no build until it stops.
 pub const QUIET: Duration = Duration::from_millis(500);
@@ -118,6 +127,10 @@ pub struct LodCache {
     arrived: u64,
     pub min_points: usize,
     pub quiet: Duration,
+    /// A layer with more points waits for its levels.
+    pub max_full_points: usize,
+    /// The points of each layer, for its features at the count.
+    counts: HashMap<LayerId, ((usize, usize), usize)>,
     /// The levels that the workers finish stay in their channels, for the
     /// tests.
     pub held: bool,
@@ -133,6 +146,8 @@ impl Default for LodCache {
             arrived: 0,
             min_points: MIN_POINTS,
             quiet: QUIET,
+            max_full_points: MAX_FULL_POINTS,
+            counts: HashMap::new(),
             held: false,
         }
     }
@@ -142,10 +157,49 @@ impl LodCache {
     /// The level of `layer` to draw for a pixel of `pixel` radians. `None`:
     /// the full geometry. The first use starts the build of the levels.
     pub fn level(&mut self, layer: &Layer, pixel: f64) -> Option<Arc<Detail>> {
-        let entry = self.entry(layer)?;
-        let ready = std::array::from_fn(|l| entry.levels[l].is_some());
-        let index = lod::choose(pixel, ready)?;
-        entry.levels[index].clone()
+        self.level_or_wait(layer, pixel).unwrap_or_default()
+    }
+
+    /// The level of `layer` to draw for a pixel of `pixel` radians, as
+    /// `level` gives it. A layer with more than `MAX_FULL_POINTS` points
+    /// (`max_full_points`) takes a coarser ready level in place of its full
+    /// geometry, and
+    /// `Wait` with no ready level. Its full geometry draws only at a scale
+    /// finer than all levels, where the view cuts it to the screen.
+    pub fn level_or_wait(
+        &mut self,
+        layer: &Layer,
+        pixel: f64,
+    ) -> Result<Option<Arc<Detail>>, Wait> {
+        let large = self.points(layer) > self.max_full_points
+            && (layer.features.iter()).any(|f| !matches!(f.geometry, Geometry::Points(_)));
+        let Some(entry) = self.entry(layer) else {
+            return if large { Err(Wait) } else { Ok(None) };
+        };
+        let ready: [bool; LEVELS] = std::array::from_fn(|l| entry.levels[l].is_some());
+        if let Some(index) = lod::choose(pixel, ready) {
+            return Ok(entry.levels[index].clone());
+        }
+        if !large || lod::tolerance(0) >= pixel {
+            return Ok(None);
+        }
+        match (0..LEVELS).find(|&l| ready[l]) {
+            Some(index) => Ok(entry.levels[index].clone()),
+            None => Err(Wait),
+        }
+    }
+
+    /// The number of points of `layer`, for the features that it has now.
+    fn points(&mut self, layer: &Layer) -> usize {
+        let key = (layer.features.as_ptr() as usize, layer.features.len());
+        match self.counts.get(&layer.id) {
+            Some(&(k, n)) if k == key => n,
+            _ => {
+                let n = layer.features.iter().map(|f| points(&f.geometry)).sum();
+                self.counts.insert(layer.id, (key, n));
+                n
+            }
+        }
     }
 
     /// The entry of `layer`, up to date or with a new build.
@@ -244,6 +298,7 @@ impl LodCache {
     pub fn retain(&mut self, keep: impl Fn(LayerId) -> bool) {
         self.entries.retain(|id, _| keep(*id));
         self.edited.retain(|id, _| keep(*id));
+        self.counts.retain(|id, _| keep(*id));
     }
 
     /// A number that changes when a level arrives.

@@ -293,11 +293,21 @@ A large vector layer has simplified copies at four levels. On an Earth-size worl
 
 The simplification keeps the shared edges of polygons. It splits the boundaries of the layer into arcs between the points where three or more features meet. It simplifies each arc one time, and each feature that has the arc gets the same points. Where two simplified lines cross, it puts back points until no lines cross. A feature that is smaller than a level is not in the copy of that level.
 
-The globe and the flat view draw the coarsest level that is finer than one pixel. A map frame on the screen keeps its display lists at each zoom of the page, so it draws the coarsest level that is finer than one pixel at the highest zoom. If that level is not ready, the views draw the next finer level that is ready, or the full geometry. A map frame composes its lists again when a level is ready.
+The globe and the flat view draw the coarsest level that is finer than one pixel. A map frame on the screen keeps its display lists at each zoom of the page, so it draws the coarsest level that is finer than one pixel at the highest zoom. If that level is not ready, the views draw the next finer level that is ready, or the full geometry. A layer with more than 1,000,000 points never draws its full geometry at a scale that a level is for. It draws the finest ready level, and nothing until the first level is ready, because the meshes of one frame must fit in one GPU buffer. A map frame composes its lists again when a level is ready.
 
 The copies of each layer build on a worker thread, after the first draw of the layer. An edit builds the copies of only that layer again, after the edit stops. A layer with fewer than 20,000 points has no copies.
 
-Edits, snapping, the attribute table, pick, and the export use the full geometry. A layer with a mask draws its full geometry.
+Edits, snapping, the attribute table, pick, and the export use the full geometry. A polygon mask cuts the level that the view draws.
+
+### Tiles of a vector layer
+
+The globe and the flat view draw a line or polygon layer with more than 100,000 points from tiles. The layer must have no mask, and only fills and solid or dashed strokes. A tile is a picture of a part of a cube face. Level 0 has one tile for each face, and each level cuts each tile into four, down to level 8. A tile has 256 by 256 texels.
+
+The view wants the tiles under it at the level that has one texel or more in each pixel, and the six tiles of level 0. Worker threads render the tiles with the map renderer, coarse levels first and then from the middle of the view. A tile reads only the parts of the rings near it, so a tile needs no simplified copy. The tiles of all layers share one atlas of 360 tiles on the GPU. Each layer has a table of the places of its tiles in the atlas. Where a tile is missing, the shader draws the nearest coarser tile that is there.
+
+A change of the style renders the tiles again. After an edit stops, the layer waits for the quiet time. Then a worker compares the new geometry with the old one, and only the tiles near the changed points render again. An old tile stays on screen until its new tile arrives. While you edit, the edit tools draw the feature that you change.
+
+egui puts the meshes of one frame in one GPU buffer. The globe and the flat view add up the size of the meshes of the vector layers in each frame. A layer that does not fit in the rest of the frame does not draw. Its row in the Layers panel shows "Too large to show", and its panel says why. The layer stays in the project, and you can still delete it.
 
 ### Heightmap
 
@@ -404,9 +414,13 @@ All operations work on the sphere. They live in the core crates, so the command 
 
 ### Polygonize
 
-The polygonize operation traces the value of each color stop on each cube face, joins the outlines across face edges, and smooths them. It writes one polygon layer. It can also split the output at a value into two layers, for example Topography and Bathymetry at 0 m. Each polygon of a heightmap has an `elev_min` attribute, and a normal style rule colors it.
+The polygonize operation traces the limits of the bands of a raster layer, and it writes one polygon layer. The Levels page sets the limits: the color stops of the layer, or each multiple of an interval from a base value, as the contour polygons of QGIS and GDAL do. A run has 256 bands at most. With an interval, each band has the color of the layer at the middle of the band, and on a height layer the limits include 0 m for the split. The pixel centers of all six faces are the points of one mesh. The mesh has a quad between four pixels of a face, a quad across each face edge, and a triangle at each cube corner. Marching squares on this mesh gives each limit as closed rings. Two cells put the crossing on the edge between them at the same point, so the rings have no gap at a face edge or a cube corner. A pixel at a limit is in the upper band, as in the preview.
 
-The polygons are an output layer of the toolbox. When the heightmap changes, the layer shows that it is out of date, and you run the operation again. A map can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
+The operation reads the layer at its full face size. It filters and traces one face at a time, so it holds the values of one face in memory. The run works on a worker thread. The page shows its progress, and Cancel stops it. The Smooth control sets the width of a Gaussian filter on the values before the trace, from 0 to 2 pixels. The Simplify control sets the largest distance of a removed vertex from the ring, from half a pixel to 16 pixels, and it shows that distance on the ground. Each limit simplifies on its own, so above half a pixel two limits that are closer than the distance can cross, and a band smaller than the distance can go.
+
+Each band with an area is one feature. A feature of a height layer has the attributes `elev_min` and `elev_max`, and a feature of another raster layer has `value_min` and `value_max`. The style has a rule for each band, with the color of the band. On a height layer, the operation can split the output at 0 m into two layers, for example Topography and Bathymetry.
+
+The polygons are an output layer of the toolbox. When the heightmap changes, the page of the operation and the panel of each output layer show that it is out of date. Run again in the panel runs the operation one more time. A new run replaces the output layers of the last run on the same input, as one undo step. A map can use the polygons, so topography stays vector in PDF and SVG. It can also use the stepped raster with the lines of its stops.
 
 ### Lines
 

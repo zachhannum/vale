@@ -22,6 +22,7 @@ use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, sc
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
 use crate::globe::shapes::ShapeCache;
+use crate::globe::vtiles::{LEVELS, VectorTiles};
 use crate::lod::{self, LodCache};
 use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
 use crate::raster_values::{LayerRasters, RasterCache};
@@ -226,6 +227,7 @@ pub struct Pipeline {
     globe: ShapeCache,
     lod: LodCache,
     rasters: RasterCache,
+    vtiles: VectorTiles,
     /// The raster masks of the layers in the map frames.
     page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
 }
@@ -783,30 +785,107 @@ pub fn flow_range(largest: f64) -> (f64, f64) {
     (vale_terrain::RIVER_MIN_AREA, largest)
 }
 
-/// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
-fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mut SymbolDraw<'_>) {
-    let features = || batch.features.iter().map(|&i| &pl.features[i]);
-    let masked = batch.masked;
-    let lines = || polylines_path(features().flat_map(|f| f.lines_for(masked)), false);
-    match (pl.kind, batch.paint.clone()) {
-        (GeometryKind::Polygon, Paint::Fill(color)) => {
-            for f in features().filter(|f| !f.rings_for(masked).is_empty()) {
+/// A paint that draws only the lines and the rings of the features: a Fill
+/// of polygons, or a Stroke of the solid or dashed kind. A Taper or a Flow on
+/// a polygon outline draws as a solid stroke.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Plain {
+    /// One even-odd fill for each feature.
+    Fill(vale_render::Color),
+    /// One stroke of the lines of all features. `round` means round joins
+    /// and caps. A dashed stroke cuts the lines of each feature into dashes
+    /// of length `dash.0` with gaps of length `dash.1`.
+    Stroke {
+        color: vale_render::Color,
+        width: f64,
+        round: bool,
+        dash: Option<(f64, f64)>,
+    },
+}
+
+impl Plain {
+    /// The plain paint of `paint` on a layer of `kind`. `None` if the paint
+    /// is not plain or does not fit the kind.
+    pub(crate) fn of(kind: GeometryKind, paint: &Paint) -> Option<Plain> {
+        match (kind, paint) {
+            (GeometryKind::Polygon, Paint::Fill(color)) => Some(Plain::Fill(*color)),
+            (GeometryKind::Polygon | GeometryKind::Line, Paint::Stroke(s)) => {
+                let line = kind == GeometryKind::Line;
+                let (round, dash) = match s.kind {
+                    StrokeKind::Dashed { dash, gap } => (false, Some((dash, gap))),
+                    StrokeKind::Solid => (line, None),
+                    StrokeKind::Taper { .. } | StrokeKind::Flow { .. } if !line => (false, None),
+                    _ => return None,
+                };
+                Some(Plain::Stroke {
+                    color: s.color,
+                    width: s.width,
+                    round,
+                    dash,
+                })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Draws a plain paint. `rings` gives the rings of each feature for a fill,
+/// and `lines` gives the lines of each feature for a stroke, in the units of
+/// `list`.
+pub(crate) fn draw_plain<'a>(
+    list: &mut DisplayList,
+    plain: &Plain,
+    rings: impl Iterator<Item = &'a [Vec<Point>]>,
+    lines: impl Iterator<Item = &'a [Vec<Point>]>,
+) {
+    match *plain {
+        Plain::Fill(color) => {
+            for r in rings.filter(|r| !r.is_empty()) {
                 list.push(Item::Fill {
-                    path: polylines_path(f.rings_for(masked), true),
+                    path: polylines_path(r, true),
                     color,
                     rule: FillRule::EvenOdd,
                 });
             }
         }
+        Plain::Stroke {
+            color,
+            width,
+            round,
+            dash,
+        } => {
+            let path = match dash {
+                Some((dash, gap)) => {
+                    let parts: Vec<_> = lines.flat_map(|l| stroke::dash(l, dash, gap)).collect();
+                    polylines_path(&parts, false)
+                }
+                None => polylines_path(lines.flatten(), false),
+            };
+            if !path.elements().is_empty() {
+                list.push(Item::Stroke {
+                    path,
+                    color,
+                    width,
+                    round,
+                });
+            }
+        }
+    }
+}
+
+/// Draws one batch. A paint that does not fit the kind of the layer draws nothing.
+fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mut SymbolDraw<'_>) {
+    let features = || batch.features.iter().map(|&i| &pl.features[i]);
+    let masked = batch.masked;
+    if let Some(plain) = Plain::of(pl.kind, &batch.paint) {
+        let rings = features().map(|f| f.rings_for(masked));
+        draw_plain(list, &plain, rings, features().map(|f| f.lines_for(masked)));
+        return;
+    }
+    match (pl.kind, batch.paint.clone()) {
         (GeometryKind::Polygon | GeometryKind::Line, Paint::Stroke(stroke)) => {
             let line = pl.kind == GeometryKind::Line;
             match stroke.kind {
-                StrokeKind::Dashed { dash, gap } => {
-                    let parts: Vec<_> = features()
-                        .flat_map(|f| stroke::dash(f.lines_for(masked), dash, gap))
-                        .collect();
-                    push_stroke(list, polylines_path(&parts, false), &stroke, false);
-                }
                 StrokeKind::Taper { .. } | StrokeKind::Flow { .. } if line => {
                     // One fill for the batch, so that the alpha does not build up where two lines overlap.
                     let mut path = BezPath::new();
@@ -863,9 +942,7 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
                         list.push(Item::Rasterize { bounds, items });
                     }
                 }
-                StrokeKind::Solid | StrokeKind::Taper { .. } | StrokeKind::Flow { .. } => {
-                    push_stroke(list, lines(), &stroke, line);
-                }
+                _ => {}
             }
         }
         (
@@ -1029,17 +1106,6 @@ fn closed_path(ring: &[Point]) -> BezPath {
         path.close_path();
     }
     path
-}
-
-fn push_stroke(list: &mut DisplayList, path: BezPath, stroke: &Stroke, round: bool) {
-    if !path.elements().is_empty() {
-        list.push(Item::Stroke {
-            path,
-            color: stroke.color,
-            width: stroke.width,
-            round,
-        });
-    }
 }
 
 /// Closes the clip that starts at item `at`. A clip with nothing in it goes.
@@ -1408,6 +1474,7 @@ impl Pipeline {
         self.globe.forget(id);
         self.lod.forget(id);
         self.rasters.forget(id);
+        self.vtiles.forget(id);
     }
 
     /// A pipeline with no kept geometry, that keeps the levels of detail
@@ -1418,12 +1485,73 @@ impl Pipeline {
         lod.uncheck();
         let mut rasters = std::mem::take(&mut self.rasters);
         rasters.uncheck();
+        let mut vtiles = std::mem::take(&mut self.vtiles);
+        vtiles.uncheck();
         *self = Pipeline {
             lod,
             rasters,
+            vtiles,
             page_masks: std::mem::take(&mut self.page_masks),
             ..Pipeline::default()
         };
+    }
+
+    /// The tiles of the vector layers that draw from tiles.
+    pub fn vtiles(&self) -> &VectorTiles {
+        &self.vtiles
+    }
+
+    pub fn vtiles_mut(&mut self) -> &mut VectorTiles {
+        &mut self.vtiles
+    }
+
+    /// Draws layer `id` from tiles in this frame if it can: a visible line
+    /// or polygon layer with more than `VectorTiles::min_points` points, no
+    /// mask, and only the paints that tiles draw. True: it does.
+    pub fn show_tiles(&mut self, doc: &Document, id: LayerId, pixels_per_point: f32) -> bool {
+        let (Some(layer), Some(entry)) = (doc.layer(id), doc.entry(id)) else {
+            return false;
+        };
+        let style = &entry.style.style;
+        let lines = (layer.features.iter()).any(|f| !matches!(f.geometry, Geometry::Points(_)));
+        if !layer.visible || !lines || style.mask.is_some() {
+            return false;
+        }
+        if self.vtiles.points(layer) <= self.vtiles.min_points {
+            return false;
+        }
+        let radius_km = doc.project.world.radius_km;
+        let rasters = self.rasters.for_layer(id);
+        let features = &layer.features;
+        let paints = || {
+            (0..LEVELS as u8)
+                .map(|level| {
+                    let scale = crate::vector_tiles::level_scale(
+                        level,
+                        radius_km * 1000.0,
+                        pixels_per_point,
+                    );
+                    let batches = style_batches(style, scale, features.len(), |i| Context {
+                        attributes: &features[i].attributes,
+                        scale,
+                        geometry: features[i].geometry.kind(),
+                        shape: Some(&features[i].geometry),
+                        radius_km,
+                        page: None,
+                        rasters: Some(&rasters),
+                        index: i,
+                    });
+                    crate::vector_tiles::tiles_draw(&batches).then_some(
+                        crate::vector_tiles::TilePaints {
+                            batches,
+                            pixels_per_point,
+                        },
+                    )
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        let world = (pixels_per_point, radius_km * 1000.0);
+        self.vtiles.show(layer, style, world, paints)
     }
 
     /// The levels of detail of the vector layers.
@@ -1485,11 +1613,16 @@ impl Pipeline {
             .collect()
     }
 
-    /// The parts of the features of layer `id` inside the mask of its
-    /// style. `None`: the layer draws whole.
-    pub fn masked(&mut self, doc: &Document, id: LayerId) -> Option<Arc<MaskedLayer>> {
+    /// The parts of the features of layer `id` at `detail` inside the mask
+    /// of its style. `None`: the layer draws whole.
+    pub fn masked(
+        &mut self,
+        doc: &Document,
+        id: LayerId,
+        detail: Option<&Arc<lod::Detail>>,
+    ) -> Option<Arc<MaskedLayer>> {
         let mask = doc.entry(id).and_then(|e| e.style.style.mask);
-        self.masks.layer(doc, id, mask)
+        self.masks.layer(doc, id, mask, detail)
     }
 
     /// The scatters that the pipeline keeps.
@@ -1575,11 +1708,18 @@ impl Pipeline {
                     .flat_map(|r| &r.symbolizers)
                     .any(|s| !s.cut_by_mask())
             });
-            let masked = self.masks.layer(doc, *id, mask);
-            let detail = match (pixel, &masked) {
-                (Some(pixel), None) => doc.layer(*id).and_then(|l| self.lod.level(l, pixel)),
+            let detail = match (pixel, doc.layer(*id)) {
+                (Some(pixel), Some(l)) => match self.lod.level_or_wait(l, pixel) {
+                    Ok(detail) => detail,
+                    // The map draws the layer when its first level is ready.
+                    Err(lod::Wait) => {
+                        cache.layers.remove(id);
+                        continue;
+                    }
+                },
                 _ => None,
             };
+            let masked = self.masks.layer(doc, *id, mask, detail.as_ref());
             let generation = (
                 masked.as_ref().map(|m| (m.generation, keep_whole)),
                 lod::key(detail.as_ref()),
@@ -1598,7 +1738,9 @@ impl Pipeline {
                             Some(part) => project_masked(
                                 &cache.projection,
                                 part,
-                                keep_whole.then_some(&f.geometry),
+                                keep_whole
+                                    .then(|| lod::geometry(detail.as_deref(), i, &f.geometry))
+                                    .flatten(),
                             ),
                             None => lod::geometry(detail.as_deref(), i, &f.geometry)
                                 .and_then(|g| project_feature(&cache.projection, g)),
