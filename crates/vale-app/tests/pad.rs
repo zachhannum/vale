@@ -19114,6 +19114,62 @@ fn manual_draw_the_polygonize_output_of_a_painted_world() {
     step(&mut h, "step");
 }
 
+/// Times the tiles of the Polygonize output of a painted world: the tiles
+/// of the whole globe, of closer views, and of a style change.
+/// `VALE_FACE` sets the face size.
+#[test]
+#[ignore = "manual"]
+fn manual_tile_the_polygonize_output_of_a_painted_world() {
+    use std::time::Instant;
+    use vale_app::ui::RasterSpec;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    let id = state.polygonize().unwrap()[0];
+    h.run_steps(2);
+    let state = h.state_mut();
+    let ppp = 2.0;
+    let plan = |state: &mut AppState, what: &str| {
+        let start = Instant::now();
+        state.pipeline.vtiles_mut().begin();
+        assert!(state.pipeline.show_tiles(&state.doc, id, ppp));
+        state
+            .globe
+            .set_vector_tiles(state.pipeline.vtiles().shown());
+        state
+            .globe
+            .plan_vector_tiles(state.pipeline.vtiles_mut(), ppp, true);
+        let tiles = state.pipeline.vtiles().tiles(id);
+        let finest = tiles.iter().map(|k| k.level).max().unwrap_or(0);
+        eprintln!(
+            "{what}: {:?}, {} tiles, finest level {finest}",
+            start.elapsed(),
+            tiles.len()
+        );
+    };
+    plan(state, "globe");
+    plan(state, "globe again");
+    for zoom in [4.0, 16.0, 64.0, 256.0] {
+        state.globe.view.zoom = zoom;
+        plan(state, &format!("zoom {zoom}"));
+    }
+    let style = &mut state.doc.entry_mut(id).unwrap().style.style;
+    for rule in &mut style.rules {
+        rule.symbolizers
+            .retain(|s| !matches!(s, vale_style::Symbolizer::Stroke(_)));
+    }
+    plan(state, "no strokes");
+}
+
 #[test]
 fn polygonize_shows_its_progress_and_stops_on_cancel() {
     use vale_app::globe::DISPLAY_CAP;
