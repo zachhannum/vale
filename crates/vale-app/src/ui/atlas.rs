@@ -383,6 +383,10 @@ pub enum ClassPage {
     Case,
     /// The ranked positions of a point class.
     Positions,
+    /// The numeric fields that can give the angle of a point label.
+    AngleField,
+    /// The choices for a point label that is nearer to another point.
+    Ambiguous,
     /// The ranked zones inside and outside the polygons of a polygon class.
     Zones,
     /// The start and the style of the leader line of a label outside its polygon.
