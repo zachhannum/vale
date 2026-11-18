@@ -762,6 +762,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     expression::widen(state, &mut rects);
     state.sync_selection_form(state.pad.shows(Panel::Attributes));
     select::drop_focus(&ctx, state);
+    state.pad.collections_rect = None;
     dock_ui::show(&ctx, state, &mut controls, &rects);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
@@ -793,7 +794,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         None => {}
     }
     state.pad.add_rect = None;
-    state.pad.collections_rect = None;
     match state.pad.add_button {
         Some(button) if state.pad.add => add_menu(&ctx, state, &mut controls, &rects, button),
         _ => state.pad.add = false,

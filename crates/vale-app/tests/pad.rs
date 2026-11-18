@@ -28,8 +28,8 @@ use vale_app::ui::pad::{
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
     PANELS, POLYGON, PROJECTION, Page, Panel, RECENTER, RESET, SCULPT, SMOOTHING, SNAP,
     SNAP_DISTANCE, SNAPPING, TERRAIN, TERRAIN_BALANCE, TERRAIN_FIT, TERRAIN_FIT_SWITCH, TOOLBOX,
-    VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text, panels_menu,
-    readout_line, readout_text, theme,
+    VECTOR, VIEW, VIEWS, WORLD_PROPERTIES, WORLDS, WORLDS_ROW, brush_size_text,
+    collection::collection_row, panels_menu, readout_line, readout_text, theme,
 };
 use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
@@ -377,6 +377,7 @@ fn check_controls(h: &Pad, what: &str) {
     let in_menu = h.state().pad.menu_rect.is_some();
     let in_modes = h.state().pad.flyouts.rect.is_some();
     let in_add = h.state().pad.add_rect.is_some();
+    let in_collections = h.state().pad.collections_rect.is_some();
     let in_panels = h.state().pad.panels_menu_rect.is_some();
     let in_list = h.state().pad.projections_rect.is_some();
     let in_view = h.state().pad.view_menu_rect.is_some();
@@ -402,6 +403,7 @@ fn check_controls(h: &Pad, what: &str) {
         || in_menu
         || in_modes
         || in_add
+        || in_collections
         || in_panels
         || in_list
         || in_view
@@ -466,6 +468,7 @@ fn check_controls(h: &Pad, what: &str) {
                 let add = add || pane_menu;
                 let view = in_view && view_rows().contains(&name);
                 let add = add || view;
+                let add = add || in_collections && in_collection_menu(h, name);
                 let stop = in_stop
                     && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
@@ -499,6 +502,23 @@ fn check_controls(h: &Pad, what: &str) {
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
     }
+}
+
+/// True for a control of the open collection menu.
+fn in_collection_menu(h: &Pad, name: &str) -> bool {
+    use vale_app::ui::pad::collection::{ALL_LAYERS, COLLECTION_NAME, NEW_COLLECTION};
+    use vale_app::ui::pad::widgets::RENAME;
+    let collections = h.state().doc.project.collections().iter();
+    let names: Vec<String> = collections
+        .flat_map(|c| {
+            [
+                collection_row(&c.name),
+                format!("{RENAME} {}", c.name),
+                format!("Delete {}", c.name),
+            ]
+        })
+        .collect();
+    [ALL_LAYERS, NEW_COLLECTION, COLLECTION_NAME].contains(&name) || names.iter().any(|n| n == name)
 }
 
 /// The controls of the View popover.
@@ -19474,5 +19494,290 @@ fn a_swipe_opens_a_row_in_a_pane_above_another_pane() {
         swipe(&mut h, "Land", 80.0);
         let land = vector(&h, "Land");
         assert!(h.state().pad.layer_list.is_picked(land), "{below:?}");
+    }
+}
+
+/// The names of the rows of the Layers panel, from the bottom of the
+/// drawing up.
+fn listed_layers(h: &Pad) -> Vec<String> {
+    let state = h.state();
+    let rows = state.doc.project.layers().iter();
+    rows.filter(|l| control(h, &format!("Layer {}", l.name)).is_some())
+        .map(|l| l.name.clone())
+        .collect()
+}
+
+/// Opens the collection menu of the Layers panel.
+fn open_collection_menu(h: &mut Pad) {
+    use vale_app::ui::pad::collection::COLLECTION_MENU;
+    if !h.state().pad.collections_menu {
+        tap(h, COLLECTION_MENU);
+    }
+    assert!(h.state().pad.collections_rect.is_some());
+}
+
+/// Makes a collection with "New collection…" and gives it a name.
+fn new_collection(h: &mut Pad, name: &str) {
+    use vale_app::ui::pad::collection::{COLLECTION_NAME, NEW_COLLECTION};
+    open_collection_menu(h);
+    tap(h, NEW_COLLECTION);
+    assert!(control(h, COLLECTION_NAME).is_some());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text(name.to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(control(h, COLLECTION_NAME).is_none());
+}
+
+/// A swipe to the left on the row of a collection in the collection menu.
+fn swipe_collection(h: &mut Pad, name: &str) {
+    let row = collection_row(name);
+    let rect = control(h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
+    let from = rect.center();
+    drag(h, from, from - vec2(120.0, 0.0), None);
+}
+
+/// Shows a collection, or all layers for `None`, with the collection menu.
+fn show_collection(h: &mut Pad, name: Option<&str>) {
+    use vale_app::ui::pad::collection::ALL_LAYERS;
+    open_collection_menu(h);
+    match name {
+        Some(name) => tap(h, &collection_row(name)),
+        None => tap(h, ALL_LAYERS),
+    }
+    assert!(!h.state().pad.collections_menu);
+}
+
+/// Opens the panel of a layer, opens its Collections page, and taps the
+/// switch of each collection in `names`.
+fn switch_collections(h: &mut Pad, layer: &str, names: &[&str]) {
+    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
+    tap(h, &format!("Open {layer}"));
+    tap(h, COLLECTIONS);
+    assert_eq!(h.state().pad.page, Some(Page::Collections));
+    for name in names {
+        tap(h, &switch_name(name));
+    }
+    tap(h, &format!("Back to {layer}"));
+    tap(h, "Back to Layers");
+}
+
+#[test]
+fn a_collection_lists_only_its_layers_in_the_draw_order() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_panel(&mut h, "Layers");
+        new_collection(&mut h, "Travel");
+        new_collection(&mut h, "Water");
+        check_controls(&h, &format!("{what} with the collection menu"));
+        let menu = h.state().pad.collections_rect.unwrap();
+        for name in [collection_row("Travel"), collection_row("Water")] {
+            let row = control(&h, &name).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(row.height() >= 44.0 && menu.contains_rect(row), "{what}");
+        }
+        // A new collection does not change the shown collection.
+        assert_eq!(h.state().doc.project.shown_collection(), None, "{what}");
+        show_collection(&mut h, None);
+
+        // Rivers is in both collections, and Land is in none.
+        switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
+        switch_collections(&mut h, "Places", &["Travel"]);
+        switch_collections(&mut h, "Height", &["Water"]);
+        assert_eq!(
+            listed_layers(&h),
+            ["Height", "Land", "Rivers", "Places"],
+            "{what}"
+        );
+        show_collection(&mut h, Some("Travel"));
+        assert_eq!(listed_layers(&h), ["Rivers", "Places"], "{what}");
+        show_collection(&mut h, Some("Water"));
+        assert_eq!(listed_layers(&h), ["Height", "Rivers"], "{what}");
+        check_controls(&h, &format!("{what} with a collection"));
+
+        // A move in a collection keeps the order of the other layers.
+        let height = h.state().doc.project.layers()[0].id;
+        let shown = h.state().shown_layer_ids();
+        assert!(h.state_mut().move_layer_in(height, &shown, 1));
+        assert_eq!(
+            layer_names(&h),
+            ["Land", "Rivers", "Height", "Places"],
+            "{what}"
+        );
+        h.run_steps(2);
+        assert_eq!(listed_layers(&h), ["Rivers", "Height"], "{what}");
+        show_collection(&mut h, None);
+        assert_eq!(listed_layers(&h).len(), 4, "{what}");
+    }
+}
+
+#[test]
+fn the_collections_page_has_a_switch_for_each_collection() {
+    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Rivers");
+        tap(&mut h, COLLECTIONS);
+        assert!(control(&h, &switch_name("Travel")).is_none(), "{what}");
+        tap(&mut h, "Back to Rivers");
+        tap(&mut h, "Back to Layers");
+        new_collection(&mut h, "Travel");
+        new_collection(&mut h, "Water");
+        show_collection(&mut h, None);
+        tap(&mut h, "Open Rivers");
+        tap(&mut h, COLLECTIONS);
+        check_controls(&h, &format!("{what} on the Collections page"));
+        tap(&mut h, &switch_name("Travel"));
+        tap(&mut h, &switch_name("Water"));
+        let rivers = vector(&h, "Rivers");
+        assert_eq!(
+            h.state().doc.project.collections_of(rivers).len(),
+            2,
+            "{what}"
+        );
+        tap(&mut h, &switch_name("Water"));
+        assert_eq!(
+            h.state().doc.project.collections_of(rivers).len(),
+            1,
+            "{what}"
+        );
+    }
+}
+
+#[test]
+fn each_change_of_a_collection_is_one_undo_step() {
+    use vale_app::ui::pad::collection::COLLECTIONS;
+    use vale_app::ui::pad::widgets::RENAME;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    open_panel(&mut h, "Layers");
+    let names = |h: &Pad| -> Vec<String> {
+        let collections = h.state().doc.project.collections().iter();
+        collections.map(|c| c.name.clone()).collect()
+    };
+    let undo = |h: &mut Pad| {
+        step_and_save(h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+    };
+    let redo = |h: &mut Pad| {
+        h.state_mut().redo();
+        h.run_steps(2);
+    };
+    // The new collection is one step, and its name is one more.
+    new_collection(&mut h, "Travel");
+    assert_eq!(names(&h), ["Travel"]);
+    undo(&mut h);
+    assert_eq!(names(&h), ["Collection 1"]);
+    undo(&mut h);
+    assert!(names(&h).is_empty());
+    redo(&mut h);
+    redo(&mut h);
+    assert_eq!(names(&h), ["Travel"]);
+
+    // A rename by a swipe.
+    open_collection_menu(&mut h);
+    swipe_collection(&mut h, "Travel");
+    tap(&mut h, &format!("{RENAME} Travel"));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Trade".to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(names(&h), ["Trade"]);
+    undo(&mut h);
+    assert_eq!(names(&h), ["Travel"]);
+    redo(&mut h);
+
+    // A change of the layers of a collection.
+    show_collection(&mut h, None);
+    tap(&mut h, "Open Rivers");
+    tap(&mut h, COLLECTIONS);
+    tap(&mut h, &vale_app::ui::pad::collection::switch_name("Trade"));
+    let rivers = vector(&h, "Rivers");
+    let members = |h: &Pad| h.state().doc.project.collections_of(rivers).len();
+    assert_eq!(members(&h), 1);
+    undo(&mut h);
+    assert_eq!(members(&h), 0);
+    redo(&mut h);
+    assert_eq!(members(&h), 1);
+    tap(&mut h, "Back to Rivers");
+    tap(&mut h, "Back to Layers");
+
+    // A delete by a swipe keeps the layers, and the panel shows all layers.
+    show_collection(&mut h, Some("Trade"));
+    assert_eq!(listed_layers(&h), ["Rivers"]);
+    open_collection_menu(&mut h);
+    swipe_collection(&mut h, "Trade");
+    check_controls(&h, "an open collection row");
+    tap(&mut h, "Delete Trade");
+    assert!(names(&h).is_empty());
+    assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
+    assert_eq!(h.state().doc.project.shown_collection(), None);
+    tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
+    assert_eq!(listed_layers(&h).len(), 4);
+    undo(&mut h);
+    assert_eq!(names(&h), ["Trade"]);
+    assert_eq!(members(&h), 1);
+}
+
+#[test]
+fn a_reopened_project_shows_the_same_collection() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[1], dir.path());
+    open_panel(&mut h, "Layers");
+    new_collection(&mut h, "Travel");
+    new_collection(&mut h, "Water");
+    show_collection(&mut h, None);
+    switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
+    show_collection(&mut h, Some("Water"));
+    assert_eq!(listed_layers(&h), ["Rivers"]);
+    step_and_save(&mut h, false);
+    drop(h);
+
+    let mut doc = Document::sample();
+    let session = Session::open(&dir.path().join("w.gpkg"), &mut doc).unwrap();
+    let mut state = AppState::new(doc).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.session = Some(session);
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[1].0, BOARDS[1].1))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    let project = &h.state().doc.project;
+    let water = project.collections().iter().find(|c| c.name == "Water");
+    assert_eq!(project.shown_collection(), water.map(|c| c.id));
+    open_panel(&mut h, "Layers");
+    assert_eq!(listed_layers(&h), ["Rivers"]);
+}
+
+#[test]
+fn manual_collection_screenshots() {
+    use vale_app::ui::pad::collection::COLLECTIONS;
+    for (size, what) in [(BOARDS[0], "landscape"), (BOARDS[3], "narrow")] {
+        let mut h = pad(size);
+        open_panel(&mut h, "Layers");
+        new_collection(&mut h, "Travel");
+        new_collection(&mut h, "Water");
+        show_collection(&mut h, None);
+        switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
+        show_collection(&mut h, Some("Travel"));
+        open_collection_menu(&mut h);
+        swipe_collection(&mut h, "Water");
+        screenshot::save(&mut h, &format!("pad-collection-menu-{what}"));
+        tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
+        screenshot::save(&mut h, &format!("pad-collection-list-{what}"));
+        tap(&mut h, "Open Rivers");
+        screenshot::save(&mut h, &format!("pad-collection-row-{what}"));
+        tap(&mut h, COLLECTIONS);
+        screenshot::save(&mut h, &format!("pad-collections-page-{what}"));
     }
 }
