@@ -57,6 +57,7 @@ pub mod thumbnail;
 pub mod vector;
 pub mod vertex;
 pub mod view;
+pub mod vtiles;
 pub mod zoom_test;
 
 use crate::pen::Pen;
@@ -935,6 +936,8 @@ pub struct Globe {
     stack: Option<Vec<StackItem>>,
     /// The vector layers with a raster mask.
     raster_masks: Vec<(LayerId, RasterMask)>,
+    /// The vector layers that draw from tiles.
+    vector_tiles: Vec<LayerId>,
     /// The raster layers of the masks of the map frames.
     frame_mask_rasters: Vec<RasterId>,
     /// The raster layer that the brush paints after the stroke or the
@@ -1141,6 +1144,7 @@ impl Globe {
             images: Vec::new(),
             stack: None,
             raster_masks: Vec::new(),
+            vector_tiles: Vec::new(),
             frame_mask_rasters: Vec::new(),
             pending: None,
             resting: None,
@@ -1728,6 +1732,28 @@ impl Globe {
 
     /// Sets the vector layers with a raster mask. The GPU keeps a copy of
     /// each raster layer of a mask, also of a hidden one.
+    /// Draws the vector layers `ids` from their tiles, as
+    /// `vtiles::VectorTiles` gives them.
+    pub fn set_vector_tiles(&mut self, ids: &[LayerId]) {
+        if self.vector_tiles != ids {
+            self.vector_tiles = ids.to_vec();
+        }
+    }
+
+    /// Plans the tiles of the vector layers under the view, as
+    /// `VectorTiles::plan` does, and sends them to the GPU with a wgpu
+    /// renderer.
+    pub fn plan_vector_tiles(
+        &mut self,
+        tiles: &mut vtiles::VectorTiles,
+        pixels_per_point: f32,
+        block: bool,
+    ) {
+        let grid = self.view_grid(pixels_per_point);
+        let link = self.format.map(|_| &self.link);
+        tiles.plan(&grid, link, block);
+    }
+
     pub fn set_raster_masks(&mut self, masks: Vec<(LayerId, RasterMask)>) {
         if masks == self.raster_masks {
             return;
@@ -4340,6 +4366,7 @@ impl Globe {
             details: self.details.keys(),
             rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
             images: self.image_keys(),
+            vector_tiles: self.vector_tiles.clone(),
             flat,
             epoch: self.epoch,
         })
@@ -5027,6 +5054,7 @@ impl Globe {
             Raster(LayerDraw<'a>),
             Image(ImageDraw),
             Vector(LayerId),
+            Tiles(LayerId),
             Masked(LayerId, Option<(LayerDraw<'a>, RasterMask)>),
         }
         let mut items: Vec<Item> = Vec::new();
@@ -5056,6 +5084,7 @@ impl Globe {
                                 Some((_, mask)) => {
                                     Item::Masked(id, self.mask_draw(stack, mask, &rivers))
                                 }
+                                None if self.vector_tiles.contains(&id) => Item::Tiles(id),
                                 None => Item::Vector(id),
                             });
                         }
@@ -5145,6 +5174,10 @@ impl Globe {
                 uniforms: self.uniforms(canvas, Some(layer), false, None),
             }),
             Item::Image(image) => Some(self.image_pass(canvas, image, clip, None)),
+            Item::Tiles(id) => Some(Draw {
+                pass: Pass::VectorTiles(*id),
+                ..plain(Pass::Ground, false)
+            }),
             Item::Vector(_) | Item::Masked(..) => None,
         };
 
@@ -5226,6 +5259,9 @@ impl Globe {
                         },
                     ));
                 }
+                // A layer from tiles draws above the graticule, as the
+                // other vector layers do.
+                Item::Tiles(_) => run.extend(layer(item)),
                 Item::Raster(..) | Item::Image(..) => {
                     run.extend(layer(item));
                     if top == Some(at) {

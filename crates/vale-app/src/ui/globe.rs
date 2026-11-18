@@ -2165,6 +2165,18 @@ pub(super) fn paint_canvas(
     (pipeline.scatter_cache_mut()).retain(|id| doc.layer(id).is_some());
     (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
+    // A large vector layer draws from tiles.
+    pipeline.vtiles_mut().begin();
+    for layer in doc.project.layers() {
+        if matches!(layer.kind, vale_store::LayerKind::Vector(_)) {
+            pipeline.show_tiles(doc, layer.id, pixels_per_point);
+        }
+    }
+    globe.set_vector_tiles(pipeline.vtiles().shown());
+    globe.plan_vector_tiles(pipeline.vtiles_mut(), pixels_per_point, false);
+    if pipeline.vtiles().loading() {
+        ui.ctx().request_repaint();
+    }
     let format = globe.format;
     match globe.paint(canvas) {
         Some(paints) => {

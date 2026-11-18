@@ -55,6 +55,7 @@ pub mod table;
 pub mod text_size;
 pub mod tools;
 pub mod ui;
+pub mod vector_tiles;
 pub mod view;
 pub mod workcopy;
 pub mod world;

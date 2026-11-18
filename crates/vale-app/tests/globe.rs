@@ -5616,6 +5616,59 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
 
 #[test]
 #[ignore = "gpu"]
+fn a_large_vector_layer_draws_from_tiles_as_it_draws_from_shapes() {
+    use vale_app::globe::WorldView;
+    let _gpu = one_gpu_test();
+    for world_view in [WorldView::Globe, WorldView::Flat] {
+        let mut state = state();
+        state.globe.preview.graticule = false;
+        state.globe.world_view = world_view;
+        // The middle of the view is on the land of Africa.
+        state.globe.view = GlobeView::centered(22.0, 10.0);
+        let land = state.doc.project.layers()[0].id;
+        state.set_layer_visible(land, true);
+        let fill = state.doc.entry(land).unwrap().style.fill().unwrap();
+        let fill = [fill.r, fill.g, fill.b];
+        let setup = egui_kittest::wgpu::default_wgpu_setup();
+        let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+        h.set_render_every_step(true);
+        h.run_steps(3);
+        let shapes = canvas_image(&mut h);
+        assert!(h.state().pipeline.vtiles().shown().is_empty());
+
+        // The layer counts as large.
+        h.state_mut().pipeline.vtiles_mut().min_points = 10;
+        for _ in 0..400 {
+            h.step();
+            if !h.state().pipeline.vtiles().loading() {
+                break;
+            }
+        }
+        assert_eq!(h.state().pipeline.vtiles().shown(), [land]);
+        let tiles = canvas_image(&mut h);
+        save(&shapes, &format!("{world_view:?}_land_shapes"));
+        save(&tiles, &format!("{world_view:?}_land_tiles"));
+        let filled = |img: &image::RgbaImage| {
+            (img.pixels())
+                .filter(|p| close([p.0[0], p.0[1], p.0[2]], fill))
+                .count()
+        };
+        let (a, b) = (filled(&shapes), filled(&tiles));
+        assert!(
+            a > 10_000 && b.abs_diff(a) * 20 < a,
+            "{world_view:?}: {a} and {b}"
+        );
+        // The two pictures differ only along the edges of the shapes.
+        let off = (shapes.pixels().zip(tiles.pixels()))
+            .filter(|(a, b)| (0..3).any(|c| a.0[c].abs_diff(b.0[c]) > 60))
+            .count();
+        let all = (tiles.width() * tiles.height()) as usize;
+        assert!(off * 50 < all, "{world_view:?}: {off} of {all}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
 fn a_hidden_layer_leaves_the_picture_and_the_selection_does_not_change_it() {
     let _gpu = one_gpu_test();
     let (mut h, ids) = layers_harness(&[LOW, HIGH]);
