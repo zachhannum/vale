@@ -375,12 +375,9 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
 }
 
 /// The layers that a map draws, in draw order. `None` is the legacy map,
-/// which draws the visible layers. A layer with too many points is left
-/// out.
+/// which draws the visible layers.
 fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
-    let entries = (doc.frame.entries.iter())
-        .map(|e| e.layer)
-        .filter(|id| !doc.too_large(*id));
+    let entries = doc.frame.entries.iter().map(|e| e.layer);
     match map {
         None => entries.filter(|id| doc.visible(*id)).collect(),
         Some(map) => entries.filter(|id| doc.shown(map, *id)).collect(),
@@ -1488,11 +1485,16 @@ impl Pipeline {
             .collect()
     }
 
-    /// The parts of the features of layer `id` inside the mask of its
-    /// style. `None`: the layer draws whole.
-    pub fn masked(&mut self, doc: &Document, id: LayerId) -> Option<Arc<MaskedLayer>> {
+    /// The parts of the features of layer `id` at `detail` inside the mask
+    /// of its style. `None`: the layer draws whole.
+    pub fn masked(
+        &mut self,
+        doc: &Document,
+        id: LayerId,
+        detail: Option<&Arc<lod::Detail>>,
+    ) -> Option<Arc<MaskedLayer>> {
         let mask = doc.entry(id).and_then(|e| e.style.style.mask);
-        self.masks.layer(doc, id, mask)
+        self.masks.layer(doc, id, mask, detail)
     }
 
     /// The scatters that the pipeline keeps.
@@ -1578,9 +1580,8 @@ impl Pipeline {
                     .flat_map(|r| &r.symbolizers)
                     .any(|s| !s.cut_by_mask())
             });
-            let masked = self.masks.layer(doc, *id, mask);
-            let detail = match (pixel, &masked, doc.layer(*id)) {
-                (Some(pixel), None, Some(l)) => match self.lod.level_or_wait(l, pixel) {
+            let detail = match (pixel, doc.layer(*id)) {
+                (Some(pixel), Some(l)) => match self.lod.level_or_wait(l, pixel) {
                     Ok(detail) => detail,
                     // The map draws the layer when its first level is ready.
                     Err(lod::Wait) => {
@@ -1590,6 +1591,7 @@ impl Pipeline {
                 },
                 _ => None,
             };
+            let masked = self.masks.layer(doc, *id, mask, detail.as_ref());
             let generation = (
                 masked.as_ref().map(|m| (m.generation, keep_whole)),
                 lod::key(detail.as_ref()),
@@ -1608,7 +1610,9 @@ impl Pipeline {
                             Some(part) => project_masked(
                                 &cache.projection,
                                 part,
-                                keep_whole.then_some(&f.geometry),
+                                keep_whole
+                                    .then(|| lod::geometry(detail.as_deref(), i, &f.geometry))
+                                    .flatten(),
                             ),
                             None => lod::geometry(detail.as_deref(), i, &f.geometry)
                                 .and_then(|g| project_feature(&cache.projection, g)),

@@ -192,6 +192,54 @@ fn a_large_layer_draws_nothing_until_its_first_level_is_ready() {
 }
 
 #[test]
+fn a_masked_layer_draws_a_coarse_level() {
+    let mut doc = Document::empty();
+    let id = import(&mut doc, "zones", &mosaic(12, 6, 40));
+    let square = r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [[[-60, -50], [60, -50], [60, 50], [-60, 50], [-60, -50]]]}}]}"#;
+    let mask = import(&mut doc, "mask", square);
+    doc.entry_mut(id).unwrap().style.style.mask = Some(vale_style::Mask::Polygons { layer: mask });
+    let mut pipeline = pipeline();
+    let full = draw(&doc, &mut pipeline, &world(), id);
+    assert!(count(&full) > 0);
+    pipeline.poll_lod(true);
+    let coarse = draw(&doc, &mut pipeline, &world(), id);
+    assert!(
+        count(&coarse) * 2 < count(&full),
+        "{} {}",
+        count(&coarse),
+        count(&full)
+    );
+}
+
+#[test]
+fn a_layer_that_does_not_fit_in_the_frame_draws_nothing() {
+    use vale_app::ui::budget;
+    let mut doc = Document::empty();
+    let id = import(&mut doc, "zones", &mosaic(12, 6, 40));
+    let mut pipeline = pipeline();
+    let ctx = egui::Context::default();
+    budget::set_limit(&ctx, (100, 100));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let painter = ui.ctx().layer_painter(egui::LayerId::background());
+        vector_layer(&painter, None, RECT, &doc, &world(), id, &mut pipeline);
+    });
+    output.textures_delta.clear();
+    let shapes: Vec<egui::Shape> = output.shapes.into_iter().map(|s| s.shape).collect();
+    assert_eq!(count(&shapes), 0);
+    assert!(budget::too_large(&ctx, id));
+    // With room in the frame, the layer draws again.
+    budget::set_limit(&ctx, (budget::MAX_VERTICES, budget::MAX_INDICES));
+    for _ in 0..2 {
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let painter = ui.ctx().layer_painter(egui::LayerId::background());
+            vector_layer(&painter, None, RECT, &doc, &world(), id, &mut pipeline);
+        });
+        output.textures_delta.clear();
+    }
+    assert!(!budget::too_large(&ctx, id));
+}
+
+#[test]
 fn an_edit_builds_the_levels_of_only_that_layer() {
     let mut doc = Document::empty();
     let a = import(&mut doc, "a", &mosaic(12, 6, 40));

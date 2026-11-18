@@ -19074,58 +19074,33 @@ fn polygonize_reads_a_layer_that_is_not_active_from_the_project_file() {
 }
 
 #[test]
-fn a_layer_with_too_many_points_shows_an_error_and_can_be_deleted() {
-    use vale_app::globe::StackItem;
-    use vale_app::ui::pad::{TOO_LARGE, too_large_text};
+fn a_layer_too_large_to_show_shows_an_error_and_can_be_deleted() {
+    use vale_app::ui::budget::{self, TOO_LARGE, TOO_LARGE_ABOUT};
     let (mut h, _) = islands_pad();
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("w.gpkg");
-    let state = h.state_mut();
-    state.session = Some(Session::open(&path, &mut state.doc).unwrap());
-    state.save_waiting().unwrap();
-    let outputs = state.polygonize().unwrap();
-    // The output layer with the most points goes over the limit.
-    let topo = *(outputs.iter())
-        .max_by_key(|id| state.doc.layer_points(**id))
-        .unwrap();
-    let points = state.doc.layer_points(topo);
-    assert!(
-        outputs
-            .iter()
-            .all(|id| *id == topo || state.doc.layer_points(*id) < points)
-    );
-    state.doc.set_max_shown_points(points - 1);
-    state.sync_globe();
-    // The views leave the layer out.
-    let stack = state.globe.stack().unwrap();
-    assert!(!stack.contains(&StackItem::Vector(topo)));
-    state.pad.open(Panel::Layers);
-    h.run_steps(2);
+    let outputs = h.state_mut().polygonize().unwrap();
+    let topo = outputs[0];
+    // The harness paints no globe, so each frame takes the draw of the
+    // layer by hand. Nothing fits in the frame.
+    budget::set_limit(&h.ctx, (0, 0));
+    let steps = |h: &mut Pad, n: usize| {
+        for _ in 0..n {
+            if h.state().doc.layer(topo).is_some() {
+                budget::spend(&h.ctx, topo, (1, 1));
+            }
+            h.step();
+        }
+    };
+    h.state_mut().pad.open(Panel::Layers);
+    steps(&mut h, 3);
     let marks = |h: &Pad| h.query_all_by_label(TOO_LARGE).count();
-    let marked = marks(&h);
-    assert!(marked > 0);
+    assert_eq!(marks(&h), 1);
     h.state_mut().pad.layer = Some(LayerRef::Vector(topo));
-    h.run_steps(2);
-    let text = too_large_text(points, points - 1);
-    assert!(h.query_by_label(&text).is_some());
+    steps(&mut h, 2);
+    assert!(h.query_by_label(TOO_LARGE_ABOUT).is_some());
     // The layer goes, and the project keeps the other layers.
     let before = h.state().doc.project.layers().len();
     assert!(h.state_mut().remove_layer(topo));
-    h.run_steps(2);
+    steps(&mut h, 3);
     assert_eq!(h.state().doc.project.layers().len(), before - 1);
-    assert!(marks(&h) < marked);
-}
-
-#[test]
-fn polygonize_does_not_add_a_layer_with_too_many_points() {
-    use vale_app::ui::pad::toolbox::RUN;
-    let (mut h, _) = islands_pad();
-    h.state_mut().doc.set_max_shown_points(10);
-    let before = h.state().doc.project.layers().len();
-    open_polygonize(&mut h);
-    tap(&mut h, RUN);
-    assert_eq!(h.state().doc.project.layers().len(), before);
-    let note = h.state().toolbox_note.clone().unwrap();
-    assert!(note.contains("that a layer can show"), "{note}");
-    assert!(h.query_by_label(&note).is_some());
+    assert_eq!(marks(&h), 0);
 }

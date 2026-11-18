@@ -297,9 +297,9 @@ The globe and the flat view draw the coarsest level that is finer than one pixel
 
 The copies of each layer build on a worker thread, after the first draw of the layer. An edit builds the copies of only that layer again, after the edit stops. A layer with fewer than 20,000 points has no copies.
 
-Edits, snapping, the attribute table, pick, and the export use the full geometry. A layer with a mask draws its full geometry.
+Edits, snapping, the attribute table, pick, and the export use the full geometry. A polygon mask cuts the level that the view draws.
 
-The views do not draw a layer with more than 10,000,000 points. The layer stays in the project, its row in the Layers panel shows "Too large to show", and its panel says why. You can still delete it.
+egui puts the meshes of one frame in one GPU buffer. The globe and the flat view add up the size of the meshes of the vector layers in each frame. A layer that does not fit in the rest of the frame does not draw. Its row in the Layers panel shows "Too large to show", and its panel says why. The layer stays in the project, and you can still delete it.
 
 ### Heightmap
 
@@ -408,7 +408,7 @@ All operations work on the sphere. They live in the core crates, so the command 
 
 The polygonize operation traces the value of each color stop of a raster layer, and it writes one polygon layer. The pixel centers of all six faces are the points of one mesh. The mesh has a quad between four pixels of a face, a quad across each face edge, and a triangle at each cube corner. Marching squares on this mesh gives each stop as closed rings. Two cells put the crossing on the edge between them at the same point, so the rings have no gap at a face edge or a cube corner. A pixel at a stop is in the upper band, as in the preview.
 
-The operation reads the layer at its full face size. It filters and traces one face at a time, so it holds the values of one face in memory. The run works on a worker thread. The page shows its progress, and Cancel stops it. The Smooth control sets the width of a Gaussian filter on the values before the trace, from 0 to 2 pixels. Each vertex that is less than half a pixel from the simpler ring goes. The operation does not add a layer with more points than the views draw, and its note says so.
+The operation reads the layer at its full face size. It filters and traces one face at a time, so it holds the values of one face in memory. The run works on a worker thread. The page shows its progress, and Cancel stops it. The Smooth control sets the width of a Gaussian filter on the values before the trace, from 0 to 2 pixels. Each vertex that is less than half a pixel from the simpler ring goes.
 
 Each band with an area is one feature. A feature of a height layer has the attributes `elev_min` and `elev_max`, and a feature of another raster layer has `value_min` and `value_max`. The style has a rule for each band, with the color of the band. On a height layer, the operation can split the output at 0 m into two layers, for example Topography and Bathymetry.
 

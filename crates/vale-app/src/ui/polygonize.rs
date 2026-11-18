@@ -263,23 +263,6 @@ pub fn stale_text(names: &[String]) -> String {
     }
 }
 
-/// The number of points of the features of an output layer.
-fn output_points(layer: &Output) -> usize {
-    (layer.features.iter())
-        .map(|f| crate::lod::points(&f.geometry))
-        .sum()
-}
-
-/// The note of a run whose output layer has more points than the views
-/// draw.
-pub fn too_many_text(name: &str, points: usize, limit: usize) -> String {
-    format!(
-        "{name} would have {} points, more than the {} that a layer can show. Raise Smooth, or use fewer color stops.",
-        crate::color_key::number_text(points as f64),
-        crate::color_key::number_text(limit as f64),
-    )
-}
-
 /// The text of the time of a run.
 pub fn time_text(time: Duration) -> String {
     match time.as_secs_f64() {
@@ -462,17 +445,6 @@ impl AppState {
             },
         };
         let job = self.polygonize.job.take().expect("a job");
-        // A layer that the views cannot show does not go in the project.
-        let limit = self.doc.max_shown_points();
-        let result = result.map(|r| {
-            r.and_then(|out| match out {
-                Some(layers) => match layers.iter().find(|l| output_points(l) > limit) {
-                    Some(l) => Err(too_many_text(&l.name, output_points(l), limit)),
-                    None => Ok(Some(layers)),
-                },
-                None => Ok(None),
-            })
-        });
         match result {
             Some(Ok(Some(layers))) => {
                 let time = job.start.elapsed();
