@@ -28,6 +28,8 @@ const EARTH_KM: f64 = 6371.0;
 /// that were not neighbors in the input.
 const MAX_STEP_DEG: f64 = 45.0;
 const NONE: u32 = u32::MAX;
+/// The ratio of the cell sizes of two levels of the grid of `untangle`.
+const GRID_STEP: f64 = 8.0;
 
 /// Tolerance of each level in radians: LEVEL_KM / 6371.
 pub fn tolerance(level: usize) -> f64 {
@@ -663,31 +665,71 @@ impl Graph {
         if segs.is_empty() {
             return;
         }
-        let total: f64 = segs
-            .iter()
-            .map(|s| angle(self.v[s.a as usize], self.v[s.b as usize]))
-            .sum();
-        let size = (2.0 * total / segs.len() as f64).clamp(4e-6, 0.5);
+        let length = |s: &Seg| angle(self.v[s.a as usize], self.v[s.b as usize]);
+        let total: f64 = segs.iter().map(length).sum();
+        // The grid has levels of cells, each `GRID_STEP` times the size of
+        // the last, up to cells that hold the whole sphere. A segment goes
+        // in the level where it is at most one cell long, so a long segment
+        // takes few cells.
+        let mut sizes = vec![(2.0 * total / segs.len() as f64).clamp(4e-6, 0.5)];
+        while sizes[sizes.len() - 1] < 2.0 {
+            sizes.push(sizes[sizes.len() - 1] * GRID_STEP);
+        }
+        let level_of = |s: &Seg| {
+            let len = length(s);
+            sizes
+                .iter()
+                .position(|&z| len <= z)
+                .unwrap_or(sizes.len() - 1)
+        };
 
         let mut cells = Vec::new();
-        let mut grid: Vec<(u64, u32)> = Vec::new();
+        let mut grids: Vec<Vec<(u64, u32)>> = vec![Vec::new(); sizes.len()];
+        let levels: Vec<usize> = segs.iter().map(level_of).collect();
         for (i, s) in segs.iter().enumerate() {
-            self.seg_cells(s, size, &mut cells);
-            grid.extend(cells.iter().map(|&c| (c, i as u32)));
+            self.seg_cells(s, sizes[levels[i]], &mut cells);
+            grids[levels[i]].extend(cells.iter().map(|&c| (c, i as u32)));
         }
-        grid.sort_unstable();
+        for grid in &mut grids {
+            grid.sort_unstable();
+        }
+        let in_cell = |grid: &[(u64, u32)], c: u64| {
+            let start = grid.partition_point(|e| e.0 < c);
+            let end = start + grid[start..].partition_point(|e| e.0 == c);
+            grid[start..end].iter().map(|e| e.1).collect::<Vec<u32>>()
+        };
+        // Two segments that cross share a cell of the level of the longer
+        // one: the pairs in each cell, and each segment with the segments
+        // of the coarser levels.
         let mut queue: Vec<(u32, u32)> = Vec::new();
-        for group in grid.chunk_by(|x, y| x.0 == y.0) {
-            for (i, x) in group.iter().enumerate() {
-                for y in &group[i + 1..] {
-                    if self.cross_segs(&segs[x.1 as usize], &segs[y.1 as usize]) {
-                        queue.push((x.1, y.1));
+        for grid in &grids {
+            for group in grid.chunk_by(|x, y| x.0 == y.0) {
+                for (i, x) in group.iter().enumerate() {
+                    for y in &group[i + 1..] {
+                        if self.cross_segs(&segs[x.1 as usize], &segs[y.1 as usize]) {
+                            queue.push((x.1, y.1));
+                        }
+                    }
+                }
+            }
+        }
+        for (i, s) in segs.iter().enumerate() {
+            for j in levels[i] + 1..sizes.len() {
+                if grids[j].is_empty() {
+                    continue;
+                }
+                self.seg_cells(s, sizes[j], &mut cells);
+                for &c in &cells {
+                    for t in in_cell(&grids[j], c) {
+                        if self.cross_segs(s, &segs[t as usize]) {
+                            queue.push((i as u32, t));
+                        }
                     }
                 }
             }
         }
 
-        let mut extra: Map<u64, Vec<u32>> = Map::default();
+        let mut extra: Vec<Map<u64, Vec<u32>>> = vec![Map::default(); sizes.len()];
         let mut new: Vec<u32> = Vec::new();
         while let Some((s1, s2)) = queue.pop() {
             if !segs[s1 as usize].alive || !segs[s2 as usize].alive {
@@ -706,22 +748,28 @@ impl Graph {
                 }
             }
             for &n in &new {
-                self.seg_cells(&segs[n as usize], size, &mut cells);
+                let k = level_of(&segs[n as usize]);
+                self.seg_cells(&segs[n as usize], sizes[k], &mut cells);
                 for &c in &cells {
-                    extra.entry(c).or_default().push(n);
+                    extra[k].entry(c).or_default().push(n);
                 }
             }
+            // A new segment meets the segments of each level.
             for &n in &new {
                 let s = segs[n as usize];
-                self.seg_cells(&s, size, &mut cells);
-                for &c in &cells {
-                    let start = grid.partition_point(|e| e.0 < c);
-                    let fixed = grid[start..].iter().take_while(|e| e.0 == c).map(|e| e.1);
-                    let added = extra.get(&c).into_iter().flatten().copied();
-                    for t in fixed.chain(added) {
-                        let other = &segs[t as usize];
-                        if t != n && other.alive && self.cross_segs(&s, other) {
-                            queue.push((n, t));
+                for j in 0..sizes.len() {
+                    if grids[j].is_empty() && extra[j].is_empty() {
+                        continue;
+                    }
+                    self.seg_cells(&s, sizes[j], &mut cells);
+                    for &c in &cells {
+                        let fixed = in_cell(&grids[j], c);
+                        let added = extra[j].get(&c).into_iter().flatten().copied();
+                        for t in fixed.into_iter().chain(added) {
+                            let other = &segs[t as usize];
+                            if t != n && other.alive && self.cross_segs(&s, other) {
+                                queue.push((n, t));
+                            }
                         }
                     }
                 }
