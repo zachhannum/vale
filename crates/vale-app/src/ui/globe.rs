@@ -1336,9 +1336,13 @@ pub fn vector_layer_cut(
     let whole = masked.is_some()
         && (key.batches.iter().flatten())
             .any(|b| !b.masked && matches!(b.paint, StylePaint::Fill(_) | StylePaint::Stroke(_)));
-    let detail = (masked.is_none() || whole)
-        .then(|| pipeline.lod_mut().level(layer, pixel))
-        .flatten();
+    // A large layer draws when its first level is ready.
+    let detail =
+        match (masked.is_none() || whole).then(|| pipeline.lod_mut().level_or_wait(layer, pixel)) {
+            Some(Ok(detail)) => detail,
+            Some(Err(crate::lod::Wait)) => return None,
+            None => None,
+        };
     let (scatter, cache) = pipeline.globe_caches_mut();
     let (shapes, whole_shapes, work) = cache.layer(layer, masked.as_ref(), detail.as_ref(), whole);
     if let Some(out) = shapes.drawn(&key) {
@@ -1718,12 +1722,18 @@ pub fn flat_vector_layer_cut(
     // A masked layer draws the paints that the mask does not cut from the
     // whole geometry.
     let on_whole = |batch: &pipeline::Batch| masked.is_some() && !batch.masked;
-    let detail = (masked.is_none() || batches.iter().any(on_whole))
-        .then(|| {
-            let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point())?;
-            pipeline.lod_mut().level(layer, pixel)
-        })
-        .flatten();
+    let pixel = flat_pixel(flat, rect, painter.ctx().pixels_per_point());
+    // A large layer draws when its first level is ready.
+    let detail = match (masked.is_none() || batches.iter().any(on_whole))
+        .then_some(pixel)
+        .flatten()
+    {
+        Some(pixel) => match pipeline.lod_mut().level_or_wait(layer, pixel) {
+            Ok(detail) => detail,
+            Err(crate::lod::Wait) => return None,
+        },
+        None => None,
+    };
     let to_screen = |p: &vale_sphere::Point| flat.screen(rect, *p);
     let measured = |lines: Vec<Vec<vale_sphere::Point>>| -> Vec<Vec<(kurbo::Point, f64)>> {
         (lines.into_iter())

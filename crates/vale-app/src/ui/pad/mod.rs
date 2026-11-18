@@ -3361,6 +3361,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         .iter()
         .map(|l| (LayerRef::of(l), layer_icon(l), l.visible))
         .collect();
+    let large: Vec<bool> = layers.iter().map(|l| state.doc.too_large(l.id)).collect();
     let rows: Vec<list::Row<LayerId>> = layers
         .iter()
         .map(|l| list::Row {
@@ -3383,6 +3384,8 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         let look = list::Look {
             icon: Some(looks[i].1),
             text: &rows[i].name,
+            note: large[i].then_some(TOO_LARGE),
+            warn: large[i],
             eye: Some(looks[i].2),
             open: true,
             ..list::Look::default()
@@ -3554,6 +3557,19 @@ fn menu_heading(ui: &mut egui::Ui, text: &str) {
 
 /// The panel of a vector layer: its name, its kind, the number of its
 /// features, its style, and its fields.
+/// The note in the row of a layer that the views do not draw, because it
+/// has too many points.
+pub const TOO_LARGE: &str = "Too large to show";
+
+/// The warning in the panel of a layer with too many points.
+pub fn too_large_text(points: usize, limit: usize) -> String {
+    format!(
+        "This layer has {} points. The app shows a layer with {} points at most, so it does not show this layer. Delete it, or make it with fewer points.",
+        crate::color_key::number_text(points as f64),
+        crate::color_key::number_text(limit as f64),
+    )
+}
+
 fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
         return;
@@ -3583,6 +3599,12 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
+    if state.doc.too_large(id) {
+        let text = too_large_text(state.doc.layer_points(id), state.doc.max_shown_points());
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(text).color(theme::WARN));
+        ui.add_space(8.0);
+    }
     if state.is_stale_output(id) {
         use crate::ui::polygonize::{RUN_AGAIN, STALE_LAYER};
         ui.add_space(8.0);

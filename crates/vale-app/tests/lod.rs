@@ -176,6 +176,22 @@ fn the_view_draws_the_full_geometry_while_the_levels_build() {
 }
 
 #[test]
+fn a_large_layer_draws_nothing_until_its_first_level_is_ready() {
+    let mut doc = Document::empty();
+    let id = import(&mut doc, "zones", &mosaic(12, 6, 40));
+    let mut pipeline = pipeline();
+    pipeline.lod_mut().max_full_points = points(&doc, id) - 1;
+    pipeline.lod_mut().held = true;
+    let waiting = draw(&doc, &mut pipeline, &world(), id);
+    assert_eq!(count(&waiting), 0);
+    pipeline.lod_mut().held = false;
+    assert!(!pipeline.poll_lod(true));
+    let coarse = draw(&doc, &mut pipeline, &world(), id);
+    assert!(count(&coarse) > 0);
+    assert!(count(&coarse) < points(&doc, id));
+}
+
+#[test]
 fn an_edit_builds_the_levels_of_only_that_layer() {
     let mut doc = Document::empty();
     let a = import(&mut doc, "a", &mosaic(12, 6, 40));

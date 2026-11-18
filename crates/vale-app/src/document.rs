@@ -45,6 +45,46 @@ pub struct Document {
     pub project: Project,
     pub frame: MapFrame,
     symbols: SymbolLibrary,
+    points: PointCounts,
+}
+
+/// The most points of a vector layer that the views draw. A layer with
+/// more points stays in the project, but the views leave it out and it
+/// shows an error. Its levels of detail and its meshes do not fit in the
+/// memory of a device.
+pub const MAX_SHOWN_POINTS: usize = 10_000_000;
+
+/// The number of points of each vector layer, for the features that the
+/// layer had at the count, and the most points of a layer that the views
+/// draw.
+#[derive(Debug)]
+struct PointCounts {
+    counts: std::sync::Mutex<std::collections::HashMap<LayerId, (usize, usize, usize)>>,
+    limit: usize,
+}
+
+impl Default for PointCounts {
+    fn default() -> Self {
+        PointCounts {
+            counts: Default::default(),
+            limit: MAX_SHOWN_POINTS,
+        }
+    }
+}
+
+impl Clone for PointCounts {
+    fn clone(&self) -> Self {
+        PointCounts {
+            counts: Default::default(),
+            limit: self.limit,
+        }
+    }
+}
+
+impl PartialEq for PointCounts {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// The symbols that the styles can use: the symbols of the project.
@@ -107,6 +147,7 @@ impl Document {
         let project = Project::new(World::default());
         Document {
             symbols: SymbolLibrary::of(&project),
+            points: PointCounts::default(),
             project,
             frame: MapFrame {
                 view: None,
@@ -505,6 +546,41 @@ impl Document {
 
     pub fn visible(&self, id: LayerId) -> bool {
         self.project.layer(id).is_some_and(|l| l.visible)
+    }
+
+    /// The number of points of the features of a vector layer.
+    pub fn layer_points(&self, id: LayerId) -> usize {
+        let Some(layer) = self.project.layer(id) else {
+            return 0;
+        };
+        let key = (layer.features.as_ptr() as usize, layer.features.len());
+        let mut counts = self.points.counts.lock().unwrap_or_else(|e| e.into_inner());
+        match counts.get(&id) {
+            Some(&(ptr, len, n)) if (ptr, len) == key => n,
+            _ => {
+                let n = (layer.features.iter())
+                    .map(|f| crate::lod::points(&f.geometry))
+                    .sum();
+                counts.insert(id, (key.0, key.1, n));
+                n
+            }
+        }
+    }
+
+    /// True if a vector layer has more points than the views draw.
+    pub fn too_large(&self, id: LayerId) -> bool {
+        self.layer_points(id) > self.points.limit
+    }
+
+    /// The most points of a vector layer that the views draw.
+    pub fn max_shown_points(&self) -> usize {
+        self.points.limit
+    }
+
+    /// Sets the most points of a vector layer that the views draw, for the
+    /// tests.
+    pub fn set_max_shown_points(&mut self, limit: usize) {
+        self.points.limit = limit;
     }
 
     pub fn entry(&self, id: LayerId) -> Option<&LayerEntry> {

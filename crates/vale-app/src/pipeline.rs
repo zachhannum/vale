@@ -375,9 +375,12 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
 }
 
 /// The layers that a map draws, in draw order. `None` is the legacy map,
-/// which draws the visible layers.
+/// which draws the visible layers. A layer with too many points is left
+/// out.
 fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
-    let entries = doc.frame.entries.iter().map(|e| e.layer);
+    let entries = (doc.frame.entries.iter())
+        .map(|e| e.layer)
+        .filter(|id| !doc.too_large(*id));
     match map {
         None => entries.filter(|id| doc.visible(*id)).collect(),
         Some(map) => entries.filter(|id| doc.shown(map, *id)).collect(),
@@ -1576,8 +1579,15 @@ impl Pipeline {
                     .any(|s| !s.cut_by_mask())
             });
             let masked = self.masks.layer(doc, *id, mask);
-            let detail = match (pixel, &masked) {
-                (Some(pixel), None) => doc.layer(*id).and_then(|l| self.lod.level(l, pixel)),
+            let detail = match (pixel, &masked, doc.layer(*id)) {
+                (Some(pixel), None, Some(l)) => match self.lod.level_or_wait(l, pixel) {
+                    Ok(detail) => detail,
+                    // The map draws the layer when its first level is ready.
+                    Err(lod::Wait) => {
+                        cache.layers.remove(id);
+                        continue;
+                    }
+                },
                 _ => None,
             };
             let generation = (

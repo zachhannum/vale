@@ -1009,6 +1009,7 @@ impl AppState {
     }
 
     pub fn sync_globe(&mut self) {
+        let doc = &self.doc;
         let (project, globe) = (&self.doc.project, &mut self.globe);
         let gone = match self.selected_layer {
             Some(LayerRef::Raster(id)) => project.raster(id).is_none(),
@@ -1043,6 +1044,8 @@ impl AppState {
                     blend: raster.blend,
                 })
             }
+            // A layer with too many points shows an error in its row.
+            LayerKind::Vector(_) if doc.too_large(layer.id) => None,
             LayerKind::Vector(_) => Some(StackItem::Vector(layer.id)),
         };
         let visible = project.layers().iter().filter(|layer| layer.visible);
