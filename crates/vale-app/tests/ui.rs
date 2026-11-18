@@ -1191,7 +1191,7 @@ fn a_new_world_has_no_raster_layer() {
         let controls = &h.state().pad.controls;
         controls.iter().any(|control| control.name == name)
     };
-    assert!(!cell(&h, SCULPT) && !cell(&h, TERRAIN) && !cell(&h, "Size"));
+    assert!(!cell(&h, SCULPT) && !cell(&h, TERRAIN) && !cell(&h, "Strip size"));
     assert!(cell(&h, "Pan"));
     let view = h.state().globe.view;
     let before = texels(&h.state().globe.map);
@@ -1221,7 +1221,7 @@ fn a_new_world_has_no_raster_layer() {
     // The brush paints a raster layer that is selected and visible.
     let height = h.state_mut().add_height();
     h.run_steps(2);
-    assert!(cell(&h, SCULPT) && cell(&h, TERRAIN) && cell(&h, "Size"));
+    assert!(cell(&h, SCULPT) && cell(&h, TERRAIN) && cell(&h, "Strip size"));
     h.state_mut().set_raster_visible(height, false);
     h.run_steps(2);
     assert!(!cell(&h, SCULPT) && !cell(&h, TERRAIN));

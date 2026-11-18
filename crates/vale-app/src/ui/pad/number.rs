@@ -81,7 +81,11 @@ pub struct Number<'a> {
     field: bool,
     keypad: bool,
     mixed: bool,
+    pin: Option<bool>,
 }
+
+/// The side of the pin after the label of a slider.
+const PIN: f32 = 14.0;
 
 impl<'a> Number<'a> {
     /// A slider for `value` in `range`. `name` names the control, and it is
@@ -105,7 +109,20 @@ impl<'a> Number<'a> {
             field: true,
             keypad: true,
             mixed: false,
+            pin: None,
         }
+    }
+
+    /// A pin after the label of the slider of a row, and the label as the
+    /// button of the pin. `on`: the pin is in.
+    pub fn pin(mut self, on: bool) -> Self {
+        self.pin = Some(on);
+        self
+    }
+
+    /// The name of the button of the pin.
+    pub fn pin_name(&self) -> String {
+        format!("{} pin", self.name)
     }
 
     /// The name on screen.
@@ -323,6 +340,12 @@ impl<'a> Number<'a> {
     /// value. Returns the new value when the user changes it. A drag that
     /// starts up or down scrolls the panel.
     pub fn slider(self, ui: &mut egui::Ui, controls: &mut Controls) -> Option<f64> {
+        self.slider_pin(ui, controls).0
+    }
+
+    /// Adds the slider as `slider` does. Returns the new value, and true if
+    /// a tap on the label of a slider with a pin toggled the pin.
+    pub fn slider_pin(self, ui: &mut egui::Ui, controls: &mut Controls) -> (Option<f64>, bool) {
         let enabled = self.enabled;
         let names = if self.ticks.is_empty() {
             0.0
@@ -345,15 +368,39 @@ impl<'a> Number<'a> {
         } else {
             Rect::from_min_max(pos2(row.right(), y), pos2(row.right(), y))
         };
-        let body = row.with_max_x(field.left());
-        // The slider senses clicks, and takes a drag along its track. A
-        // drag up or down scrolls the panel.
-        let resp = hit(ui, controls, body, self.name, Sense::click(), enabled, None);
+        let room = if self.pin.is_some() { 16.0 + PIN } else { 16.0 };
         let start = if self.label.is_empty() {
             row.left()
         } else {
-            row.left() + (label.size().x + 16.0).max(LABEL_COLUMN)
+            row.left() + (label.size().x + room).max(LABEL_COLUMN)
         };
+        // The label of a slider with a pin is the button of the pin.
+        let cell = row.with_max_x(start - 4.0);
+        let body = if self.pin.is_some() {
+            row.with_min_x(cell.right()).with_max_x(field.left())
+        } else {
+            row.with_max_x(field.left())
+        };
+        // The slider senses clicks, and takes a drag along its track. A
+        // drag up or down scrolls the panel.
+        let resp = hit(ui, controls, body, self.name, Sense::click(), enabled, None);
+        let mut pinned = false;
+        if let Some(on) = self.pin {
+            let name = self.pin_name();
+            let tap = hit(ui, controls, cell, &name, Sense::click(), true, Some(on));
+            pinned = tap.clicked();
+            let back = cell.expand2(vec2(8.0, -2.0)).with_max_x(cell.right());
+            if tap.is_pointer_button_down_on() {
+                ui.painter().rect_filled(back, 8.0, theme::raise());
+            }
+            let at = Rect::from_center_size(pos2(start - 8.0 - PIN / 2.0, y), vec2(PIN, PIN));
+            let color = if on {
+                theme::ACCENT
+            } else {
+                theme::MUTE.gamma_multiply(0.45)
+            };
+            super::icons::paint_pin(ui.painter(), at, PIN + 2.0, color, on);
+        }
         let end = if self.field {
             field.left() - 8.0
         } else {
@@ -391,7 +438,7 @@ impl<'a> Number<'a> {
         if let Some(drag) = dragging(ui, &resp) {
             self.bubble(ui, value, drag.note, row);
         }
-        out.filter(|v| *v != self.value)
+        (out.filter(|v| *v != self.value), pinned)
     }
 
     /// Adds the slider as a column `height` high, with the value at the top

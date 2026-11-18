@@ -1,0 +1,68 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+:root{--canvas:#0f1113;--text:#e7e9ec;--mute:#aeb5be;--accent:#45c4a8;--card:#1c1f22;--raise:#33373c;--track:#0f1113;--faint:#4a4f55}
+*{box-sizing:border-box;margin:0}
+body{width:1194px;height:834px;overflow:hidden;background:var(--canvas) url(assets/raise.png) 0 0/1194px 834px no-repeat;font:15px "Noto Sans","Inter",-apple-system,sans-serif;color:var(--text);position:relative}
+svg{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.screen{display:none}
+/* The rows of the sliders, drawn over the rows of the picture. */
+.m{position:absolute;left:942px;width:18px;height:14px;display:flex;align-items:center;justify-content:center}
+.m svg{width:14px;height:14px;stroke-width:2}.m .on{color:var(--accent)}.m .off{color:var(--faint)}
+.press{position:absolute;left:862px;width:104px;height:44px;border-radius:8px;background:rgba(255,255,255,.07)}
+.row{height:48px;display:flex;align-items:center;position:relative}
+.l{width:96px;height:48px;display:flex;align-items:center;justify-content:space-between;padding-right:8px;white-space:nowrap}
+.l svg{width:14px;height:14px;stroke-width:2}
+.l .on{color:var(--accent)}
+.l .off{color:var(--faint)}
+.l.press{background:rgba(255,255,255,.06);margin-left:-8px;padding-left:8px;width:104px;border-radius:8px}
+.sl{width:119px;height:34px;border-radius:9px;background:var(--track);position:relative;overflow:hidden}
+.sl i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:9px 0 0 9px}
+.sl b{position:absolute;top:5px;width:10px;height:24px;border-radius:4px;background:#e7e9ec}
+.val{margin-left:9px;width:84px;height:34px;border-radius:9px;background:var(--raise);font:13px "DejaVu Sans Mono",monospace;display:flex;align-items:center;justify-content:center}
+/* The sliders of the strip, drawn over the column of the picture. */
+.strip{position:absolute;left:0;top:372px;width:55px;height:331px;background:#1b1e21}
+.vs{position:absolute;left:0;width:55px;text-align:center;font-size:10px;white-space:nowrap}
+.vt{position:absolute;left:14px;width:28px;border-radius:8px;background:var(--track);overflow:hidden}
+.vt i{position:absolute;left:0;right:0;bottom:0;background:var(--accent)}
+.vt b{position:absolute;left:4px;width:20px;height:9px;border-radius:3px;background:#e7e9ec}
+.hd{position:absolute;top:100px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px}
+.hd svg{width:20px;height:20px;fill:none;stroke-width:1.6}
+.cap{position:absolute;left:300px;bottom:22px;right:300px;font:13px "DejaVu Sans Mono",monospace;color:var(--mute);text-align:center;background:rgba(15,17,19,.8);padding:8px 12px;border-radius:8px}
+</style></head><body>
+<div class="screen" id="panel"></div>
+<div class="screen" id="swap"></div>
+<div class="screen" id="reset"></div>
+<script>
+// The marker: a small vertical slider.
+// The pin of a slider: filled if the slider is in the strip.
+const mark=n=>`<svg class="${n?'on':'off'}" viewBox="0 0 14 14" style="stroke-width:1.4"><path d="M5 1.5h4l-.6 4 2.1 2.2H3.5l2.1-2.2z" ${n?'fill="currentColor"':''}/><path d="M7 7.7v4.8"/></svg>`;
+const rows=(ons,press)=>ons.map((on,k)=>(press===k?`<div class="press" style="top:${146+48*k}px"></div>`:'')+`<div class="m" style="top:${161+48*k}px">${mark(on)}</div>`).join('');
+const strip=(a,b)=>{
+  const one=(y,[label,value,fill])=>`<div class="vs" style="top:${y}px">${value}</div>
+   <div class="vt" style="top:${y+12}px;height:120px"><i style="height:${fill*120}px"></i><b style="bottom:${fill*120-5}px"></b></div>
+   <div class="vs" style="top:${y+138}px">${label}</div>`;
+  return `<div class="strip">${one(8,a)}${one(172,b)}</div>`;
+};
+const size=['Size','611 km',.63],hard=['Hardness','30%',.3],flow=['Flow','100%',1],strength=['Strength','1500 m',.68];
+
+document.getElementById('panel').innerHTML=`
+${rows([1,0,0,2],1)}
+${strip(size,strength)}
+<div class="cap">panel: the pin after a label shows that the slider is in the strip. A tap on a label adds the slider to the strip or takes it out.</div>`;
+
+document.getElementById('swap').innerHTML=`
+${rows([1,2,0,0])}
+${strip(size,hard)}
+<div class="cap">swap: a tap on Hardness replaced Strength, the slider that was added last. The strip keeps the order of the panel.</div>`;
+
+// The Reset pins button in the header of the Brush panel: a small pin in
+// the circular arrow of the reset icon of the app.
+const PIN='M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21';
+const RESET=`<path d="M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"/><path transform="translate(12 12) scale(.5) translate(-12 -12)" d="${PIN}" stroke-width="3"/>`;
+const screens={
+  'reset':[`${rows([1,2,0,0])}${strip(size,hard)}<div class="hd" style="left:1107px;width:80px;background:rgb(22,24,28)"></div><div class="hd" style="left:1107px;width:36px;color:var(--mute)"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div><div class="hd" style="left:1149px;width:36px;color:var(--mute)"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${RESET}</svg></div>`,'reset: while the pins differ from the default pair of the mode, the header has Reset pins. A tap gives the mode its default pair.'],
+};
+for(const [k,[html,cap]] of Object.entries(screens)){document.getElementById(k).innerHTML=html+`<div class="cap">${cap}</div>`}
+
+const id=(location.hash||'#panel').slice(1);document.getElementById(id).style.display='block';
+</script></body></html>

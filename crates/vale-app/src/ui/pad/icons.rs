@@ -90,6 +90,8 @@ pub enum Icon {
     Eyedropper,
     /// A push pin.
     Pin,
+    /// A small push pin in the circular arrow of `Reset`.
+    ResetPins,
     /// A window with a header and a column at the left.
     Panels,
     /// A window with a column at the right.
@@ -251,6 +253,10 @@ impl Icon {
             }
             Icon::Reset => {
                 "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"
+            }
+            Icon::ResetPins => {
+                "M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4\
+                 M10.5 7.5h3l-.5 3 1.75 1.75h-5.5L11 10.5zM12 12.25V16.5"
             }
         }
     }
@@ -434,6 +440,29 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, size: f32, color: 
     }
 }
 
+/// Paints the pin icon as `paint` does. A filled pin has its head filled.
+pub fn paint_pin(painter: &egui::Painter, rect: Rect, size: f32, color: Color32, filled: bool) {
+    if filled {
+        let color = opaque(color);
+        let scale = size / 24.0;
+        let origin = rect.center() - egui::vec2(size, size) / 2.0;
+        let place = |(x, y): (f32, f32)| origin + egui::vec2(x, y) * scale;
+        // The head of the pin is not convex, so it is two convex parts.
+        for part in [
+            [(9.0, 3.0), (15.0, 3.0), (14.0, 9.0), (10.0, 9.0)],
+            [(10.0, 9.0), (14.0, 9.0), (17.5, 12.5), (6.5, 12.5)],
+        ] {
+            let points = part.into_iter().map(place).collect();
+            painter.add(egui::Shape::convex_polygon(
+                points,
+                color,
+                egui::Stroke::NONE,
+            ));
+        }
+    }
+    paint(painter, rect, Icon::Pin, size, color);
+}
+
 /// The color that a translucent color gives over the fill of a card. The
 /// strokes of an icon overlap, and a translucent color is darker where they
 /// overlap.
@@ -583,6 +612,7 @@ mod tests {
             Icon::Grip,
             Icon::Eyedropper,
             Icon::Pin,
+            Icon::ResetPins,
             Icon::Panels,
             Icon::Dock,
             Icon::Pages,

@@ -14,6 +14,7 @@ use crate::globe::line::LineSettings;
 use crate::globe::snap::SnapSettings;
 use crate::globe::sweep;
 use crate::pen::PenSwitch;
+use crate::strip::{self, Pins};
 
 /// The file in the state folder that holds the settings.
 const TOOLS_FILE: &str = "tools.txt";
@@ -193,6 +194,8 @@ pub struct Tools {
     pub focus_new: bool,
     /// One finger paints and draws. `None`: the default of the device.
     pub finger_paints: Option<bool>,
+    /// The strip sliders of each brush mode.
+    pub pins: Pins,
 }
 
 impl Tools {
@@ -380,6 +383,17 @@ impl Tools {
         if let Some(on) = self.finger_paints {
             lines.push(format!("finger_paints {on}"));
         }
+        for (mode, pins) in self.pins.changed() {
+            let Some(mode) = name(&MODES, mode) else {
+                continue;
+            };
+            let mut line = format!("strip {mode}");
+            for name in pins.iter().filter_map(|&pin| name(&strip::NAMES, pin)) {
+                line.push(' ');
+                line.push_str(name);
+            }
+            lines.push(line);
+        }
         lines.join("\n")
     }
 
@@ -486,6 +500,23 @@ impl Tools {
         }
         if let Some(v) = float("snap_distance").filter(|&v| v > 0.0) {
             snap.distance = v;
+        }
+        // A mode with no strip line keeps its default pins. A slider that
+        // this version does not know has no effect.
+        for line in text.lines() {
+            let mut words = line.split(' ');
+            if words.next() != Some("strip") {
+                continue;
+            }
+            let Some(&(mode, _)) = words
+                .next()
+                .and_then(|name| MODES.iter().find(|(_, n)| *n == name))
+            else {
+                continue;
+            };
+            let find = |word: &str| strip::NAMES.iter().find(|(_, n)| *n == word);
+            let pins: Vec<_> = words.filter_map(find).map(|&(pin, _)| pin).collect();
+            self.pins.set(mode, &pins);
         }
     }
 }
@@ -805,6 +836,47 @@ mod tests {
         next.tools
             .load(&text, &mut tool, brush, line, &mut next_snap);
         assert_eq!(next.brush.flatten_level, None);
+    }
+
+    #[test]
+    fn the_strip_pins_stay_after_a_write_and_a_read() {
+        use crate::strip::Slider;
+        let mut globe = Globe::new();
+        globe.tools.pins.toggle(Mode::Raise, Slider::Hardness);
+        globe.tools.pins.toggle(Mode::Warp, Slider::Scale);
+        let snap = SnapSettings::default();
+        let text = globe.tools.text(&globe.brush, &globe.line, &snap);
+
+        let mut next = Globe::new();
+        let (brush, line) = (&mut next.brush, &mut next.line);
+        let mut tool = Tool::Pan;
+        let mut next_snap = SnapSettings::default();
+        let text = format!("{text}\nstrip lower size spin\nstrip nothing size");
+        next.tools
+            .load(&text, &mut tool, brush, line, &mut next_snap);
+        assert_eq!(
+            next.tools.pins.of(Mode::Raise),
+            [Slider::Size, Slider::Hardness]
+        );
+        // An unpin of each slider also stays.
+        assert_eq!(next.tools.pins.of(Mode::Warp), [Slider::Size]);
+        assert_eq!(next.tools.pins.of(Mode::Lower), [Slider::Size]);
+        assert_eq!(
+            next.tools.pins.of(Mode::Carve),
+            [Slider::Size, Slider::Strength]
+        );
+    }
+
+    #[test]
+    fn each_slider_has_a_name_in_the_file() {
+        let names: std::collections::HashSet<_> = strip::NAMES.iter().map(|n| n.1).collect();
+        assert_eq!(names.len(), strip::NAMES.len());
+        let modes = SCULPT_MODES.iter().chain(&TERRAIN_MODES).map(|m| m.2);
+        for mode in modes {
+            for slider in strip::sliders(mode, true) {
+                assert!(name(&strip::NAMES, slider).is_some(), "{slider:?}");
+            }
+        }
     }
 
     #[test]

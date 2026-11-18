@@ -20,6 +20,7 @@ View the mockups at https://claude.ai/artifact/K7SGPcJf76r1k1HhgvQi8T. The link 
 | `duo-inner/` | The app on the inner screen of iPhone Duo, in portrait and in landscape, as pictures from the app. Its README lists the screens. |
 | `duo-layout/` | The layout of iPhone Duo in each pose, as HTML over pictures from the app. Its README lists the screens. |
 | `pad-export/` | The export command in the world menu and the export form, for the iPad, the iPhone, and the desktop, as HTML over pictures from the app. Its README lists the screens. |
+| `pad-brush-strip/` | The pins of the strip sliders of the brush in the Brush panel of the iPad layout, as HTML over a picture from the app. Its README lists the screens. |
 | `pad-readout/` | A proposal for the readout at the lower left of the World workspace of the iPad layout, in HTML. Its README lists the states. |
 
 The sample world, Kareth, and all names on the maps are invented for the mockups.
