@@ -1222,3 +1222,109 @@ fn a_polygon_half_outside_a_page_mask_places_its_label_inside_the_mask() {
     assert!(!origins.is_empty(), "{:?}", c.labels.unplaced);
     assert_west_half(&doc, &mut p, &origins);
 }
+
+/// A frame of the first map of the sample document, with a layer of points
+/// that has the style `style` and the class that `edit` changes. Only the
+/// points have labels. Each feature has its name and its attributes.
+fn points_frame(
+    features: &[(&str, [f64; 2], &str)],
+    style: Style,
+    edit: impl FnOnce(&mut vale_style::LabelClass),
+) -> (Composed, LayerId) {
+    let mut doc = Document::sample();
+    let mut p = Pipeline::new();
+    let map = doc.first_map();
+    let features: Vec<String> = (features.iter())
+        .map(|(name, [lon, lat], props)| {
+            format!(
+                r#"{{"type":"Feature","properties":{{"name":"{name}"{props}}},"geometry":{{"type":"Point","coordinates":[{lon},{lat}]}}}}"#
+            )
+        })
+        .collect();
+    let cities = add_layer(&mut doc, "Cities", &features);
+    doc.entry_mut(cities).unwrap().style.style = style;
+    let ids: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+    for id in ids.into_iter().filter(|id| *id != cities) {
+        doc.set_label_classes(map, id, &[]);
+    }
+    let mut class = vale_style::LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
+    class.fallbacks.clear();
+    edit(&mut class);
+    assert!(doc.set_label_classes(map, cities, &[class]));
+    let (c, _) = first_map_frame(&mut doc, &mut p);
+    (c, cities)
+}
+
+/// The step from the first glyph of the label `text` to its last glyph.
+fn reading_direction(c: &Composed, text: &str) -> kurbo::Vec2 {
+    let runs = runs(c);
+    let r = runs
+        .get(text)
+        .unwrap_or_else(|| panic!("{:?}", c.labels.unplaced));
+    let origins: Vec<Point> = (r.iter())
+        .flat_map(|g| g.glyphs.iter().map(|(_, t)| Point::ZERO + t.translation()))
+        .collect();
+    origins[origins.len() - 1] - origins[0]
+}
+
+#[test]
+fn a_class_turns_its_labels_by_an_angle_field() {
+    let cities = [
+        ("Upward", [-20.0, 10.0], r#","dir":90"#),
+        ("Level", [20.0, -10.0], r#","dir":0"#),
+    ];
+    let style = || Style {
+        mask: None,
+        rules: vec![],
+    };
+    let (c, _) = points_frame(&cities, style(), |c| {
+        c.angle_field = Some("dir".into());
+    });
+    // 90 degrees counterclockwise from east reads up the page.
+    let up = reading_direction(&c, "Upward");
+    assert!(up.y < -10.0 && up.x.abs() < 0.5, "{up:?}");
+    let level = reading_direction(&c, "Level");
+    assert!(level.x > 10.0 && level.y.abs() < 0.5, "{level:?}");
+
+    // With no field, the label is horizontal.
+    let (c, _) = points_frame(&cities, style(), |_| {});
+    let up = reading_direction(&c, "Upward");
+    assert!(up.x > 10.0 && up.y.abs() < 0.5, "{up:?}");
+}
+
+#[test]
+fn a_class_measures_the_offset_from_the_marker_shape() {
+    use vale_style::expr::Property;
+    use vale_style::{LabelPosition, MarkerShape};
+    let square = || Style {
+        mask: None,
+        rules: vec![Rule::new(
+            "Square",
+            vec![Symbolizer::Marker {
+                radius: Property::constant(10.0),
+                shape: MarkerShape::Square,
+                fill: Some(Property::constant(vale_render::Color::rgb(0, 0, 0))),
+                hatch: None,
+                stroke: None,
+            }],
+        )],
+    };
+    // The left of the first glyph of the label, right of the marker.
+    let start = |outline: bool| {
+        let (c, _) = points_frame(&[("Oakton", [0.0, 0.0], "")], square(), |c| {
+            for rank in &mut c.positions {
+                rank.on = rank.position == LabelPosition::Right;
+            }
+            c.offset = 2.0;
+            c.offset_from_outline = outline;
+        });
+        let r = runs(&c);
+        let g = r
+            .get("Oakton")
+            .unwrap_or_else(|| panic!("{:?}", c.labels.unplaced));
+        g[0].glyphs[0].1.translation().x
+    };
+    // The square reaches 10 points right of its center, and its corner 14.1.
+    let (circle, shape) = (start(false), start(true));
+    assert!((3.0..5.5).contains(&(circle - shape)), "{shape} {circle}");
+}
