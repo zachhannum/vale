@@ -7,6 +7,7 @@ svg{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-l
 .screen{display:none}
 /* The rows of the sliders, drawn over the rows of the picture. */
 .m{position:absolute;left:942px;width:18px;height:14px;display:flex;align-items:center;justify-content:center}
+.m svg{width:14px;height:14px;stroke-width:2}.m .on{color:var(--accent)}.m .off{color:var(--faint)}
 .press{position:absolute;left:862px;width:104px;height:44px;border-radius:8px;background:rgba(255,255,255,.07)}
 .row{height:48px;display:flex;align-items:center;position:relative}
 .l{width:96px;height:48px;display:flex;align-items:center;justify-content:space-between;padding-right:8px;white-space:nowrap}
@@ -24,10 +25,13 @@ svg{fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-l
 .vt{position:absolute;left:14px;width:28px;border-radius:8px;background:var(--track);overflow:hidden}
 .vt i{position:absolute;left:0;right:0;bottom:0;background:var(--accent)}
 .vt b{position:absolute;left:4px;width:20px;height:9px;border-radius:3px;background:#e7e9ec}
+.hd{position:absolute;top:100px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:9px}
+.hd svg{width:20px;height:20px;fill:none;stroke-width:1.6}
 .cap{position:absolute;left:300px;bottom:22px;right:300px;font:13px "DejaVu Sans Mono",monospace;color:var(--mute);text-align:center;background:rgba(15,17,19,.8);padding:8px 12px;border-radius:8px}
 </style></head><body>
 <div class="screen" id="panel"></div>
 <div class="screen" id="swap"></div>
+<div class="screen" id="reset"></div>
 <script>
 // The marker: a small vertical slider.
 // The pin of a slider: filled if the slider is in the strip.
@@ -50,6 +54,15 @@ document.getElementById('swap').innerHTML=`
 ${rows([1,2,0,0])}
 ${strip(size,hard)}
 <div class="cap">swap: a tap on Hardness replaced Strength, the slider that was added last. The strip keeps the order of the panel.</div>`;
+
+// The Reset pins button in the header of the Brush panel: a small pin in
+// the circular arrow of the reset icon of the app.
+const PIN='M9 3h6l-1 6 3.5 3.5h-11L10 9zM12 12.5V21';
+const RESET=`<path d="M4 4v5h5M4.5 9c1.4-3 4.2-5 7.5-5 4.4 0 8 3.6 8 8s-3.6 8-8 8c-3.5 0-6.5-2.2-7.6-5.4"/><path transform="translate(12 12) scale(.5) translate(-12 -12)" d="${PIN}" stroke-width="3"/>`;
+const screens={
+  'reset':[`${rows([1,2,0,0])}${strip(size,hard)}<div class="hd" style="left:1107px;width:80px;background:rgb(22,24,28)"></div><div class="hd" style="left:1107px;width:36px;color:var(--mute)"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></div><div class="hd" style="left:1149px;width:36px;color:var(--mute)"><svg viewBox="0 0 24 24" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${RESET}</svg></div>`,'reset: while the pins differ from the default pair of the mode, the header has Reset pins. A tap gives the mode its default pair.'],
+};
+for(const [k,[html,cap]] of Object.entries(screens)){document.getElementById(k).innerHTML=html+`<div class="cap">${cap}</div>`}
 
 const id=(location.hash||'#panel').slice(1);document.getElementById(id).style.display='block';
 </script></body></html>

@@ -12,6 +12,6 @@ shoot() {
     --force-device-scale-factor=2 --window-size="$1" --virtual-time-budget=2000 \
     --screenshot="$dir/screens/$2.png" "file://$dir/$3" 2>/dev/null
 }
-for screen in panel swap; do
+for screen in panel swap reset; do
   shoot 1194,834 "$screen" "strip.html#$screen"
 done

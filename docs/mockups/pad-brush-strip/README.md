@@ -8,3 +8,4 @@ These files show how you choose the two sliders that the tool column shows for a
 | --- | --- |
 | `panel` | A pin after the label of each slider. The pins of Size and Strength are in, so the strip shows those two sliders. |
 | `swap` | A tap on the label of Hardness. Hardness replaces Strength in the strip. |
+| `reset` | The pins of Raise differ from its default pair, so the header has Reset pins. |
