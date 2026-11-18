@@ -50,6 +50,7 @@ pub mod rule_edit;
 pub mod scale_bar;
 pub mod scatter;
 pub mod session;
+pub mod strip;
 pub mod table;
 pub mod text_size;
 pub mod tools;
