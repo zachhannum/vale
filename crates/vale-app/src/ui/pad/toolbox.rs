@@ -12,8 +12,8 @@ use super::{TOOLBOX, filter, panels, theme};
 use crate::ui::AppState;
 use crate::ui::orient::{self, ORIENT_ABOUT, ORIENT_DOWNHILL};
 use crate::ui::polygonize::{
-    self, ABOVE, BANDS, BELOW, CANCEL, INPUT, NEEDS_RASTER, POLYGONIZE, POLYGONIZE_ABOUT, SMOOTH,
-    SPLIT,
+    self, ABOVE, BASE, BELOW, BREAKS, Breaks, CANCEL, COLOR_STOPS, INPUT, INTERVAL, NEEDS_RASTER,
+    POLYGONIZE, POLYGONIZE_ABOUT, SIMPLIFY, SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
 };
 
 /// The hint of the search field of the grid.
@@ -71,6 +71,8 @@ pub enum ToolPage {
     Polygonize,
     /// The raster layers that "Polygonize" can take.
     PolygonizeInput,
+    /// The limits of the bands of "Polygonize".
+    PolygonizeBreaks,
 }
 
 /// The state of the Toolbox panel.
@@ -91,6 +93,7 @@ pub(super) fn head(page: Option<ToolPage>) -> (&'static str, &'static str, Optio
         Some(ToolPage::OrientHeight) => ("pad-orient-height", HEIGHT_LAYER, Some(ORIENT_DOWNHILL)),
         Some(ToolPage::Polygonize) => ("pad-polygonize", POLYGONIZE, Some(TOOLBOX)),
         Some(ToolPage::PolygonizeInput) => ("pad-polygonize-input", INPUT, Some(POLYGONIZE)),
+        Some(ToolPage::PolygonizeBreaks) => ("pad-polygonize-breaks", BREAKS, Some(POLYGONIZE)),
     }
 }
 
@@ -99,7 +102,7 @@ pub(super) fn back(state: &mut AppState) {
     let page = &mut state.pad.toolbox.page;
     *page = match page {
         Some(ToolPage::OrientLines | ToolPage::OrientHeight) => Some(ToolPage::Orient),
-        Some(ToolPage::PolygonizeInput) => Some(ToolPage::Polygonize),
+        Some(ToolPage::PolygonizeInput | ToolPage::PolygonizeBreaks) => Some(ToolPage::Polygonize),
         _ => None,
     };
 }
@@ -113,6 +116,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         Some(ToolPage::OrientHeight) => height_body(ui, state, controls),
         Some(ToolPage::Polygonize) => polygonize_body(ui, state, controls),
         Some(ToolPage::PolygonizeInput) => input_body(ui, state, controls),
+        Some(ToolPage::PolygonizeBreaks) => breaks_body(ui, state, controls),
     }
 }
 
@@ -322,8 +326,9 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     if widgets::open_row(ui, controls, INPUT, &input_name).clicked() {
         state.pad.toolbox.page = Some(ToolPage::PolygonizeInput);
     }
-    if let Some(bands) = state.polygonize_bands() {
-        widgets::detail_row(ui, BANDS, &format!("{bands}, from the color stops"));
+    let breaks = breaks_text(state);
+    if widgets::open_row(ui, controls, BREAKS, &breaks).clicked() {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeBreaks);
     }
     let smooth = Number::new(SMOOTH, state.polygonize.smooth, 0.0..=1.0)
         .shown(100.0, "%")
@@ -331,6 +336,15 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         .slider(ui, controls);
     if let Some(smooth) = smooth {
         state.polygonize.smooth = smooth;
+    }
+    // The tolerance is in texels, and it shows as a distance on the ground.
+    let texel = state.polygonize_texel_m().unwrap_or(1.0);
+    let simplify = Number::new(SIMPLIFY, state.polygonize.simplify, SIMPLIFY_RANGE)
+        .log()
+        .text(move |px| polygonize::distance_text(px * texel))
+        .slider(ui, controls);
+    if let Some(simplify) = simplify {
+        state.polygonize.simplify = simplify;
     }
     widgets::list_heading(ui, OUTPUT);
     if state.polygonize_can_split() {
@@ -383,6 +397,56 @@ fn progress_bar(ui: &mut egui::Ui, share: f32) {
     let mut fill = rect;
     fill.set_width(rect.width() * share.clamp(0.0, 1.0));
     ui.painter().rect_filled(fill, radius, theme::ACCENT);
+}
+
+/// The value of the Breaks row.
+fn breaks_text(state: &mut AppState) -> String {
+    match state.polygonize.breaks {
+        Breaks::Stops => COLOR_STOPS.to_owned(),
+        Breaks::Interval { step, .. } => {
+            let unit = state.polygonize_unit();
+            format!("Every {}{unit}", crate::color_key::number_text(step))
+        }
+    }
+}
+
+fn breaks_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    let stops = state.polygonize.breaks == Breaks::Stops;
+    if widgets::option_row(ui, controls, COLOR_STOPS, COLOR_STOPS, &[], stops).clicked() {
+        state.polygonize.breaks = Breaks::Stops;
+    }
+    if widgets::option_row(ui, controls, INTERVAL, INTERVAL, &[], !stops).clicked() && stops {
+        state.polygonize.breaks = state.default_interval();
+    }
+    let range = state.polygonize_range();
+    if let (Breaks::Interval { step, base }, Some((min, max))) = (state.polygonize.breaks, range) {
+        let unit = state.polygonize_unit();
+        let span = (max - min).max(1.0);
+        let new_step = Number::new(INTERVAL, step, span / 1000.0..=span)
+            .nice()
+            .unit(unit.trim())
+            .stepper(ui, controls);
+        let new_base = Number::new(BASE, base, min.min(0.0)..=max.max(0.0))
+            .step(step)
+            .unit(unit.trim())
+            .stepper(ui, controls);
+        if new_step.is_some() || new_base.is_some() {
+            state.polygonize.breaks = Breaks::Interval {
+                step: new_step.unwrap_or(step),
+                base: new_base.unwrap_or(base),
+            };
+        }
+    }
+    ui.add_space(8.0);
+    let note = match state.polygonize_bands() {
+        Some(bands) if bands.len() == 1 => "1 band.".to_owned(),
+        Some(bands) => format!("{} bands.", bands.len()),
+        None if state.polygonize_input().is_some() => TOO_MANY_BANDS.to_owned(),
+        None => NEEDS_RASTER.to_owned(),
+    };
+    ui.label(egui::RichText::new(note).color(theme::MUTE));
 }
 
 fn input_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {

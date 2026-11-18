@@ -1516,7 +1516,10 @@ fn orient_form(ui: &mut egui::Ui, state: &mut AppState) {
 /// result.
 fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
     use pad::toolbox::{NONE, RUN};
-    use polygonize::{ABOVE, BELOW, INPUT, NEEDS_RASTER, SMOOTH, SPLIT};
+    use polygonize::{
+        ABOVE, BASE, BELOW, BREAKS, Breaks, COLOR_STOPS, INPUT, INTERVAL, NEEDS_RASTER, SIMPLIFY,
+        SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
+    };
     ui.indent("polygonize", |ui| {
         let input = state.polygonize_input();
         let mut chosen = input;
@@ -1534,6 +1537,37 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
             state.polygonize.raster = chosen;
             state.toolbox_note = None;
         }
+        let stops = state.polygonize.breaks == Breaks::Stops;
+        let mut interval = !stops;
+        egui::ComboBox::from_label(BREAKS)
+            .selected_text(if stops { COLOR_STOPS } else { INTERVAL })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut interval, false, COLOR_STOPS);
+                ui.selectable_value(&mut interval, true, INTERVAL);
+            });
+        if interval != !stops {
+            state.polygonize.breaks = match interval {
+                true => state.default_interval(),
+                false => Breaks::Stops,
+            };
+        }
+        if let Breaks::Interval { mut step, mut base } = state.polygonize.breaks {
+            let unit = state.polygonize_unit();
+            ui.horizontal(|ui| {
+                ui.label(INTERVAL);
+                ui.add(
+                    egui::DragValue::new(&mut step)
+                        .range(1e-6..=f64::MAX)
+                        .suffix(unit),
+                );
+                ui.label(BASE);
+                ui.add(egui::DragValue::new(&mut base).suffix(unit));
+            });
+            state.polygonize.breaks = Breaks::Interval { step, base };
+            if state.polygonize_bands().is_none() {
+                ui.weak(TOO_MANY_BANDS);
+            }
+        }
         let mut smooth = state.polygonize.smooth * 100.0;
         let slider = egui::Slider::new(&mut smooth, 0.0..=100.0)
             .suffix("%")
@@ -1541,6 +1575,12 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
         if ui.add(slider).changed() {
             state.polygonize.smooth = smooth / 100.0;
         }
+        let texel = state.polygonize_texel_m().unwrap_or(1.0);
+        let slider = egui::Slider::new(&mut state.polygonize.simplify, SIMPLIFY_RANGE)
+            .logarithmic(true)
+            .custom_formatter(|px, _| polygonize::distance_text(px * texel))
+            .text(SIMPLIFY);
+        ui.add(slider);
         if state.polygonize_can_split() {
             ui.checkbox(&mut state.polygonize.split, SPLIT);
             if state.polygonize.split {

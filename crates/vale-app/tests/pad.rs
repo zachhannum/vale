@@ -19222,7 +19222,7 @@ fn polygonize_shows_its_progress_and_stops_on_cancel() {
     use vale_app::globe::DISPLAY_CAP;
     use vale_app::ui::RasterSpec;
     use vale_app::ui::pad::toolbox::RUN;
-    use vale_app::ui::polygonize::{BANDS, CANCEL, STOPPED};
+    use vale_app::ui::polygonize::{BREAKS, CANCEL, STOPPED};
     let mut h = empty_pad(BOARDS[1]);
     let state = h.state_mut();
     let n = 2 * DISPLAY_CAP as usize;
@@ -19233,7 +19233,7 @@ fn polygonize_shows_its_progress_and_stops_on_cancel() {
     map.fill(meters_to_level(-3000.0));
     h.run_steps(2);
     open_polygonize(&mut h);
-    assert!(h.query_by_label_contains(BANDS).is_some());
+    assert!(h.query_by_label_contains(BREAKS).is_some());
     let before = h.state().doc.project.layers().len();
     // The run does not wait for the worker outside of the tests.
     h.state_mut().headless = false;
@@ -19327,4 +19327,56 @@ fn a_layer_too_large_to_show_shows_an_error_and_can_be_deleted() {
     steps(&mut h, 3);
     assert_eq!(h.state().doc.project.layers().len(), before - 1);
     assert_eq!(marks(&h), 0);
+}
+
+#[test]
+fn polygonize_makes_bands_at_an_interval_from_the_breaks_page() {
+    use vale_app::ui::polygonize::{BREAKS, INTERVAL};
+    let (mut h, _) = islands_pad();
+    open_polygonize(&mut h);
+    tap(&mut h, BREAKS);
+    tap(&mut h, INTERVAL);
+    h.state_mut().polygonize.breaks = vale_app::ui::polygonize::Breaks::Interval {
+        step: 1000.0,
+        base: 0.0,
+    };
+    h.run_steps(2);
+    let count = h.state_mut().polygonize_bands().unwrap().len();
+    assert!(h.query_by_label(&format!("{count} bands.")).is_some());
+    screenshot::save(&mut h, "polygonize-breaks");
+    tap(
+        &mut h,
+        &format!("Back to {}", vale_app::ui::polygonize::POLYGONIZE),
+    );
+    screenshot::save(&mut h, "polygonize-page");
+    let (low, high) = h.state_mut().polygonize_range().unwrap();
+    let layers = h.state_mut().polygonize().unwrap();
+    let state = h.state();
+    let mins: Vec<f64> = (layers.iter())
+        .flat_map(|id| &state.doc.layer(*id).unwrap().features)
+        .filter_map(|f| match f.attributes.get("elev_min") {
+            Some(vale_store::Value::Number(v)) => Some(*v),
+            _ => None,
+        })
+        .collect();
+    assert!(!mins.is_empty());
+    for v in mins {
+        assert!(v == low || (v / 1000.0).fract() == 0.0, "{v} of {high}");
+    }
+}
+
+#[test]
+fn a_larger_simplify_gives_fewer_points() {
+    let (mut h, _) = islands_pad();
+    let points = |h: &mut Pad, simplify: f64| -> usize {
+        h.state_mut().polygonize.simplify = simplify;
+        let layers = h.state_mut().polygonize().unwrap();
+        (layers.iter())
+            .flat_map(|id| &h.state().doc.layer(*id).unwrap().features)
+            .map(|f| vale_app::lod::points(&f.geometry))
+            .sum()
+    };
+    let fine = points(&mut h, 0.5);
+    let coarse = points(&mut h, 4.0);
+    assert!(coarse * 2 < fine, "{coarse} and {fine}");
 }
