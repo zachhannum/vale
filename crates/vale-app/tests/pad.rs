@@ -19456,3 +19456,23 @@ fn a_larger_simplify_gives_fewer_points() {
     let coarse = points(&mut h, 4.0);
     assert!(coarse * 2 < fine, "{coarse} and {fine}");
 }
+
+#[test]
+fn a_swipe_opens_a_row_in_a_pane_above_another_pane() {
+    for below in [Panel::Attributes, Panel::Toolbox, Panel::Brush] {
+        let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[below]]);
+        swipe(&mut h, "Rivers", -120.0);
+        let rivers = vector(&h, "Rivers");
+        let open = h.state().pad.layer_list.open;
+        assert_eq!(
+            open.map(|o| (o.row, o.moving)),
+            Some((rivers, false)),
+            "{below:?}"
+        );
+        assert!(control(&h, "Delete Rivers").is_some(), "{below:?}");
+        // A swipe to the right selects a row.
+        swipe(&mut h, "Land", 80.0);
+        let land = vector(&h, "Land");
+        assert!(h.state().pad.layer_list.is_picked(land), "{below:?}");
+    }
+}

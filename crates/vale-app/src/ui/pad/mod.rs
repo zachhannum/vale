@@ -2221,7 +2221,10 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     if list && state.pad.layer_list.lift.is_none() {
         state.pad.name = None;
     }
-    if !list {
+    // The head of each pane comes here, so another pane must not end a
+    // gesture in the layer list.
+    let list_shown = state.pad.shows(Panel::Layers) && state.pad.layer.is_none();
+    if !list_shown {
         state.pad.layer_list.shut();
     }
     let scroll = egui::scroll_area::ScrollSource::default();
