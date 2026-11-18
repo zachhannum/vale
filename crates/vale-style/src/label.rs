@@ -218,6 +218,97 @@ impl LeaderAnchor {
     }
 }
 
+/// How the text of a line label lies on the line.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineOrientation {
+    #[default]
+    Curved,
+    Straight,
+    Horizontal,
+    Perpendicular,
+}
+
+impl LineOrientation {
+    pub const ALL: [LineOrientation; 4] = [
+        LineOrientation::Curved,
+        LineOrientation::Straight,
+        LineOrientation::Horizontal,
+        LineOrientation::Perpendicular,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            LineOrientation::Curved => "Curved",
+            LineOrientation::Straight => "Straight",
+            LineOrientation::Horizontal => "Horizontal",
+            LineOrientation::Perpendicular => "Perpendicular",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            LineOrientation::Curved => "curved",
+            LineOrientation::Straight => "straight",
+            LineOrientation::Horizontal => "horizontal",
+            LineOrientation::Perpendicular => "perpendicular",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<LineOrientation> {
+        LineOrientation::ALL.into_iter().find(|o| o.key() == key)
+    }
+}
+
+/// Where a line label goes along its line.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum LineAnchor {
+    /// Any position.
+    #[default]
+    Best,
+    FromStart,
+    FromEnd,
+    BeforeStart,
+    AfterEnd,
+}
+
+impl LineAnchor {
+    pub const ALL: [LineAnchor; 5] = [
+        LineAnchor::Best,
+        LineAnchor::FromStart,
+        LineAnchor::FromEnd,
+        LineAnchor::BeforeStart,
+        LineAnchor::AfterEnd,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            LineAnchor::Best => "Best",
+            LineAnchor::FromStart => "From start",
+            LineAnchor::FromEnd => "From end",
+            LineAnchor::BeforeStart => "Before start",
+            LineAnchor::AfterEnd => "After end",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            LineAnchor::Best => "best",
+            LineAnchor::FromStart => "from_start",
+            LineAnchor::FromEnd => "from_end",
+            LineAnchor::BeforeStart => "before_start",
+            LineAnchor::AfterEnd => "after_end",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<LineAnchor> {
+        LineAnchor::ALL.into_iter().find(|a| a.key() == key)
+    }
+}
+
 /// The default rank of each zone inside a polygon. Rank 1 is best, and rank 0 blocks the zone.
 pub const ZONES_INSIDE: [u8; 9] = [1; 9];
 
@@ -685,12 +776,36 @@ pub struct LabelClass {
     pub polygon_repeat: bool,
     /// Polygons. The distance between the repeats, in points.
     pub polygon_repeat_distance: f64,
-    /// Polygons. The distance that a label can go past the outline, in points.
+    /// Polygons and lines. The distance that a label can go past the outline or the ends of
+    /// the line, in points.
     pub overrun: f64,
     /// Polygons. A shape with less area gets no label, in square points.
     pub min_area: f64,
     /// Lines. The smoothing window of the line, in multiples of `size`.
     pub smoothing: f64,
+    /// Lines. How the text lies on the line.
+    pub orientation: LineOrientation,
+    /// Lines. Where the label goes along the line.
+    pub line_anchor: LineAnchor,
+    /// Lines. The distance of the anchor, in points, or in percent of the length if
+    /// `anchor_percent` is true.
+    pub anchor_distance: f64,
+    /// Lines. How far the label can move from the anchor, in the unit of `anchor_distance`.
+    pub anchor_tolerance: f64,
+    pub anchor_percent: bool,
+    /// Lines. True puts "Above" left of the line in the direction of its vertices, and
+    /// "Below" right of it.
+    pub by_direction: bool,
+    /// Lines. True makes the text read in the direction of the line, also upside down.
+    pub follow_direction: bool,
+    /// Lines. True gives lines with the same text that meet end to end one label.
+    pub merge_lines: bool,
+    /// Lines. The most extra space between two letters, in multiples of `size`.
+    pub line_spread: f64,
+    /// Lines. True spreads the letters to fill the line, with no limit.
+    pub spread_fill: bool,
+    /// Lines. A shorter visible line gets no label, in points.
+    pub min_length: f64,
     /// The margin around the label that other labels keep free, in points.
     pub buffer: f64,
     /// True keeps labels with the same text apart.
@@ -810,6 +925,17 @@ impl LabelClass {
             overrun: 0.0,
             min_area: 0.0,
             smoothing: SMOOTHING,
+            orientation: LineOrientation::Curved,
+            line_anchor: LineAnchor::Best,
+            anchor_distance: 0.0,
+            anchor_tolerance: 0.0,
+            anchor_percent: false,
+            by_direction: false,
+            follow_direction: false,
+            merge_lines: true,
+            line_spread: 0.0,
+            spread_fill: false,
+            min_length: 0.0,
             buffer: BUFFER,
             remove_duplicates: true,
             duplicate_distance: DUPLICATE_DISTANCE,
@@ -917,6 +1043,19 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "remove_duplicates": c.remove_duplicates,
                 "duplicate_distance": c.duplicate_distance,
             });
+            let line = json!({
+                "orientation": c.orientation.key(),
+                "line_anchor": c.line_anchor.key(),
+                "anchor_distance": c.anchor_distance,
+                "anchor_tolerance": c.anchor_tolerance,
+                "anchor_percent": c.anchor_percent,
+                "by_direction": c.by_direction,
+                "follow_direction": c.follow_direction,
+                "merge_lines": c.merge_lines,
+                "line_spread": c.line_spread,
+                "spread_fill": c.spread_fill,
+                "min_length": c.min_length,
+            });
             // The macro has a recursion limit, so the fallbacks go in after it.
             let fallbacks = json!({
                 "fallbacks": c
@@ -937,8 +1076,11 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "truncation_marker": c.truncation_marker,
                 "leader_distance": c.leader_distance,
             });
-            if let (Json::Object(m), Json::Object(f)) = (&mut class, fallbacks) {
+            if let (Json::Object(m), Json::Object(f), Json::Object(l)) =
+                (&mut class, fallbacks, line)
+            {
                 m.extend(f);
+                m.extend(l);
             }
             class
         })
@@ -1124,6 +1266,23 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         overrun: number("overrun", 0.0),
         min_area: number("min_area", 0.0),
         smoothing: number("smoothing", SMOOTHING),
+        orientation: text(m, "orientation")
+            .as_deref()
+            .and_then(LineOrientation::from_key)
+            .unwrap_or_default(),
+        line_anchor: text(m, "line_anchor")
+            .as_deref()
+            .and_then(LineAnchor::from_key)
+            .unwrap_or_default(),
+        anchor_distance: number("anchor_distance", 0.0),
+        anchor_tolerance: number("anchor_tolerance", 0.0),
+        anchor_percent: flag("anchor_percent", false),
+        by_direction: flag("by_direction", false),
+        follow_direction: flag("follow_direction", false),
+        merge_lines: flag("merge_lines", true),
+        line_spread: number("line_spread", 0.0),
+        spread_fill: flag("spread_fill", false),
+        min_length: number("min_length", 0.0),
         buffer: number("buffer", BUFFER),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
@@ -1285,6 +1444,18 @@ mod tests {
         a.no_flip = true;
         let mut b = LabelClass::new("Rivers", GeometryKind::Line, -1).unwrap();
         b.placement = LabelPlacement::LineBelow;
+        b.orientation = LineOrientation::Perpendicular;
+        b.line_anchor = LineAnchor::FromEnd;
+        b.anchor_distance = 20.0;
+        b.anchor_tolerance = 5.0;
+        b.anchor_percent = true;
+        b.by_direction = true;
+        b.follow_direction = true;
+        b.merge_lines = false;
+        b.line_spread = 0.5;
+        b.spread_fill = true;
+        b.min_length = 40.0;
+        b.overrun = 6.0;
         let mut c = LabelClass::new("Seas", GeometryKind::Polygon, 1).unwrap();
         c.spread = 2.5;
         c.curve_limit = 0.1;
@@ -1385,6 +1556,14 @@ mod tests {
         assert_eq!(read[0].curve_limit, 0.30);
         assert_eq!(read[0].spread, 1.0);
         assert_eq!(read[0].smoothing, 1.5);
+        assert_eq!(read[0].orientation, LineOrientation::Curved);
+        assert_eq!(read[0].line_anchor, LineAnchor::Best);
+        assert_eq!(read[0].anchor_distance, 0.0);
+        assert!(!read[0].by_direction && !read[0].follow_direction);
+        assert!(read[0].merge_lines);
+        assert_eq!(read[0].line_spread, 0.0);
+        assert!(!read[0].spread_fill);
+        assert_eq!(read[0].min_length, 0.0);
         assert_eq!(read[0].buffer, 1.0);
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);

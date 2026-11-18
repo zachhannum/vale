@@ -6,6 +6,7 @@ use crate::model::*;
 use crate::text::{Fonts, ShapedText};
 use crate::{fallback, improve, line, point, polygon};
 use kurbo::{Affine, Point, Rect};
+use std::collections::HashMap;
 
 pub(crate) struct Candidate {
     pub kind: CandidateKind,
@@ -175,6 +176,8 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         }
         valid.push((fi, shaped));
     }
+    let (merged, absorbed) = merge_lines(input, &valid);
+    valid.retain(|(fi, _)| !absorbed.contains_key(fi));
 
     // Fixed hard obstacles. `owner[i]` is the feature that owns box i, if any.
     let mut hard: Vec<OrientedBox> = Vec::new();
@@ -225,7 +228,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                     segs.len() as u32,
                     Rect::new(w[0].x, w[0].y, w[1].x, w[1].y).abs(),
                 );
-                segs.push((w[0], w[1], fi));
+                segs.push((w[0], w[1], absorbed.get(&fi).copied().unwrap_or(fi)));
             }
         }
     }
@@ -252,6 +255,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         input,
         parallels: &parallels,
         polygons: &polygons,
+        merged: &merged,
     };
     let mut instances: Vec<Instance> = Vec::new();
     for (fi, shaped) in &valid {
@@ -455,12 +459,95 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     }
 }
 
+/// Ends of lines closer than this, in page units, meet.
+const MERGE_TOLERANCE: f64 = 0.01;
+
+/// The lines of classes with [`LinePlacement::merge_connected`] that meet end to end and have
+/// the same text, joined into one path for the first feature of each chain. The second map
+/// gives the first feature of the chain of each other feature.
+fn merge_lines(
+    input: &LabelInput,
+    valid: &[(usize, ShapedText)],
+) -> (HashMap<usize, Vec<Point>>, HashMap<usize, usize>) {
+    let mut groups: Vec<((usize, &str), Vec<usize>)> = Vec::new();
+    for (fi, _) in valid {
+        let f = &input.features[*fi];
+        let merges = matches!(
+            &input.classes[f.class].placement,
+            Placement::Line(lp) if lp.merge_connected
+        );
+        if !merges || !matches!(&f.geometry, Geometry::Line { path, .. } if path.len() >= 2) {
+            continue;
+        }
+        let key = (f.class, f.text.as_str());
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, g)) => g.push(*fi),
+            None => groups.push((key, vec![*fi])),
+        }
+    }
+    let path_of = |fi: usize| match &input.features[fi].geometry {
+        Geometry::Line { path, .. } => path.as_slice(),
+        _ => &[],
+    };
+    let meet = |a: Point, b: Point| a.distance(b) <= MERGE_TOLERANCE;
+    let mut merged = HashMap::new();
+    let mut absorbed = HashMap::new();
+    for (_, group) in groups {
+        let mut used = vec![false; group.len()];
+        for i in 0..group.len() {
+            if used[i] {
+                continue;
+            }
+            used[i] = true;
+            let mut path = path_of(group[i]).to_vec();
+            let mut joined = false;
+            // Grow the chain at its end, then at its start.
+            for at_end in [true, false] {
+                loop {
+                    let tip = if at_end {
+                        path[path.len() - 1]
+                    } else {
+                        path[0]
+                    };
+                    let next = (0..group.len()).find_map(|j| {
+                        let p = path_of(group[j]);
+                        let (first, last) = (p[0], p[p.len() - 1]);
+                        (!used[j] && (meet(tip, first) || meet(tip, last)))
+                            .then_some((j, meet(tip, first)))
+                    });
+                    let Some((j, from_first)) = next else { break };
+                    used[j] = true;
+                    absorbed.insert(group[j], group[i]);
+                    joined = true;
+                    let mut piece = path_of(group[j]).to_vec();
+                    if from_first != at_end {
+                        piece.reverse();
+                    }
+                    if at_end {
+                        path.extend_from_slice(&piece[1..]);
+                    } else {
+                        piece.pop();
+                        piece.extend_from_slice(&path);
+                        path = piece;
+                    }
+                }
+            }
+            if joined {
+                merged.insert(group[i], path);
+            }
+        }
+    }
+    (merged, absorbed)
+}
+
 /// Makes the candidates of a feature.
 struct Generator<'a> {
     input: &'a LabelInput,
     parallels: &'a Parallels,
     /// The index, rings, and bounds of each polygon feature.
     polygons: &'a [(usize, &'a [Vec<Point>], Rect)],
+    /// The joined path of each line feature that absorbed connected lines.
+    merged: &'a HashMap<usize, Vec<Point>>,
 }
 
 impl Generator<'_> {
@@ -490,6 +577,7 @@ impl Generator<'_> {
                 self.parallels,
             ))],
             (Geometry::Line { path, stroke_width }, Placement::Line(lp)) => {
+                let path = self.merged.get(&fi).unwrap_or(path);
                 line::slots(path, *stroke_width, class, lp, shaped, bounds)
                     .into_iter()
                     .map(|slot| match slot {

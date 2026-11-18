@@ -5,8 +5,9 @@ use std::collections::{HashMap, HashSet};
 use kurbo::{Point, Rect};
 use vale_labeler::{
     Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor,
-    LinePlacement, LineSide, Obstacle, ObstacleKind, Options, Placement, PointPlacement,
-    PointPosition, PolygonMode, PolygonPlacement, PolygonZones, TextStyle, place_labels,
+    LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, ObstacleKind, Options,
+    Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
+    TextStyle, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
 use vale_store::GeometryKind;
@@ -413,6 +414,29 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             offset: c.offset,
             max_glyph_turn: c.curve_limit,
             smoothing: c.smoothing,
+            orientation: match c.orientation {
+                vale_style::LineOrientation::Curved => LineOrientation::Curved,
+                vale_style::LineOrientation::Straight => LineOrientation::Straight,
+                vale_style::LineOrientation::Horizontal => LineOrientation::Horizontal,
+                vale_style::LineOrientation::Perpendicular => LineOrientation::Perpendicular,
+            },
+            anchor: match c.line_anchor {
+                vale_style::LineAnchor::Best => LineAnchor::Best,
+                vale_style::LineAnchor::FromStart => LineAnchor::FromStart,
+                vale_style::LineAnchor::FromEnd => LineAnchor::FromEnd,
+                vale_style::LineAnchor::BeforeStart => LineAnchor::BeforeStart,
+                vale_style::LineAnchor::AfterEnd => LineAnchor::AfterEnd,
+            },
+            anchor_distance: c.anchor_distance,
+            anchor_tolerance: c.anchor_tolerance,
+            anchor_percent: c.anchor_percent,
+            by_direction: c.by_direction,
+            follow_direction: c.follow_direction,
+            overrun: c.overrun,
+            merge_connected: c.merge_lines,
+            max_spread: c.line_spread,
+            spread_fill: c.spread_fill,
+            min_length: c.min_length,
         })
     };
     match p {

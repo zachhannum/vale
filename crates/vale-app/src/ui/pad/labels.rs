@@ -6,7 +6,9 @@ use eframe::egui::{self, Align2, Rect, pos2, vec2};
 use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
-use vale_style::{LabelClass, LabelFallback, LabelPlacement, LabelPosition};
+use vale_style::{
+    LabelClass, LabelFallback, LabelPlacement, LabelPosition, LineAnchor, LineOrientation,
+};
 
 use super::atlas::{FRAME_TABS, named_tabs};
 use super::filter;
@@ -88,6 +90,16 @@ pub const REPEAT_LABEL: &str = "Repeat label";
 pub const REPEAT_DISTANCE: &str = "Repeat distance";
 pub const OVERRUN: &str = "Overrun";
 pub const MIN_AREA: &str = "Minimum area";
+pub const ORIENTATION: &str = "Orientation";
+pub const LINE_POSITION: &str = "Position";
+pub const ANCHOR_DISTANCE: &str = "Distance";
+pub const ANCHOR_TOLERANCE: &str = "Tolerance";
+pub const ANCHOR_PERCENT: &str = "Percent of length";
+pub const BY_DIRECTION: &str = "Side by line direction";
+pub const FOLLOW_DIRECTION: &str = "Follow line direction";
+pub const SPREAD_FILL: &str = "Spread to fill";
+pub const MERGE_LINES: &str = "Join connected lines";
+pub const MIN_LENGTH: &str = "Minimum length";
 /// The text of a blocked zone.
 pub const ZONE_OFF: &str = "Off";
 /// The names of the zones inside a polygon, row by row from the top left.
@@ -178,6 +190,16 @@ pub const SPREADS: (f64, f64) = (0.0, 4.0);
 pub const POLYGON_REPEAT_DISTANCES: (f64, f64) = (50.0, 2000.0);
 /// The smallest and the largest overrun, in points.
 pub const OVERRUNS: (f64, f64) = (0.0, 20.0);
+/// The smallest and the largest overrun of a line label, in points.
+pub const LINE_OVERRUNS: (f64, f64) = (0.0, 50.0);
+/// The smallest and the largest spread of a line label, in multiples of the size.
+pub const LINE_SPREADS: (f64, f64) = (0.0, 2.0);
+/// The smallest and the largest anchor distance and tolerance, in points.
+pub const ANCHOR_DISTANCES: (f64, f64) = (0.0, 1000.0);
+/// The smallest and the largest anchor distance and tolerance, in percent of the length.
+pub const ANCHOR_PERCENTS: (f64, f64) = (0.0, 100.0);
+/// The smallest and the largest minimum length of a line, in points.
+pub const MIN_LENGTHS: (f64, f64) = (0.0, 1000.0);
 /// The smallest and the largest minimum area, in square points.
 pub const MIN_AREAS: (f64, f64) = (0.0, 10000.0);
 /// The thinnest and the widest leader line, in points.
@@ -395,6 +417,8 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
     let (key, title, back) = match page {
         Some(ClassPage::Layer) => ("pad-atlas-class-layer", LAYER, class.name.as_str()),
         Some(ClassPage::Placement) => ("pad-atlas-placement", PLACEMENT, &*class.name),
+        Some(ClassPage::Orientation) => ("pad-atlas-orientation", ORIENTATION, &*class.name),
+        Some(ClassPage::LinePosition) => ("pad-atlas-line-position", LINE_POSITION, &*class.name),
         Some(ClassPage::Style) => ("pad-atlas-class-style", STYLE, &*class.name),
         Some(ClassPage::Case) => ("pad-atlas-class-case", CASE, &*class.name),
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
@@ -422,6 +446,8 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         match page {
             Some(ClassPage::Layer) => layer_page(ui, state, controls, at),
             Some(ClassPage::Placement) => placement_page(ui, state, controls, at, kind, &class),
+            Some(ClassPage::Orientation) => orientation_page(ui, state, controls, at, &class),
+            Some(ClassPage::LinePosition) => line_position_page(ui, state, controls, at, &class),
             Some(ClassPage::Style) => style_page(ui, state, controls, at, &class),
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
@@ -704,8 +730,8 @@ fn parallel_switches(
 }
 
 /// The Placement segment of the panel of a class. A point class has its
-/// positions and its offset. A line class has its offset, its repeat, its
-/// curve limit, and its smoothing. A polygon class has its spread, and a
+/// positions and its offset. A line class has its offset and the line
+/// options. A polygon class has its spread, and a
 /// class that is not horizontal has its curve limit. A point class and a
 /// polygon class can follow the parallels.
 fn placement_segment(
@@ -755,29 +781,167 @@ fn placement_segment(
         return;
     }
 
-    let mut repeat = class.repeat;
-    if widgets::switch_row(ui, controls, REPEAT, REPEAT, &mut repeat) {
-        state.label_class_step(map, layer, i, |c| c.repeat = repeat);
+    line_options(ui, state, controls, (map, layer, i), class);
+}
+
+/// The options of a line class after its offset: the orientation, the
+/// position and its numbers, the direction switches, the repeat, the
+/// overrun, the spread, the join, the minimum length, the curve limit, and
+/// the smoothing.
+fn line_options(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, layer, i): (MapId, LayerId, usize),
+    class: &LabelClass,
+) {
+    type Set = fn(&mut LabelClass, bool);
+    let switch = |ui: &mut egui::Ui,
+                  state: &mut AppState,
+                  controls: &mut Controls,
+                  name: &str,
+                  mut on: bool,
+                  set: Set| {
+        if widgets::switch_row(ui, controls, name, name, &mut on) {
+            state.label_class_step(map, layer, i, |c| set(c, on));
+        }
+    };
+    if widgets::open_row(ui, controls, ORIENTATION, class.orientation.name()).clicked() {
+        state.atlas.label_page = Some(ClassPage::Orientation);
     }
-    if class.repeat {
-        let (lo, hi) = REPEAT_INTERVALS;
-        let distance = Number::new(REPEAT_INTERVAL, class.repeat_distance, lo..=hi)
-            .nice()
-            .step(10.0)
-            .unit("pt")
+    if widgets::open_row(ui, controls, LINE_POSITION, class.line_anchor.name()).clicked() {
+        state.atlas.label_page = Some(ClassPage::LinePosition);
+    }
+    let best = class.line_anchor == LineAnchor::Best;
+    if !best {
+        let ((lo, hi), unit, step) = if class.anchor_percent {
+            (ANCHOR_PERCENTS, "%", 1.0)
+        } else {
+            (ANCHOR_DISTANCES, "pt", 5.0)
+        };
+        let distance = Number::new(ANCHOR_DISTANCE, class.anchor_distance, lo..=hi)
+            .step(step)
+            .unit(unit)
             .stepper(ui, controls);
         if let Some(distance) = distance {
-            state.edit_label_class(map, layer, i, |c| c.repeat_distance = distance);
+            state.edit_label_class(map, layer, i, |c| c.anchor_distance = distance);
+        }
+        let tolerance = Number::new(ANCHOR_TOLERANCE, class.anchor_tolerance, lo..=hi)
+            .step(step)
+            .unit(unit)
+            .stepper(ui, controls);
+        if let Some(tolerance) = tolerance {
+            state.edit_label_class(map, layer, i, |c| c.anchor_tolerance = tolerance);
+        }
+        switch(
+            ui,
+            state,
+            controls,
+            ANCHOR_PERCENT,
+            class.anchor_percent,
+            |c, on| {
+                c.anchor_percent = on;
+            },
+        );
+    }
+    switch(
+        ui,
+        state,
+        controls,
+        BY_DIRECTION,
+        class.by_direction,
+        |c, on| {
+            c.by_direction = on;
+        },
+    );
+    switch(
+        ui,
+        state,
+        controls,
+        FOLLOW_DIRECTION,
+        class.follow_direction,
+        |c, on| {
+            c.follow_direction = on;
+        },
+    );
+    if best {
+        switch(ui, state, controls, REPEAT, class.repeat, |c, on| {
+            c.repeat = on
+        });
+        if class.repeat {
+            let (lo, hi) = REPEAT_INTERVALS;
+            let distance = Number::new(REPEAT_INTERVAL, class.repeat_distance, lo..=hi)
+                .nice()
+                .step(10.0)
+                .unit("pt")
+                .stepper(ui, controls);
+            if let Some(distance) = distance {
+                state.edit_label_class(map, layer, i, |c| c.repeat_distance = distance);
+            }
         }
     }
-    curve_limit(ui, state, controls, (map, layer, i), class);
-    let smoothing = Number::new(SMOOTHING, class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
-        .step(0.1)
-        .unit("×")
-        .default(vale_style::SMOOTHING)
-        .slider(ui, controls);
-    if let Some(smoothing) = smoothing {
-        state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
+    let overrun = Number::new(OVERRUN, class.overrun, LINE_OVERRUNS.0..=LINE_OVERRUNS.1)
+        .step(0.5)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(overrun) = overrun {
+        state.edit_label_class(map, layer, i, |c| c.overrun = overrun);
+    }
+    let along = matches!(
+        class.orientation,
+        LineOrientation::Curved | LineOrientation::Straight
+    );
+    if along {
+        if !class.spread_fill {
+            let (lo, hi) = LINE_SPREADS;
+            let spread = Number::new(SPREAD, class.line_spread, lo..=hi)
+                .step(0.1)
+                .unit("×")
+                .stepper(ui, controls);
+            if let Some(spread) = spread {
+                state.edit_label_class(map, layer, i, |c| c.line_spread = spread);
+            }
+        }
+        switch(
+            ui,
+            state,
+            controls,
+            SPREAD_FILL,
+            class.spread_fill,
+            |c, on| {
+                c.spread_fill = on;
+            },
+        );
+    }
+    switch(
+        ui,
+        state,
+        controls,
+        MERGE_LINES,
+        class.merge_lines,
+        |c, on| {
+            c.merge_lines = on;
+        },
+    );
+    let length = Number::new(MIN_LENGTH, class.min_length, MIN_LENGTHS.0..=MIN_LENGTHS.1)
+        .step(5.0)
+        .unit("pt")
+        .stepper(ui, controls);
+    if let Some(length) = length {
+        state.edit_label_class(map, layer, i, |c| c.min_length = length);
+    }
+    if class.orientation == LineOrientation::Curved {
+        curve_limit(ui, state, controls, (map, layer, i), class);
+    }
+    if along {
+        let smoothing = Number::new(SMOOTHING, class.smoothing, SMOOTHINGS.0..=SMOOTHINGS.1)
+            .step(0.1)
+            .unit("×")
+            .default(vale_style::SMOOTHING)
+            .slider(ui, controls);
+        if let Some(smoothing) = smoothing {
+            state.edit_label_class(map, layer, i, |c| c.smoothing = smoothing);
+        }
     }
 }
 
@@ -1612,6 +1776,42 @@ fn placement_page(
         let on = placement == class.placement;
         if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
             state.label_class_step(map, layer, i, |c| c.placement = placement);
+            state.atlas.label_page = None;
+        }
+    }
+}
+
+/// The orientations of a line class.
+fn orientation_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    for orientation in LineOrientation::ALL {
+        let name = orientation.name();
+        let on = orientation == class.orientation;
+        if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
+            state.label_class_step(map, layer, i, |c| c.orientation = orientation);
+            state.atlas.label_page = None;
+        }
+    }
+}
+
+/// The positions along the line of a line class.
+fn line_position_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    for anchor in LineAnchor::ALL {
+        let name = anchor.name();
+        let on = anchor == class.line_anchor;
+        if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
+            state.label_class_step(map, layer, i, |c| c.line_anchor = anchor);
             state.atlas.label_page = None;
         }
     }

@@ -70,6 +70,7 @@ fn class(size: f64) -> LabelClass {
             repeat_distance: Some(600.0),
             max_glyph_turn: 0.30,
             smoothing: 1.5,
+            ..Default::default()
         }),
         duplicate_distance: Some(300.0),
         fallbacks: Default::default(),
