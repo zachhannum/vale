@@ -19114,6 +19114,82 @@ fn manual_draw_the_polygonize_output_of_a_painted_world() {
     step(&mut h, "step");
 }
 
+/// The peak heap of each step with a large Polygonize output: the run, the
+/// tiles of the globe, the simplified copies, and the Atlas workspace.
+/// `VALE_FACE` sets the face size, and `VALE_SIMPLIFY` the Simplify in
+/// texels.
+#[test]
+#[ignore = "manual"]
+fn manual_memory_of_a_large_polygonize_output() {
+    use vale_app::ui::RasterSpec;
+    let n: usize = std::env::var("VALE_FACE").map_or(8192, |v| v.parse().unwrap());
+    let simplify: f64 = std::env::var("VALE_SIMPLIFY").map_or(0.5, |v| v.parse().unwrap());
+    let mut h = empty_pad(BOARDS[1]);
+    let state = h.state_mut();
+    let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..vale_terrain::FACES {
+        let levels: Vec<u16> = (0..n * n)
+            .map(|i| noise_level(face, i % n, i / n, n))
+            .collect();
+        map.store_face(face, &levels);
+    }
+    state.polygonize.split = false;
+    state.polygonize.simplify = simplify;
+    // The resident memory and its peak since the last reset, in MB.
+    let status = |key: &str| -> usize {
+        let text = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+        let line = text.lines().find(|l| l.starts_with(key)).unwrap_or("");
+        let kb: usize = (line.split_whitespace().nth(1))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        kb >> 10
+    };
+    let step = |what: &str, run: &mut dyn FnMut()| {
+        let _ = std::fs::write("/proc/self/clear_refs", "5");
+        let base = status("VmRSS");
+        let start = std::time::Instant::now();
+        run();
+        eprintln!(
+            "{what}: {:?}, resident {base} MB before, peak {} MB, after {} MB",
+            start.elapsed(),
+            status("VmHWM"),
+            status("VmRSS")
+        );
+    };
+    let mut id = None;
+    step("polygonize", &mut || {
+        id = h.state_mut().polygonize().unwrap().first().copied()
+    });
+    let id = id.unwrap();
+    let points: usize = (h.state().doc.layer(id).unwrap().features.iter())
+        .map(|f| vale_app::lod::points(&f.geometry))
+        .sum();
+    eprintln!("{points} points");
+    step("frames", &mut || h.run_steps(3));
+    step("tiles", &mut || {
+        let state = h.state_mut();
+        state.pipeline.vtiles_mut().begin();
+        state.pipeline.show_tiles(&state.doc, id, 2.0);
+        state
+            .globe
+            .set_vector_tiles(state.pipeline.vtiles().shown());
+        state
+            .globe
+            .plan_vector_tiles(state.pipeline.vtiles_mut(), 2.0, true);
+    });
+    step("simplified copies", &mut || {
+        let state = h.state_mut();
+        let layer = state.doc.layer(id).unwrap().clone();
+        state.pipeline.lod_mut().level(&layer, 1e-3);
+        state.pipeline.poll_lod(true);
+    });
+    step("atlas", &mut || {
+        h.state_mut().workspace = Workspace::Atlas;
+        h.run_steps(5);
+    });
+}
+
 /// Times the tiles of the Polygonize output of a painted world: the tiles
 /// of the whole globe, of closer views, and of a style change.
 /// `VALE_FACE` sets the face size.
