@@ -36,8 +36,9 @@ pub const ATLAS: [u32; 2] = [SLOT_COLS * TILE_PX as u32, SLOT_ROWS * TILE_PX as 
 /// The size of the page table of a layer: an entry for each tile of each
 /// level.
 pub const PAGE_SIZE: [u32; 2] = [1024, 512];
-/// A layer with more points draws from tiles.
-pub const MIN_POINTS: usize = 1_000_000;
+/// A layer with more points draws from tiles. The shapes of egui slow the
+/// frame well before a layer has this many points on the screen.
+pub const MIN_POINTS: usize = 100_000;
 
 /// The index of the entry of `key` in the page table.
 pub fn page_index(key: TileKey) -> u32 {

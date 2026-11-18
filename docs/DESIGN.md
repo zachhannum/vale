@@ -301,7 +301,7 @@ Edits, snapping, the attribute table, pick, and the export use the full geometry
 
 ### Tiles of a vector layer
 
-The globe and the flat view draw a line or polygon layer with more than 1,000,000 points from tiles. The layer must have no mask, and only fills and solid or dashed strokes. A tile is a picture of a part of a cube face. Level 0 has one tile for each face, and each level cuts each tile into four, down to level 8. A tile has 256 by 256 texels.
+The globe and the flat view draw a line or polygon layer with more than 100,000 points from tiles. The layer must have no mask, and only fills and solid or dashed strokes. A tile is a picture of a part of a cube face. Level 0 has one tile for each face, and each level cuts each tile into four, down to level 8. A tile has 256 by 256 texels.
 
 The view wants the tiles under it at the level that has one texel or more in each pixel, and the six tiles of level 0. Worker threads render the tiles with the map renderer, coarse levels first and then from the middle of the view. A tile reads only the parts of the rings near it, so a tile needs no simplified copy. The tiles of all layers share one atlas of 360 tiles on the GPU. Each layer has a table of the places of its tiles in the atlas. Where a tile is missing, the shader draws the nearest coarser tile that is there.
 
