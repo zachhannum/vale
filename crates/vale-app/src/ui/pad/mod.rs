@@ -565,6 +565,8 @@ pub struct PadState {
     pub brush_faces: [Option<(&'static str, Icon)>; 2],
     /// The height of the contents of each panel, by the key of the panel.
     heights: HashMap<&'static str, f32>,
+    /// The key of a page that opens at the top in the next frame.
+    scroll_top: Option<&'static str>,
     /// The Style section of the panel of a raster layer.
     pub style: raster::StyleState,
     /// The Style section of the panel of a vector layer.

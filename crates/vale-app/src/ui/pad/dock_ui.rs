@@ -1027,7 +1027,12 @@ fn contents(
         None if super::list::lifted(ui.ctx()) => egui::scroll_area::ScrollSource::NONE,
         None => head.scroll,
     };
-    let out = egui::ScrollArea::vertical()
+    let mut area = egui::ScrollArea::vertical();
+    if state.pad.scroll_top == Some(head.key) {
+        state.pad.scroll_top = None;
+        area = area.vertical_scroll_offset(0.0);
+    }
+    let out = area
         .id_salt(("pad-pane", head.key))
         .scroll_source(scroll)
         .max_height(most)

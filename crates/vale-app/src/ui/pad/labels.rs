@@ -290,6 +290,8 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
 fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label = Some((frame, layer, i));
     state.atlas.label_page = None;
+    // The panels of all classes have one key.
+    state.pad.scroll_top = Some(CLASS_KEY);
     state.atlas.label_segment = ClassSegment::Text;
     state.atlas.label_color = None;
     state.atlas.position_list = ListState::default();
@@ -420,6 +422,9 @@ fn class_group(state: &mut AppState, map: MapId, name: &'static str) {
     }
 }
 
+/// The key of the panel of a label class.
+const CLASS_KEY: &str = "pad-atlas-class";
+
 /// The panel of the open label class of frame `id`, or of one of its pages,
 /// in the pane of the Labels panel.
 pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
@@ -441,7 +446,7 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
         Some(ClassPage::Fallbacks) => ("pad-atlas-fallbacks", FALLBACKS, &*class.name),
         Some(ClassPage::Abbreviations) => ("pad-atlas-abbreviations", ABBREVIATIONS, FALLBACKS),
-        None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
+        None => (CLASS_KEY, class.name.as_str(), FRAME_TABS[3]),
     };
     let parts = PageParts::new(key, title, Some(back));
     let back_to = move |state: &mut AppState| match page {
