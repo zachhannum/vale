@@ -310,6 +310,22 @@ impl Project {
         id
     }
 
+    /// Moves a new raster layer from the top of `new_layer_collection` to
+    /// the place above the top raster layer of the collection.
+    pub(crate) fn place_raster_in_collection(&mut self, layer: LayerId) {
+        let into = self.new_layer_collection();
+        let rasters: BTreeSet<LayerId> = (self.layers.iter())
+            .filter(|l| l.raster().is_some() && l.id != layer)
+            .map(|l| l.id)
+            .collect();
+        let Some(c) = self.collection_mut(into) else {
+            return;
+        };
+        c.layers.retain(|l| *l != layer);
+        let top = c.layers.iter().rposition(|l| rasters.contains(l));
+        c.layers.insert(top.map_or(0, |i| i + 1), layer);
+    }
+
     /// Takes each removed layer out of each collection.
     pub(crate) fn drop_removed_members(&mut self) {
         let ids: BTreeSet<LayerId> = self.layers.iter().map(|l| l.id).collect();
@@ -491,6 +507,18 @@ mod tests {
         p.set_globe_collections(vec![]);
         let e = p.add_layer("e".into(), GeometryKind::Line, None, vec![]);
         assert_eq!(layers(&p, world).last(), Some(&e));
+    }
+
+    #[test]
+    fn a_new_raster_layer_goes_above_the_top_raster_layer_of_its_collection() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let first = p.add_raster("h".into(), 64, "m".into(), 0.0, 1.0);
+        let first = p.raster_layer(first).unwrap().id;
+        assert_eq!(layers(&p, world), [first, a, b, c]);
+        let second = p.add_raster("g".into(), 64, "m".into(), 0.0, 1.0);
+        let second = p.raster_layer(second).unwrap().id;
+        assert_eq!(layers(&p, world), [first, second, a, b, c]);
     }
 
     #[test]

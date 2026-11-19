@@ -946,7 +946,9 @@ impl Project {
             features: Vec::new(),
             style: None,
         };
+        let layer_id = layer.id;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
+        self.place_raster_in_collection(layer_id);
         id
     }
 
