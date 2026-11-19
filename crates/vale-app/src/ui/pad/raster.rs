@@ -47,6 +47,9 @@ pub const REMOVE_STOP: &str = "Remove stop";
 /// The row that puts back the default color stops, and the button of the
 /// card that asks before it.
 pub const RESET_STOPS: &str = "Reset colors";
+/// The row of the stops page of a frame that moves the stops into the
+/// values of the frame.
+pub const FIT_TO_FRAME: &str = "Fit stops to frame";
 /// The row of the Style section that opens the page of the color ramps, and
 /// the title of the page.
 pub const COLOR_RAMPS: &str = "Color ramps";
@@ -309,7 +312,8 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
 /// area at each value, the list of the bands, the reset row, and the row of
 /// the color ramps. A tap on a band opens its card, which `band_card`
 /// shows. On the page of frame `frame`, a switch shows the bands that the
-/// frame shows or all bands.
+/// frame shows or all bands, and in frame, a row fits the stops to the
+/// values of the frame.
 pub fn stops_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -413,6 +417,25 @@ pub fn stops_body(
         style.reset = None;
     }
     style.reset_anchor = (style.reset == Some(id)).then_some((id, row.rect));
+    if let Some(w) = &window {
+        let on = w.lo < w.hi;
+        if widgets::text_row(ui, controls, FIT_TO_FRAME, 0.0, false, on).clicked() {
+            match bands.fitted_to(w.lo, w.hi) {
+                Some(fitted) => *bands = fitted,
+                None => {
+                    let text = format!("Range is too small for {count} bands.");
+                    state.ramp_note = Some(crate::ui::Note::new(text, true, Some(id)));
+                }
+            }
+        }
+        if state
+            .ramp_note
+            .as_ref()
+            .is_some_and(|n| n.layer == Some(id))
+        {
+            super::note_text(ui, None, &mut state.ramp_note, Some(id));
+        }
+    }
     if widgets::open_row(ui, controls, COLOR_RAMPS, "").clicked() {
         state.pad.page = Some(Page::Ramps);
     }

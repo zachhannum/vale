@@ -7194,6 +7194,17 @@ fn the_card_of_a_ramp_on_the_globe_has_no_choice_of_the_frame_bands() {
 }
 
 #[test]
+fn the_stops_page_on_the_globe_has_no_fit_to_frame_row() {
+    use vale_app::ui::pad::raster::{FIT_TO_FRAME, RESET_STOPS};
+    let mut h = painted_pad(BOARDS[0]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    scroll_to_row(&mut h, RESET_STOPS);
+    assert!(control(&h, RESET_STOPS).is_some());
+    assert!(control(&h, FIT_TO_FRAME).is_none());
+}
+
+#[test]
 fn save_as_ramp_opens_the_editor_with_the_band_colors_and_names() {
     use vale_app::ui::pad::ramp_editor::SAVE_RAMP;
     use vale_app::ui::pad::raster::SAVE_AS_RAMP;

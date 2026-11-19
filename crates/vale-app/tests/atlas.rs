@@ -12969,6 +12969,13 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
 /// Three land colors for a ramp.
 const LAND_RAMP: [[u8; 3]; 3] = [[200, 40, 40], [220, 180, 40], [250, 250, 200]];
 
+/// The values of the stops of the height layer in the style of the inset
+/// map.
+fn inset_values(h: &Pad, layer: LayerId) -> Vec<f64> {
+    let style = raster_style(h, Some(frame(h, 1).map), layer);
+    style.stops.iter().map(|s| s.value).collect()
+}
+
 #[test]
 fn the_ramp_card_in_a_frame_starts_on_the_mode_of_the_page() {
     use vale_app::ui::pad::Page;
@@ -13029,4 +13036,96 @@ fn all_bands_on_the_ramp_card_in_a_frame_changes_the_bands_out_of_the_frame() {
         }
         assert_eq!(raster_style(&h, None, layer), globe, "{all}");
     }
+}
+
+#[test]
+fn fit_stops_to_frame_shows_only_in_frame() {
+    use vale_app::ui::pad::raster::{FIT_TO_FRAME, RESET_STOPS};
+    use vale_app::ui::pad::stops::ALL_BANDS;
+    let (mut h, _, _) = frame_stops_pad(45.0);
+    scroll_to(&mut h, FIT_TO_FRAME);
+    assert!(control(&h, FIT_TO_FRAME).is_some());
+    tap(&mut h, ALL_BANDS);
+    scroll_to(&mut h, RESET_STOPS);
+    assert!(control(&h, FIT_TO_FRAME).is_none());
+    assert!(h.query_by_label(FIT_TO_FRAME).is_none());
+}
+
+#[test]
+fn fit_stops_to_frame_keeps_sea_level_on_a_frame_across_it() {
+    use vale_app::ui::pad::raster::FIT_TO_FRAME;
+    let (mut h, height, layer) = frame_stops_pad(0.0);
+    let w = stops_window(&h);
+    assert!(w.lo < 0.0 && 0.0 < w.hi, "{w:?}");
+    let before = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let globe = raster_style(&h, None, layer);
+    let old = inset_values(&h, layer);
+    scroll_to(&mut h, FIT_TO_FRAME);
+    tap(&mut h, FIT_TO_FRAME);
+    let style = raster_style(&h, Some(frame(&h, 1).map), layer);
+    assert_eq!(style.colors, before.colors());
+    let new = inset_values(&h, layer);
+    assert_eq!(new.len(), old.len());
+    let last = old.len() - 1;
+    assert_eq!((new[0], new[last]), (old[0], old[last]));
+    let sea = before.sea().unwrap();
+    assert_eq!(new[sea], 0.0);
+    let (min, max) = (old[0], old[last]);
+    for i in (1..last).filter(|&i| i != sea) {
+        let (got, want) = match i < sea {
+            true => (new[i] / w.lo, old[i] / min),
+            false => (new[i] / w.hi, old[i] / max),
+        };
+        assert!((got - want).abs() < 1e-9, "{i}: {old:?} {new:?}");
+        assert!((w.lo..=w.hi).contains(&new[i]), "{i}: {new:?}");
+    }
+    assert_eq!(raster_style(&h, None, layer), globe);
+}
+
+#[test]
+fn fit_stops_to_frame_moves_only_the_land_on_a_land_frame() {
+    use vale_app::ui::pad::raster::FIT_TO_FRAME;
+    let (mut h, height, layer) = frame_stops_pad(45.0);
+    let w = stops_window(&h);
+    let sea = h
+        .state_mut()
+        .globe
+        .bands_mut(height)
+        .unwrap()
+        .sea()
+        .unwrap();
+    let old = inset_values(&h, layer);
+    scroll_to(&mut h, FIT_TO_FRAME);
+    tap(&mut h, FIT_TO_FRAME);
+    let new = inset_values(&h, layer);
+    let last = old.len() - 1;
+    assert_eq!(new[..=sea], old[..=sea]);
+    assert_eq!(new[last], old[last]);
+    for i in sea + 1..last {
+        let got = (new[i] - w.lo) / (w.hi - w.lo);
+        let want = old[i] / old[last];
+        assert!((got - want).abs() < 1e-9, "{i}: {old:?} {new:?}");
+    }
+}
+
+#[test]
+fn fit_stops_to_frame_is_one_undo_step() {
+    use vale_app::ui::pad::raster::FIT_TO_FRAME;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let (mut h, _, layer) = frame_stops_on(h, 45.0);
+    h.state_mut().save_waiting().unwrap();
+    let old = inset_values(&h, layer);
+    scroll_to(&mut h, FIT_TO_FRAME);
+    tap(&mut h, FIT_TO_FRAME);
+    h.state_mut().save_waiting().unwrap();
+    assert_ne!(inset_values(&h, layer), old);
+    tap(&mut h, "Undo");
+    assert_eq!(inset_values(&h, layer), old);
 }
