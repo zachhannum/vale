@@ -76,10 +76,10 @@ impl Project {
         Some(id)
     }
 
-    /// False if the collection is missing, or if the name is blank or
-    /// another collection has it.
+    /// False for World, if the collection is missing, or if the name is
+    /// blank or another collection has it.
     pub fn rename_collection(&mut self, id: CollectionId, name: &str) -> bool {
-        if !self.collection_name_is_free(name, Some(id)) {
+        if id == self.world_collection || !self.collection_name_is_free(name, Some(id)) {
             return false;
         }
         match self.collection_mut(id) {
@@ -417,11 +417,11 @@ mod tests {
     }
 
     #[test]
-    fn world_can_be_renamed_and_cannot_be_removed() {
+    fn world_cannot_be_renamed_or_removed() {
         let (mut p, ids) = project();
         let world = p.world_collection();
-        assert!(p.rename_collection(world, "Earth"));
-        assert_eq!(p.collection(world).unwrap().name, "Earth");
+        assert!(!p.rename_collection(world, "Earth"));
+        assert_eq!(p.collection(world).unwrap().name, "World");
         assert!(!p.remove_collection(world));
         assert_eq!(layers(&p, world), ids);
     }

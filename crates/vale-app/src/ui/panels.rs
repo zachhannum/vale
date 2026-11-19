@@ -610,8 +610,8 @@ fn move_name(name: &str, up: bool) -> String {
 }
 
 /// The header of the group of a checked collection: the button that
-/// collapses it, its name field, the count of its layers while it is
-/// collapsed, the arrows that restack it, and its Delete button.
+/// collapses it, its name field, the arrows that restack it, and its
+/// Delete button. The name field and the Delete button of World are off.
 fn collection_header(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -624,7 +624,7 @@ fn collection_header(
     let Some(c) = project.collection(id) else {
         return;
     };
-    let (name, layers) = (c.name.clone(), c.layers.len());
+    let name = c.name.clone();
     let collapsed = project.is_collapsed(id);
     let world = project.world_collection();
     ui.horizontal(|ui| {
@@ -642,7 +642,10 @@ fn collection_header(
         // changes when it loses the focus.
         let key = ui.id().with(COLLECTION_NAME);
         let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| name.clone());
-        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
+        let field = ui.add_enabled(
+            id != world,
+            egui::TextEdit::singleline(&mut text).desired_width(140.0),
+        );
         named(
             &field,
             egui::WidgetType::TextEdit,
@@ -654,9 +657,6 @@ fn collection_header(
             ui.data_mut(|d| d.remove::<String>(key));
         } else if field.has_focus() {
             ui.data_mut(|d| d.insert_temp(key, text));
-        }
-        if collapsed {
-            ui.weak(layers.to_string());
         }
         for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
             let button = ui.add_enabled(index != end, egui::Button::new(text).small());

@@ -4539,9 +4539,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The dock is on the right edge, below the top row.
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(854.0, 92.0), 340.0));
-    // The header, the collection menu, the import row, and the three layers
-    // of the sample.
-    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 10.0);
+    // The header and the card of World, with the space below its last row.
+    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 5.0 + 10.0);
     // The action button is at the right end of the header.
     assert_eq!(control(&h, ADD_LAYER).unwrap().min, pos2(1146.0, 96.0));
     // The Brush panel is a pane below a bar.
@@ -19927,7 +19926,7 @@ fn three_cards(h: &mut Pad) {
 
 #[test]
 fn the_cards_of_the_checked_collections_are_in_the_stacking_order() {
-    use vale_app::ui::pad::collection::{chevron_name, dim_row, grip_name, layer_row};
+    use vale_app::ui::pad::collection::{chevron_name, dim_row, header_name, layer_row};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -19935,7 +19934,7 @@ fn the_cards_of_the_checked_collections_are_in_the_stacking_order() {
         check_controls(&h, &format!("{what} with three cards"));
         assert_eq!(card_order(&h), ["Water", "Travel", "World"], "{what}");
         for name in ["Water", "Travel", "World"] {
-            for control_name in [chevron_name(name, false), grip_name(name)] {
+            for control_name in [chevron_name(name, false), header_name(name)] {
                 let rect = control(&h, &control_name).unwrap();
                 assert!(rect.width() >= 44.0 && rect.height() >= 44.0, "{what}");
             }
@@ -19993,7 +19992,8 @@ fn a_collapsed_card_shows_its_header_and_the_count_of_its_layers() {
     assert!(control(&h, &chevron_name("World", true)).is_some());
     assert!(control(&h, &layer_row("Land")).is_none());
     assert!(control(&h, &dim_row("Height", "World")).is_none());
-    assert!(h.query_by_label("4").is_some());
+    // The header row has no count of layers.
+    assert!(h.query_by_label("4").is_none());
     let project = &h.state().doc.project;
     assert!(project.is_collapsed(project.world_collection()));
     // A tap on the header row opens the card again, and a second tap
@@ -20076,9 +20076,35 @@ fn a_drop_outside_its_own_card_springs_back() {
     assert_eq!(control(&h, &layer_row("Land")).unwrap(), land);
 }
 
+/// Holds the header row of a card until the card lifts, and drags it to
+/// `to`.
+fn hold_card(h: &mut Pad, name: &str, to: Pos2) {
+    use vale_app::ui::pad::collection::header_name;
+    let from = control(h, &header_name(name)).unwrap().center();
+    touch(h, egui::TouchPhase::Start, from, None);
+    for _ in 0..200 {
+        h.step();
+        if h.state().pad.cards.lift.is_some() {
+            break;
+        }
+    }
+    assert!(h.state().pad.cards.lift.is_some(), "{name} did not lift");
+    for i in 1..=8 {
+        touch(
+            h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 8.0),
+            None,
+        );
+        h.step();
+    }
+    touch(h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
 #[test]
 fn a_drag_of_a_card_restacks_the_collections_in_one_step() {
-    use vale_app::ui::pad::collection::{chevron_name, grip_name};
+    use vale_app::ui::pad::collection::{chevron_name, header_name};
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
@@ -20092,10 +20118,14 @@ fn a_drag_of_a_card_restacks_the_collections_in_one_step() {
         let stack = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
         let ids = ["World", "Travel", "Water"].map(|n| collection_id(&h, n));
         assert_eq!(stack(&h), ids, "{what}");
-        // A drag of the grip of World to the top of the panel.
-        let grip = control(&h, &grip_name("World")).unwrap().center();
+        // A hold on the header of World, and a drag to the top of the
+        // panel.
         let top = control(&h, &chevron_name("Water", true)).unwrap();
-        drag(&mut h, grip, pos2(grip.x, top.top() + 4.0), None);
+        hold_card(
+            &mut h,
+            "World",
+            pos2(top.center().x + 80.0, top.top() + 4.0),
+        );
         assert_eq!(h.state().pad.cards.lift, None, "{what}");
         assert_eq!(card_order(&h), ["World", "Water", "Travel"], "{what}");
         assert_eq!(stack(&h), [ids[1], ids[2], ids[0]], "{what}");
@@ -20105,8 +20135,8 @@ fn a_drag_of_a_card_restacks_the_collections_in_one_step() {
         assert_eq!(stack(&h), ids, "{what}");
 
         // A drop next to the card itself changes nothing.
-        let grip = control(&h, &grip_name("Travel")).unwrap().center();
-        drag(&mut h, grip, grip + vec2(0.0, 10.0), None);
+        let travel = control(&h, &header_name("Travel")).unwrap().center();
+        hold_card(&mut h, "Travel", travel + vec2(0.0, 10.0));
         assert_eq!(stack(&h), ids, "{what}");
     }
 }
@@ -20252,6 +20282,7 @@ fn each_change_of_a_collection_is_one_undo_step() {
     open_collection_menu(&mut h);
     swipe_collection(&mut h, "World");
     assert!(control(&h, "Delete World").is_none());
+    assert!(control(&h, &format!("{RENAME} World")).is_none());
     close_collection_menu(&mut h);
 
     // A delete by a swipe keeps the layers.
@@ -20304,6 +20335,10 @@ fn manual_collection_screenshots() {
         let mut h = pad(size);
         three_cards(&mut h);
         screenshot::save(&mut h, &format!("pad-collection-cards-{what}"));
+        tap(&mut h, "Layer Rivers");
+        swipe(&mut h, "Rivers", -120.0);
+        screenshot::save(&mut h, &format!("pad-collection-row-swipe-{what}"));
+        swipe(&mut h, "Rivers", 120.0);
         tap(&mut h, &chevron_name("Travel", false));
         screenshot::save(&mut h, &format!("pad-collection-collapsed-{what}"));
         open_collection_menu(&mut h);

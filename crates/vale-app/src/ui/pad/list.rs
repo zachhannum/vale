@@ -809,7 +809,15 @@ fn paint_row<K>(
     let clip = Rect::from_x_y_ranges(left..=edge + shift.min(0.0), rect.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(clip));
     let pressed = body.is_pointer_button_down_on();
-    let highlight = highlight.translate(vec2(shift, 0.0));
+    // A swipe to the left moves the right edge of the highlight, so that
+    // its corners stay round.
+    let highlight = match shift < 0.0 {
+        true => Rect::from_min_max(
+            highlight.min,
+            pos2(highlight.right() + shift, highlight.bottom()),
+        ),
+        false => highlight.translate(vec2(shift, 0.0)),
+    };
     paint_back(&painter, highlight, picked, row.on || pressed);
     let at = Cell {
         rect,

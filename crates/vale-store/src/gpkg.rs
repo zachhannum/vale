@@ -8440,7 +8440,6 @@ mod tests {
             let map = p.atlas.maps[0].id;
             p.set_map_stack(map, vec![c, world])
         });
-        step(&mut project, &|p| p.rename_collection(world, "Earth"));
         step(&mut project, &|p| p.remove_collection(c));
         assert_one_step_each(states);
     }

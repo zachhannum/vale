@@ -30,8 +30,12 @@ pub const NO_CHECKED: &str = "No collection is checked.";
 const MENU_WIDTH: f32 = 300.0;
 /// The space between two cards.
 const CARD_GAP: f32 = 10.0;
-/// The space between the edge of a card and its rows.
-const CARD_INSET: f32 = 10.0;
+/// The space between the edge of a card and its rows. The highlight of a
+/// row is then as far from the edge of the card as its radius is less than
+/// the radius of the card.
+const CARD_INSET: f32 = 15.0;
+/// The space below the last row of a card.
+const CARD_BOTTOM: f32 = 5.0;
 const CARD_RADIUS: f32 = 12.0;
 
 /// The name of the popover row of a collection.
@@ -50,11 +54,6 @@ pub fn chevron_name(name: &str, collapsed: bool) -> String {
 /// The name of the header row of a card.
 pub fn header_name(name: &str) -> String {
     format!("Card {name}")
-}
-
-/// The name of the grip of a card.
-pub fn grip_name(name: &str) -> String {
-    format!("Move {name}")
 }
 
 /// The name of the row of a layer. A layer takes touch in one card at
@@ -174,7 +173,7 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             let c = project.collection(*id)?;
             Some(list::Row {
                 label: collection_row(&c.name),
-                rename: true,
+                rename: c.id != world,
                 delete: c.id != world,
                 ..list::Row::new(c.id, c.name.clone())
             })
@@ -263,13 +262,12 @@ fn card(
         return Rect::NOTHING;
     };
     let name = c.name.clone();
-    let count = c.layers.len();
     let collapsed = project.is_collapsed(id);
     let rows = card_rows(project, id);
     let body = match (collapsed, rows.len()) {
         (true, _) => 0.0,
-        (false, 0) => PANEL_ROW,
-        (false, n) => n as f32 * PANEL_ROW,
+        (false, 0) => PANEL_ROW + CARD_BOTTOM,
+        (false, n) => n as f32 * PANEL_ROW + CARD_BOTTOM,
     };
     let size = vec2(ui.available_width(), PANEL_ROW + body);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -286,21 +284,13 @@ fn card(
         },
     };
     painter.rect_filled(head, radius, theme::raise());
-    header(
-        ui,
-        state,
-        controls,
-        id,
-        head,
-        &name,
-        collapsed.then_some(count),
-    );
+    header(ui, state, controls, id, head, &name, collapsed);
     if collapsed {
         return rect;
     }
     let inner = Rect::from_min_max(
         pos2(rect.left() + CARD_INSET, head.bottom()),
-        pos2(rect.right() - CARD_INSET, rect.bottom()),
+        pos2(rect.right() - CARD_INSET, rect.bottom() - CARD_BOTTOM),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -319,10 +309,8 @@ fn card(
     rect
 }
 
-/// The header row of a card: the chevron, the name, the count of layers of
-/// a collapsed card, and the grip. A tap on the row collapses the card or
-/// opens it. A drag of the grip, or a hold of the row, lifts the card.
-#[allow(clippy::too_many_arguments)]
+/// The header row of a card: the chevron and the name. A tap on the row
+/// collapses the card or opens it, and a hold of the row lifts the card.
 fn header(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -330,9 +318,8 @@ fn header(
     id: CollectionId,
     head: Rect,
     name: &str,
-    count: Option<usize>,
+    collapsed: bool,
 ) {
-    let collapsed = count.is_some();
     let chevron = Rect::from_center_size(
         pos2(head.left() + 4.0 + TOUCH / 2.0, head.center().y),
         vec2(TOUCH, TOUCH),
@@ -340,23 +327,10 @@ fn header(
     let icon = if collapsed { Icon::Open } else { Icon::Down };
     let chevron_text = chevron_name(name, collapsed);
     let tap = widgets::icon_button_at(ui, controls, chevron, &chevron_text, icon, false, true);
-    let grip_rect = Rect::from_center_size(
-        pos2(head.right() - 4.0 - TOUCH / 2.0, head.center().y),
-        vec2(TOUCH, TOUCH),
-    );
-    let grip = widgets::hit(
-        ui,
-        controls,
-        grip_rect,
-        &grip_name(name),
-        Sense::click(),
-        true,
-        None,
-    );
-    // The rest of the row, between the chevron and the grip.
+    // The rest of the row, at the right of the chevron.
     let rest = Rect::from_min_max(
         pos2(chevron.right(), chevron.top()),
-        pos2(grip_rect.left(), grip_rect.bottom()),
+        pos2(head.right() - 4.0, chevron.bottom()),
     );
     let row = widgets::hit(
         ui,
@@ -367,66 +341,30 @@ fn header(
         true,
         None,
     );
-    let painter = ui.painter().clone();
-    paint_header(&painter, Some(ui), head, name, count, grip_rect);
+    paint_name(ui.painter(), head, name);
     if tap.clicked() || row.clicked() {
         state.set_collapsed(id, !collapsed);
     }
     if state.pad.cards.lifted() {
         return;
     }
-    let grab = |ui: &egui::Ui| {
-        ui.input(|i| i.pointer.interact_pos())
-            .map_or(PANEL_ROW / 2.0, |p| p.y - head.top())
-    };
-    if widgets::take_drag(ui, &grip, |_| true) || held(ui, &row) {
-        if !grip.dragged() {
-            ui.ctx().set_dragged_id(grip.id);
-        }
-        state.pad.cards.lift = Some(CardLift { id, grab: grab(ui) });
+    if held(ui, &row) {
+        ui.ctx().set_dragged_id(row.id);
+        let grab = ui.input(|i| i.pointer.interact_pos());
+        let grab = grab.map_or(PANEL_ROW / 2.0, |p| p.y - head.top());
+        state.pad.cards.lift = Some(CardLift { id, grab });
         state.pad.cards.shut();
         ui.ctx().request_repaint();
     }
 }
 
-/// Paints the name, the count, and the grip of a header row. With `ui`,
-/// the count is a label, so a screen reader and a test can read it.
-fn paint_header(
-    painter: &egui::Painter,
-    ui: Option<&mut egui::Ui>,
-    head: Rect,
-    name: &str,
-    count: Option<usize>,
-    grip: Rect,
-) {
-    let mut right = grip.left() - 4.0;
-    if let Some(count) = count {
-        let text = count.to_string();
-        let galley = painter.layout_no_wrap(text.clone(), theme::body(), theme::MUTE);
-        let size = galley.size();
-        let place = Rect::from_min_max(
-            pos2(right - 8.0 - size.x.ceil() - 2.0, head.top()),
-            pos2(right - 8.0, head.bottom()),
-        );
-        match ui {
-            Some(ui) => {
-                let text = egui::RichText::new(text)
-                    .font(theme::body())
-                    .color(theme::MUTE);
-                let layout = egui::Layout::right_to_left(egui::Align::Center);
-                let builder = egui::UiBuilder::new().max_rect(place).layout(layout);
-                let mut child = ui.new_child(builder);
-                child.add(egui::Label::new(text).selectable(false));
-            }
-            None => {
-                let at = pos2(place.right(), head.center().y - size.y / 2.0);
-                painter.galley(pos2(at.x - size.x, at.y), galley, theme::MUTE);
-            }
-        }
-        right = place.left() - 8.0;
-    }
+/// Paints the name of a header row.
+fn paint_name(painter: &egui::Painter, head: Rect, name: &str) {
     let left = head.left() + 4.0 + TOUCH + 6.0;
-    let clip = Rect::from_min_max(pos2(left, head.top()), pos2(right, head.bottom()));
+    let clip = Rect::from_min_max(
+        pos2(left, head.top()),
+        pos2(head.right() - 12.0, head.bottom()),
+    );
     painter
         .with_clip_rect(painter.clip_rect().intersect(clip))
         .text(
@@ -436,8 +374,6 @@ fn paint_header(
             theme::title(),
             theme::TEXT,
         );
-    let mark = Rect::from_center_size(grip.center(), vec2(18.0, 18.0));
-    icons::paint(painter, mark, Icon::Grip, 18.0, theme::MUTE);
 }
 
 /// True when a press on `row` became a hold of `HOLD_TIME` in place.
@@ -515,16 +451,12 @@ fn move_card(ui: &mut egui::Ui, state: &mut AppState, placed: &[(CollectionId, R
             vec2(card.width(), PANEL_ROW),
         );
         painter.rect_filled(head, CARD_RADIUS, theme::menu());
-        let grip = Rect::from_center_size(
-            pos2(head.right() - 4.0 - TOUCH / 2.0, head.center().y),
-            vec2(TOUCH, TOUCH),
-        );
         let chevron = Rect::from_center_size(
             pos2(head.left() + 4.0 + TOUCH / 2.0, head.center().y),
             vec2(18.0, 18.0),
         );
         icons::paint(&painter, chevron, Icon::Open, 18.0, theme::MUTE);
-        paint_header(&painter, None, head, &c.name, Some(c.layers.len()), grip);
+        paint_name(&painter, head, &c.name);
     }
     // A finger near the top or the bottom of the panel scrolls it.
     if let Some(p) = pointer {
