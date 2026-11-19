@@ -79,6 +79,34 @@ pub enum Part {
     Land,
 }
 
+/// The colors of a ramp and what the bands take from them.
+#[derive(Clone, Copy, Debug)]
+pub struct RampColors<'a> {
+    pub colors: &'a [Rgb],
+    /// One label for each color, or none.
+    pub labels: &'a [String],
+    /// The colors are for classes with no order, so they do not blend, and
+    /// they do not split at sea level.
+    pub qualitative: bool,
+    /// The number of colors below sea level. `None`: the colors that are
+    /// mostly blue at the start of the ramp.
+    pub sea: Option<usize>,
+}
+
+impl RampColors<'_> {
+    /// The number of colors below sea level, if the ramp splits there.
+    fn sea_colors(&self) -> Option<usize> {
+        if self.qualitative {
+            return None;
+        }
+        let n = self.colors.len();
+        match self.sea {
+            Some(sea) => (1..n).contains(&sea).then_some(sea),
+            None => sea_colors(self.colors),
+        }
+    }
+}
+
 /// One step of the preview, from one stop to the next.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Band {
@@ -547,28 +575,53 @@ impl Bands {
         self.painted_split(colors, labels, part, bands, lo, hi, sea_colors(colors))
     }
 
-    /// `painted_in` with `count` new bands in the place of one band for each
-    /// color. The colors are `count` even steps along the ramp, or the
-    /// colors in order for a `qualitative` ramp, and each band takes the
-    /// label of its nearest color. With bands that cross sea level, the sea
-    /// colors and the land colors of the ramp each get a share of `count`,
-    /// at least one, in the ratio of their numbers of colors.
-    #[allow(clippy::too_many_arguments)]
-    pub fn painted_count(
+    /// The part that a ramp colors by default: `part` of its colors, or all
+    /// bands for a ramp with a sea level of its own.
+    pub fn ramp_part(&self, ramp: &RampColors) -> Part {
+        match ramp.sea {
+            Some(_) if self.split && ramp.sea_colors().is_some() => Part::All,
+            _ => self.part(ramp.colors),
+        }
+    }
+
+    /// `stretched_in` for a ramp, with its sea colors below sea level.
+    pub fn stretched_ramp(
         &self,
-        colors: &[Rgb],
-        labels: &[String],
+        ramp: &RampColors,
         part: Part,
         bands: Range<usize>,
-        lo: f64,
-        hi: f64,
-        count: usize,
-        qualitative: bool,
     ) -> Option<Bands> {
+        let (colors, labels) = (ramp.colors, ramp.labels);
+        self.stretched_split(
+            colors,
+            labels,
+            part,
+            bands,
+            ramp.qualitative,
+            ramp.sea_colors(),
+        )
+    }
+
+    /// `painted_in` for a ramp, with `count` new bands in the place of one
+    /// band for each color. The colors are `count` even steps along the
+    /// ramp, or the colors in order for a qualitative ramp, and each band
+    /// takes the label of its nearest color. With bands that cross sea
+    /// level, the sea colors and the land colors of the ramp each get a
+    /// share of `count`, at least one, in the ratio of their numbers of
+    /// colors.
+    pub fn painted_count(
+        &self,
+        ramp: &RampColors,
+        part: Part,
+        bands: Range<usize>,
+        (lo, hi): (f64, f64),
+        count: usize,
+    ) -> Option<Bands> {
+        let (colors, labels, qualitative) = (ramp.colors, ramp.labels, ramp.qualitative);
         let n = colors.len();
         let r = self.window(part, bands.clone());
         let crosses = self.sea().is_some_and(|sea| r.start < sea && sea < r.end);
-        let blue = sea_colors(colors).filter(|_| crosses && !qualitative && count >= 2);
+        let blue = ramp.sea_colors().filter(|_| crosses && count >= 2);
         // The colors of each side of the ramp, and the number of new bands
         // of the side.
         let sides: Vec<(Range<usize>, usize)> = match blue {
@@ -2027,6 +2080,42 @@ mod tests {
         assert!(bands.fitted_to(400.0, 401.0).is_none());
     }
 
+    /// A ramp that is not qualitative and has no sea level of its own.
+    fn ramp_of<'a>(colors: &'a [Rgb], labels: &'a [String]) -> RampColors<'a> {
+        RampColors {
+            colors,
+            labels,
+            qualitative: false,
+            sea: None,
+        }
+    }
+
+    #[test]
+    fn a_ramp_with_its_own_sea_level_splits_there() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let all = 0..bands.colors().len();
+        // Teal sea colors are not mostly blue.
+        let teal = [[23, 70, 66], [42, 107, 106], [90, 163, 154]];
+        let colors = [&teal[..], &greys(4)].concat();
+        let ramp = RampColors {
+            sea: Some(3),
+            ..ramp_of(&colors, &[])
+        };
+        assert_eq!(bands.part(&colors), Part::Land);
+        assert_eq!(bands.ramp_part(&ramp), Part::All);
+        let fitted = bands.stretched_ramp(&ramp, Part::All, all.clone()).unwrap();
+        assert_eq!(fitted.colors()[0], teal[0]);
+        assert_eq!(fitted.colors()[sea - 1], teal[2]);
+        assert!(fitted.colors()[sea..].iter().all(|c| c[0] == c[1] && c[1] == c[2]));
+        let (lo, hi) = (bands.min(), bands.max());
+        let made = bands
+            .painted_count(&ramp, Part::All, all, (lo, hi), 7)
+            .unwrap();
+        assert_eq!(made.sea(), Some(3));
+        assert_eq!(made.colors()[..3], teal);
+    }
+
     /// A ramp with `sea` colors that are mostly blue and then `land` colors
     /// that are not.
     fn sea_and_land(sea: usize, land: usize) -> Vec<Rgb> {
@@ -2076,7 +2165,7 @@ mod tests {
         let all = 0..bands.colors().len();
         let (lo, hi) = (bands.min(), bands.max());
         let painted = bands
-            .painted_count(&colors, &[], Part::All, all, lo, hi, 10, false)
+            .painted_count(&ramp_of(&colors, &[]), Part::All, all, (lo, hi), 10)
             .unwrap();
         assert_eq!(painted.colors().len(), 10);
         let sea = painted.sea().unwrap();
@@ -2103,7 +2192,7 @@ mod tests {
         let all = 0..bands.colors().len();
         let (lo, hi) = (bands.min(), bands.max());
         let painted = bands
-            .painted_count(&greys(8), &[], Part::Land, all, lo, hi, 3, false)
+            .painted_count(&ramp_of(&greys(8), &[]), Part::Land, all, (lo, hi), 3)
             .unwrap();
         assert_eq!(painted.colors().len(), sea + 3);
         assert_eq!(painted.stops()[..=sea], bands.stops()[..=sea]);
@@ -2118,7 +2207,13 @@ mod tests {
         let labels = owned(&["Low", "Mid", "High"]);
         let all = 0..bands.colors().len();
         let painted = bands
-            .painted_count(&greys(3), &labels, Part::All, all, 0.0, 100.0, 5, false)
+            .painted_count(
+                &ramp_of(&greys(3), &labels),
+                Part::All,
+                all,
+                (0.0, 100.0),
+                5,
+            )
             .unwrap();
         assert_eq!(painted.colors().len(), 5);
         let names: Vec<&str> = (0..5).map(|i| painted.name(i)).collect();
