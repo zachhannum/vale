@@ -10,8 +10,9 @@ use eframe::egui;
 use vale_labeler::Fonts;
 use vale_sphere::LonLat;
 use vale_store::{
-    BlendMode, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, MapStyleId,
-    Project, Raster, RasterDisplay, RasterId, Rgb, SnapTypes, StepSelection, StoreError, World,
+    BlendMode, Collection, CollectionId, Feature, GeometryKind, ImageId, Layer, LayerId, LayerKind,
+    MapId, MapStyleId, Project, Raster, RasterDisplay, RasterId, Rgb, SnapTypes, StepSelection,
+    StoreError, World,
 };
 use vale_style::LabelClass;
 use vale_terrain::{Bands, Heightmap, Mode};
@@ -1627,6 +1628,15 @@ impl AppState {
     /// Moves a layer to this index of the draw order. Index 0 is the bottom.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.doc.move_layer(id, to);
+        self.sync_globe();
+        self.touch();
+        moved
+    }
+
+    /// Moves a layer to index `to` of the list `shown`, a part of the draw
+    /// order. Each other layer keeps its place.
+    pub fn move_layer_in(&mut self, id: LayerId, shown: &[LayerId], to: usize) -> bool {
+        let moved = self.doc.move_in(id, shown, to);
         self.sync_globe();
         self.touch();
         moved
@@ -3338,6 +3348,78 @@ impl AppState {
         {
             self.status = format!("Could not save project: {e}");
         }
+    }
+
+    /// Checks one collection on the globe, or each collection for `None`,
+    /// as one undo step.
+    pub fn show_collection(&mut self, id: Option<CollectionId>) {
+        let project = &self.doc.project;
+        let checks = match id {
+            Some(id) => vec![id],
+            None => project.collections().iter().map(|c| c.id).collect(),
+        };
+        if project.globe_collections() == checks.as_slice() {
+            return;
+        }
+        self.save_edit();
+        if self.doc.project.set_globe_collections(checks) {
+            self.pad.layer_list = Default::default();
+        }
+        self.save_edit();
+    }
+
+    /// Adds an empty collection as one undo step. `None` if the name is
+    /// blank or another collection has it.
+    pub fn add_collection(&mut self, name: &str) -> Option<CollectionId> {
+        self.save_edit();
+        let id = self.doc.project.add_collection(name);
+        self.save_edit();
+        id
+    }
+
+    /// Renames a collection as one undo step. False if the name is blank,
+    /// another collection has it, or nothing changes.
+    pub fn rename_collection(&mut self, id: CollectionId, name: &str) -> bool {
+        let same = |c: &Collection| c.name == name.trim();
+        if self.doc.project.collection(id).is_none_or(same) {
+            return false;
+        }
+        self.save_edit();
+        let renamed = self.doc.project.rename_collection(id, name);
+        self.save_edit();
+        renamed
+    }
+
+    /// Removes a collection as one undo step. Each of its layers that is in
+    /// no other collection goes into World. If the globe then checks no
+    /// collection, it checks World, so that the Layers panel lists layers.
+    pub fn delete_collection(&mut self, id: CollectionId) -> bool {
+        self.save_edit();
+        let shown = self.doc.project.globe_collections().contains(&id);
+        let removed = self.doc.project.remove_collection(id);
+        if removed && shown {
+            self.pad.layer_list = Default::default();
+            let project = &mut self.doc.project;
+            if project.globe_collections().is_empty() {
+                project.check_collection(project.world_collection(), true);
+            }
+        }
+        self.save_edit();
+        removed
+    }
+
+    /// Puts a layer in a collection or takes it out, as one undo step.
+    pub fn set_in_collection(&mut self, id: CollectionId, layer: LayerId, on: bool) -> bool {
+        self.save_edit();
+        let changed = self.doc.project.set_in_collection(id, layer, on);
+        self.save_edit();
+        changed
+    }
+
+    /// The IDs of the layers that the Layers panel lists, in the draw order.
+    pub fn shown_layer_ids(&self) -> Vec<LayerId> {
+        let shown = self.doc.project.shown_layers();
+        shown.iter().map(|l| l.id).collect()
     }
 
     /// The snap targets of layer `id`, kept or new. A layer with the same

@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 pub use uuid::Uuid;
 
 mod atlas;
+mod collection;
 mod fill;
 mod gpkg;
 mod image_tile;
@@ -21,6 +22,7 @@ pub use atlas::{
     PageRecord, PageUnits, ProjectionPreset, SecondUnit, TextAlign, TextCase, TextItem,
     text_literal, title_case,
 };
+pub use collection::{Collection, CollectionId, WORLD_COLLECTION};
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
@@ -819,6 +821,17 @@ pub struct Project {
     /// The snap targets of each layer that has its own. A layer with no
     /// entry has the default targets.
     snap_targets: BTreeMap<LayerId, BTreeMap<LayerId, SnapTypes>>,
+    /// In the order of creation, with World first.
+    collections: Vec<Collection>,
+    next_collection_id: u32,
+    /// The default collection.
+    world_collection: CollectionId,
+    /// The checked collections of the globe, from the bottom to the top.
+    globe_collections: Vec<CollectionId>,
+    /// The collections of each map that has its own stack, from the bottom
+    /// to the top. A removed map keeps its entry, so that an undo of the
+    /// removal gives the map its stack again.
+    map_stacks: BTreeMap<MapId, Vec<CollectionId>>,
 }
 
 /// What a layer snaps to in one target layer. A vector target reads
@@ -860,7 +873,7 @@ pub struct SymbolRecord {
 }
 
 impl Project {
-    /// A project with no layers.
+    /// A project with no layers. It has World, and the globe checks World.
     pub fn new(world: World) -> Self {
         Project {
             atlas: Atlas::new(world.units),
@@ -873,6 +886,15 @@ impl Project {
             images: Vec::new(),
             next_image_id: 0,
             snap_targets: BTreeMap::new(),
+            collections: vec![Collection {
+                id: CollectionId(0),
+                name: WORLD_COLLECTION.to_owned(),
+                layers: Vec::new(),
+            }],
+            next_collection_id: 1,
+            world_collection: CollectionId(0),
+            globe_collections: vec![CollectionId(0)],
+            map_stacks: BTreeMap::new(),
         }
     }
 
@@ -912,7 +934,7 @@ impl Project {
         });
         let top = self.layers.iter().rposition(|l| l.raster().is_some());
         let layer = Layer {
-            id: LayerId(self.next_id),
+            id: self.new_layer_id(),
             name,
             kind: LayerKind::Raster(id),
             visible: true,
@@ -921,7 +943,6 @@ impl Project {
             features: Vec::new(),
             style: None,
         };
-        self.next_id += 1;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
         id
     }
@@ -1083,6 +1104,7 @@ impl Project {
         let i = self.rasters.iter().position(|r| r.id == id)?;
         self.layers.retain(|l| l.raster() != Some(id));
         self.prune_snap_targets();
+        self.drop_removed_members();
         Some(self.rasters.remove(i))
     }
 
@@ -1100,8 +1122,9 @@ impl Project {
             opacity: 1.0,
             blend: BlendMode::Normal,
         });
+        let layer_id = self.new_layer_id();
         self.layers.push(Layer {
-            id: LayerId(self.next_id),
+            id: layer_id,
             name,
             kind: LayerKind::Image(id),
             visible: true,
@@ -1110,7 +1133,6 @@ impl Project {
             features: Vec::new(),
             style: None,
         });
-        self.next_id += 1;
         id
     }
 
@@ -1157,6 +1179,7 @@ impl Project {
         let i = self.images.iter().position(|x| x.id == id)?;
         self.layers.retain(|l| l.image() != Some(id));
         self.prune_snap_targets();
+        self.drop_removed_members();
         Some(self.images.remove(i))
     }
 
@@ -1172,8 +1195,7 @@ impl Project {
         source: Option<String>,
         mut features: Vec<Feature>,
     ) -> LayerId {
-        let id = LayerId(self.next_id);
-        self.next_id += 1;
+        let id = self.new_layer_id();
         let fields = infer_fields(&mut features);
         self.layers.push(Layer {
             id,
@@ -1517,6 +1539,7 @@ impl Project {
             self.images.retain(|i| i.id != image);
         }
         self.prune_snap_targets();
+        self.drop_removed_members();
         Some(layer)
     }
 

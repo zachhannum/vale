@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::LonLat;
-use vale_store::{GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
+use vale_store::{CollectionId, GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
@@ -36,6 +36,7 @@ pub mod browser;
 pub mod cases;
 pub mod chip_popover;
 pub mod classify;
+pub mod collection;
 pub mod dock_ui;
 pub mod edge_labels;
 pub mod expression;
@@ -439,6 +440,8 @@ pub enum Page {
     /// The height layer of the Flow lines of the layer, from the rule with
     /// this index, or from the selected rules.
     FlowHeight(Option<usize>),
+    /// The collections of the layer.
+    Collections,
 }
 
 /// The state of the iPad layout.
@@ -480,6 +483,12 @@ pub struct PadState {
     add_button: Option<Rect>,
     /// The gestures and the selected rows of the layer list.
     pub layer_list: list::ListState<LayerId>,
+    /// The collection menu of the Layers panel is open.
+    pub collections_menu: bool,
+    /// The card of the collection menu in the last frame.
+    pub collections_rect: Option<Rect>,
+    /// The gestures of the list of the collections in the collection menu.
+    pub collection_list: list::ListState<CollectionId>,
     /// The list of the fields of a vector layer. A key is a layer and the
     /// index of a field.
     pub field_list: list::ListState<(LayerId, usize)>,
@@ -753,6 +762,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     expression::widen(state, &mut rects);
     state.sync_selection_form(state.pad.shows(Panel::Attributes));
     select::drop_focus(&ctx, state);
+    state.pad.collections_rect = None;
     dock_ui::show(&ctx, state, &mut controls, &rects);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
@@ -2078,6 +2088,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
     let fits = match (layer, state.pad.page) {
+        (Some(_), Some(Page::Collections)) => true,
         (
             Some(LayerRef::Raster(_)),
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
@@ -2132,6 +2143,9 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     let name = name.as_deref().unwrap_or_default();
     let (key, title, back): (&'static str, &str, Option<&str>) = match (panel, layer) {
         (Panel::Brush, _) => (panel.key(), panel_name(state, panel), None),
+        (Panel::Layers, Some(_)) if page == Some(Page::Collections) => {
+            ("pad-collections", collection::COLLECTIONS, Some(name))
+        }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
         }
@@ -2226,6 +2240,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     let list_shown = state.pad.shows(Panel::Layers) && state.pad.layer.is_none();
     if !list_shown {
         state.pad.layer_list.shut();
+        state.pad.collections_menu = false;
     }
     let scroll = egui::scroll_area::ScrollSource::default();
     let mode = state.globe.brush.mode;
@@ -2274,7 +2289,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         }
         (None, None) if list => {
             let picked = state.pad.layer_list.picked.len();
-            let count = state.doc.project.layers().len();
+            let count = state.doc.project.shown_layers().len();
             let buttons = list::group_buttons(picked, count, &[], Some(DELETE_LAYERS));
             buttons.map(|buttons| PageButtons {
                 buttons,
@@ -2365,6 +2380,10 @@ pub(super) fn panel_top(
         let size = ui.available_size();
         ui.allocate_ui(size, |ui| table::page(ui, state, controls));
     }
+    if head.panel == Panel::Layers && head.layer.is_none() && state.workspace == Workspace::Globe {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        collection::menu_row(ui, state, controls);
+    }
 }
 
 /// The body of a panel.
@@ -2375,6 +2394,13 @@ pub(super) fn panel_body(
     head: &Head,
 ) {
     let (panel, layer, page) = (head.panel, head.layer, head.page);
+    if panel == Panel::Layers
+        && page == Some(Page::Collections)
+        && let Some(id) = layer.and_then(|l| layer_id(state, l))
+    {
+        collection::page_body(ui, state, controls, id);
+        return;
+    }
     match (panel, layer) {
         (Panel::Brush, _) => brush_body(ui, state, controls),
         (Panel::Snap, _) => snap_body(ui, state, controls),
@@ -3350,15 +3376,30 @@ fn image_note(ui: &mut egui::Ui, state: &mut AppState, layer: Option<ImageId>) {
     }
 }
 
+/// The ID of the layer of a panel.
+fn layer_id(state: &AppState, layer: LayerRef) -> Option<LayerId> {
+    let project = &state.doc.project;
+    match layer {
+        LayerRef::Vector(id) => Some(id),
+        LayerRef::Raster(id) => project.raster_layer(id).map(|l| l.id),
+        LayerRef::Image(id) => project.image_layer(id).map(|l| l.id),
+    }
+}
+
 fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let layers = state.doc.project.layers();
+    let layers = state.doc.project.shown_layers();
     if layers.is_empty() {
+        let empty = match state.doc.project.layers().is_empty() {
+            true => NO_LAYERS,
+            false => collection::EMPTY_COLLECTION,
+        };
         state.pad.layer_list = list::ListState::default();
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
+        ui.label(egui::RichText::new(empty).color(theme::MUTE));
         return;
     }
+    let shown: Vec<LayerId> = layers.iter().map(|l| l.id).collect();
     let selected = state.selected_layer;
     let looks: Vec<(LayerRef, Icon, bool)> = layers
         .iter()
@@ -3425,7 +3466,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
                 state.remove_layer(id);
             }
             list::Event::Move { key, to, .. } => {
-                state.move_layer(key, to);
+                state.move_layer_in(key, &shown, to);
             }
         }
     }
@@ -3436,7 +3477,7 @@ pub const DELETE_LAYERS: &str = "Delete layers";
 
 /// Does the action of a header button of the selected layers.
 fn layer_group(state: &mut AppState, name: &'static str) {
-    let keys: Vec<LayerId> = state.doc.project.layers().iter().map(|l| l.id).collect();
+    let keys = state.shown_layer_ids();
     let list = &mut state.pad.layer_list;
     if let Some(list::Group::Delete(ids)) =
         list::group_action(list, &keys, name, Some(DELETE_LAYERS))
@@ -3591,6 +3632,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Type", kind);
+    collection::open_row(ui, state, controls, id);
     if crate::ui::budget::too_large(ui.ctx(), id) {
         ui.add_space(8.0);
         ui.label(egui::RichText::new(crate::ui::budget::TOO_LARGE_ABOUT).color(theme::WARN));
@@ -3724,6 +3766,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     let (unit, height, opacity) = (raster.unit.clone(), is_height(raster), raster.opacity);
     let layer = state.doc.project.raster_layer(id);
     let name = layer.map_or(String::new(), |layer| layer.name.clone());
+    let layer = layer.map(|layer| layer.id);
     let span = raster.value_max - raster.value_min;
     let range = format!(
         "{} to {}",
@@ -3750,6 +3793,9 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     raster::unit_row(ui, state, controls, id);
     widgets::value_row(ui, "Values", &range);
     widgets::value_row(ui, "Pixel size", &pixel_size);
+    if let Some(layer) = layer {
+        collection::open_row(ui, state, controls, layer);
+    }
     let number = percent(OPACITY, f64::from(opacity)).label("Opacity");
     if let Some(opacity) = number.slider(ui, controls) {
         state.set_raster_opacity(id, opacity as f32);
@@ -3790,6 +3836,7 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     }
     state.pad.name = Some((of, text));
     widgets::value_row(ui, "Size", &size);
+    collection::open_row(ui, state, controls, layer);
     let number = percent(OPACITY, f64::from(opacity)).label("Opacity");
     if let Some(opacity) = number.slider(ui, controls) {
         state.set_image_opacity(id, opacity as f32);
