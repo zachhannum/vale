@@ -492,6 +492,10 @@ pub struct PadState {
     pub collections_rect: Option<Rect>,
     /// The gestures of the list of the collections in the collection menu.
     pub collection_list: list::ListState<CollectionId>,
+    /// The gestures of the list of the Collections page of a layer.
+    pub layer_collections: list::ListState<CollectionId>,
+    /// The text of the search field of the Collections page of a layer.
+    pub collection_search: String,
     /// The list of the fields of a vector layer. A key is a layer and the
     /// index of a field.
     pub field_list: list::ListState<(LayerId, usize)>,

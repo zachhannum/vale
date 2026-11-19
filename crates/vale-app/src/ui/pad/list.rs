@@ -157,6 +157,8 @@ pub struct Row<K> {
     pub select: bool,
     /// A hold lifts the row, in a list with [`Spec::reorder`].
     pub lift: bool,
+    /// The row takes a tap.
+    pub enabled: bool,
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
@@ -178,6 +180,7 @@ impl<K> Row<K> {
             actions: &[],
             select: true,
             lift: true,
+            enabled: true,
             trailing: 0.0,
             height: PANEL_ROW,
         }
@@ -860,7 +863,7 @@ fn paint_row<K>(
         body_rect,
         &row.label,
         egui::Sense::click(),
-        true,
+        row.enabled,
         Some(row.on || picked),
     );
     let (mut delete, mut rename, mut action) = (false, false, None);
@@ -1040,7 +1043,13 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
     if let Some(on) = look.check {
         let mark = Rect::from_center_size(pos2(x + 18.0, rect.center().y), vec2(18.0, 18.0));
         if on {
-            icons::paint(painter, mark, Icon::Tick, 18.0, theme::ACCENT);
+            icons::paint(
+                painter,
+                mark,
+                Icon::Tick,
+                18.0,
+                widgets::fade(theme::ACCENT, !look.dim),
+            );
         }
         x += 38.0;
     }
@@ -1057,7 +1066,7 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
     }
     let shown = look.eye != Some(false);
     let color = match look.check {
-        Some(false) => theme::MUTE,
+        Some(false) => widgets::fade(theme::MUTE, !look.dim),
         _ => widgets::fade(theme::TEXT, shown && !look.dim),
     };
     let trailing = cell.trailing.translate(moved);

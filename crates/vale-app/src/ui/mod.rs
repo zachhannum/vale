@@ -3417,6 +3417,21 @@ impl AppState {
         id
     }
 
+    /// Adds a collection that holds `layer` and checks it on top of the
+    /// globe's stack, as one undo step. `None` if the name is blank or
+    /// another collection has it.
+    pub fn add_collection_with(&mut self, name: &str, layer: LayerId) -> Option<CollectionId> {
+        self.save_edit();
+        let project = &mut self.doc.project;
+        let id = project.add_collection(name);
+        if let Some(id) = id {
+            project.check_collection(id, true);
+            project.set_in_collection(id, layer, true);
+        }
+        self.save_edit();
+        id
+    }
+
     /// Renames a collection as one undo step. False if the name is blank,
     /// another collection has it, or nothing changes.
     pub fn rename_collection(&mut self, id: CollectionId, name: &str) -> bool {

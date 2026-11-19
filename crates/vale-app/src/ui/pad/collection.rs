@@ -598,9 +598,40 @@ pub fn row_value(project: &Project, layer: LayerId) -> String {
     }
 }
 
-/// The name of the switch of a collection on the Collections page.
+/// The name of the row of a collection on the Collections page.
 pub fn switch_name(name: &str) -> String {
     format!("In {name}")
+}
+
+/// The hint of the search field of the Collections page.
+pub const SEARCH_COLLECTIONS: &str = "Search";
+
+/// The collections of the Collections page of a layer whose names hold
+/// `search`: the collections that hold the layer, then the others, each
+/// group by name. Each has true if it holds the layer, and true if the
+/// layer can leave it.
+pub fn page_rows(
+    project: &Project,
+    layer: LayerId,
+    search: &str,
+) -> Vec<(CollectionId, bool, bool)> {
+    let search = search.trim().to_lowercase();
+    let mut rows: Vec<(&str, CollectionId, bool, bool)> = (project.collections().iter())
+        .filter(|c| c.name.to_lowercase().contains(&search))
+        .map(|c| {
+            let on = c.layers.contains(&layer);
+            (
+                c.name.as_str(),
+                c.id,
+                on,
+                project.can_leave_collection(c.id, layer),
+            )
+        })
+        .collect();
+    rows.sort_by_key(|(name, _, on, _)| (!on, name.to_lowercase()));
+    rows.into_iter()
+        .map(|(_, id, on, free)| (id, on, free))
+        .collect()
 }
 
 /// The row of a layer panel that opens the Collections page.
@@ -613,11 +644,15 @@ pub(super) fn open_row(
     let value = row_value(&state.doc.project, layer);
     if widgets::open_row(ui, controls, COLLECTIONS, &value).clicked() {
         state.pad.page = Some(super::Page::Collections);
+        state.pad.collection_search.clear();
+        state.pad.layer_collections = list::ListState::default();
     }
 }
 
-/// The Collections page of a layer: a switch for each collection. The
-/// switch of World is dim while the layer is only in World.
+/// The Collections page of a layer: the search field, a row with a check
+/// for each collection that holds the layer, and "New collection…". A tap
+/// on a row puts the layer in the collection or takes it out. The row of
+/// World is dim while the layer is only in World.
 pub(super) fn page_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -625,18 +660,65 @@ pub(super) fn page_body(
     layer: LayerId,
 ) {
     ui.spacing_mut().item_spacing.y = 0.0;
+    super::filter::search_field(
+        ui,
+        controls,
+        SEARCH_COLLECTIONS,
+        &mut state.pad.collection_search,
+    );
     let project = &state.doc.project;
-    let switches: Vec<(CollectionId, String, bool, bool)> = (project.collections().iter())
-        .map(|c| {
-            let on = c.layers.contains(&layer);
-            let free = project.can_leave_collection(c.id, layer);
-            (c.id, c.name.clone(), on, free)
+    let shown = page_rows(project, layer, &state.pad.collection_search);
+    let rows: Vec<list::Row<CollectionId>> = (shown.iter())
+        .filter_map(|(id, _, free)| {
+            let c = project.collection(*id)?;
+            Some(list::Row {
+                label: switch_name(&c.name),
+                enabled: *free,
+                ..list::Row::new(c.id, c.name.clone())
+            })
         })
         .collect();
-    for (id, name, mut on, free) in switches {
-        let switch = switch_name(&name);
-        if widgets::switch_row_enabled(ui, controls, &switch, &name, &mut on, free) {
-            state.set_in_collection(id, layer, on);
+    let list = &mut state.pad.layer_collections;
+    let renamed = list.rename.as_ref().map(|r| r.0);
+    let valid = |name: &str| project.collection_name_is_free(name, renamed);
+    let spec = list::Spec {
+        field: COLLECTION_NAME,
+        valid: &valid,
+        ..list::Spec::default()
+    };
+    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        let look = list::Look {
+            text: &rows[i].name,
+            check: Some(shown[i].1),
+            dim: !shown[i].2,
+            ..list::Look::default()
+        };
+        list::draw(ui, controls, cell, &look)
+    });
+    for event in events {
+        match event {
+            list::Event::Tap(id) => {
+                let on = shown.iter().any(|(key, on, _)| *on && *key == id);
+                state.set_in_collection(id, layer, !on);
+            }
+            list::Event::Rename(id, name) => {
+                state.rename_collection(id, &name);
+            }
+            _ => {}
+        }
+    }
+
+    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
+    let line = Rect::from_center_size(line.center(), vec2(line.width(), 1.0));
+    ui.painter().rect_filled(line, 0.0, theme::divider());
+    if widgets::text_row(ui, controls, NEW_COLLECTION, 0.0, false, true).clicked() {
+        // The row of the new collection is its name field.
+        state.pad.collection_search.clear();
+        let name = state.doc.project.free_collection_name();
+        if let Some(id) = state.add_collection_with(&name, layer) {
+            let list = &mut state.pad.layer_collections;
+            list.shut();
+            list.rename = Some((id, name));
         }
     }
 }

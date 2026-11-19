@@ -20223,6 +20223,96 @@ fn the_collections_page_keeps_each_layer_in_a_collection() {
 }
 
 #[test]
+fn the_collections_page_is_a_checklist_with_search_and_new_collection() {
+    use vale_app::ui::pad::collection::{
+        COLLECTION_NAME, COLLECTIONS, NEW_COLLECTION, SEARCH_COLLECTIONS, page_rows, switch_name,
+    };
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_panel(&mut h, "Layers");
+        for name in ["Water", "Climate", "Travel"] {
+            new_collection(&mut h, name);
+        }
+        close_collection_menu(&mut h);
+        let rivers = vector(&h, "Rivers");
+        let travel = collection_id(&h, "Travel");
+        h.state_mut().set_in_collection(travel, rivers, true);
+        h.run_steps(2);
+        tap(&mut h, "Open Rivers");
+        tap(&mut h, COLLECTIONS);
+        check_controls(&h, &format!("{what} on the Collections page"));
+        // The collections of the layer come first, then the others, each
+        // group by name.
+        let names = |h: &Pad, search: &str| -> Vec<String> {
+            let project = &h.state().doc.project;
+            (page_rows(project, rivers, search).iter())
+                .map(|(id, _, _)| project.collection(*id).unwrap().name.clone())
+                .collect()
+        };
+        assert_eq!(
+            names(&h, ""),
+            ["Travel", "World", "Climate", "Water"],
+            "{what}"
+        );
+        let top = |h: &Pad, name: &str| control(h, &switch_name(name)).unwrap().top();
+        assert!(top(&h, "Travel") < top(&h, "World"), "{what}");
+        assert!(top(&h, "World") < top(&h, "Climate"), "{what}");
+        for name in ["Travel", "World", "Climate", "Water"] {
+            assert!(
+                control(&h, &switch_name(name)).unwrap().height() >= 44.0,
+                "{what}"
+            );
+        }
+
+        // The search field keeps the rows whose names hold its text.
+        tap(&mut h, SEARCH_COLLECTIONS);
+        h.event(egui::Event::Text("wa".to_owned()));
+        h.run_steps(2);
+        assert!(control(&h, &switch_name("Water")).is_some(), "{what}");
+        assert!(control(&h, &switch_name("Travel")).is_none(), "{what}");
+        tap(&mut h, &switch_name("Water"));
+        let of = |h: &Pad| h.state().doc.project.collections_of(rivers).len();
+        assert_eq!(of(&h), 3, "{what}");
+
+        // "New collection…" makes a collection that holds the layer, in one
+        // step, and its row is a name field.
+        tap(&mut h, NEW_COLLECTION);
+        assert!(control(&h, COLLECTION_NAME).is_some(), "{what}");
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.event(egui::Event::Text("Coast".to_owned()));
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        let coast = collection_id(&h, "Coast");
+        assert!(
+            h.state()
+                .doc
+                .project
+                .collection(coast)
+                .unwrap()
+                .layers
+                .contains(&rivers)
+        );
+        assert!(
+            h.state().doc.project.globe_collections().contains(&coast),
+            "{what}"
+        );
+        assert_eq!(of(&h), 4, "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(of(&h), 3, "{what}");
+        assert!(h.state().doc.project.collection(coast).is_none(), "{what}");
+    }
+}
+
+#[test]
 fn each_change_of_a_collection_is_one_undo_step() {
     use vale_app::ui::pad::widgets::RENAME;
     let dir = tempfile::tempdir().unwrap();
