@@ -439,7 +439,7 @@ fn applying_a_labeled_ramp_names_the_bands() {
         .unwrap();
     let labels = ramps[at].labels.clone();
     state
-        .apply_ramp(climate, at, false, vale_terrain::Part::All)
+        .apply_ramp(climate, at, false, vale_terrain::Part::All, None)
         .unwrap();
     assert_eq!(state.globe.bands_mut(climate).unwrap().names(), labels);
 

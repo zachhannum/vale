@@ -404,6 +404,8 @@ impl LayerRef {
 }
 
 /// The name of the raster layer that the app makes for a height.
+/// The error of a ramp that would give a layer too many bands.
+pub const TOO_MANY_BANDS: &str = "A layer has at most 32 bands.";
 pub const HEIGHT_NAME: &str = "Height";
 /// The unit of a height layer. A raster layer with this unit has a sea and
 /// rivers.
@@ -4189,13 +4191,16 @@ impl AppState {
 
     /// Gives the bands of a part of a raster layer the colors of a ramp.
     /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
-    /// band for each color.
+    /// band for each color. With `window`, only the bands of the window in
+    /// the part change, and new bands spread from its lowest value to its
+    /// highest value.
     pub fn apply_ramp(
         &mut self,
         id: RasterId,
         index: usize,
         keep: bool,
         part: vale_terrain::Part,
+        window: Option<&pad::stops::FrameWindow>,
     ) -> Result<(), String> {
         let Some(ramp) = self.ramps.list().get(index) else {
             return Err("Ramp not found.".to_owned());
@@ -4205,10 +4210,24 @@ impl AppState {
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
+        let count = bands.colors().len();
+        let all = 0..count;
+        let (range, lo, hi) = match window {
+            Some(w) => (w.bands.clone(), w.lo, w.hi),
+            None => (all, bands.min(), bands.max()),
+        };
+        let p = bands.part_bands(part);
+        let replaced = range
+            .end
+            .min(p.end)
+            .saturating_sub(range.start.max(p.start));
+        if !keep && count - replaced + colors.len() > vale_terrain::MAX_BANDS {
+            return Err(TOO_MANY_BANDS.to_owned());
+        }
         let applied = if keep {
-            bands.stretched_part(&colors, &labels, part)
+            bands.stretched_in(&colors, &labels, part, range)
         } else {
-            bands.painted_part(&colors, &labels, part)
+            bands.painted_in(&colors, &labels, part, range, lo, hi)
         };
         let Some(applied) = applied else {
             let count = colors.len();

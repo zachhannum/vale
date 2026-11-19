@@ -646,6 +646,11 @@ pub struct AtlasState {
     pub layer: Option<(FrameId, LayerId)>,
     /// The page of the panel of `layer`.
     pub layer_page: Option<super::pad::Page>,
+    /// The page of the color stops of `layer` shows all bands, not only
+    /// the bands that the frame shows.
+    pub stops_all: bool,
+    /// The bands that the frame shows on the page of the color stops.
+    pub stops_window: Option<super::pad::stops::FrameWindow>,
     /// The label class whose panel the Labels tab of this frame shows: its
     /// layer and its place in the classes of the layer.
     pub label: Option<(FrameId, LayerId, usize)>,
@@ -873,6 +878,8 @@ impl Default for AtlasState {
             composes: 0,
             layer: None,
             layer_page: None,
+            stops_all: false,
+            stops_window: None,
             label: None,
             label_page: None,
             map_styles: None,
@@ -1835,9 +1842,9 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
 
 /// True while a gesture moves the maps, so the frames show their last
 /// textures.
-fn gesture(ui: &egui::Ui, state: &AppState) -> bool {
+pub(crate) fn gesture(ctx: &egui::Context, state: &AppState) -> bool {
     let (down, fingers, now) =
-        ui.input(|i| (i.pointer.any_down(), i.multi_touch().is_some(), i.time));
+        ctx.input(|i| (i.pointer.any_down(), i.multi_touch().is_some(), i.time));
     let wheel = state.atlas.wheel_at.is_some_and(|t| now - t < WHEEL_REST);
     down || fingers || wheel
 }
@@ -2847,7 +2854,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
-    let moving = gesture(ui, state);
+    let moving = gesture(ui.ctx(), state);
     let primary = state.atlas.frame().or(page.frames.first().map(|f| f.id));
     let target = place.target();
     let painter = ui.painter_at(area);
@@ -3299,7 +3306,7 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
-    let moving = gesture(ui, state);
+    let moving = gesture(ui.ctx(), state);
     let painter = ui.painter_at(area);
     let zoom = place.pts_per_mm / PT_PER_MM;
     for rec in &page.furniture {

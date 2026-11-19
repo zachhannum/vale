@@ -1,8 +1,10 @@
 //! The Style section of the panel of a raster layer: the display and the
 //! color stops.
 
+use std::sync::Arc;
+
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
-use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
+use vale_store::{BlendMode, FrameId, Hillshade, LayerId, RasterDisplay, RasterId, Smoothing};
 use vale_terrain::{Bands, MAX_BANDS, Part, StopLine};
 
 use super::geometry::{PAD, Rects, TOUCH};
@@ -13,6 +15,7 @@ use super::stops;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
+use crate::areas::{FrameBins, FrameKey};
 use crate::globe::preview::{LAKE_KM2, LAKE_KM2_RANGE};
 use crate::ui::{Action, AppState, RampSource, elevation, gradient};
 use crate::world;
@@ -240,6 +243,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         .inner;
     if strip.clicked() {
         state.pad.page = Some(Page::Stops);
+        state.atlas.stops_all = false;
     }
     ui.add_space(8.0);
     let Some(mut lines) = state.doc.project.raster(id).map(|r| r.lines) else {
@@ -301,8 +305,15 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
 /// The page of the color stops of the Layers panel: the histogram of the
 /// area at each value, the list of the bands, the reset row, and the row of
 /// the color ramps. A tap on a band opens its card, which `band_card`
-/// shows.
-pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+/// shows. On the page of frame `frame`, a switch shows the bands that the
+/// frame shows or all bands.
+pub fn stops_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: RasterId,
+    frame: Option<FrameId>,
+) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
     };
@@ -311,8 +322,22 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         raster.unit.clone(),
         crate::ui::is_height(raster),
     );
+    if frame.is_some() {
+        let choices = [stops::IN_FRAME, stops::ALL_BANDS];
+        let active = usize::from(state.atlas.stops_all);
+        if let Some(choice) = widgets::segmented(ui, controls, &choices, Some(active), true) {
+            state.atlas.stops_all = choice == 1;
+        }
+        ui.add_space(12.0);
+    }
+    let frame = frame.filter(|_| !state.atlas.stops_all);
     state.areas.retain(|r| r == id);
-    let bins = (state.globe.value_map(id)).and_then(|map| state.areas.bins(id, map));
+    let window = frame.and_then(|frame| frame_window(ui.ctx(), state, frame, id));
+    let bins = match &window {
+        Some((_, bins)) => bins.clone().map(|b| Arc::new(b.bins.clone())),
+        None => (state.globe.value_map(id)).and_then(|map| state.areas.bins(id, map)),
+    };
+    let window = window.map(|(w, _)| w);
     if state.areas.poll(false) {
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(50));
@@ -324,7 +349,16 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     let before = selected;
+    let count = bands.colors().len();
+    let shown = window.as_ref().map_or(0..count, |w| w.bands.clone());
     let histogram = stops::histogram(ui);
+    let above = count.saturating_sub(shown.end);
+    let fold = |ui: &mut egui::Ui, controls: &mut Controls, name, count, side| {
+        let text = stops::fold_text(count, side);
+        let indent = stops::FOLD_INDENT;
+        widgets::text_row_as(ui, controls, name, &text, indent, false, true).clicked()
+    };
+    let mut all = above > 0 && fold(ui, controls, stops::BANDS_ABOVE, above, "above");
     let legend = stops::legend(
         ui,
         controls,
@@ -333,11 +367,22 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         display,
         &unit,
         bins.as_deref().map(Vec::as_slice),
+        shown.clone(),
     );
+    if shown.start > 0 {
+        all |= fold(ui, controls, stops::BANDS_BELOW, shown.start, "below");
+    }
     let marker = legend.scrub.map(|i| bands.stops()[i].value);
     let dim = selected.filter(|_| legend.scrub.is_none());
     let bins = bins.as_deref().map(Vec::as_slice);
-    stops::paint_histogram(ui, histogram, bins, bands, display, &unit, dim, marker);
+    let range = window.as_ref().map(|w| (w.lo, w.hi));
+    stops::paint_histogram(
+        ui, histogram, bins, bands, display, &unit, dim, marker, range,
+    );
+    if all {
+        state.atlas.stops_all = true;
+        ui.ctx().request_repaint();
+    }
     if selected != before {
         style.side = None;
     }
@@ -372,6 +417,56 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     if widgets::text_row(ui, controls, SAVE_AS_RAMP, 0.0, false, true).clicked() {
         open_editor(state, Some(id), RampSource::Bands(id));
     }
+}
+
+/// The bands of layer `id` that frame `frame` shows, and the level areas
+/// inside its shape. The bands come again from the areas only while no
+/// finger is down, so a stop that a finger drags stays in the window. The
+/// areas come again only when the frame stops.
+pub(crate) fn frame_window(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    frame: FrameId,
+    id: RasterId,
+) -> Option<(stops::FrameWindow, Option<Arc<FrameBins>>)> {
+    let record = state.doc.project.atlas.frame(frame)?;
+    let spec = state.doc.projection(record.map);
+    let key = FrameKey::new(record, spec, state.doc.project.world.radius_km * 1000.0);
+    let wait = crate::ui::atlas::gesture(ctx, state);
+    if wait {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    let held = ctx.input(|i| i.pointer.any_down() || i.multi_touch().is_some());
+    let map = state.globe.value_map(id)?;
+    let bins = state.areas.frame_bins(frame, id, key, map, wait);
+    let bands = state.globe.bands_mut(id)?;
+    let count = bands.colors().len();
+    let stored =
+        (state.atlas.stops_window.clone()).filter(|w| held && w.frame == frame && w.raster == id);
+    let mut window = stored.unwrap_or_else(|| {
+        let (lo, hi) = match bins.as_deref().filter(|b| !b.is_empty()) {
+            Some(b) => (bands.value(b.lo), bands.value(b.hi)),
+            None => (bands.min(), bands.max()),
+        };
+        let band = |v: f64| {
+            bands
+                .stops()
+                .partition_point(|s| s.value <= v)
+                .clamp(1, count)
+                - 1
+        };
+        stops::FrameWindow {
+            frame,
+            raster: id,
+            bands: band(lo)..band(hi) + 1,
+            lo,
+            hi,
+        }
+    });
+    let end = window.bands.end.clamp(1, count);
+    window.bands = window.bands.start.min(end - 1)..end;
+    state.atlas.stops_window = Some(window.clone());
+    Some((window, bins))
 }
 
 /// Opens the page of the editor of a new ramp.
@@ -720,17 +815,22 @@ pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
 /// The number of bands of a part, and the name of the part with a space,
 /// or an empty name for all bands.
 pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
-    let part = if bands.sea().is_some() {
-        part
-    } else {
-        Part::All
-    };
+    let part = part_of(bands, part);
     let kind = match part {
         Part::All => "",
         Part::Sea => "sea ",
         Part::Land => "land ",
     };
     (bands.part_bands(part).len(), kind)
+}
+
+/// The part, or all bands with no sea split.
+fn part_of(bands: &Bands, part: Part) -> Part {
+    if bands.sea().is_some() {
+        part
+    } else {
+        Part::All
+    }
 }
 
 /// The row of a color ramp: its name, and a bar of its colors at the right.
@@ -1136,12 +1236,14 @@ pub fn reset_card(
 /// The card of the ramp of a row. If the ramp has as many colors as the
 /// layer has bands, the card applies it. Otherwise, the layer keeps its
 /// stops, or it gets one band for each color. A touch outside the card and
-/// the row closes it.
+/// the row closes it. With frame `frame`, the card applies the ramp to the
+/// bands that the frame shows.
 pub fn ramp_card(
     ctx: &egui::Context,
     state: &mut AppState,
     controls: &mut Controls,
     rects: &Rects,
+    frame: Option<FrameId>,
 ) {
     state.pad.style.ramp_card = None;
     let (Some((user, index)), Some(row)) =
@@ -1157,7 +1259,16 @@ pub fn ramp_card(
     let colors = ramp.colors.len();
     let built_in = ramp.built_in;
     let labeled = ramp.labels.iter().any(|l| !l.is_empty());
+    let ramp_colors = ramp.colors.clone();
+    let window = match (user, frame) {
+        (RampUser::Raster(id), Some(frame)) => frame_window(ctx, state, frame, id).map(|w| w.0),
+        _ => None,
+    };
+    let Some(ramp) = state.ramps.list().get(index) else {
+        return;
+    };
     let (keep, fresh);
+    let mut none = false;
     let (mut buttons, split, part): (Vec<(&str, egui::Color32, RampChoice)>, bool, Part) =
         match user {
             RampUser::Raster(id) => {
@@ -1169,8 +1280,17 @@ pub fn ramp_card(
                     .pad
                     .style
                     .ramp_part
-                    .unwrap_or(layer.part(&ramp.colors));
-                let (bands, kind) = ramp_fit(layer, part);
+                    .unwrap_or(layer.part(&ramp_colors));
+                let (mut bands, kind) = ramp_fit(layer, part);
+                if let Some(w) = &window {
+                    let p = layer.part_bands(part_of(layer, part));
+                    bands = w
+                        .bands
+                        .end
+                        .min(p.end)
+                        .saturating_sub(w.bands.start.max(p.start));
+                    none = bands == 0;
+                }
                 keep = format!("Fit to {bands} {kind}bands");
                 fresh = format!("Make {colors} {kind}bands");
                 let buttons = if colors == bands {
@@ -1234,7 +1354,8 @@ pub fn ramp_card(
             ui.add_space(8.0);
         }
         for (name, fill, choice) in &buttons {
-            if widgets::button_row_in(ui, controls, name, true, *fill).clicked() {
+            let on = !(none && matches!(choice, RampChoice::Apply(_)));
+            if widgets::button_row_in(ui, controls, name, on, *fill).clicked() {
                 chosen = Some(*choice);
             }
         }
@@ -1251,7 +1372,9 @@ pub fn ramp_card(
         state.pad.style.ramp = None;
     }
     let result = match (chosen, user) {
-        (RampChoice::Apply(keep), RampUser::Raster(id)) => state.apply_ramp(id, index, keep, part),
+        (RampChoice::Apply(keep), RampUser::Raster(id)) => {
+            state.apply_ramp(id, index, keep, part, window.as_ref())
+        }
         (RampChoice::Apply(_), RampUser::Classify(_)) => Ok(()),
         (RampChoice::Use, RampUser::Classify(id)) => {
             super::classify::use_ramp(state, id, index);

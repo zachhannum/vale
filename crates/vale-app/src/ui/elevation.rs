@@ -400,7 +400,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         return;
     };
     let result = match choice {
-        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part),
+        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part, None),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
         RampChoice::Duplicate => {

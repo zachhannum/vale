@@ -627,7 +627,7 @@ fn apply_ramp(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<(
                 .bands_mut(id)
                 .zip(colors)
                 .map_or(vale_terrain::Part::All, |(b, c)| b.part(&c));
-            if let Err(text) = state.apply_ramp(id, last, false, part) {
+            if let Err(text) = state.apply_ramp(id, last, false, part, None) {
                 bail!("{text}");
             }
         }

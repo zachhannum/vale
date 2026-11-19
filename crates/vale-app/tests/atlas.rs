@@ -12648,3 +12648,309 @@ fn the_tissot_circles_follow_the_panel_of_the_frame_that_a_finger_touched_last()
     h.run_steps(2);
     assert_eq!(atlas::tissot_frame(h.state()), None);
 }
+
+/// The height of the test layer at each degree of latitude, in meters.
+const METERS_PER_DEGREE: f64 = 60.0;
+
+/// Shows 20° of latitude around `lat` in the inset frame.
+fn look_at(h: &mut Pad, lat: f64) {
+    let f = frame(h, 1);
+    let tall = shape_bbox(&f.shape).height();
+    let s = h.state_mut();
+    let ground = s.doc.project.world.radius_km * 1000.0 * 20f64.to_radians();
+    let record = s.doc.project.atlas.frame_mut(f.id).unwrap();
+    record.center = [0.0, lat];
+    record.rotation = 0.0;
+    record.scale = ground * 1000.0 / tall;
+}
+
+/// Waits for the level areas, and draws the result.
+fn wait_areas(h: &mut Pad) {
+    h.run_steps(1);
+    h.state_mut().areas.poll(true);
+    h.run_steps(2);
+}
+
+/// A page with an inset frame that shows 20° of latitude around `lat`,
+/// and a height layer whose height grows with the latitude. The page of
+/// the color stops of the layer in the Layers tab of the inset is open.
+fn frame_stops_pad(lat: f64) -> (Pad, vale_store::RasterId, LayerId) {
+    use vale_app::ui::pad::raster::COLOR_STOPS;
+    let mut h = inset_pad(BOARDS[0]);
+    let height = h.state_mut().add_height();
+    let layer = h.state().doc.project.raster_layer(height).unwrap();
+    let (layer, name) = (layer.id, layer.name.clone());
+    let bands = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let map = h.state_mut().globe.raster_map_mut(height).unwrap();
+    let n = map.face_size();
+    for face in 0..6 {
+        for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
+            let lat = map.texel_dir(face, x, y)[2].asin().to_degrees();
+            map.set(face, x, y, bands.level(lat * METERS_PER_DEGREE));
+        }
+    }
+    look_at(&mut h, lat);
+    h.run_steps(2);
+    show_tab(&mut h, FRAME_TABS[2]);
+    let open = format!("Open {name}");
+    scroll_to(&mut h, &open);
+    tap(&mut h, &open);
+    scroll_to(&mut h, COLOR_STOPS);
+    tap(&mut h, COLOR_STOPS);
+    wait_areas(&mut h);
+    (h, height, layer)
+}
+
+/// The bands that the stops page of the frame shows.
+fn stops_window(h: &Pad) -> vale_app::ui::pad::stops::FrameWindow {
+    h.state().atlas.stops_window.clone().expect("a window")
+}
+
+/// The number of bands of the height layer in the style of the inset map.
+fn inset_bands(h: &Pad, layer: LayerId) -> usize {
+    raster_style(h, Some(frame(h, 1).map), layer).colors.len()
+}
+
+fn shown(h: &Pad, name: &str) -> bool {
+    h.query_by_label(name).is_some()
+}
+
+fn frame_texts(h: &Pad) -> Vec<(String, Rect)> {
+    fn visit(shape: &egui::Shape, texts: &mut Vec<(String, Rect)>) {
+        match shape {
+            egui::Shape::Text(text) => {
+                texts.push((text.galley.text().to_owned(), text.visual_bounding_rect()));
+            }
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| visit(s, texts)),
+            _ => {}
+        }
+    }
+    let mut texts = Vec::new();
+    for clipped in &h.output().shapes {
+        visit(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn the_stops_page_of_a_frame_has_the_switch_and_opens_in_frame() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::raster::COLOR_STOPS;
+    use vale_app::ui::pad::stops::{ALL_BANDS, IN_FRAME};
+    let (mut h, _, _) = frame_stops_pad(45.0);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Stops));
+    assert!(control(&h, IN_FRAME).is_some());
+    assert!(control(&h, ALL_BANDS).is_some());
+    assert!(!h.state().atlas.stops_all);
+    tap(&mut h, ALL_BANDS);
+    assert!(h.state().atlas.stops_all);
+    // The page opens again on "In frame".
+    h.state_mut().atlas.layer_page = None;
+    h.run_steps(2);
+    scroll_to(&mut h, COLOR_STOPS);
+    tap(&mut h, COLOR_STOPS);
+    assert_eq!(h.state().atlas.layer_page, Some(Page::Stops));
+    assert!(!h.state().atlas.stops_all);
+}
+
+#[test]
+fn in_frame_the_list_shows_the_bands_of_the_frame_with_their_shares() {
+    use vale_app::ui::gradient::band_row;
+    use vale_app::ui::pad::stops::{BANDS_ABOVE, BANDS_BELOW, fold_text};
+    let (mut h, _, layer) = frame_stops_pad(45.0);
+    let count = inset_bands(&h, layer);
+    let w = stops_window(&h);
+    // The frame shows from about 2100 m to 3300 m.
+    assert!((2000.0..2200.0).contains(&w.lo), "{w:?}");
+    assert!((3200.0..3400.0).contains(&w.hi), "{w:?}");
+    assert!(w.bands.start > 0 && w.bands.len() < count, "{w:?}");
+    for i in 0..count {
+        assert_eq!(shown(&h, &band_row(i)), w.bands.contains(&i), "{i}");
+    }
+    let texts = frame_texts(&h);
+    let has = |t: &str| texts.iter().any(|(s, _)| s == t);
+    assert!(shown(&h, BANDS_BELOW));
+    assert!(has(&fold_text(w.bands.start, "below")), "{texts:?}");
+    assert_eq!(shown(&h, BANDS_ABOVE), w.bands.end < count);
+    if w.bands.end < count {
+        assert!(has(&fold_text(count - w.bands.end, "above")));
+    }
+    assert!(!has("Sea level"));
+    // The shares are shares of the frame.
+    let rows: Vec<Rect> = (w.bands.clone())
+        .map(|i| h.get_by_label(&band_row(i)).rect())
+        .collect();
+    let shares: Vec<f64> = (texts.iter())
+        .filter(|(t, r)| t.ends_with('%') && rows.iter().any(|row| row.contains(r.center())))
+        .map(|(t, _)| match t.as_str() {
+            "<1%" => 0.5,
+            t => t.trim_end_matches('%').parse().unwrap(),
+        })
+        .collect();
+    assert_eq!(shares.len(), w.bands.len(), "{texts:?}");
+    let sum: f64 = shares.iter().sum();
+    assert!((sum - 100.0).abs() <= shares.len() as f64, "{shares:?}");
+
+    // A tap on a folded row shows all bands.
+    tap(&mut h, BANDS_BELOW);
+    assert!(h.state().atlas.stops_all);
+    for i in 0..count {
+        assert!(shown(&h, &band_row(i)), "{i}");
+    }
+    assert!(!shown(&h, BANDS_BELOW));
+}
+
+#[test]
+fn in_frame_sea_level_shows_only_when_the_frame_has_land_and_sea() {
+    let (h, _, _) = frame_stops_pad(0.0);
+    let w = stops_window(&h);
+    assert!(w.lo < 0.0 && w.hi > 0.0, "{w:?}");
+    assert!(frame_texts(&h).iter().any(|(s, _)| s == "Sea level"));
+}
+
+#[test]
+fn in_frame_the_histogram_shows_the_values_of_the_frame() {
+    use vale_app::ui::pad::stops::HISTOGRAM;
+    for lat in [45.0, 0.0] {
+        let (h, height, _) = frame_stops_pad(lat);
+        let w = stops_window(&h);
+        let unit = h.state().doc.project.raster(height).unwrap().unit.clone();
+        let text = |v: f64| vale_app::world::value_text(v, w.hi - w.lo, &unit);
+        let histogram = h.get_by_label(HISTOGRAM).rect().expand(2.0);
+        let texts = frame_texts(&h);
+        let below = |t: &str| (texts.iter()).any(|(s, r)| s == t && histogram.contains(r.center()));
+        assert!(below(&text(w.lo)), "{lat}: {texts:?}");
+        assert!(below(&text(w.hi)), "{lat}: {texts:?}");
+        assert_eq!(below("0"), lat == 0.0, "{lat}");
+    }
+}
+
+#[test]
+fn the_bands_of_a_frame_wait_for_the_frame_and_the_finger_to_stop() {
+    use vale_app::ui::gradient::band_row;
+    use vale_app::ui::pad::stops::{HISTOGRAM, stop_name};
+    let (mut h, _, _) = frame_stops_pad(45.0);
+    let before = stops_window(&h);
+    // A finger holds the histogram while the frame moves south.
+    let hold = h.get_by_label(HISTOGRAM).rect().center();
+    touch(&mut h, 1, egui::TouchPhase::Start, hold, None);
+    h.step();
+    look_at(&mut h, -45.0);
+    for _ in 0..3 {
+        wait_areas(&mut h);
+    }
+    assert_eq!(stops_window(&h), before);
+    touch(&mut h, 1, egui::TouchPhase::End, hold, None);
+    h.run_steps(2);
+    wait_areas(&mut h);
+    let south = stops_window(&h);
+    assert!(south.hi < 0.0, "{south:?}");
+    assert!(south.bands.end <= before.bands.start, "{south:?}");
+
+    // A stop that a finger drags out of the frame range stays in the list
+    // until the finger lifts.
+    look_at(&mut h, 45.0);
+    h.run_steps(2);
+    wait_areas(&mut h);
+    let w = stops_window(&h);
+    assert_eq!(w.bands, before.bands);
+    let low = w.bands.start;
+    let stop = low + 1;
+    assert!(w.bands.len() >= 2, "{w:?}");
+    let from = h.get_by_label(&stop_name(stop)).rect().center();
+    let to = from + vec2(0.0, 80.0);
+    touch(&mut h, 1, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=8 {
+        touch(
+            &mut h,
+            1,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 8.0),
+            None,
+        );
+        h.step();
+    }
+    wait_areas(&mut h);
+    assert_eq!(stops_window(&h).bands, w.bands);
+    assert!(shown(&h, &band_row(low)));
+    assert!(shown(&h, &stop_name(stop)));
+    touch(&mut h, 1, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    wait_areas(&mut h);
+    assert_eq!(stops_window(&h).bands.start, stop);
+    assert!(!shown(&h, &band_row(low)));
+    assert!(!shown(&h, &stop_name(stop)));
+}
+
+/// Adds the custom ramp `name`, and opens its card from the stops page or
+/// the ramps page of the frame.
+fn open_ramp_card(h: &mut Pad, name: &str, colors: Vec<[u8; 3]>) {
+    use vale_app::ui::pad::raster::COLOR_RAMPS;
+    h.state_mut().ramps.add(name, colors).unwrap();
+    if h.state().atlas.layer_page != Some(vale_app::ui::pad::Page::Ramps) {
+        scroll_to(h, COLOR_RAMPS);
+        tap(h, COLOR_RAMPS);
+    }
+    scroll_to(h, name);
+    tap(h, name);
+    assert!(h.state().pad.style.ramp_card.is_some());
+}
+
+#[test]
+fn in_frame_fit_colors_only_the_bands_of_the_frame() {
+    let (mut h, height, layer) = frame_stops_pad(45.0);
+    let w = stops_window(&h);
+    let before = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let colors = vec![[200, 40, 40], [220, 180, 40], [250, 250, 200]];
+    assert_ne!(colors.len(), w.bands.len());
+    open_ramp_card(&mut h, "Frame fit", colors);
+    tap(&mut h, &format!("Fit to {} land bands", w.bands.len()));
+    let after = raster_style(&h, Some(frame(&h, 1).map), layer);
+    let values: Vec<f64> = after.stops.iter().map(|s| s.value).collect();
+    let old: Vec<f64> = before.stops().iter().map(|s| s.value).collect();
+    assert_eq!(values, old);
+    let (a, b) = (w.bands.start, w.bands.end);
+    assert_eq!(after.colors[..a], before.colors()[..a]);
+    assert_eq!(after.colors[b..], before.colors()[b..]);
+    assert_ne!(after.colors[a..b], before.colors()[a..b]);
+}
+
+#[test]
+fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
+    use vale_app::ui::TOO_MANY_BANDS;
+    let (mut h, height, layer) = frame_stops_pad(0.0);
+    let w = stops_window(&h);
+    let before = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let old: Vec<f64> = before.stops().iter().map(|s| s.value).collect();
+    let (a, b) = (w.bands.start, w.bands.end);
+    let colors = vec![
+        [20, 60, 160],
+        [60, 120, 220],
+        [120, 180, 90],
+        [200, 160, 90],
+    ];
+    open_ramp_card(&mut h, "Frame make", colors);
+    tap(&mut h, "Make 4 bands");
+    let after = raster_style(&h, Some(frame(&h, 1).map), layer);
+    let values: Vec<f64> = after.stops.iter().map(|s| s.value).collect();
+    let (lo, hi) = (w.lo.max(old[a]), w.hi.min(old[b]));
+    let mut want = old[..=a].to_vec();
+    want.extend([lo / 2.0, 0.0, hi / 2.0]);
+    want.extend_from_slice(&old[b..]);
+    assert_eq!(values.len(), want.len(), "{values:?} {want:?}");
+    for (got, want) in values.iter().zip(&want) {
+        assert!((got - want).abs() < 1e-6, "{values:?} {want:?}");
+    }
+
+    // A layer has at most 32 bands.
+    let count = after.colors.len();
+    let many: Vec<[u8; 3]> = (0..32).map(|i| [200, 100 + 4 * i as u8, 40]).collect();
+    let w = stops_window(&h);
+    open_ramp_card(&mut h, "Frame many", many);
+    let land = w.bands.end - w.bands.start.max(before.sea().unwrap());
+    assert!(count - land + 32 > 32);
+    tap(&mut h, "Make 32 land bands");
+    assert!(shown(&h, TOO_MANY_BANDS));
+    assert_eq!(inset_bands(&h, layer), count);
+}

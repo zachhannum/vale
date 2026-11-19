@@ -5947,6 +5947,21 @@ fn band_of(h: &Pad, value: f64) -> usize {
 }
 
 #[test]
+fn the_stops_page_of_the_globe_has_no_frame_switch() {
+    use vale_app::ui::pad::stops::{ALL_BANDS, BANDS_ABOVE, BANDS_BELOW, IN_FRAME};
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    for name in [IN_FRAME, ALL_BANDS, BANDS_ABOVE, BANDS_BELOW] {
+        assert!(h.query_by_label(name).is_none(), "{name}");
+    }
+    let count = h.state().globe.map.bands.colors().len();
+    for i in 0..count {
+        assert!(h.query_by_label(&band_row(i)).is_some(), "{i}");
+    }
+}
+
+#[test]
 fn a_row_shows_its_band_name_and_its_share_of_the_area() {
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
@@ -6946,7 +6961,7 @@ fn an_imported_ramp_gives_one_color_per_band() {
     // A fit keeps the stops, and each band takes the color at its middle
     // along the ramp.
     h.state_mut()
-        .apply_ramp(height, at, true, Part::All)
+        .apply_ramp(height, at, true, Part::All, None)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
@@ -6960,7 +6975,7 @@ fn an_imported_ramp_gives_one_color_per_band() {
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
-        .apply_ramp(height, at, false, Part::All)
+        .apply_ramp(height, at, false, Part::All, None)
         .unwrap();
     assert_eq!(h.state().globe.map.bands.colors(), colors);
 }

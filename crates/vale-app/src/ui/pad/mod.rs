@@ -771,7 +771,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     raster::shade_color_frame(&ctx, state);
     rules::picker_frame(&ctx, state);
     raster::reset_card(&ctx, state, &mut controls, &rects);
-    raster::ramp_card(&ctx, state, &mut controls, &rects);
+    raster::ramp_card(&ctx, state, &mut controls, &rects, None);
     readout::readout(&ctx, state, &mut controls, &rects);
     held_card(&ctx, state, &mut controls, &rects);
     readout::view_menu(&ctx, state, &mut controls, &rects);
@@ -2411,7 +2411,7 @@ pub(super) fn panel_body(
             }
             Some(Page::RampLabels(i)) => raster::labels_body(ui, state, controls, i),
             Some(Page::RampEditor) => ramp_editor::body(ui, state, controls),
-            Some(Page::Stops) => raster::stops_body(ui, state, controls, id),
+            Some(Page::Stops) => raster::stops_body(ui, state, controls, id, None),
             Some(Page::Hillshade) => {
                 raster::hillshade_body(ui, state, controls, id);
             }
