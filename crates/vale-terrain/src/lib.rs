@@ -35,7 +35,8 @@ mod tiles;
 mod zonal;
 
 pub use bands::{
-    Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, SEA_LEVEL, Stop, StopLine, sample_ramp,
+    Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, SEA_LEVEL, Stop, StopLine,
+    sample_ramp, sea_colors,
 };
 pub use basin::{BASIN_DENSITY_KM, BasinCut, BasinLine, BasinSpec, basin};
 pub use channel::{

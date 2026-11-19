@@ -1,0 +1,119 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@font-face{font-family:App;src:local("Ubuntu Light"),local("Ubuntu-Light")}
+:root{--text:#e7e9ec;--mute:#aeb5be;--warn:#d9a65a;--accent:#43a68b;--raise:rgba(255,255,255,.13);--track:rgba(0,0,0,.4);--dock:rgb(27,30,34)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1194px;height:834px;overflow:hidden}
+body{background:#0f1113 0 0/1194px 834px no-repeat;font:15px App,sans-serif;color:var(--text);position:relative}
+body.list{background-image:url(assets/ramps.png)}
+body.editor{background-image:url(assets/editor.png)}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+/* A cover over a part of the picture of the app. */
+.cover{position:absolute;background:var(--dock)}
+.title{position:absolute;left:906px;top:158px;font-size:16px;background:var(--dock);padding-right:20px;line-height:24px}
+/* The row of a ramp in the list. */
+.ramp{position:absolute;left:862px;width:324px;height:44px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-radius:8px;font-size:16px}
+.ramp.open{background:#33373d}
+.bar{display:flex;width:96px;height:14px}.bar i{flex:1}
+/* The card of a ramp, at the left of the dock. */
+.card{position:absolute;left:540px;width:300px;border-radius:14px;background:rgba(26,29,33,.96);box-shadow:0 4px 20px rgba(0,0,0,.35);padding:12px}
+.card .pt{position:absolute;right:-10px;width:0;height:0;border:10px solid transparent;border-left-color:rgba(26,29,33,.96);border-right:0}
+.card .head{color:var(--mute);font-size:15px;margin:2px 0 10px}
+.crow{height:48px;display:flex;align-items:center;justify-content:space-between}
+.seg{display:flex;background:#111316;border-radius:10px;padding:3px;font-size:15px}
+.seg span{width:56px;text-align:center;padding:8px 0;border-radius:8px;color:var(--mute)}.seg .on{background:#3a3e44;color:var(--text)}
+.seg.w span{width:85px}
+.step{display:flex;align-items:center;height:40px;border-radius:10px;background:#2c3035}
+.step b{width:44px;text-align:center;font-weight:400;font-size:20px}
+.step span{width:84px;text-align:center;border-left:1px solid #44484e;border-right:1px solid #44484e;line-height:24px;font-size:14px}
+.btn{height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-top:4px;font-size:15px;color:#101214}
+.btn.go{background:var(--accent)}.btn.alt{background:#c5c7ca}
+/* The editor. */
+.ed{position:absolute;left:854px;top:196px;width:340px;bottom:30px;background:var(--dock);padding:0 16px;overflow:hidden}
+.ed .row{height:48px;display:flex;align-items:center;justify-content:space-between;font-size:16px}
+.ed .field{height:40px;width:212px;border-radius:9px;background:#33373c;display:flex;align-items:center;padding:0 10px;color:var(--text)}
+.ed .field.e{color:transparent}
+.sw{width:50px;height:30px;border-radius:15px;background:#3a3e44;position:relative}
+.sw:after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:12px;background:#eceef0}
+.sw.on{background:var(--accent)}.sw.on:after{left:23px}
+.hint{color:var(--mute);font-size:12px;margin:8px 0 6px}
+.color{height:46px;display:flex;align-items:center;justify-content:space-between}
+.color .s{width:42px;height:30px;border-radius:6px;border:1px solid rgba(174,181,190,.5);margin-left:7px}
+.color.sea .s{box-shadow:inset 0 0 0 0 transparent}
+.color .field{width:212px}
+/* The line of sea level between two colors. */
+.sea-line{height:48px;display:flex;align-items:center;gap:8px;color:#8fd0f0;font-size:14px}
+.sea-line .l{flex:1;height:2px;background:#5fb0dc;border-radius:1px}
+.sea-line .b{width:44px;height:40px;border-radius:9px;background:#2c3035;display:flex;align-items:center;justify-content:center;color:var(--text)}
+.text-row{height:48px;display:flex;align-items:center;font-size:16px}
+.text-row.off{color:#6b7178}
+.save{height:44px;border-radius:10px;background:var(--accent);color:#101214;display:flex;align-items:center;justify-content:center;margin-top:10px}
+.mark{position:absolute;color:#101214;background:#f2d36b;font-size:12px;padding:3px 7px;border-radius:6px;z-index:9;font-weight:600}
+</style></head><body><script>
+const P = {
+  up: '<path d="M6 15l6-6 6 6"/>', down: '<path d="M6 9l6 6 6-6"/>',
+};
+const ic = n => `<svg class="i" viewBox="0 0 24 24">${P[n]}</svg>`;
+
+// A custom ramp whose sea colors are teal and grey-green, so that the rule
+// of the blue colors does not find its sea.
+const SEA = ['#173f45', '#2a6b6a', '#5aa39a', '#a7d6c9'];
+const LAND = ['#6f9b55', '#a8b86a', '#d8c98a', '#b8895a', '#8a6a52', '#d9d4cf', '#ffffff'];
+const COAST = [...SEA, ...LAND];
+const bar = cs => `<div class="bar">${cs.map(c => `<i style="background:${c}"></i>`).join('')}</div>`;
+
+const screen = location.hash.slice(1) || 'card-keep';
+const html = [];
+
+function list() {
+  document.body.className = 'list';
+  // The custom ramp "Coast" in the place of the row "land".
+  html.push(`<div class="cover" style="left:856px;top:636px;width:336px;height:50px"></div>`);
+  html.push(`<div class="ramp open" style="top:639px"><span>Coast</span>${bar(COAST)}</div>`);
+}
+
+function card(make) {
+  list();
+  const rows = [
+    `<div class="head">Coast · 11 colors</div>`,
+    `<div class="crow"><span>Apply to</span><div class="seg"><span class="on">All</span><span>Sea</span><span>Land</span></div></div>`,
+    `<div class="crow"><span>Stops</span><div class="seg w"><span class="${make ? '' : 'on'}">Keep</span><span class="${make ? 'on' : ''}">New</span></div></div>`,
+  ];
+  if (make) {
+    rows.push(`<div class="crow"><span>Bands</span><div class="step"><b>−</b><span>10</span><b>+</b></div></div>`);
+    rows.push(`<div class="btn go">Make 10 bands</div>`);
+  } else {
+    rows.push(`<div class="btn go">Fit to 12 bands</div>`);
+  }
+  rows.push(`<div class="btn alt">Edit ramp…</div>`);
+  const height = 12 + 30 + 48 * (make ? 3 : 2) + 48 * 2 + 12;
+  const top = 661 - height + 70;
+  html.push(`<div class="card" style="top:${top}px">${rows.join('')}<div class="pt" style="top:${661 - top - 10}px"></div></div>`);
+}
+
+function editor(end) {
+  document.body.className = 'editor';
+  html.push(`<div class="title">Edit ramp</div>`);
+  const r = [];
+  r.push(`<div class="row" style="margin-top:4px"><span>Name</span><div class="field">Coast</div></div>`);
+  r.push(`<div class="row"><span>Qualitative</span><div class="sw"></div></div>`);
+  r.push(`<div class="row"><span>Sea level</span><div class="sw on"></div></div>`);
+  r.push(`<div class="hint">First color is the lowest band.</div>`);
+  const color = (c, label) => `<div class="color"><div class="s" style="background:${c}"></div><div class="field${label ? '' : ' e'}">${label || '.'}</div></div>`;
+  const labels = ['Deep sea', '', '', 'Shallows', 'Coast', '', ''];
+  SEA.forEach((c, i) => r.push(color(c, labels[i])));
+  r.push(`<div class="sea-line"><div class="l"></div><span>Sea level</span><div class="l"></div><div class="b">${ic('up')}</div><div class="b">${ic('down')}</div></div>`);
+  LAND.forEach((c, i) => r.push(color(c, labels[SEA.length + i])));
+  r.push(`<div class="text-row">Add color</div>`);
+  r.push(`<div class="text-row">Reverse colors</div>`);
+  r.push(`<div class="save">Save ramp</div>`);
+  // The end of the editor is the page scrolled to the bottom.
+  const shift = end ? 'style="margin-top:-330px"' : '';
+  html.push(`<div class="ed"><div ${shift}>${r.join('')}</div></div>`);
+}
+
+if (screen === 'card-keep') card(false);
+if (screen === 'card-new') card(true);
+if (screen === 'editor') editor(false);
+if (screen === 'editor-end') editor(true);
+document.body.insertAdjacentHTML('beforeend', html.join(''));
+</script></body></html>

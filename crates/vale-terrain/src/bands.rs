@@ -919,7 +919,7 @@ fn is_blue(c: Rgb) -> bool {
 
 /// The number of colors that are mostly blue at the start of a ramp, if
 /// the ramp also has other colors.
-fn sea_colors(colors: &[Rgb]) -> Option<usize> {
+pub fn sea_colors(colors: &[Rgb]) -> Option<usize> {
     let blue = colors.iter().take_while(|c| is_blue(**c)).count();
     (1..colors.len()).contains(&blue).then_some(blue)
 }
@@ -2107,7 +2107,11 @@ mod tests {
         let fitted = bands.stretched_ramp(&ramp, Part::All, all.clone()).unwrap();
         assert_eq!(fitted.colors()[0], teal[0]);
         assert_eq!(fitted.colors()[sea - 1], teal[2]);
-        assert!(fitted.colors()[sea..].iter().all(|c| c[0] == c[1] && c[1] == c[2]));
+        assert!(
+            fitted.colors()[sea..]
+                .iter()
+                .all(|c| c[0] == c[1] && c[1] == c[2])
+        );
         let (lo, hi) = (bands.min(), bands.max());
         let made = bands
             .painted_count(&ramp, Part::All, all, (lo, hi), 7)
