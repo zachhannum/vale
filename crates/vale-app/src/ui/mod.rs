@@ -4207,6 +4207,7 @@ impl AppState {
         };
         let colors = ramp.colors.clone();
         let labels = ramp.labels.clone();
+        let qualitative = ramp.qualitative;
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
@@ -4225,7 +4226,7 @@ impl AppState {
             return Err(TOO_MANY_BANDS.to_owned());
         }
         let applied = if keep {
-            bands.stretched_in(&colors, &labels, part, range)
+            bands.stretched_in(&colors, &labels, part, range, qualitative)
         } else {
             bands.painted_in(&colors, &labels, part, range, lo, hi)
         };

@@ -549,7 +549,7 @@ impl Bands {
             return None;
         }
         if n == r.len() {
-            return self.stretched_in(colors, labels, part, r);
+            return self.stretched_in(colors, labels, part, r, false);
         }
         let (bottom, top) = (self.stops[r.start].value, self.stops[r.end].value);
         let (lo, hi) = (lo.max(bottom), hi.min(top));
@@ -607,10 +607,12 @@ impl Bands {
     }
 
     /// The bands with the same stops, values, and lines, and the colors of
-    /// a ramp over the bands of its part. Each band takes the color at its
-    /// middle along the ramp, so with more bands than colors, a color
-    /// repeats, and with fewer bands, a color drops out. The bands of the
-    /// other part do not change. Returns `None` if there are no colors.
+    /// a ramp over the bands of its part. With more bands than colors, the
+    /// first band takes the first color, the last band takes the last
+    /// color, and the bands between take the blend at their place along
+    /// the ramp. With fewer bands, each band takes the color at its middle
+    /// along the ramp, and a color drops out. The bands of the other part
+    /// do not change. Returns `None` if there are no colors.
     pub fn stretched(&self, colors: &[Rgb]) -> Option<Bands> {
         self.stretched_part(colors, &[], self.part(colors))
     }
@@ -620,18 +622,21 @@ impl Bands {
     /// If a label is not empty, each band of the part takes the label of
     /// its color as its name. Otherwise, the bands keep their names.
     pub fn stretched_part(&self, colors: &[Rgb], labels: &[String], part: Part) -> Option<Bands> {
-        self.stretched_in(colors, labels, part, 0..self.colors.len())
+        self.stretched_in(colors, labels, part, 0..self.colors.len(), false)
     }
 
     /// `stretched_part` for the bands of `bands` in the part. The ramp
-    /// spans these bands, and the other bands do not change. Returns `None`
-    /// if there are no colors or if no band is in both.
+    /// spans these bands, and the other bands do not change. The colors of
+    /// a `qualitative` ramp do not blend: with more bands than colors, the
+    /// colors repeat in order. Returns `None` if there are no colors or if
+    /// no band is in both.
     pub fn stretched_in(
         &self,
         colors: &[Rgb],
         labels: &[String],
         part: Part,
         bands: Range<usize>,
+        qualitative: bool,
     ) -> Option<Bands> {
         let n = colors.len();
         let range = self.window(part, bands);
@@ -643,8 +648,18 @@ impl Bands {
         let mut all = self.colors.clone();
         let mut names = self.padded_names();
         for (k, i) in range.enumerate() {
-            let c = (2 * k + 1) * n / (2 * m);
-            all[i] = colors[c];
+            let c = if n >= m {
+                (2 * k + 1) * n / (2 * m)
+            } else if qualitative {
+                k % n
+            } else {
+                (k * (n - 1) + (m - 1) / 2) / (m - 1)
+            };
+            all[i] = if n > 1 && n < m && !qualitative {
+                blend(colors, k as f64 / (m - 1) as f64)
+            } else {
+                colors[c]
+            };
             if labeled {
                 names[i] = labels[c].clone();
             }
@@ -812,6 +827,14 @@ mod tests {
 
     fn greys(n: usize) -> Vec<Rgb> {
         (0..n).map(|i| [(i * 7) as u8; 3]).collect()
+    }
+
+    /// The colors of `m` bands that blend the colors of a ramp from the
+    /// first band to the last.
+    fn spread(colors: &[Rgb], m: usize) -> Vec<Rgb> {
+        (0..m)
+            .map(|k| blend(colors, k as f64 / (m - 1) as f64))
+            .collect()
     }
 
     #[test]
@@ -1482,11 +1505,7 @@ mod tests {
         let stretched = bands.stretched(&greys(2)).unwrap();
         assert_eq!(values(&stretched), values(&bands));
         assert_eq!(stretched.colors()[..sea], bands.colors()[..sea]);
-        let g = greys(2);
-        assert_eq!(
-            band_colors(&stretched)[sea..],
-            [g[0], g[0], g[0], g[1], g[1], g[1], g[1]]
-        );
+        assert_eq!(band_colors(&stretched)[sea..], spread(&greys(2), 7));
     }
 
     /// The names `names`, as owned strings.
@@ -1666,11 +1685,7 @@ mod tests {
         let before = bands.stops().to_vec();
         let more = bands.stretched(&greys(4)).unwrap();
         assert_eq!(more.stops(), before);
-        let g = greys(4);
-        assert_eq!(
-            band_colors(&more),
-            [g[0], g[0], g[1], g[1], g[2], g[2], g[3], g[3]]
-        );
+        assert_eq!(band_colors(&more), spread(&greys(4), 8));
         let fewer = bands.stretched(&greys(16)).unwrap();
         let g = greys(16);
         assert_eq!(
@@ -1694,18 +1709,44 @@ mod tests {
     }
 
     #[test]
+    fn a_ramp_with_fewer_colors_than_bands_blends_its_colors() {
+        let plain = Bands::with_range(0.0, 100.0, false).unwrap();
+        let m = plain.colors().len();
+        assert!(m > 3);
+        let ramp = [[0, 0, 0], [100, 100, 100], [200, 200, 200]];
+        let fit = plain.stretched_part(&ramp, &[], Part::All).unwrap();
+        let colors = fit.colors();
+        assert_eq!(colors[0], ramp[0]);
+        assert_eq!(colors[m - 1], ramp[2]);
+        // No two bands next to each other have the same color.
+        assert!(colors.windows(2).all(|w| w[0][0] < w[1][0]), "{colors:?}");
+        // A qualitative ramp does not blend, and its colors repeat in order.
+        let fit = plain
+            .stretched_in(&ramp, &[], Part::All, 0..m, true)
+            .unwrap();
+        let cycle: Vec<Rgb> = (0..m).map(|k| ramp[k % 3]).collect();
+        assert_eq!(fit.colors(), cycle);
+        // One color colors all bands.
+        let one = plain.stretched_part(&ramp[..1], &[], Part::All).unwrap();
+        assert!(one.colors().iter().all(|&c| c == ramp[0]));
+    }
+
+    #[test]
     fn stretched_in_colors_only_the_window() {
         let bands = Bands::default();
         let fit = bands
-            .stretched_in(&greys(2), &[], Part::Land, 7..10)
+            .stretched_in(&greys(2), &[], Part::Land, 7..10, false)
             .unwrap();
         assert_eq!(fit.stops(), bands.stops());
-        let g = greys(2);
-        assert_eq!(fit.colors()[7..10], [g[0], g[1], g[1]]);
+        assert_eq!(fit.colors()[7..10], spread(&greys(2), 3));
         assert_eq!(fit.colors()[..7], bands.colors()[..7]);
         assert_eq!(fit.colors()[10..], bands.colors()[10..]);
         // The window is in the part, so a sea window colors nothing.
-        assert!(bands.stretched_in(&g, &[], Part::Land, 0..5).is_none());
+        assert!(
+            bands
+                .stretched_in(&greys(2), &[], Part::Land, 0..5, false)
+                .is_none()
+        );
     }
 
     #[test]

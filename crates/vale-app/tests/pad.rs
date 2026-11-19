@@ -6958,20 +6958,20 @@ fn an_imported_ramp_gives_one_color_per_band() {
     // The new ramp is the last ramp of the library.
     let at = h.state().ramps.list().len() - 1;
 
-    // A fit keeps the stops, and each band takes the color at its middle
-    // along the ramp.
+    // A fit keeps the stops. With more bands than colors, the end bands
+    // take the end colors, and the bands between blend the colors, so no
+    // two bands next to each other have the same color.
     h.state_mut()
         .apply_ramp(height, at, true, Part::All, None)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
     assert_eq!(bands.colors().len(), count);
-    let want: Vec<[u8; 3]> = (0..count)
-        .map(|k| colors[(2 * k + 1) * 3 / (2 * count)])
-        .collect();
-    assert_eq!(bands.colors(), want);
+    assert_eq!(bands.colors()[0], colors[0]);
+    assert_eq!(bands.colors()[count - 1], colors[2]);
+    assert!(bands.colors().windows(2).all(|w| w[0] != w[1]));
     let shown: Vec<[u8; 3]> = bands.bands().iter().map(|b| b.color).collect();
-    assert_eq!(shown, want);
+    assert_eq!(shown, bands.colors());
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
