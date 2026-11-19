@@ -13177,8 +13177,9 @@ fn frame_key_pad(
     (h, layer, id)
 }
 
-/// The text of the items of the key `id` in an export.
-fn key_texts(h: &mut Pad, id: vale_store::FurnitureId) -> Vec<String> {
+/// The runs of text of the key `id` in an export: the text, and the left
+/// and the right end of the run in page points.
+fn key_runs(h: &mut Pad, id: vale_store::FurnitureId) -> Vec<(String, f64, f64)> {
     let s = h.state_mut();
     let rec = s.doc.project.atlas.furniture(id).unwrap().clone();
     let target = vale_app::atlas::FrameTarget {
@@ -13191,10 +13192,38 @@ fn key_texts(h: &mut Pad, id: vale_store::FurnitureId) -> Vec<String> {
         vale_app::furniture::items(&mut s.pipeline, &s.doc, &rec, target, &mut fonts, purpose);
     (items.iter())
         .filter_map(|i| match i {
-            vale_render::Item::Glyphs(run) => Some(run.text.clone()),
+            vale_render::Item::Glyphs(run) => {
+                let style = vale_labeler::TextStyle::new(
+                    vale_app::fonts::DEFAULT_FAMILY,
+                    f64::from(run.font_size),
+                );
+                let x0 = run.glyphs[0].1.translation().x;
+                let w = fonts.measure(&run.text, &style).advance;
+                Some((run.text.clone(), x0, x0 + w))
+            }
             _ => None,
         })
         .collect()
+}
+
+/// The text of the items of the key `id` in an export.
+fn key_texts(h: &mut Pad, id: vale_store::FurnitureId) -> Vec<String> {
+    key_runs(h, id).into_iter().map(|(t, _, _)| t).collect()
+}
+
+/// Asserts that each run of text of the key `id` is inside its box.
+fn assert_texts_inside(h: &mut Pad, id: vale_store::FurnitureId) {
+    let rect = rect_of(h.state().doc.project.atlas.furniture(id).unwrap());
+    let pt = vale_app::atlas::PT_PER_MM;
+    let (left, right) = (rect.x0 * pt, rect.x1 * pt);
+    let runs = key_runs(h, id);
+    assert!(!runs.is_empty());
+    for (text, x0, x1) in runs {
+        assert!(
+            x0 >= left - 1e-6 && x1 <= right + 1e-6,
+            "{text}: {x0}..{x1} in {left}..{right}"
+        );
+    }
 }
 
 #[test]
@@ -13248,6 +13277,12 @@ fn in_frame_the_strip_has_closed_ends_at_the_bands_of_the_frame() {
     want.extend(strip_values(&values[sea..=w.bands.end]));
     want.push("meters".to_string());
     assert_eq!(key_texts(&mut h, id), want);
+    // The values at the closed ends of both rows stay inside the key, also
+    // in a narrow key.
+    assert_texts_inside(&mut h, id);
+    let s = h.state_mut();
+    s.doc.project.atlas.furniture_mut(id).unwrap().rect = [10.0, 10.0, 40.0, 60.0];
+    assert_texts_inside(&mut h, id);
 }
 
 #[test]
