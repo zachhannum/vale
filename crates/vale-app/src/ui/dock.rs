@@ -1722,6 +1722,14 @@ fn key_sections(
         ui.weak(item::LAYER_HIDDEN);
     }
     ui.horizontal(|ui| {
+        ui.label(item::KEY_EXTENT);
+        for (all, name) in [false, true].into_iter().zip(item::KEY_BAND_CHOICES) {
+            if ui.selectable_label(k.all_bands == all, name).clicked() && k.all_bands != all {
+                atlas::edit_key(state, id, true, |k| k.all_bands = all);
+            }
+        }
+    });
+    ui.horizontal(|ui| {
         ui.label(item::KEY_LAYOUT);
         for (layout, name) in KeyLayout::ALL.into_iter().zip(item::KEY_LAYOUTS) {
             if ui.selectable_label(k.layout == layout, name).clicked() && k.layout != layout {

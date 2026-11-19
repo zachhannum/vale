@@ -1928,16 +1928,17 @@ fn raster_cards(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
             && let Some(map) = state.doc.project.atlas.frame(frame).map(|f| f.map)
         {
             state.edit_map_style(map, layer, |state| {
-                super::raster::ramp_card(ctx, state, controls, rects);
+                super::raster::ramp_card(ctx, state, controls, rects, None);
             });
         }
         return;
     };
+    let frame = state.atlas.frame();
     state.edit_map_raster(map, layer, raster, |state| {
         super::raster::band_card(ctx, state, controls, rects);
         super::raster::shade_color_frame(ctx, state);
         super::raster::reset_card(ctx, state, controls, rects);
-        super::raster::ramp_card(ctx, state, controls, rects);
+        super::raster::ramp_card(ctx, state, controls, rects, frame);
     });
 }
 
@@ -1994,7 +1995,9 @@ fn raster_head(
     let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
         ui.spacing_mut().item_spacing.y = 0.0;
         state.edit_map_raster(map, layer, raster, |state| match state.pad.page {
-            Some(Page::Stops) => super::raster::stops_body(ui, state, controls, raster),
+            Some(Page::Stops) => {
+                super::raster::stops_body(ui, state, controls, raster, Some(id));
+            }
             Some(Page::Ramps) => super::raster::ramps_body(
                 ui,
                 state,
@@ -2018,7 +2021,7 @@ fn raster_head(
                 {
                     state.set_raster_opacity(raster, v as f32);
                 }
-                super::raster::style(ui, state, controls, raster);
+                super::raster::style(ui, state, controls, raster, Some(id));
             }
         });
         if page.is_none() {

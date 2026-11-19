@@ -264,6 +264,11 @@ impl PdfExport {
         *self.pipeline.rasters_mut() = rasters;
     }
 
+    /// Gives the export the levels inside the frames of the color keys.
+    pub fn set_frame_levels(&mut self, levels: crate::color_key::FrameLevels) {
+        self.pipeline.set_frame_levels(levels);
+    }
+
     /// Sets the most pixels on a side of a texture of the GPU.
     pub fn set_max_side(&mut self, side: u32) {
         self.max_side = side.max(MIN_STRIP_ROWS);

@@ -102,7 +102,8 @@ pub struct Args {
     #[arg(long, value_name = "PAGES", requires = "export_form")]
     pub export_range: Option<String>,
     /// With --layout pad and --panel layers: open the page of the color stops
-    /// of the selected raster layer.
+    /// of the selected raster layer. With --frame, open the page in the
+    /// Layers tab of the frame.
     #[arg(long)]
     pub stops_page: bool,
     /// Open the editor of a new ramp. With --layout pad and --panel layers,
@@ -570,8 +571,14 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
     if args.stops_page
         && let Some(id) = state.selected_raster()
     {
-        state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
-        state.pad.page = Some(crate::ui::pad::Page::Stops);
+        let layer = state.doc.project.raster_layer(id).map(|l| l.id);
+        if let (Some(frame), Some(layer)) = (state.atlas.frame(), layer) {
+            state.atlas.layer = Some((frame, layer));
+            state.atlas.layer_page = Some(crate::ui::pad::Page::Stops);
+        } else {
+            state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
+            state.pad.page = Some(crate::ui::pad::Page::Stops);
+        }
     }
     if args.ramp_editor {
         let id = state.selected_raster();
@@ -627,7 +634,7 @@ fn apply_ramp(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<(
                 .bands_mut(id)
                 .zip(colors)
                 .map_or(vale_terrain::Part::All, |(b, c)| b.part(&c));
-            if let Err(text) = state.apply_ramp(id, last, false, part) {
+            if let Err(text) = state.apply_ramp(id, last, false, part, None) {
                 bail!("{text}");
             }
         }

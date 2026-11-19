@@ -646,6 +646,11 @@ pub struct AtlasState {
     pub layer: Option<(FrameId, LayerId)>,
     /// The page of the panel of `layer`.
     pub layer_page: Option<super::pad::Page>,
+    /// The page of the color stops of `layer` shows all bands, not only
+    /// the bands that the frame shows.
+    pub stops_all: bool,
+    /// The bands that the frame shows on the page of the color stops.
+    pub stops_window: Option<super::pad::stops::FrameWindow>,
     /// The label class whose panel the Labels tab of this frame shows: its
     /// layer and its place in the classes of the layer.
     pub label: Option<(FrameId, LayerId, usize)>,
@@ -873,6 +878,8 @@ impl Default for AtlasState {
             composes: 0,
             layer: None,
             layer_page: None,
+            stops_all: false,
+            stops_window: None,
             label: None,
             label_page: None,
             map_styles: None,
@@ -1619,7 +1626,54 @@ pub fn key_data(
     key: &vale_store::ColorKeyItem,
 ) -> Option<crate::color_key::KeyData> {
     let frame = state.doc.project.atlas.frame(key.frame?)?;
-    crate::color_key::data(&state.doc, frame, key)
+    crate::color_key::data(&state.doc, frame, key, state.pipeline.frame_levels())
+}
+
+/// Gives the pipeline the levels inside the frames of the color keys of
+/// `pages` that show the bands of their frame. A count of the levels starts
+/// only if not `wait`, and with `block` it runs to its end. The levels of a
+/// running count are the old levels. True while a count runs.
+pub fn update_key_levels(
+    state: &mut AppState,
+    pages: &[PageRecord],
+    wait: bool,
+    block: bool,
+) -> bool {
+    let doc = &state.doc;
+    let radius = doc.project.world.radius_km * 1000.0;
+    let mut jobs = Vec::new();
+    for rec in pages.iter().flat_map(|p| &p.furniture) {
+        let Furniture::ColorKey(key) = &rec.item else {
+            continue;
+        };
+        let frame = key.frame.and_then(|f| doc.project.atlas.frame(f));
+        let raster = (key.layer.and_then(|l| doc.project.layer(l))).and_then(|l| l.raster());
+        if let (false, Some(frame), Some(raster)) = (key.all_bands, frame, raster) {
+            let spec = doc.projection(frame.map);
+            let key = crate::areas::FrameKey::new(frame, spec, radius);
+            jobs.push((frame.id, raster, key));
+        }
+    }
+    let mut levels = crate::color_key::FrameLevels::new();
+    for (frame, raster, key) in jobs {
+        let Some(map) = state.globe.value_map(raster) else {
+            continue;
+        };
+        let bins = match block && !wait {
+            true => state.areas.frame_bins_now(frame, raster, key, map),
+            false => state.areas.frame_bins(frame, raster, key, map, wait),
+        };
+        if let Some(b) = bins.filter(|b| !b.is_empty()) {
+            levels.insert((frame, raster), (b.lo, b.hi));
+        }
+    }
+    state.pipeline.set_frame_levels(levels);
+    let atlas = &state.doc.project.atlas;
+    let project = &state.doc.project;
+    state
+        .areas
+        .retain_frames(|f, r| atlas.frame(f).is_some() && project.raster(r).is_some());
+    state.areas.poll(false)
 }
 
 /// The rows of a legend, or nothing for a legend with no frame.
@@ -1835,9 +1889,9 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
 
 /// True while a gesture moves the maps, so the frames show their last
 /// textures.
-fn gesture(ui: &egui::Ui, state: &AppState) -> bool {
+pub(crate) fn gesture(ctx: &egui::Context, state: &AppState) -> bool {
     let (down, fingers, now) =
-        ui.input(|i| (i.pointer.any_down(), i.multi_touch().is_some(), i.time));
+        ctx.input(|i| (i.pointer.any_down(), i.multi_touch().is_some(), i.time));
     let wheel = state.atlas.wheel_at.is_some_and(|t| now - t < WHEEL_REST);
     down || fingers || wheel
 }
@@ -2847,7 +2901,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
-    let moving = gesture(ui, state);
+    let moving = gesture(ui.ctx(), state);
     let primary = state.atlas.frame().or(page.frames.first().map(|f| f.id));
     let target = place.target();
     let painter = ui.painter_at(area);
@@ -3299,7 +3353,14 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     let page = open_page(state).clone();
     let ctx = ui.ctx().clone();
     let ppp = ctx.pixels_per_point();
-    let moving = gesture(ui, state);
+    let moving = gesture(ui.ctx(), state);
+    // A color key shows the bands of its frame again when the frame stops.
+    let block = state.headless;
+    if update_key_levels(state, std::slice::from_ref(&page), moving, block) {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    } else if moving {
+        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+    }
     let painter = ui.painter_at(area);
     let zoom = place.pts_per_mm / PT_PER_MM;
     for rec in &page.furniture {
@@ -3316,7 +3377,9 @@ fn items(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let map = frame.and_then(|f| atlas.map(f.map));
         // A color key follows the style and the range of its layer.
         let key = match (&rec.item, frame) {
-            (Furniture::ColorKey(k), Some(f)) => crate::color_key::data(&state.doc, f, k),
+            (Furniture::ColorKey(k), Some(f)) => {
+                crate::color_key::data(&state.doc, f, k, state.pipeline.frame_levels())
+            }
             _ => None,
         };
         // The page values of a text item.

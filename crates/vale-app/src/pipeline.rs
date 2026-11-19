@@ -230,6 +230,9 @@ pub struct Pipeline {
     vtiles: VectorTiles,
     /// The raster masks of the layers in the map frames.
     page_masks: HashMap<(FrameId, LayerId), Arc<PageMask>>,
+    /// The levels of the raster layers inside the frames of the color keys
+    /// that show the bands of their frame.
+    frame_levels: crate::color_key::FrameLevels,
 }
 
 /// The raster-masked layers of a frame, with their page masks. `None`: the
@@ -1492,6 +1495,7 @@ impl Pipeline {
             rasters,
             vtiles,
             page_masks: std::mem::take(&mut self.page_masks),
+            frame_levels: std::mem::take(&mut self.frame_levels),
             ..Pipeline::default()
         };
     }
@@ -1576,6 +1580,15 @@ impl Pipeline {
 
     pub fn rasters_mut(&mut self) -> &mut RasterCache {
         &mut self.rasters
+    }
+
+    /// The levels inside the frames that the color keys read.
+    pub fn frame_levels(&self) -> &crate::color_key::FrameLevels {
+        &self.frame_levels
+    }
+
+    pub fn set_frame_levels(&mut self, levels: crate::color_key::FrameLevels) {
+        self.frame_levels = levels;
     }
 
     /// Sets the raster mask of layer `layer` in frame `frame`, from the

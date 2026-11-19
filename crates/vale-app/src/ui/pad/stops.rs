@@ -1,8 +1,10 @@
 //! The page of the color stops: a histogram of the area at each value, and
 //! a list of the bands, as in a map legend.
 
+use std::ops::Range;
+
 use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, pos2, vec2};
-use vale_store::RasterDisplay;
+use vale_store::{FrameId, RasterDisplay, RasterId};
 use vale_terrain::{Bands, MAX_BANDS, MIN_BAND};
 
 use super::geometry::TOUCH;
@@ -39,6 +41,36 @@ const SHARE_WIDTH: f32 = 34.0;
 const ADD: f32 = 44.0;
 /// The fill of the value of a stop.
 const PILL: Color32 = Color32::from_rgb(48, 53, 60);
+
+/// The switch of the page of a raster layer in the Layers tab of a frame.
+pub const IN_FRAME: &str = "In frame";
+pub const ALL_BANDS: &str = "All";
+/// The rows that hold the bands above and below the bands of a frame.
+pub const BANDS_ABOVE: &str = "Bands above";
+pub const BANDS_BELOW: &str = "Bands below";
+
+/// The indent of the text of a row that holds bands: the indent of the
+/// names of the bands.
+pub const FOLD_INDENT: f32 = CELL + PILL_GAP + PILL_PAD;
+
+/// The bands of a raster layer that a frame shows, and the lowest and the
+/// highest value inside its shape.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FrameWindow {
+    pub frame: FrameId,
+    pub raster: RasterId,
+    pub bands: Range<usize>,
+    pub lo: f64,
+    pub hi: f64,
+}
+
+/// The text of a row that holds `count` bands, `side` "above" or "below".
+pub fn fold_text(count: usize, side: &str) -> String {
+    match count {
+        1 => format!("1 band {side}"),
+        n => format!("{n} bands {side}"),
+    }
+}
 
 /// The name of the value of a stop.
 pub fn stop_name(index: usize) -> String {
@@ -120,7 +152,9 @@ pub fn histogram(ui: &mut egui::Ui) -> Rect {
 /// The histogram in `rect`: the area at each value, in the color of the
 /// band of the value, with the lowest value, sea level, and the highest
 /// value below it. While a band is selected, the other bands are dim.
-/// `marker`: the value of a stop that a finger drags.
+/// `marker`: the value of a stop that a finger drags. `range`: the lowest
+/// and the highest value of the axis, if not the range of the layer. Sea
+/// level then shows only if the range has values on both sides.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_histogram(
     ui: &egui::Ui,
@@ -131,14 +165,22 @@ pub fn paint_histogram(
     unit: &str,
     selected: Option<usize>,
     marker: Option<f64>,
+    range: Option<(f64, f64)>,
 ) {
     let painter = ui.painter();
     let bars = Rect::from_min_size(rect.min, vec2(rect.width(), BARS));
-    let (min, max) = (bands.min(), bands.max());
+    let (min, max) = match range {
+        Some((lo, hi)) if lo < hi => (lo, hi),
+        _ => (bands.min(), bands.max()),
+    };
     let x_of = |v: f64| bars.left() + ((v - min) / (max - min)) as f32 * bars.width();
     if let Some(bins) = bins {
         let count = (bars.width() / COLUMN).floor().max(1.0) as usize;
-        let cols = crate::areas::columns(bins, count);
+        let n = bins.len() as f64;
+        let place = |v: f64| (v - bands.min()) / (bands.max() - bands.min()) * n;
+        // The columns reach the edges of the bins of the two ends.
+        let (from, to) = (place(min).floor(), (place(max).floor() + 1.0).min(n));
+        let cols = crate::areas::columns_between(bins, count, from, to);
         // The values out of the range of a layer sit at its two ends, so the
         // columns at the ends do not set the scale.
         let inner = cols.get(1..count.saturating_sub(1)).unwrap_or(&[]);
@@ -189,7 +231,8 @@ pub fn paint_histogram(
         Align2::RIGHT_CENTER,
         world::value_text(max, span, unit),
     );
-    if bands.sea().is_some() {
+    let both = range.is_none_or(|(lo, hi)| lo < 0.0 && 0.0 < hi);
+    if bands.sea().is_some() && both && min < 0.0 && 0.0 < max {
         text(pos2(x_of(0.0), y), Align2::CENTER_CENTER, "0".to_string());
     }
 }
@@ -197,12 +240,14 @@ pub fn paint_histogram(
 /// The list of the bands, with the highest band at the top. The color
 /// cells touch, and the value of each stop between the two ends is on the
 /// seam between its two bands. A row shows the name of its band and its
-/// share of the area of the world, from `bins`, the area of each level bin. `selected` is a band. A tap on
+/// share of the area in `bins`, the area of each level bin. `selected` is a band. A tap on
 /// a row or on the value of the stop at its lower edge selects the band, or
 /// clears the selection if the band is selected. A drag on the value of a
 /// stop that moves, or on the color cell of the band above it, changes the
 /// value, and each other drag scrolls the panel. The selected row has a
-/// button that adds a stop in the middle of the band.
+/// button that adds a stop in the middle of the band. `shown`: the bands
+/// that have a row. A stop shows only between two rows.
+#[allow(clippy::too_many_arguments)]
 pub fn legend(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -211,22 +256,29 @@ pub fn legend(
     display: RasterDisplay,
     unit: &str,
     bins: Option<&[f64]>,
+    shown: Range<usize>,
 ) -> Legend {
     let count = bands.colors().len();
-    let size = vec2(ui.available_width(), PANEL_ROW * count as f32);
+    let shown = shown.start.min(count)..shown.end.min(count);
+    let size = vec2(ui.available_width(), PANEL_ROW * shown.len() as f32);
     let (rows, _) = ui.allocate_exact_size(size, Sense::hover());
-    if selected.is_some_and(|i| i >= count) {
+    if selected.is_some_and(|i| !shown.contains(&i)) {
         *selected = None;
     }
     let row_rect = |i: usize| {
-        let top = rows.top() + (count - 1 - i) as f32 * PANEL_ROW;
+        let top = rows.top() + (shown.end - 1 - i) as f32 * PANEL_ROW;
         Rect::from_min_size(pos2(rows.left(), top), vec2(rows.width(), PANEL_ROW))
     };
-    let row_of: Vec<Rect> = (0..count).map(row_rect).collect();
+    let row_of: Vec<Rect> = (0..count)
+        .map(|i| match shown.contains(&i) {
+            true => row_rect(i),
+            false => Rect::NOTHING,
+        })
+        .collect();
     let toggle = |selected: Option<usize>, i: usize| (selected != Some(i)).then_some(i);
 
     let mut down = vec![false; count];
-    for (i, rect) in row_of.iter().enumerate() {
+    for (i, rect) in row_of.iter().enumerate().take(shown.end).skip(shown.start) {
         let row = widgets::tap_area(ui, controls, *rect, &band_row(i), true);
         if row.clicked() {
             *selected = toggle(*selected, i);
@@ -283,6 +335,10 @@ pub fn legend(
     // cell of a band moves the stop at its lower edge.
     let mut cells = Vec::with_capacity(count);
     for (i, row) in row_of.iter().enumerate() {
+        if !shown.contains(&i) {
+            cells.push(None);
+            continue;
+        }
         let hit = Rect::from_min_max(
             row.min - vec2(TOUCH - CELL, 0.0),
             pos2(row.left() + CELL, row.bottom()),
@@ -292,9 +348,13 @@ pub fn legend(
             *selected = toggle(*selected, i);
         }
         down[i] |= resp.is_pointer_button_down_on();
-        cells.push(resp);
+        cells.push(Some(resp));
     }
-    for (i, cell) in cells.iter().enumerate().take(inner.min(count)).skip(1) {
+    let stops_shown = shown.start + 1..inner.min(shown.end);
+    for (i, cell) in cells.iter().enumerate() {
+        let Some(cell) = cell.as_ref().filter(|_| stops_shown.contains(&i)) else {
+            continue;
+        };
         let value = bands.stops()[i].value;
         let w = pill_width(ui, value, false);
         let hit = Rect::from_center_size(
@@ -348,8 +408,8 @@ pub fn legend(
     // The paint.
     let painter = ui.painter().clone();
     let list = bands.bands();
-    let count = list.len().min(row_of.len());
-    for i in 0..count {
+    let shown = shown.start..shown.end.min(list.len());
+    for i in shown.clone() {
         let row = row_of[i];
         if *selected == Some(i) || down[i] {
             painter.rect_filled(row, theme::CONTROL_RADIUS, theme::raise());
@@ -357,17 +417,17 @@ pub fn legend(
         let cell = Rect::from_min_size(row.min, vec2(CELL, row.height()));
         let r = 8;
         let radius = CornerRadius {
-            nw: if i + 1 == count { r } else { 0 },
-            ne: if i + 1 == count { r } else { 0 },
-            sw: if i == 0 { r } else { 0 },
-            se: if i == 0 { r } else { 0 },
+            nw: if i + 1 == shown.end { r } else { 0 },
+            ne: if i + 1 == shown.end { r } else { 0 },
+            sw: if i == shown.start { r } else { 0 },
+            se: if i == shown.start { r } else { 0 },
         };
         painter.rect_filled(cell, radius, cell_color(bands, &list[i], display));
     }
     let areas = bins.map(|bins| crate::areas::band_areas(bins, bands));
     let areas = areas.as_deref();
     let total: f64 = areas.map_or(0.0, |a| a.iter().sum());
-    for (i, &row) in row_of.iter().enumerate().take(count) {
+    for (i, &row) in row_of.iter().enumerate().take(shown.end).skip(shown.start) {
         let name = bands.name(i);
         let right = match add {
             Some((band, rect)) if band == i => rect.left() - 4.0,
@@ -396,7 +456,7 @@ pub fn legend(
         }
     }
     let stops = bands.stops();
-    for i in 1..stops.len().saturating_sub(1).min(count) {
+    for i in shown.start + 1..stops.len().saturating_sub(1).min(shown.end) {
         let stop = stops[i];
         let y = seam(i);
         let on = scrub == Some(i);

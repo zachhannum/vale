@@ -5763,6 +5763,22 @@ fn the_style_section_has_a_strip_of_the_color_stops_and_no_rows_of_them() {
 }
 
 #[test]
+fn the_strip_of_the_globe_shows_all_bands() {
+    use vale_app::ui::pad::raster::COLOR_STOPS;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_row(&mut h, COLOR_STOPS);
+    let bands = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let unit = h.state().doc.project.raster(height).unwrap().unit.clone();
+    let span = bands.max() - bands.min();
+    let texts = painted_texts(&h);
+    for v in [bands.min(), bands.max()] {
+        let text = vale_app::world::value_text(v, span, &unit);
+        assert!(texts.iter().any(|(t, _)| *t == text), "{text}: {texts:?}");
+    }
+}
+
+#[test]
 fn a_tap_on_the_strip_opens_the_page_and_back_from_the_ramps_goes_to_it() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, COLOR_STOPS, RESET_STOPS};
     let mut h = painted_pad(BOARDS[1]);
@@ -5944,6 +5960,21 @@ fn halves(h: &mut Pad) {
 fn band_of(h: &Pad, value: f64) -> usize {
     let stops = h.state().globe.map.bands.stops().to_vec();
     stops.partition_point(|s| s.value <= value) - 1
+}
+
+#[test]
+fn the_stops_page_of_the_globe_has_no_frame_switch() {
+    use vale_app::ui::pad::stops::{ALL_BANDS, BANDS_ABOVE, BANDS_BELOW, IN_FRAME};
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    for name in [IN_FRAME, ALL_BANDS, BANDS_ABOVE, BANDS_BELOW] {
+        assert!(h.query_by_label(name).is_none(), "{name}");
+    }
+    let count = h.state().globe.map.bands.colors().len();
+    for i in 0..count {
+        assert!(h.query_by_label(&band_row(i)).is_some(), "{i}");
+    }
 }
 
 #[test]
@@ -6943,24 +6974,24 @@ fn an_imported_ramp_gives_one_color_per_band() {
     // The new ramp is the last ramp of the library.
     let at = h.state().ramps.list().len() - 1;
 
-    // A fit keeps the stops, and each band takes the color at its middle
-    // along the ramp.
+    // A fit keeps the stops. With more bands than colors, the end bands
+    // take the end colors, and the bands between blend the colors, so no
+    // two bands next to each other have the same color.
     h.state_mut()
-        .apply_ramp(height, at, true, Part::All)
+        .apply_ramp(height, at, true, Part::All, None)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
     assert_eq!(bands.colors().len(), count);
-    let want: Vec<[u8; 3]> = (0..count)
-        .map(|k| colors[(2 * k + 1) * 3 / (2 * count)])
-        .collect();
-    assert_eq!(bands.colors(), want);
+    assert_eq!(bands.colors()[0], colors[0]);
+    assert_eq!(bands.colors()[count - 1], colors[2]);
+    assert!(bands.colors().windows(2).all(|w| w[0] != w[1]));
     let shown: Vec<[u8; 3]> = bands.bands().iter().map(|b| b.color).collect();
-    assert_eq!(shown, want);
+    assert_eq!(shown, bands.colors());
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
-        .apply_ramp(height, at, false, Part::All)
+        .apply_ramp(height, at, false, Part::All, None)
         .unwrap();
     assert_eq!(h.state().globe.map.bands.colors(), colors);
 }
@@ -7162,6 +7193,31 @@ fn open_new_ramp(h: &mut Pad) -> RasterId {
     tap(h, NEW_RAMP);
     assert_eq!(h.state().pad.page, Some(Page::RampEditor));
     height
+}
+
+#[test]
+fn the_card_of_a_ramp_on_the_globe_has_no_choice_of_the_frame_bands() {
+    use vale_app::ui::pad::raster::SCOPE_NAMES;
+    let mut h = painted_pad(BOARDS[0]);
+    open_ramps_page(&mut h);
+    scroll_to_control(&mut h, "Viridis");
+    tap(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    assert!(control(&h, "Sea").is_some());
+    for name in SCOPE_NAMES {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+}
+
+#[test]
+fn the_stops_page_on_the_globe_has_no_fit_to_frame_row() {
+    use vale_app::ui::pad::raster::{FIT_TO_FRAME, RESET_STOPS};
+    let mut h = painted_pad(BOARDS[0]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    scroll_to_row(&mut h, RESET_STOPS);
+    assert!(control(&h, RESET_STOPS).is_some());
+    assert!(control(&h, FIT_TO_FRAME).is_none());
 }
 
 #[test]
