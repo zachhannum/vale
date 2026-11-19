@@ -456,8 +456,8 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
         })
     };
     match p {
-        StylePlacement::Around => Placement::Point(PointPlacement {
-            positions: if c.centered {
+        StylePlacement::Around | StylePlacement::Center => Placement::Point(PointPlacement {
+            positions: if p == StylePlacement::Center {
                 vec![PointPosition::Center]
             } else {
                 (c.positions.iter())

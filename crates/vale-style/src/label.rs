@@ -13,6 +13,8 @@ pub const CLASSES_VERSION: u64 = 1;
 pub enum LabelPlacement {
     /// The best of the ranked positions around a point.
     Around,
+    /// On the center of a point.
+    Center,
     /// Along a line, on the side that fits.
     AboveOrBelow,
     LineAbove,
@@ -28,7 +30,7 @@ pub enum LabelPlacement {
     Parallel,
 }
 
-const POINT_PLACEMENTS: [LabelPlacement; 1] = [LabelPlacement::Around];
+const POINT_PLACEMENTS: [LabelPlacement; 2] = [LabelPlacement::Around, LabelPlacement::Center];
 
 const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::AboveOrBelow,
@@ -44,8 +46,9 @@ const POLYGON_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::Horizontal,
 ];
 
-const ALL_PLACEMENTS: [LabelPlacement; 9] = [
+const ALL_PLACEMENTS: [LabelPlacement; 10] = [
     LabelPlacement::Around,
+    LabelPlacement::Center,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
     LabelPlacement::LineBelow,
@@ -79,6 +82,7 @@ impl LabelPlacement {
     pub fn name(self) -> &'static str {
         match self {
             LabelPlacement::Around => "Around point",
+            LabelPlacement::Center => "Centered on point",
             LabelPlacement::AboveOrBelow => "Above or below",
             LabelPlacement::LineAbove => "Above line",
             LabelPlacement::LineBelow => "Below line",
@@ -94,6 +98,7 @@ impl LabelPlacement {
     fn key(self) -> &'static str {
         match self {
             LabelPlacement::Around => "around",
+            LabelPlacement::Center => "center",
             LabelPlacement::AboveOrBelow => "above_or_below",
             LabelPlacement::LineAbove => "line_above",
             LabelPlacement::LineBelow => "line_below",
@@ -701,7 +706,7 @@ impl PositionRank {
 
 /// The default offset of a placement, in points.
 pub fn offset_for(placement: LabelPlacement) -> f64 {
-    if placement == LabelPlacement::Around {
+    if matches!(placement, LabelPlacement::Around | LabelPlacement::Center) {
         2.0
     } else {
         4.0
@@ -802,9 +807,7 @@ pub struct LabelClass {
     /// Points. The largest offset, in points. In a crowded place, the label moves out from
     /// `offset` up to this distance.
     pub max_offset: f64,
-    /// Points. True puts the label on the center of the point.
-    pub centered: bool,
-    /// Points. How far a centered label can shift from the center, in points.
+    /// Points. How far a label centered on its point can shift from the center, in points.
     pub center_shift: f64,
     /// Points. A numeric attribute with the angle of the text, in degrees counterclockwise
     /// from east on the page.
@@ -974,7 +977,6 @@ impl LabelClass {
             graticule: false,
             no_flip: false,
             max_offset: offset_for(placement),
-            centered: false,
             center_shift: 0.0,
             angle_field: None,
             offset_from_outline: false,
@@ -1124,7 +1126,6 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
             });
             let point = json!({
                 "max_offset": c.max_offset,
-                "centered": c.centered,
                 "center_shift": c.center_shift,
                 "angle_field": c.angle_field,
                 "offset_from_outline": c.offset_from_outline,
@@ -1329,7 +1330,6 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         no_flip: flag("no_flip", false),
         // Older files have one offset.
         max_offset: number("max_offset", offset),
-        centered: flag("centered", false),
         center_shift: number("center_shift", 0.0),
         angle_field: text(m, "angle_field"),
         offset_from_outline: flag("offset_from_outline", false),
@@ -1700,7 +1700,7 @@ mod tests {
         a.angle_field = Some("bearing".to_owned());
         a.ambiguous = AmbiguousLabels::OwnClass;
         let mut b = LabelClass::new("Peaks", GeometryKind::Point, 1).unwrap();
-        b.centered = true;
+        b.placement = LabelPlacement::Center;
         b.center_shift = 4.5;
         b.ambiguous = AmbiguousLabels::AllClasses;
         let classes = vec![a, b];
@@ -1715,7 +1715,7 @@ mod tests {
             r##"{"version":1,"classes":[{"color":"#102030","placement":"around","offset":5.5}]}"##;
         let c = &classes_from_json(old).unwrap()[0];
         assert_eq!((c.offset, c.max_offset), (5.5, 5.5));
-        assert!(!c.centered && !c.offset_from_outline);
+        assert!(!c.offset_from_outline);
         assert_eq!(c.center_shift, 0.0);
         assert_eq!(c.angle_field, None);
         assert_eq!(c.ambiguous, AmbiguousLabels::Keep);
@@ -1878,7 +1878,10 @@ mod tests {
     #[test]
     fn the_placements_match_the_feature_type() {
         use GeometryKind::{Line, Point, Polygon};
-        assert_eq!(LabelPlacement::choices(Point), &[LabelPlacement::Around]);
+        assert_eq!(
+            LabelPlacement::choices(Point),
+            &[LabelPlacement::Around, LabelPlacement::Center]
+        );
         assert_eq!(LabelPlacement::choices(Line).len(), 4);
         assert_eq!(
             LabelPlacement::choices(Polygon),

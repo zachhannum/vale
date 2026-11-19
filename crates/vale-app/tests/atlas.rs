@@ -64,7 +64,7 @@ use vale_app::ui::pad::labels::{
     STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::labels::{
-    AMBIGUOUS, ANGLE_FIELD, CENTER_SHIFT, CENTERED, MAX_OFFSET, NO_ANGLE_FIELD, OUTLINE_OFFSET,
+    AMBIGUOUS, ANGLE_FIELD, CENTER_SHIFT, MAX_OFFSET, NO_ANGLE_FIELD, OUTLINE_OFFSET,
 };
 use vale_app::ui::pad::labels::{
     ANCHOR_DISTANCE, ANCHOR_PERCENT, ANCHOR_TOLERANCE, BY_DIRECTION, FOLLOW_DIRECTION,
@@ -5803,6 +5803,7 @@ fn places_placement(h: &Pad, map: MapId) -> vale_labeler::PointPlacement {
 #[test]
 fn the_point_options_reach_the_labeler() {
     use vale_labeler::{AmbiguousLabels, PointPosition};
+    use vale_style::LabelPlacement;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("project.gpkg");
     let mut s = state();
@@ -5846,9 +5847,8 @@ fn the_point_options_reach_the_labeler() {
     assert!(control(&h, UPSIDE_DOWN).is_some());
 
     // A centered label has a shift and no positions or offsets.
-    scroll_up_to(&mut h, CENTERED);
-    tap(&mut h, CENTERED);
-    assert!(class(&h).centered);
+    place_points(&mut h, LabelPlacement::Center);
+    assert_eq!(class(&h).placement, LabelPlacement::Center);
     assert_eq!(places_placement(&h, map).positions, [PointPosition::Center]);
     for name in [
         POSITIONS,
@@ -5882,9 +5882,9 @@ fn the_point_options_reach_the_labeler() {
     assert_eq!(class(&h).center_shift, 0.5);
     tap(&mut h, "Undo");
     assert_eq!(class(&h).center_shift, 0.0);
-    assert!(class(&h).centered);
+    assert_eq!(class(&h).placement, LabelPlacement::Center);
     tap(&mut h, "Undo");
-    assert!(!class(&h).centered);
+    assert_eq!(class(&h).placement, LabelPlacement::Around);
     assert!(class(&h).angle_field.is_some());
     tap(&mut h, "Undo");
     assert_eq!(class(&h).angle_field, None);
@@ -5899,15 +5899,23 @@ fn the_point_options_reach_the_labeler() {
     assert_eq!(class(&h), start);
 }
 
+/// Picks the placement of the open point class on its Placement page.
+fn place_points(h: &mut Pad, placement: vale_style::LabelPlacement) {
+    scroll_up_to(h, PLACEMENT);
+    tap(h, PLACEMENT);
+    tap(h, placement.name());
+}
+
 #[test]
 fn the_point_controls_of_the_labels_tab_work_with_a_finger() {
+    use vale_style::LabelPlacement;
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = labels_pad(size);
         tap(&mut h, "Places");
         tap(&mut h, SEGMENTS[1].0);
         let rows = [
-            CENTERED,
+            PLACEMENT,
             POSITIONS,
             &value_of(OFFSET),
             &value_of(MAX_OFFSET),
@@ -5915,7 +5923,7 @@ fn the_point_controls_of_the_labels_tab_work_with_a_finger() {
             ANGLE_FIELD,
         ];
         for name in rows {
-            scroll_up_to(&mut h, CENTERED);
+            scroll_up_to(&mut h, PLACEMENT);
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
             check_controls(&h, &format!("{what}: point placement segment at {name}"));
@@ -5924,16 +5932,17 @@ fn the_point_controls_of_the_labels_tab_work_with_a_finger() {
         check_controls(&h, &format!("{what}: angle field page"));
         scroll_to(&mut h, "scalerank");
         tap(&mut h, "scalerank");
-        scroll_up_to(&mut h, CENTERED);
-        tap(&mut h, CENTERED);
+        scroll_up_to(&mut h, PLACEMENT);
+        tap(&mut h, PLACEMENT);
+        check_controls(&h, &format!("{what}: point placement page"));
+        tap(&mut h, LabelPlacement::Center.name());
         for name in [value_of(CENTER_SHIFT).as_str(), ANGLE_FIELD, UPSIDE_DOWN] {
             scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
             check_controls(&h, &format!("{what}: centered at {name}"));
         }
         if size == BOARDS[0] {
-            scroll_up_to(&mut h, CENTERED);
-            tap(&mut h, CENTERED);
+            place_points(&mut h, LabelPlacement::Around);
             screenshot::save(&mut h, "pad-atlas-label-point-placement");
         }
         tap(&mut h, SEGMENTS[2].0);

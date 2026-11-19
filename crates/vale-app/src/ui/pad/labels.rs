@@ -62,7 +62,6 @@ pub const SMOOTHING: &str = "Smoothing";
 pub const SPREAD: &str = "Spread";
 pub const FOLLOW_PARALLELS: &str = "Follow parallels";
 pub const UPSIDE_DOWN: &str = "Allow upside-down text";
-pub const CENTERED: &str = "Center on point";
 pub const CENTER_SHIFT: &str = "Center shift";
 pub const MAX_OFFSET: &str = "Largest offset";
 pub const OUTLINE_OFFSET: &str = "Measure from symbol shape";
@@ -800,9 +799,8 @@ fn placement_segment(
     line_options(ui, state, controls, (map, layer, i), class);
 }
 
-/// The options of a point class: the center switch and the center shift,
-/// or the positions, the offsets, and the outline switch; then the angle
-/// field.
+/// The options of a point class: the center shift of a centered class, or
+/// the positions, the offsets, and the outline switch; then the angle field.
 fn point_options(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -810,11 +808,7 @@ fn point_options(
     (map, layer, i): (MapId, LayerId, usize),
     class: &LabelClass,
 ) {
-    let mut centered = class.centered;
-    if widgets::switch_row(ui, controls, CENTERED, CENTERED, &mut centered) {
-        state.label_class_step(map, layer, i, |c| c.centered = centered);
-    }
-    if class.centered {
+    if class.placement == LabelPlacement::Center {
         let (lo, hi) = CENTER_SHIFTS;
         let shift = Number::new(CENTER_SHIFT, class.center_shift, lo..=hi)
             .step(0.5)

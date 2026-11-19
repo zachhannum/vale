@@ -985,12 +985,11 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
-/// The center switch and the angle field of a point class, and the shift
-/// of a centered label.
+/// The angle field of a point class, and the shift of a label centered on
+/// its point.
 fn point_label_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass, fields: &[String]) {
-    use super::pad::labels::{ANGLE_FIELD, CENTER_SHIFT, CENTER_SHIFTS, CENTERED, NO_ANGLE_FIELD};
-    ui.checkbox(&mut class.centered, CENTERED);
-    if class.centered {
+    use super::pad::labels::{ANGLE_FIELD, CENTER_SHIFT, CENTER_SHIFTS, NO_ANGLE_FIELD};
+    if class.placement == vale_style::LabelPlacement::Center {
         number::stepper(CENTER_SHIFT, &mut class.center_shift)
             .range(CENTER_SHIFTS.0..=CENTER_SHIFTS.1)
             .step(0.5)
@@ -1269,7 +1268,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if kind == GeometryKind::Point {
         point_label_controls(ui, &mut class, &fields);
     }
-    if kind == GeometryKind::Point && !class.centered {
+    let around = class.placement == vale_style::LabelPlacement::Around;
+    if kind == GeometryKind::Point && around {
         ui.label(POSITIONS);
         let count = class.positions.len();
         let mut swap = None;
@@ -1298,7 +1298,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             .suffix(" pt")
             .show(ui);
     }
-    if kind == GeometryKind::Point && !class.centered {
+    if kind == GeometryKind::Point && around {
         point_offset_controls(ui, &mut class);
     }
     if kind == GeometryKind::Polygon {
