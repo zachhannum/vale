@@ -154,7 +154,7 @@ pub fn histogram(ui: &mut egui::Ui) -> Rect {
 /// value below it. While a band is selected, the other bands are dim.
 /// `marker`: the value of a stop that a finger drags. `range`: the lowest
 /// and the highest value of the axis, if not the range of the layer. Sea
-/// level then shows only inside the range.
+/// level then shows only if the range has values on both sides.
 #[allow(clippy::too_many_arguments)]
 pub fn paint_histogram(
     ui: &egui::Ui,
@@ -231,7 +231,8 @@ pub fn paint_histogram(
         Align2::RIGHT_CENTER,
         world::value_text(max, span, unit),
     );
-    if bands.sea().is_some() && min < 0.0 && 0.0 < max {
+    let both = range.is_none_or(|(lo, hi)| lo < 0.0 && 0.0 < hi);
+    if bands.sea().is_some() && both && min < 0.0 && 0.0 < max {
         text(pos2(x_of(0.0), y), Align2::CENTER_CENTER, "0".to_string());
     }
 }

@@ -3882,6 +3882,7 @@ fn a_band_name_in_a_map_is_a_local_change() {
     tap(&mut h, &open);
     scroll_to(&mut h, COLOR_STOPS);
     tap(&mut h, COLOR_STOPS);
+    tap(&mut h, vale_app::ui::pad::stops::ALL_BANDS);
     scroll_to(&mut h, &band_row(1));
     tap(&mut h, &band_row(1));
     type_text(&mut h, BAND_NAME, "Shelf");
@@ -3925,6 +3926,8 @@ fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
         tap(&mut h, COLOR_STOPS);
         assert_eq!(h.state().atlas.layer_page, Some(Page::Stops), "{what}");
         check_controls(&h, &format!("{what}: stops"));
+        // The new layer is flat, so the frame shows one band.
+        tap(&mut h, vale_app::ui::pad::stops::ALL_BANDS);
         scroll_to(&mut h, &band_row(0));
         tap(&mut h, &band_row(0));
         let shade = format!("{COLOR} shade");
