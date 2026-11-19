@@ -1,0 +1,386 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+:root{--canvas:#0f1113;--ground:#40464f;--text:#e7e9ec;--mute:#aeb5be;--warn:#f2b85c;--accent:#45c4a8;
+--card:rgba(26,29,33,.88);--menu:#1f2226;--raise:rgba(255,255,255,.13);--raise2:rgba(255,255,255,.07);--line:rgba(255,255,255,.16);--track:rgba(0,0,0,.4)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1194px;height:834px;overflow:hidden}
+body{background:var(--canvas) url(../pad-layout/assets/globe.png) center/150% no-repeat;font:15px -apple-system,"SF Pro Text","Inter","Helvetica Neue",sans-serif;color:var(--text);position:relative}
+body.narrow,body.narrow html{width:375px}
+body.narrow{background-position:50% 50%;background-size:auto 150%}
+body.atlas{background:var(--canvas)}
+svg{fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.i{width:22px;height:22px}.i.s{width:16px;height:16px}.i.m{width:18px;height:18px}
+.card{position:absolute;background:var(--card);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-radius:14px}
+/* top row */
+.tl{left:4px;top:30px;height:48px;display:flex;align-items:center;padding:0 2px}
+.tr{right:0;top:30px;height:48px;border-radius:14px 0 0 14px;display:flex;align-items:center;padding:0 4px 0 6px}
+.btn{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--text)}
+.btn.on{background:var(--raise)}.btn.acc{background:var(--accent);color:var(--canvas)}.btn.dim{color:var(--mute);opacity:.5}
+.vdiv{width:1px;height:28px;background:var(--line);margin:0 4px}
+.wmenu{height:44px;display:flex;align-items:center;gap:8px;padding:0 10px 0 14px;font-size:16px}
+/* tool column */
+.tools{left:0;top:92px;width:56px;border-radius:0 14px 14px 0;padding:8px 0;display:flex;flex-direction:column;align-items:center;gap:2px}
+.tools .btn{color:var(--mute)}.tools .btn.on{color:var(--text)}
+.tools .tri{position:relative}.tools .tri:after{content:"";position:absolute;right:7px;bottom:7px;border:3px solid transparent;border-right-color:var(--mute);border-bottom-color:var(--mute)}
+/* dock */
+.dock{right:0;top:92px;width:340px;border-radius:14px 0 0 14px;padding:0 8px 10px;display:flex;flex-direction:column}
+.dock.tall{bottom:28px}
+.grip{position:absolute;left:-3px;top:78px;width:5px;height:40px;border-radius:3px;background:#fff;opacity:.9}
+.head{height:52px;display:flex;align-items:center;gap:10px;padding:0 6px 0 14px;font-weight:600;font-size:16px;flex:none}
+.head .grow{flex:1}.head .btn{width:40px}
+.back{display:flex;align-items:center;gap:4px;height:48px;padding:0 6px;font-weight:600;font-size:16px;color:var(--text)}
+.back svg{color:var(--text)}
+.rows{flex:1;overflow:hidden}
+.row{height:48px;display:flex;align-items:center;gap:10px;padding:0 10px 0 12px;position:relative;border-radius:10px}
+.row .v{margin-left:auto;color:var(--mute);display:flex;align-items:center;gap:8px;white-space:nowrap}
+.row .v.t{color:var(--text)}
+.row.sel{background:var(--raise)}
+.row .name{display:flex;flex-direction:column;line-height:1.15}
+.row .sub{font-size:12px;color:var(--mute)}
+.row .chk{color:var(--accent);width:22px}
+.row .chk.off{visibility:hidden}
+.row.menuitem{border-radius:0}
+.div{height:1px;background:var(--line);margin:0 12px}
+.sec{height:36px;display:flex;align-items:flex-end;padding:0 12px 6px;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--mute)}
+.sec .n{margin-left:auto;font-weight:500;letter-spacing:0;text-transform:none}
+.hint{color:var(--mute);font-size:13px;line-height:1.35;padding:8px 12px}
+.search{height:40px;margin:4px 8px 6px;border-radius:10px;background:var(--track);display:flex;align-items:center;gap:8px;padding:0 12px;color:var(--mute)}
+.field{height:36px;border-radius:9px;background:var(--track);display:flex;align-items:center;padding:0 10px;color:var(--text);min-width:150px;margin-left:auto}
+.field .caret{width:2px;height:20px;background:var(--accent);margin-left:1px}
+.sw{width:50px;height:30px;border-radius:15px;background:var(--raise);position:relative;flex:none}
+.sw:after{content:"";position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:12px;background:#fff}
+.sw.on{background:var(--accent)}.sw.on:after{left:23px}
+.seg{display:flex;background:var(--track);border-radius:9px;padding:2px;font-size:13px;margin-left:auto}
+.seg span{padding:7px 10px;border-radius:7px;color:var(--mute);white-space:nowrap}.seg .on{background:var(--raise);color:var(--text)}
+.seg.wide{margin:6px 10px 2px;height:40px}.seg.wide span{flex:1;text-align:center;padding:9px 6px;font-size:14px}
+.primary{height:44px;margin:12px 10px 0;border-radius:10px;background:var(--accent);color:var(--canvas);font-weight:600;display:flex;align-items:center;justify-content:center}
+.primary.off{opacity:.45}
+.secondary{height:44px;margin:8px 10px 0;border-radius:10px;background:var(--raise);color:var(--text);font-weight:600;display:flex;align-items:center;justify-content:center}
+.link{color:var(--accent);font-weight:500}
+.warn{color:var(--warn)}
+.swipe{position:absolute;right:0;top:0;height:48px;display:flex}
+.swipe span{display:flex;align-items:center;justify-content:center;font-weight:500;height:48px}
+.swipe .ren{width:88px;background:var(--raise);color:var(--text)}
+.swipe .del{width:88px;background:var(--warn);color:var(--canvas)}
+.swipe .rem{width:150px;background:var(--warn);color:var(--canvas)}
+.slider{height:48px;display:flex;align-items:center;gap:10px;padding:0 10px 0 12px}
+.slider .trk{flex:1;height:36px;border-radius:9px;background:var(--track);position:relative;overflow:hidden;margin-left:auto;max-width:150px}
+.slider .trk i{position:absolute;left:0;top:0;bottom:0;background:var(--raise)}
+.slider .trk b{position:absolute;top:4px;bottom:4px;width:4px;border-radius:2px;background:#fff}
+.slider .val{width:68px;text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+.hero{display:flex;gap:12px;align-items:center;padding:4px 12px 10px}
+.hero .ic{width:56px;height:56px;border-radius:14px;background:var(--raise2);display:flex;align-items:center;justify-content:center;color:var(--accent)}
+.hero .ic svg{width:34px;height:34px}
+.hero h2{font-size:17px;font-weight:600}.hero p{color:var(--mute);font-size:13px;margin-top:3px;line-height:1.3}
+/* popover */
+.pop{position:absolute;background:var(--menu);border-radius:14px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:6px 0;z-index:5}
+.pop .row{border-radius:0;padding-left:14px;padding-right:14px}
+.pop .arrow{position:absolute;width:18px;height:18px;background:var(--menu);transform:rotate(45deg)}
+/* chips */
+.chips{display:flex;gap:8px;padding:4px 8px 8px;overflow:hidden;flex:none;align-items:center}
+.chip{height:36px;padding:0 14px;border-radius:18px;background:var(--raise2);display:flex;align-items:center;gap:6px;white-space:nowrap;font-size:14px;color:var(--text);flex:none}
+.chip.on{background:var(--accent);color:var(--canvas)}
+.chip.more{padding:0 12px}
+.chip .pin{width:14px;height:14px}
+.tag{display:inline-flex;gap:4px;align-items:center;font-size:12px;color:var(--mute)}
+.tag i{width:7px;height:7px;border-radius:4px;background:var(--accent);display:inline-block}
+.circ{width:24px;height:24px;border-radius:12px;border:1.7px solid var(--mute);display:flex;align-items:center;justify-content:center;flex:none}
+.circ.on{background:var(--accent);border-color:var(--accent);color:var(--canvas)}
+.bar{height:56px;display:flex;align-items:center;gap:8px;padding:6px 8px 0;border-top:1px solid var(--line);flex:none;margin-top:auto}
+.bar .b{flex:1;height:44px;border-radius:10px;background:var(--raise);display:flex;align-items:center;justify-content:center;font-weight:500;font-size:14px;text-align:center;padding:0 6px}
+.bar .b.acc{background:var(--accent);color:var(--canvas)}
+/* readout */
+.readout{left:74px;top:754px;width:210px;height:50px;display:flex;align-items:center;padding:0 6px;gap:4px}
+.scale{display:flex;flex-direction:column;gap:3px;font-size:9px;color:var(--text);margin-left:6px}
+.scale .l{display:flex;gap:2px}.scale .l i{width:30px;height:4px;background:#fff;display:block}.scale .l i:nth-child(2){background:none}
+/* canvas banner */
+.banner{position:absolute;left:50%;transform:translateX(-50%);top:92px;height:44px;display:flex;align-items:center;gap:10px;padding:0 8px 0 14px;font-size:14px;white-space:nowrap}
+.banner .x{width:36px;height:36px;border-radius:9px;display:flex;align-items:center;justify-content:center;background:var(--raise2)}
+.banner .act{height:34px;padding:0 12px;border-radius:9px;background:var(--raise);display:flex;align-items:center;font-weight:500}
+.extent{position:absolute;inset:0;pointer-events:none}
+/* atlas */
+.paper{position:absolute;left:170px;top:120px;width:560px;height:640px;background:#f3efe6;border-radius:2px;box-shadow:0 12px 40px rgba(0,0,0,.6)}
+.paper .frame{position:absolute;left:34px;top:34px;right:34px;bottom:90px;background:url(../pad-layout/assets/map.png) center/cover;outline:2px solid var(--accent);outline-offset:0}
+.paper .h{position:absolute;left:0;right:0;bottom:30px;text-align:center;color:#3a3a3a;font:600 14px Georgia,serif;letter-spacing:.2em}
+.handle{position:absolute;width:12px;height:12px;border-radius:6px;background:#fff;border:2px solid var(--accent)}
+.pagecard{left:74px;top:754px;height:50px;display:flex;align-items:center;padding:0 10px;gap:14px;font-size:14px}
+.tabs{display:flex;gap:4px;padding:4px 8px 6px;flex:none}
+.tab{height:36px;padding:0 12px;border-radius:9px;display:flex;align-items:center;gap:6px;color:var(--mute);font-size:14px}
+.tab.on{background:var(--raise2);color:var(--text)}
+/* sheet (narrow) */
+.sheet{position:absolute;left:0;right:0;bottom:0;top:382px;background:rgba(26,29,33,.96);border-radius:18px 18px 0 0;padding:0 8px;display:flex;flex-direction:column}
+.sheet .grab{width:36px;height:4px;border-radius:2px;background:var(--mute);opacity:.6;margin:6px auto 0}
+.sheet.full{top:86px}
+.narrow .narrow .sheet.full{top:130px}
+.screen{display:none}
+
+/* collection header rows */
+.sech{height:44px;display:flex;align-items:center;gap:8px;padding:0 6px 0 8px;font-weight:600;font-size:15px;margin-top:2px}
+.sech .n{flex:1}.sech .cnt{color:var(--mute);font-weight:400;font-size:13px}
+.sech .h{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--mute)}
+.sech .chev{width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--mute)}
+.sech.sel{background:var(--raise2);border-radius:10px}
+.row.dim{opacity:.38}
+.row.lift{background:#2b3037;box-shadow:0 10px 24px rgba(0,0,0,.5);transform:scale(1.02);z-index:3;border-radius:10px}
+.ins{height:2px;background:var(--accent);margin:0 10px;border-radius:1px;position:relative}
+.ins:before{content:"";position:absolute;left:-5px;top:-4px;width:10px;height:10px;border-radius:5px;background:var(--accent)}
+.badge{font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--canvas);background:var(--accent);border-radius:5px;padding:2px 5px;margin-left:6px}
+.row .sw.off{opacity:.9}
+.mapchip{position:absolute;left:50%;transform:translateX(-50%);top:92px;height:44px;display:flex;align-items:center;gap:10px;padding:0 6px 0 14px;font-size:15px;font-weight:500}
+.mapchip .btn{width:36px;height:36px}
+.row .ghost{color:var(--mute);opacity:.6}
+.sechdrag{position:absolute;left:8px;right:8px;background:#2b3037;box-shadow:0 10px 24px rgba(0,0,0,.5);border-radius:10px;z-index:3}
+/* inset grouped cards for collections */
+.grp{margin:6px 6px 2px;border-radius:12px;background:rgba(255,255,255,.06)}
+.grp .gh{border-radius:12px 12px 0 0}.grp .gh:last-child{border-radius:12px}.grp .row:last-child{border-radius:0 0 12px 12px}
+.grp .gh{height:44px;display:flex;align-items:center;gap:8px;padding:0 4px 0 6px;background:rgba(255,255,255,.08);font-weight:600;font-size:15px}
+.grp .gh .n{flex:1}.grp .gh .cnt{color:var(--mute);font-weight:400;font-size:13px;margin-right:4px}
+.grp .gh .chev{width:32px;height:32px;display:flex;align-items:center;justify-content:center;color:var(--mute)}
+.grp .gh .h{width:36px;height:36px;display:flex;align-items:center;justify-content:center;color:var(--mute)}
+.grp .row{border-radius:0;padding-left:14px}
+.grp .row+.row{box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+.grp .row.sel{background:var(--raise)}
+.grp .row.lift{border-radius:10px;margin:0 4px;padding-left:10px}
+.grp .ins{margin:0 14px}
+.grp.lifted{box-shadow:0 10px 24px rgba(0,0,0,.5);transform:scale(1.02)}
+.row .sub{font-size:12px;color:var(--mute)}
+.menurow{height:48px;display:flex;align-items:center;padding:0 14px}
+</style><script>
+// Shared helpers of the collection mockups. The screens below define
+// SCREENS, a map from a screen id to a function that returns HTML.
+const P = {
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17l9 5 9-5"/>',
+  chevD: '<path d="M6 9l6 6 6-6"/>', chevR: '<path d="M9 6l6 6-6 6"/>', chevL: '<path d="M15 6l-6 6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', check: '<path d="M5 12l5 5 9-10"/>', x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+  map: '<path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2z"/><path d="M9 4v14M15 6v14"/>',
+  eye: '<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  pin: '<path d="M9 4h6l-1 6 3 3v1H7v-1l3-3z"/><path d="M12 14v6"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/>',
+  book: '<path d="M4 5h6a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h6z"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  redo: '<path d="M15 14l5-5-5-5"/><path d="M20 9H10a6 6 0 0 0 0 12h3"/>',
+  panels: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M12 10v10"/>',
+  dockic: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>',
+  raise: '<path d="M4 18l8-12 8 12"/>', carve: '<path d="M6 5l6 8 6-8M12 13v6"/>',
+  vector: '<path d="M4 16c4-8 8 4 16-6"/>', select: '<path d="M5 4l14 7-6 2-3 6z"/>',
+  hand: '<path d="M8 12V6a1.5 1.5 0 0 1 3 0v5V4.5a1.5 1.5 0 0 1 3 0V11V6a1.5 1.5 0 0 1 3 0v8a6 6 0 0 1-12 0v-3a1.5 1.5 0 0 1 3 0z"/>',
+  ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M8 12l2 2M11 9l2 2M14 6l2 2"/>',
+  line: '<path d="M4 16c4-8 8 4 16-6"/>', poly: '<path d="M5 9l6-5 8 4-2 9H7z"/>', pt: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8" stroke-dasharray="2 3"/>',
+  raster: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 16l5-5 4 4 3-3 4 4"/>',
+  polyg: '<path d="M3 18l5-8 4 5 3-4 6 7z"/><path d="M3 21h18"/>',
+  more: '<circle cx="6" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="18" cy="12" r="1.4" fill="currentColor"/>',
+  focus: '<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2" fill="currentColor"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',
+  frame: '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16M9 4v16"/>',
+  text: '<path d="M5 6h14M12 6v13"/>', move: '<path d="M12 3v18M3 12h18M8 7l4-4 4 4M8 17l4 4 4-4"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.6 0l3-3a4 4 0 0 0-5.6-5.6l-1 1"/><path d="M14 10a4 4 0 0 0-5.6 0l-3 3a4 4 0 0 0 5.6 5.6l1-1"/>',
+  grip: '<path d="M8 6h8M8 12h8M8 18h8"/>',
+};
+const ic = (n, c = 'i') => `<svg class="${c}" viewBox="0 0 24 24">${P[n]}</svg>`;
+const chev = ic('chevR', 'i m');
+
+function topRow(opts = {}) {
+  const ws = opts.atlas ? ['globe', 'book on'] : ['globe on', 'book'];
+  return `<div class="card tl"><div class="btn">${ic('folder')}</div><div class="vdiv"></div>
+  <div class="btn ${ws[0].includes('on') ? 'on' : ''}">${ic('globe')}</div><div class="btn ${ws[1].includes('on') ? 'on' : ''}">${ic('book')}</div></div>
+  <div class="card tr"><div class="btn dim">${ic('undo')}</div><div class="btn dim">${ic('redo')}</div><div class="vdiv"></div><div class="btn">${ic('panels')}</div><div class="btn acc">${ic('dockic')}</div></div>`;
+}
+function topRowNarrow() {
+  return `<div class="card tl"><div class="wmenu">World ${ic('chevD', 'i s')}</div></div>
+  <div class="card tr"><div class="btn dim">${ic('undo')}</div><div class="btn dim">${ic('redo')}</div><div class="vdiv"></div><div class="btn">${ic('panels')}</div></div>`;
+}
+function toolColumn(atlas) {
+  const t = atlas ? ['frame tri', 'text tri', 'select', 'vector', 'hand on', 'move', 'ruler']
+    : ['raise tri', 'carve tri', 'vector tri', 'select', 'hand on', 'ruler'];
+  return `<div class="card tools">${t.map(s => { const [n, ...c] = s.split(' '); return `<div class="btn ${c.join(' ')}">${ic(n)}</div>`; }).join('')}</div>`;
+}
+function readout() {
+  return `<div class="card readout"><div class="btn">${ic('globe')}</div><div class="vdiv"></div>
+  <div class="scale"><div class="l"><i></i><i></i><i></i><i></i></div><div style="display:flex;justify-content:space-between;width:128px"><span>0</span><span>2000 km</span></div></div></div>`;
+}
+function pageCard() {
+  return `<div class="card pagecard">${ic('chevL')}<span>Page 3 of 7</span>${ic('chevR')}</div>`;
+}
+// The chrome of a World workspace screen. body: the HTML of the dock.
+function world(body, opts = {}) {
+  return `${topRow()}${toolColumn(false)}${readout()}${opts.before || ''}${body}`;
+}
+function atlas(body) {
+  return `${topRow({ atlas: true })}${toolColumn(true)}${pageCard()}
+  <div class="paper"><div class="frame"></div><div class="h">VESPERAN</div>
+  <div class="handle" style="left:28px;top:28px"></div><div class="handle" style="right:28px;top:28px"></div>
+  <div class="handle" style="left:28px;bottom:84px"></div><div class="handle" style="right:28px;bottom:84px"></div></div>${body}`;
+}
+// The extent of a map on the globe: a darker ground outside a quad and an
+// outline of constant weight.
+function extent(pts, label) {
+  const d = pts.map((p, i) => (i ? 'L' : 'M') + p.join(' ')).join(' ') + ' Z';
+  return `<svg class="extent" viewBox="0 0 1194 834"><defs><mask id="m"><rect width="1194" height="834" fill="#fff"/><path d="${d}" fill="#000"/></mask></defs>
+  <rect width="1194" height="834" fill="rgba(0,0,0,.42)" mask="url(#m)"/>
+  <path d="${d}" stroke="#fff" stroke-width="2" fill="none"/>
+  <path d="${d}" stroke="#45c4a8" stroke-width="1" fill="none" stroke-dasharray="6 6"/>
+  ${label ? `<text x="${pts[0][0] + 10}" y="${pts[0][1] - 10}" fill="#e7e9ec" font-size="13" font-family="-apple-system,Inter,sans-serif" font-weight="600">${label}</text>` : ''}</svg>`;
+}
+const EXT = [[500, 250], [700, 240], [722, 402], [505, 416]];
+
+function dock(inner, cls = '') { return `<div class="card dock ${cls}"><div class="grip"></div>${inner}</div>`; }
+function head(title, action = ic('plus')) {
+  return `<div class="head">${ic('layers', 'i m')}<span>${title}</span><span class="grow"></span><div class="btn">${ic('chevD', 'i m')}</div><div class="btn">${action}</div></div>`;
+}
+function headBack(back, action = '') {
+  return `<div class="head" style="padding-left:4px"><span class="back">${ic('chevL', 'i m')}${ic('layers', 'i m')}<span>${back}</span></span><span class="grow"></span><div class="btn">${ic('chevD', 'i m')}</div>${action ? `<div class="btn">${action}</div>` : ''}</div>`;
+}
+function backRow(title) { return `<div class="row" style="padding-left:4px;gap:4px">${ic('chevL', 'i m')}<span style="font-size:16px;font-weight:500">${title}</span></div>`; }
+function row(label, value = '', o = {}) {
+  const v = value === '' ? '' : `<span class="v ${o.t ? 't' : ''}">${value}${o.open ? chev : ''}</span>`;
+  return `<div class="row ${o.cls || ''}">${o.icon ? ic(o.icon, 'i m') : ''}${o.check !== undefined ? `<span class="chk ${o.check ? '' : 'off'}">${ic('check', 'i m')}</span>` : ''}<span class="${o.sub ? 'name' : ''}">${label}${o.sub ? `<span class="sub">${o.sub}</span>` : ''}</span>${v}${o.swipe || ''}</div>`;
+}
+function openRow(label, value, o = {}) { return row(label, value, { ...o, open: true }); }
+function switchRow(label, on, o = {}) { return row(label, `<span class="sw ${on ? 'on' : ''}"></span>`, o); }
+function layerRow(label, kind, o = {}) {
+  return `<div class="row ${o.sel ? 'sel' : ''}" style="padding-left:10px">${o.pre || ''}${ic(kind, 'i m')}<span class="${o.sub ? 'name' : ''}">${label}${o.sub ? `<span class="sub">${o.sub}</span>` : ''}</span><span class="v">${o.right || `${ic('eye', 'i m')}${chev}`}</span>${o.swipe || ''}</div>`;
+}
+function sec(t, n = '') { return `<div class="sec">${t}${n ? `<span class="n">${n}</span>` : ''}</div>`; }
+function search(t) { return `<div class="search">${ic('search', 'i s')}${t}</div>`; }
+function slider(label, pct, val) { return `<div class="slider"><span>${label}</span><div class="trk"><i style="width:${pct}%"></i><b style="left:calc(${pct}% - 2px)"></b></div><span class="val">${val}</span></div>`; }
+function hero(title, about, icon = 'polyg') { return `<div class="hero"><div class="ic">${ic(icon)}</div><div><h2>${title}</h2><p>${about}</p></div></div>`; }
+function seg(items, on) { return `<span class="seg">${items.map((s, i) => `<span class="${i === on ? 'on' : ''}">${s}</span>`).join('')}</span>`; }
+function sheet(inner, o = {}) {
+  return `<div class="sheet ${o.full ? 'full' : ''}"><div class="grab"></div><div class="head" style="padding-left:10px">${ic('layers', 'i m')}<span>${o.title || 'Layers'}</span><span class="grow"></span><div class="btn">${ic('x', 'i m')}</div></div>${inner}</div>`;
+}
+function swipe(kind) {
+  if (kind === 'rd') return `<span class="swipe"><span class="ren">Rename</span><span class="del">Delete</span></span>`;
+  return `<span class="swipe"><span class="rem">${kind}</span></span>`;
+}
+
+const LAYERS = [['Height', 'raster'], ['Ocean', 'poly'], ['Coast', 'line'], ['Rivers', 'line'], ['Borders', 'poly'], ['Roads', 'line'], ['Towns', 'pt'], ['Place names', 'pt']];
+const VESPERAN = [['Vesperan topography', 'poly'], ['Vesperan bathymetry', 'poly'], ['Vesperan contours', 'line'], ['Rivers', 'line'], ['Roads', 'line'], ['Towns', 'pt']];
+const MAPS = ['Vesperan', 'Harbor of Lys', 'Northern coast', 'Thalen reach', 'Isles of Marr', 'Highlands of Ker', 'World overview'];
+const OTHER = ['Borders', 'Climate', 'Old empire', 'Place names', 'Sea lanes', 'Trade routes', 'Travel', 'Water'];
+
+window.addEventListener('DOMContentLoaded', () => {
+  const id = (location.hash || '#' + Object.keys(SCREENS)[0]).slice(1);
+  const s = SCREENS[id];
+  if (!s) { document.body.textContent = 'No screen ' + id; return; }
+  const html = typeof s === 'function' ? s() : s.html();
+  if (s.cls) document.body.className = s.cls;
+  document.body.insertAdjacentHTML('beforeend', html);
+});
+
+P.stack='<path d="M4 6h16M4 12h16M4 18h16"/><path d="M8 3v3M8 9v3M8 15v3" stroke-width="0"/>';
+P.grip='<path d="M9 7h6M9 12h6M9 17h6"/>';
+P.coll='<rect x="3" y="5" width="18" height="4" rx="1"/><rect x="3" y="11" width="18" height="4" rx="1"/><rect x="3" y="17" width="18" height="4" rx="1"/>';
+P.up='<path d="M12 19V5M6 11l6-6 6 6"/>';
+P.minus='<path d="M5 12h14"/>';
+function sech(name, o = {}) {
+  return `<div class="sech ${o.sel ? 'sel' : ''}"><span class="chev">${ic(o.closed ? 'chevR' : 'chevD', 'i m')}</span><span class="n">${name}</span>${o.cnt ? `<span class="cnt">${o.cnt}</span>` : ''}<span class="h">${ic('grip', 'i m')}</span></div>`;
+}
+const lr = (n, k, o = {}) => layerRow(n, k, o);
+const dimr = (n, k) => layerRow(n, k, { right: '' }).replace('class="row "', 'class="row dim"');
+const chk = (n, on, o = {}) => row(n, o.v || '', { check: on, icon: o.icon, cls: o.cls, sub: o.sub });
+const collHead = () => `<div class="head">${ic('layers', 'i m')}<span>Layers</span><span class="grow"></span><div class="btn">${ic('coll', 'i m')}</div><div class="btn">${ic('plus')}</div></div>`;
+const WORLD = [['Height', 'raster'], ['Ocean', 'poly'], ['Coast', 'line'], ['Rivers', 'line'], ['Borders', 'poly'], ['Roads', 'line'], ['Towns', 'pt'], ['Place names', 'pt']];
+const ALLC = ['Borders', 'Climate data', 'Coastal towns', 'Harbor of Lys', 'Highlands of Ker', 'Isles of Marr', 'Northern coast', 'Old empire', 'Sea lanes', 'Thalen reach', 'Travel', 'Vesperan', 'Water', 'World'];
+const MAPLIST = ['World overview', 'Vesperan', 'Harbor of Lys', 'Northern coast', 'Thalen reach', 'Isles of Marr', 'Highlands of Ker', 'The Low Marches', 'Kingdom of Aun'];
+
+function grp(name, rows, o = {}) {
+  const head = `<div class="gh"><span class="chev">${ic(o.closed ? 'chevR' : 'chevD', 'i m')}</span><span class="n">${name}</span>${o.closed ? `<span class="cnt">${o.cnt}</span>` : ''}<span class="h">${ic('grip', 'i m')}</span></div>`;
+  return `<div class="grp ${o.lifted ? 'lifted' : ''}">${head}${o.closed ? '' : rows}</div>`;
+}
+const vespRows = (o = {}) => `${lr('Vesperan topography', 'poly', { sel: 1 })}${lr('Vesperan bathymetry', 'poly')}${o.drag ? lr('Roads', 'line').replace('class="row "', 'class="row lift"') + '<div class="ins"></div>' : lr('Roads', 'line')}${lr('Vesperan contours', 'line')}${lr('Coast', 'line')}${lr('Rivers', 'line')}`;
+const worldRows = (dups = []) => WORLD.map(([n, k]) => dups.includes(n) ? dimr(n, k) : lr(n, k)).join('');
+const mapSw = (n, k, on = true) => lr(n, k, { right: `<span class="sw ${on ? 'on' : ''}"></span>` }).replace('class="row "', on ? 'class="row "' : 'class="row" style="opacity:.55;padding-left:14px"');
+
+function layersPanel(o = {}) {
+  return `${o.noHead ? '' : collHead()}
+  ${grp('Vesperan', vespRows({ drag: o.drag }))}
+  ${grp('Climate data', '', { closed: 1, cnt: 4 })}
+  ${grp('World', worldRows(['Coast', 'Rivers', 'Roads']))}`;
+}
+
+const pickPop = () => `<div class="pop" style="right:56px;top:150px;width:290px">
+  <div class="seg wide" style="margin:6px 12px 8px"><span class="on">Collections</span><span>Maps</span></div>
+  ${chk('Vesperan', true)}${chk('Climate data', true)}${chk('World', true)}${chk('Travel', false)}
+  <div class="div"></div>${row('New collection…')}${row('Manage collections…')}
+  <div class="arrow" style="right:40px;top:-7px"></div></div>`;
+
+const manageHead = (seg) => `${collHead()}${backRow('Layers')}
+  <div class="seg wide"><span class="${seg === 0 ? 'on' : ''}">Collections</span><span class="${seg === 1 ? 'on' : ''}">Layers</span></div>
+  ${search('Search')}`;
+const manageCollections = () => `${manageHead(0)}
+  ${[['Vesperan', 6], ['Climate data', 4], ['World', 8], ['Borders', 2], ['Coastal towns', 3], ['Harbor of Lys', 5], ['Northern coast', 7], ['Old empire', 6], ['Sea lanes', 2], ['Thalen reach', 5]].map(([n, c], i) => row(n, c, { open: true, swipe: i === 4 ? swipe('rd') : '' })).join('')}
+  ${row('Travel', 4, { open: true })}
+  <div class="div"></div>${row('New collection…')}`;
+const LAYERMEMBERS = [['Height', 'raster', 'World'], ['Ocean', 'poly', 'World'], ['Coast', 'line', 'Vesperan, World'], ['Rivers', 'line', 'Vesperan, World'], ['Borders', 'poly', 'World, Borders'], ['Roads', 'line', 'Vesperan, Travel, World'], ['Towns', 'pt', 'World, Coastal towns'], ['Place names', 'pt', 'World'], ['Vesperan topography', 'poly', 'Vesperan'], ['Vesperan bathymetry', 'poly', 'Vesperan'], ['Vesperan contours', 'line', 'Vesperan'], ['Rainfall', 'raster', 'Climate data'], ['Winds', 'line', 'Climate data']];
+const manageLayers = (n = 13) => `${manageHead(1)}
+  ${LAYERMEMBERS.slice(0, n).map(([l, k, m], i) => lr(l, k, { sub: m, right: chev, swipe: i === 5 ? `<span class="swipe"><span class="del">Delete</span></span>` : '' })).join('')}`;
+
+const ADDROWS = [['Borders', 'poly', 'World, Borders', 0], ['Coast', 'line', 'Vesperan, World', 1], ['Height', 'raster', 'World', 0], ['Ocean', 'poly', 'World', 0], ['Place names', 'pt', 'World', 0], ['Rainfall', 'raster', 'Climate data', 0], ['Rivers', 'line', 'Vesperan, World', 1], ['Roads', 'line', 'Vesperan, Travel, World', 1], ['Towns', 'pt', 'World, Coastal towns', 0], ['Vesperan bathymetry', 'poly', 'Vesperan', 1], ['Vesperan contours', 'line', 'Vesperan', 1], ['Vesperan topography', 'poly', 'Vesperan', 1], ['Winds', 'line', 'Climate data', 0]];
+const addLayers = (n = 13) => `${collHead()}${backRow('Vesperan')}${search('Search')}
+  ${ADDROWS.slice(0, n).map(([l, k, m, on]) => row(l, '', { check: !!on, icon: k, sub: m })).join('')}`;
+
+const SCREENS = {
+  layers: () => world(dock(layersPanel({ drag: 1 }), 'tall')),
+  'layers-narrow': { cls: 'narrow', html: () => `${topRowNarrow()}${sheet(layersPanel({ drag: 1, noHead: 1 }), { full: true })}` },
+
+  pick: () => world(dock(layersPanel(), 'tall') + pickPop()),
+
+  'collection-page': () => world(dock(`${collHead()}${backRow('Collections')}
+    ${row('Name', `<span class="field">Vesperan</span>`)}
+    <div class="div"></div>
+    ${lr('Vesperan topography', 'poly', { right: '' })}${lr('Vesperan bathymetry', 'poly', { right: '' })}${lr('Roads', 'line', { right: '' })}${lr('Vesperan contours', 'line', { right: '' })}${lr('Coast', 'line', { right: '' })}${lr('Rivers', 'line', { right: '', swipe: `<span class="swipe"><span class="del">Remove</span></span>` })}
+    ${row('Add layers…')}
+    <div class="div"></div>
+    ${row('<span class="warn">Delete collection</span>')}`, '')),
+
+  'add-layers': () => world(dock(addLayers(), 'tall')),
+  'add-layers-narrow': { cls: 'narrow', html: () => `${topRowNarrow()}${sheet(addLayers(9).replace(collHead(), ''), { full: true })}` },
+
+  'layer-collections': () => world(dock(`${collHead()}${backRow('Rivers')}
+    ${search('Search')}
+    ${chk('Vesperan', true)}${chk('World', true)}
+    ${['Climate data', 'Harbor of Lys', 'Northern coast', 'Old empire', 'Sea lanes', 'Thalen reach', 'Travel', 'Water'].map(n => chk(n, false)).join('')}
+    <div class="div"></div>${row('New collection…')}`, 'tall')),
+
+  polygonize: () => world(dock(`${headBack('Toolbox')}
+    ${hero('Polygonize', 'Makes a polygon for each band of a raster layer.')}
+    ${openRow('Input', 'Height', { t: 1 })}
+    ${openRow('Extent', 'Vesperan', { t: 1 })}
+    ${openRow('Levels', 'Interval 200 m', { t: 1 })}
+    ${slider('Smooth', 50, '50 %')}
+    ${slider('Simplify', 35, '1.2 km')}
+    ${sec('Output')}
+    ${switchRow('Split into two layers at 0 m', true)}
+    ${openRow('Collection', 'Vesperan', { t: 1 })}
+    <div class="primary">Run</div>`, 'tall')),
+
+  'polygonize-pick': () => world(dock(`${headBack('Toolbox')}${backRow('Polygonize')}
+    ${search('Search')}
+    ${row('New collection', `<span class="field" style="min-width:160px">Vesperan<span class="caret"></span></span>`, { check: true })}
+    ${['World', 'Climate data', 'Harbor of Lys', 'Northern coast', 'Old empire', 'Thalen reach', 'Travel', 'Water'].map(n => chk(n, false)).join('')}`, 'tall')),
+
+  'atlas-edit': { cls: 'atlas', html: () => atlas(dock(`<div class="head">${ic('frame', 'i m')}<span>Properties</span><span class="grow"></span><div class="btn">${ic('chevD', 'i m')}</div></div>
+    <div class="tabs"><span class="tab on">Frame</span><span class="tab">Projection</span><span class="tab">Layers</span><span class="tab">Labels</span></div>
+    ${row('Map name', `<span class="field">Vesperan</span>`)}
+    ${openRow('Map style', 'Regional', { t: 1 })}
+    ${openRow('Scale', '1 : 2 500 000', { t: 1 })}
+    ${openRow('Shape', 'Rectangle', { t: 1 })}
+    <div class="div"></div>
+    ${row('Edit on globe')}
+    ${row('<span class="warn">Delete frame</span>')}`, '')) },
+
+  'globe-map': () => world(dock(`${collHead()}
+    ${grp('Vesperan', `${lr('Vesperan topography', 'poly', { sel: 1 })}${lr('Vesperan bathymetry', 'poly')}${lr('Roads', 'line')}${lr('Vesperan contours', 'line')}${lr('Coast', 'line')}${lr('Rivers', 'line')}`)}
+    ${grp('World', worldRows(['Coast', 'Rivers', 'Roads']))}`, 'tall'), { before: extent(EXT) + `<div class="card mapchip">${ic('map', 'i m')}<span>Vesperan</span><div class="btn">${ic('x', 'i m')}</div></div>` }),
+
+  'pick-maps': () => world(dock(layersPanel(), 'tall') + `<div class="pop" style="right:56px;top:150px;width:290px">
+    <div class="seg wide" style="margin:6px 12px 8px"><span>Collections</span><span class="on">Maps</span></div>
+    ${MAPLIST.map(n => chk(n, n === 'Vesperan', { icon: 'map' })).join('')}
+    <div class="arrow" style="right:40px;top:-7px"></div></div>`),
+
+  'manage-collections': () => world(dock(manageCollections(), 'tall')),
+  'manage-layers': () => world(dock(manageLayers(), 'tall')),
+  'manage-collections-narrow': { cls: 'narrow', html: () => `${topRowNarrow()}${sheet(manageCollections().replace(collHead(), ''), { full: true })}` },
+  'manage-layers-narrow': { cls: 'narrow', html: () => `${topRowNarrow()}${sheet(manageLayers(10).replace(collHead(), ''), { full: true })}` },
+};
+</script></head><body></body></html>
