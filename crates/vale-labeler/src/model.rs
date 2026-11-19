@@ -60,6 +60,8 @@ pub enum PointPosition {
     Left,
     Top,
     Bottom,
+    /// The text is centered on the point. It ignores the offset and the symbol.
+    Center,
 }
 
 impl PointPosition {
@@ -79,14 +81,22 @@ impl PointPosition {
 /// Placement rules for point features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PointPlacement {
-    /// Preference order; the first is best.
+    /// Preference order; the first is best. A position that is not listed is blocked.
     pub positions: Vec<PointPosition>,
-    /// Gap between the symbol edge and the text.
+    /// The preferred gap between the symbol edge and the text.
     pub offset: f64,
+    /// The largest gap. The label tries larger gaps up to this one, at a higher cost.
+    /// `None`, or a value that is not larger than `offset`, gives only `offset`.
+    pub max_offset: Option<f64>,
+    /// How far a centered label can move from the point.
+    pub center_shift: f64,
     /// The text follows the parallels of [`LabelInput::parallels`], straight or curved.
     pub graticule: bool,
-    /// Text that follows the parallels reads from west to east, also where it is upside down.
+    /// Text that follows the parallels, or turns by the angle of its feature, keeps its
+    /// direction, also where it is upside down.
     pub no_flip: bool,
+    /// Which other points make a candidate ambiguous.
+    pub ambiguous: AmbiguousLabels,
 }
 
 impl Default for PointPlacement {
@@ -94,10 +104,25 @@ impl Default for PointPlacement {
         Self {
             positions: PointPosition::DEFAULT_ORDER.to_vec(),
             offset: 2.0,
+            max_offset: None,
+            center_shift: 0.0,
             graticule: false,
             no_flip: false,
+            ambiguous: AmbiguousLabels::Keep,
         }
     }
+}
+
+/// What happens to a point label candidate that is nearer to another point than to its own.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AmbiguousLabels {
+    /// The candidate stays.
+    #[default]
+    Keep,
+    /// The points of all classes count.
+    AllClasses,
+    /// Only the points of the same class count.
+    OwnClass,
 }
 
 /// Which side of a line the text sits on.
@@ -529,6 +554,11 @@ pub enum Geometry {
     Point {
         position: Point,
         symbol_radius: f64,
+        /// The angle of the text in radians, counterclockwise on the page from +x.
+        angle: Option<f64>,
+        /// The outline of the symbol, a closed ring in page space around `position`. If it is
+        /// given, the offset is measured from it and not from `symbol_radius`.
+        outline: Option<Vec<Point>>,
     },
     Line {
         path: Vec<Point>,
@@ -694,6 +724,8 @@ pub enum UnplacedReason {
     /// The visible part of the polygon has less area than the class allows.
     BelowMinimumArea,
     Collision,
+    /// At each position, the label is nearer to another point than to its own point.
+    Ambiguous,
 }
 
 /// A label that was not placed, with the reason.

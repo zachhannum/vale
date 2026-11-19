@@ -7,7 +7,8 @@ use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
 use vale_style::{
-    LabelClass, LabelFallback, LabelPlacement, LabelPosition, LineAnchor, LineOrientation,
+    AmbiguousLabels, LabelClass, LabelFallback, LabelPlacement, LabelPosition, LineAnchor,
+    LineOrientation,
 };
 
 use super::atlas::{FRAME_TABS, named_tabs};
@@ -61,6 +62,15 @@ pub const SMOOTHING: &str = "Smoothing";
 pub const SPREAD: &str = "Spread";
 pub const FOLLOW_PARALLELS: &str = "Follow parallels";
 pub const UPSIDE_DOWN: &str = "Allow upside-down text";
+pub const CENTER_SHIFT: &str = "Center shift";
+pub const MAX_OFFSET: &str = "Largest offset";
+pub const OUTLINE_OFFSET: &str = "Measure from symbol shape";
+/// The row of the angle field of a point class, and the title of its page.
+pub const ANGLE_FIELD: &str = "Angle field";
+/// The value of the angle field row when the class has no angle field.
+pub const NO_ANGLE_FIELD: &str = "None";
+/// The row of the ambiguous labels of a point class, and the title of its page.
+pub const AMBIGUOUS: &str = "Ambiguous labels";
 /// The row of the zones of a polygon class, and the title of its page.
 pub const ZONES: &str = "Zones";
 /// The headings of the zones page.
@@ -178,6 +188,8 @@ pub const SPACINGS: (f64, f64) = (-0.1, 1.0);
 pub const HALO_WIDTHS: (f64, f64) = (0.1, 8.0);
 /// The smallest and the largest offset, in points.
 pub const OFFSETS: (f64, f64) = (0.0, 20.0);
+/// The smallest and the largest shift of a centered label, in points.
+pub const CENTER_SHIFTS: (f64, f64) = (0.0, 6.0);
 /// The shortest and the longest repeat interval, in points.
 pub const REPEAT_INTERVALS: (f64, f64) = (50.0, 2000.0);
 /// The smallest and the largest curve limit, in degrees per letter.
@@ -277,6 +289,8 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
 fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label = Some((frame, layer, i));
     state.atlas.label_page = None;
+    // The panels of all classes have one key.
+    state.pad.scroll_top = Some(CLASS_KEY);
     state.atlas.label_segment = ClassSegment::Text;
     state.atlas.label_color = None;
     state.atlas.position_list = ListState::default();
@@ -407,6 +421,9 @@ fn class_group(state: &mut AppState, map: MapId, name: &'static str) {
     }
 }
 
+/// The key of the panel of a label class.
+const CLASS_KEY: &str = "pad-atlas-class";
+
 /// The panel of the open label class of frame `id`, or of one of its pages,
 /// in the pane of the Labels panel.
 pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
@@ -422,11 +439,13 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         Some(ClassPage::Style) => ("pad-atlas-class-style", STYLE, &*class.name),
         Some(ClassPage::Case) => ("pad-atlas-class-case", CASE, &*class.name),
         Some(ClassPage::Positions) => ("pad-atlas-positions", POSITIONS, &*class.name),
+        Some(ClassPage::AngleField) => ("pad-atlas-angle-field", ANGLE_FIELD, &*class.name),
+        Some(ClassPage::Ambiguous) => ("pad-atlas-ambiguous", AMBIGUOUS, &*class.name),
         Some(ClassPage::Zones) => ("pad-atlas-zones", ZONES, &*class.name),
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
         Some(ClassPage::Fallbacks) => ("pad-atlas-fallbacks", FALLBACKS, &*class.name),
         Some(ClassPage::Abbreviations) => ("pad-atlas-abbreviations", ABBREVIATIONS, FALLBACKS),
-        None => ("pad-atlas-class", class.name.as_str(), FRAME_TABS[3]),
+        None => (CLASS_KEY, class.name.as_str(), FRAME_TABS[3]),
     };
     let parts = PageParts::new(key, title, Some(back));
     let back_to = move |state: &mut AppState| match page {
@@ -451,6 +470,8 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
             Some(ClassPage::Style) => style_page(ui, state, controls, at, &class),
             Some(ClassPage::Case) => case_page(ui, state, controls, at, &class),
             Some(ClassPage::Positions) => positions_page(ui, state, controls, at, &class),
+            Some(ClassPage::AngleField) => angle_field_page(ui, state, controls, at, &class),
+            Some(ClassPage::Ambiguous) => ambiguous_page(ui, state, controls, at, &class),
             Some(ClassPage::Zones) => zones_page(ui, state, controls, at, &class),
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
             Some(ClassPage::Fallbacks) => fallbacks_page(ui, state, controls, at, kind, &class),
@@ -721,7 +742,8 @@ fn parallel_switches(
             state.label_class_step(map, layer, i, |c| c.graticule = on);
         }
     }
-    if follows_parallels(kind, class) {
+    let turned = kind == GeometryKind::Point && class.angle_field.is_some();
+    if follows_parallels(kind, class) || turned {
         let mut on = class.no_flip;
         if widgets::switch_row(ui, controls, UPSIDE_DOWN, UPSIDE_DOWN, &mut on) {
             state.label_class_step(map, layer, i, |c| c.no_flip = on);
@@ -729,8 +751,8 @@ fn parallel_switches(
     }
 }
 
-/// The Placement segment of the panel of a class. A point class has its
-/// positions and its offset. A line class has its offset and the line
+/// The Placement segment of the panel of a class. A point class has the
+/// point options. A line class has its offset and the line
 /// options. A polygon class has its spread, and a
 /// class that is not horizontal has its curve limit. A point class and a
 /// polygon class can follow the parallels.
@@ -761,13 +783,10 @@ fn placement_segment(
         polygon_options(ui, state, controls, (map, layer, i), class);
         return;
     }
-    let point = kind == GeometryKind::Point;
-    if point {
-        let on = class.positions.iter().filter(|r| r.on).count();
-        let value = format!("{on} of {}", class.positions.len());
-        if widgets::open_row(ui, controls, POSITIONS, &value).clicked() {
-            state.atlas.label_page = Some(ClassPage::Positions);
-        }
+    if kind == GeometryKind::Point {
+        point_options(ui, state, controls, (map, layer, i), class);
+        parallel_switches(ui, state, controls, (map, layer, i), kind, class);
+        return;
     }
     let offset = Number::new(OFFSET, class.offset, OFFSETS.0..=OFFSETS.1)
         .step(0.5)
@@ -776,12 +795,61 @@ fn placement_segment(
     if let Some(offset) = offset {
         state.edit_label_class(map, layer, i, |c| c.offset = offset);
     }
-    if point {
-        parallel_switches(ui, state, controls, (map, layer, i), kind, class);
-        return;
-    }
 
     line_options(ui, state, controls, (map, layer, i), class);
+}
+
+/// The options of a point class: the center shift of a centered class, or
+/// the positions, the offsets, and the outline switch; then the angle field.
+fn point_options(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, layer, i): (MapId, LayerId, usize),
+    class: &LabelClass,
+) {
+    if class.placement == LabelPlacement::Center {
+        let (lo, hi) = CENTER_SHIFTS;
+        let shift = Number::new(CENTER_SHIFT, class.center_shift, lo..=hi)
+            .step(0.5)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(shift) = shift {
+            state.edit_label_class(map, layer, i, |c| c.center_shift = shift);
+        }
+    } else {
+        let on = class.positions.iter().filter(|r| r.on).count();
+        let value = format!("{on} of {}", class.positions.len());
+        if widgets::open_row(ui, controls, POSITIONS, &value).clicked() {
+            state.atlas.label_page = Some(ClassPage::Positions);
+        }
+        let offset = Number::new(OFFSET, class.offset, OFFSETS.0..=OFFSETS.1)
+            .step(0.5)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(offset) = offset {
+            state.edit_label_class(map, layer, i, |c| {
+                c.offset = offset;
+                c.max_offset = c.max_offset.max(offset);
+            });
+        }
+        let max = class.max_offset.max(class.offset);
+        let largest = Number::new(MAX_OFFSET, max, class.offset..=OFFSETS.1)
+            .step(0.5)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(largest) = largest {
+            state.edit_label_class(map, layer, i, |c| c.max_offset = largest);
+        }
+        let mut outline = class.offset_from_outline;
+        if widgets::switch_row(ui, controls, OUTLINE_OFFSET, OUTLINE_OFFSET, &mut outline) {
+            state.label_class_step(map, layer, i, |c| c.offset_from_outline = outline);
+        }
+    }
+    let field = class.angle_field.as_deref().unwrap_or(NO_ANGLE_FIELD);
+    if widgets::open_row(ui, controls, ANGLE_FIELD, field).clicked() {
+        state.atlas.label_page = Some(ClassPage::AngleField);
+    }
 }
 
 /// The options of a line class after its offset: the orientation, the
@@ -1318,6 +1386,11 @@ fn conflicts_segment(
     if widgets::open_row(ui, controls, FALLBACKS, &value).clicked() {
         state.atlas.label_page = Some(ClassPage::Fallbacks);
     }
+    if kind == GeometryKind::Point
+        && widgets::open_row(ui, controls, AMBIGUOUS, class.ambiguous.name()).clicked()
+    {
+        state.atlas.label_page = Some(ClassPage::Ambiguous);
+    }
 }
 
 /// True if a class of `kind` can use `fallback`. A line label does not
@@ -1776,6 +1849,53 @@ fn placement_page(
         let on = placement == class.placement;
         if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
             state.label_class_step(map, layer, i, |c| c.placement = placement);
+            state.atlas.label_page = None;
+        }
+    }
+}
+
+/// The angle fields of a point class: "None" and each numeric field of the
+/// layer.
+fn angle_field_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    let fields = state
+        .doc
+        .layer(layer)
+        .map(|l| super::rules::numeric_fields(&l.fields))
+        .unwrap_or_default();
+    let choices = std::iter::once(None).chain(fields.into_iter().map(Some));
+    for field in choices {
+        let name = field.as_deref().unwrap_or(NO_ANGLE_FIELD).to_owned();
+        let on = field == class.angle_field;
+        let row = ui.push_id(("angle-field", &name), |ui| {
+            widgets::option_row(ui, controls, &name, &name, &[], on)
+        });
+        if row.inner.clicked() {
+            state.label_class_step(map, layer, i, |c| c.angle_field = field);
+            state.atlas.label_page = None;
+        }
+    }
+}
+
+/// The choices for a point label that is nearer to another point than to
+/// its own point.
+fn ambiguous_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    for ambiguous in AmbiguousLabels::ALL {
+        let name = ambiguous.name();
+        let on = ambiguous == class.ambiguous;
+        if widgets::option_row(ui, controls, name, name, &[], on).clicked() {
+            state.label_class_step(map, layer, i, |c| c.ambiguous = ambiguous);
             state.atlas.label_page = None;
         }
     }

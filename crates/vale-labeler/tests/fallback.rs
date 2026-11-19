@@ -195,6 +195,8 @@ fn a_crowded_point_label_moves_away_with_a_leader_line() {
         geometry: Geometry::Point {
             position: Point::new(x, y),
             symbol_radius: 2.0,
+            angle: None,
+            outline: None,
         },
     };
     let point = Placement::Point(PointPlacement::default());
@@ -240,6 +242,8 @@ fn a_leader_line_does_not_cross_a_hard_obstacle() {
         geometry: Geometry::Point {
             position: Point::new(x, y),
             symbol_radius: 2.0,
+            angle: None,
+            outline: None,
         },
     };
     let point = Placement::Point(PointPlacement::default());

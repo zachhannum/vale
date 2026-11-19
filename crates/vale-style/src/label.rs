@@ -13,6 +13,8 @@ pub const CLASSES_VERSION: u64 = 1;
 pub enum LabelPlacement {
     /// The best of the ranked positions around a point.
     Around,
+    /// On the center of a point.
+    Center,
     /// Along a line, on the side that fits.
     AboveOrBelow,
     LineAbove,
@@ -28,7 +30,7 @@ pub enum LabelPlacement {
     Parallel,
 }
 
-const POINT_PLACEMENTS: [LabelPlacement; 1] = [LabelPlacement::Around];
+const POINT_PLACEMENTS: [LabelPlacement; 2] = [LabelPlacement::Around, LabelPlacement::Center];
 
 const LINE_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::AboveOrBelow,
@@ -44,8 +46,9 @@ const POLYGON_PLACEMENTS: [LabelPlacement; 4] = [
     LabelPlacement::Horizontal,
 ];
 
-const ALL_PLACEMENTS: [LabelPlacement; 9] = [
+const ALL_PLACEMENTS: [LabelPlacement; 10] = [
     LabelPlacement::Around,
+    LabelPlacement::Center,
     LabelPlacement::AboveOrBelow,
     LabelPlacement::LineAbove,
     LabelPlacement::LineBelow,
@@ -79,6 +82,7 @@ impl LabelPlacement {
     pub fn name(self) -> &'static str {
         match self {
             LabelPlacement::Around => "Around point",
+            LabelPlacement::Center => "Centered on point",
             LabelPlacement::AboveOrBelow => "Above or below",
             LabelPlacement::LineAbove => "Above line",
             LabelPlacement::LineBelow => "Below line",
@@ -94,6 +98,7 @@ impl LabelPlacement {
     fn key(self) -> &'static str {
         match self {
             LabelPlacement::Around => "around",
+            LabelPlacement::Center => "center",
             LabelPlacement::AboveOrBelow => "above_or_below",
             LabelPlacement::LineAbove => "line_above",
             LabelPlacement::LineBelow => "line_below",
@@ -306,6 +311,49 @@ impl LineAnchor {
 
     fn from_key(key: &str) -> Option<LineAnchor> {
         LineAnchor::ALL.into_iter().find(|a| a.key() == key)
+    }
+}
+
+/// Which other points make a point label ambiguous. A label is ambiguous when it is nearer to
+/// another point than to its own point.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AmbiguousLabels {
+    /// No check.
+    #[default]
+    Keep,
+    /// The points of all classes.
+    AllClasses,
+    /// The points of the same class.
+    OwnClass,
+}
+
+impl AmbiguousLabels {
+    pub const ALL: [AmbiguousLabels; 3] = [
+        AmbiguousLabels::Keep,
+        AmbiguousLabels::AllClasses,
+        AmbiguousLabels::OwnClass,
+    ];
+
+    /// The UI text.
+    pub fn name(self) -> &'static str {
+        match self {
+            AmbiguousLabels::Keep => "Keep",
+            AmbiguousLabels::AllClasses => "All classes",
+            AmbiguousLabels::OwnClass => "This class",
+        }
+    }
+
+    /// The JSON name.
+    fn key(self) -> &'static str {
+        match self {
+            AmbiguousLabels::Keep => "keep",
+            AmbiguousLabels::AllClasses => "all_classes",
+            AmbiguousLabels::OwnClass => "own_class",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<AmbiguousLabels> {
+        AmbiguousLabels::ALL.into_iter().find(|a| a.key() == key)
     }
 }
 
@@ -658,7 +706,7 @@ impl PositionRank {
 
 /// The default offset of a placement, in points.
 pub fn offset_for(placement: LabelPlacement) -> f64 {
-    if placement == LabelPlacement::Around {
+    if matches!(placement, LabelPlacement::Around | LabelPlacement::Center) {
         2.0
     } else {
         4.0
@@ -756,6 +804,18 @@ pub struct LabelClass {
     pub graticule: bool,
     /// True lets text that follows the parallels read west to east also where it is upside down.
     pub no_flip: bool,
+    /// Points. The largest offset, in points. In a crowded place, the label moves out from
+    /// `offset` up to this distance.
+    pub max_offset: f64,
+    /// Points. How far a label centered on its point can shift from the center, in points.
+    pub center_shift: f64,
+    /// Points. A numeric attribute with the angle of the text, in degrees counterclockwise
+    /// from east on the page.
+    pub angle_field: Option<String>,
+    /// Points. True measures the offset from the outline of the symbol.
+    pub offset_from_outline: bool,
+    /// Points. Which other points make a label ambiguous.
+    pub ambiguous: AmbiguousLabels,
     /// Polygons. The rank of each zone inside the shape, row by row from the top left. Rank 1
     /// is best, and rank 0 blocks the zone.
     pub zones_inside: [u8; 9],
@@ -841,12 +901,15 @@ pub struct LabelClass {
 }
 
 impl LabelClass {
-    /// Replaces the field `old` with `new` in the text, the filter, and the priority field.
+    /// Replaces the field `old` with `new` in the text, the filter, the priority field, and the
+    /// angle field.
     pub fn rename_field(&mut self, old: &str, new: &str) {
         self.text = crate::expr::rename_field(&self.text, old, new);
         self.filter = crate::expr::rename_field(&self.filter, old, new);
-        if self.priority_field.as_deref() == Some(old) {
-            self.priority_field = Some(new.to_owned());
+        for field in [&mut self.priority_field, &mut self.angle_field] {
+            if field.as_deref() == Some(old) {
+                *field = Some(new.to_owned());
+            }
         }
     }
 
@@ -913,6 +976,11 @@ impl LabelClass {
             spread: SPREAD,
             graticule: false,
             no_flip: false,
+            max_offset: offset_for(placement),
+            center_shift: 0.0,
+            angle_field: None,
+            offset_from_outline: false,
+            ambiguous: AmbiguousLabels::Keep,
             zones_inside: ZONES_INSIDE,
             zones_outside: ZONES_OUTSIDE,
             anchor: LeaderAnchor::default(),
@@ -1056,6 +1124,13 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "spread_fill": c.spread_fill,
                 "min_length": c.min_length,
             });
+            let point = json!({
+                "max_offset": c.max_offset,
+                "center_shift": c.center_shift,
+                "angle_field": c.angle_field,
+                "offset_from_outline": c.offset_from_outline,
+                "ambiguous": c.ambiguous.key(),
+            });
             // The macro has a recursion limit, so the fallbacks go in after it.
             let fallbacks = json!({
                 "fallbacks": c
@@ -1076,11 +1151,12 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "truncation_marker": c.truncation_marker,
                 "leader_distance": c.leader_distance,
             });
-            if let (Json::Object(m), Json::Object(f), Json::Object(l)) =
-                (&mut class, fallbacks, line)
+            if let (Json::Object(m), Json::Object(f), Json::Object(l), Json::Object(p)) =
+                (&mut class, fallbacks, line, point)
             {
                 m.extend(f);
                 m.extend(l);
+                m.extend(p);
             }
             class
         })
@@ -1219,6 +1295,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
             .and_then(|n| u32::try_from(n).ok())
             .unwrap_or(fallback)
     };
+    let offset = number("offset", offset_for(placement));
     let mut class = LabelClass {
         name: text(m, "name").unwrap_or_default(),
         text: text(m, "text").unwrap_or_default(),
@@ -1243,7 +1320,7 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         priority,
         priority_field: text(m, "priority_field"),
         placement,
-        offset: number("offset", offset_for(placement)),
+        offset,
         positions,
         repeat: flag("repeat", true),
         repeat_distance: number("repeat_distance", REPEAT_DISTANCE),
@@ -1251,6 +1328,15 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         spread: number("spread", SPREAD),
         graticule: flag("graticule", false),
         no_flip: flag("no_flip", false),
+        // Older files have one offset.
+        max_offset: number("max_offset", offset),
+        center_shift: number("center_shift", 0.0),
+        angle_field: text(m, "angle_field"),
+        offset_from_outline: flag("offset_from_outline", false),
+        ambiguous: text(m, "ambiguous")
+            .as_deref()
+            .and_then(AmbiguousLabels::from_key)
+            .unwrap_or_default(),
         zones_inside: ranks(m, "zones_inside", ZONES_INSIDE),
         zones_outside: ranks(m, "zones_outside", ZONES_OUTSIDE),
         anchor: text(m, "anchor")
@@ -1606,6 +1692,51 @@ mod tests {
     }
 
     #[test]
+    fn point_options_round_trip() {
+        let mut a = LabelClass::new("Towns", GeometryKind::Point, 0).unwrap();
+        a.offset = 3.0;
+        a.max_offset = 9.5;
+        a.offset_from_outline = true;
+        a.angle_field = Some("bearing".to_owned());
+        a.ambiguous = AmbiguousLabels::OwnClass;
+        let mut b = LabelClass::new("Peaks", GeometryKind::Point, 1).unwrap();
+        b.placement = LabelPlacement::Center;
+        b.center_shift = 4.5;
+        b.ambiguous = AmbiguousLabels::AllClasses;
+        let classes = vec![a, b];
+        let text = classes_to_json(&classes);
+        assert_eq!(classes_from_json(&text).unwrap(), classes);
+        assert_eq!(classes_to_json(&classes_from_json(&text).unwrap()), text);
+    }
+
+    #[test]
+    fn older_point_classes_read_with_one_offset() {
+        let old =
+            r##"{"version":1,"classes":[{"color":"#102030","placement":"around","offset":5.5}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        assert_eq!((c.offset, c.max_offset), (5.5, 5.5));
+        assert!(!c.offset_from_outline);
+        assert_eq!(c.center_shift, 0.0);
+        assert_eq!(c.angle_field, None);
+        assert_eq!(c.ambiguous, AmbiguousLabels::Keep);
+        let old = r##"{"version":1,"classes":[{"color":"#102030","placement":"around"}]}"##;
+        let c = &classes_from_json(old).unwrap()[0];
+        assert_eq!((c.offset, c.max_offset), (2.0, 2.0));
+        let new = LabelClass::new("Towns", GeometryKind::Point, 0).unwrap();
+        assert_eq!(new.max_offset, new.offset);
+    }
+
+    #[test]
+    fn rename_field_renames_the_angle_field() {
+        let mut c = LabelClass::new("Towns", GeometryKind::Point, 0).unwrap();
+        c.angle_field = Some("bearing".to_owned());
+        c.rename_field("bearing", "heading");
+        assert_eq!(c.angle_field.as_deref(), Some("heading"));
+        c.rename_field("other", "x");
+        assert_eq!(c.angle_field.as_deref(), Some("heading"));
+    }
+
+    #[test]
     fn colors_with_alpha_survive_json() {
         let mut c = LabelClass::new("Towns", GeometryKind::Polygon, 0).unwrap();
         c.color = Color::rgba(1, 2, 3, 64);
@@ -1747,7 +1878,10 @@ mod tests {
     #[test]
     fn the_placements_match_the_feature_type() {
         use GeometryKind::{Line, Point, Polygon};
-        assert_eq!(LabelPlacement::choices(Point), &[LabelPlacement::Around]);
+        assert_eq!(
+            LabelPlacement::choices(Point),
+            &[LabelPlacement::Around, LabelPlacement::Center]
+        );
         assert_eq!(LabelPlacement::choices(Line).len(), 4);
         assert_eq!(
             LabelPlacement::choices(Polygon),

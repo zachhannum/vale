@@ -985,6 +985,48 @@ fn page_panel(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 }
 
+/// The angle field of a point class, and the shift of a label centered on
+/// its point.
+fn point_label_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass, fields: &[String]) {
+    use super::pad::labels::{ANGLE_FIELD, CENTER_SHIFT, CENTER_SHIFTS, NO_ANGLE_FIELD};
+    if class.placement == vale_style::LabelPlacement::Center {
+        number::stepper(CENTER_SHIFT, &mut class.center_shift)
+            .range(CENTER_SHIFTS.0..=CENTER_SHIFTS.1)
+            .step(0.5)
+            .suffix(" pt")
+            .show(ui);
+    }
+    egui::ComboBox::from_label(ANGLE_FIELD)
+        .selected_text(class.angle_field.as_deref().unwrap_or(NO_ANGLE_FIELD))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut class.angle_field, None, NO_ANGLE_FIELD);
+            for f in fields {
+                ui.selectable_value(&mut class.angle_field, Some(f.clone()), f);
+            }
+        });
+}
+
+/// The offset, the largest offset, and the outline switch of a point class
+/// that is not centered.
+fn point_offset_controls(ui: &mut egui::Ui, class: &mut vale_style::LabelClass) {
+    use super::pad::labels::{MAX_OFFSET, OFFSET, OFFSETS, OUTLINE_OFFSET};
+    let changed = number::stepper(OFFSET, &mut class.offset)
+        .range(OFFSETS.0..=OFFSETS.1)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui)
+        .changed();
+    if changed || class.max_offset < class.offset {
+        class.max_offset = class.max_offset.max(class.offset);
+    }
+    number::stepper(MAX_OFFSET, &mut class.max_offset)
+        .range(class.offset..=OFFSETS.1)
+        .step(0.5)
+        .suffix(" pt")
+        .show(ui);
+    ui.checkbox(&mut class.offset_from_outline, OUTLINE_OFFSET);
+}
+
 /// The options of a line class: the orientation, the position, the
 /// direction, the repeat, the overrun, the spread, the join, the minimum
 /// length, the curve limit, and the smoothing.
@@ -1220,7 +1262,14 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 ui.selectable_value(&mut class.placement, p, p.name());
             }
         });
+    let fields = (state.doc.layer(layer))
+        .map(|l| super::pad::rules::numeric_fields(&l.fields))
+        .unwrap_or_default();
     if kind == GeometryKind::Point {
+        point_label_controls(ui, &mut class, &fields);
+    }
+    let around = class.placement == vale_style::LabelPlacement::Around;
+    if kind == GeometryKind::Point && around {
         ui.label(POSITIONS);
         let count = class.positions.len();
         let mut swap = None;
@@ -1242,12 +1291,15 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             class.positions.swap(a, b);
         }
     }
-    if kind != GeometryKind::Polygon {
+    if kind == GeometryKind::Line {
         number::stepper(OFFSET, &mut class.offset)
             .range(0.0..=20.0)
             .step(0.5)
             .suffix(" pt")
             .show(ui);
+    }
+    if kind == GeometryKind::Point && around {
+        point_offset_controls(ui, &mut class);
     }
     if kind == GeometryKind::Polygon {
         number::slider(SPREAD, &mut class.spread, SPREADS.0..=SPREADS.1)
@@ -1258,7 +1310,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if can_follow_parallels(kind, class.placement) {
         ui.checkbox(&mut class.graticule, FOLLOW_PARALLELS);
     }
-    if follows_parallels(kind, &class) {
+    let turned = kind == GeometryKind::Point && class.angle_field.is_some();
+    if follows_parallels(kind, &class) || turned {
         ui.checkbox(&mut class.no_flip, UPSIDE_DOWN);
     }
     let curved =
@@ -1334,6 +1387,16 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         }
     });
     fallback_controls(ui, &mut class, kind, salt);
+    if kind == GeometryKind::Point {
+        use super::pad::labels::AMBIGUOUS;
+        egui::ComboBox::from_label(AMBIGUOUS)
+            .selected_text(class.ambiguous.name())
+            .show_ui(ui, |ui| {
+                for a in vale_style::AmbiguousLabels::ALL {
+                    ui.selectable_value(&mut class.ambiguous, a, a.name());
+                }
+            });
+    }
     let at = list.iter().position(|(l, j, _)| (*l, *j) == (layer, i));
     if let Some(at) = at {
         ui.horizontal(|ui| {

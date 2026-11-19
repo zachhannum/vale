@@ -236,6 +236,8 @@ fn a_point_label_follows_the_parallel_through_the_point() {
         Geometry::Point {
             position: p,
             symbol_radius: 3.0,
+            angle: None,
+            outline: None,
         },
         "Pointville on the arc",
         conic(),
@@ -293,6 +295,8 @@ fn the_text_stays_upright_unless_the_class_allows_flipped_text() {
             Geometry::Point {
                 position: Point::new(400.0, 305.0),
                 symbol_radius: 2.0,
+                angle: None,
+                outline: None,
             },
             "Upright",
             reversed(),

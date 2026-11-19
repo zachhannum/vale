@@ -259,6 +259,8 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             geometry: Geometry::Point {
                 position,
                 symbol_radius: radius,
+                angle: None,
+                outline: None,
             },
         });
     }

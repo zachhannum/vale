@@ -58,6 +58,8 @@ fn glyphs(position: Point) -> GlyphRun {
             geometry: Geometry::Point {
                 position,
                 symbol_radius: 2.0,
+                angle: None,
+                outline: None,
             },
         }],
         obstacles: vec![],

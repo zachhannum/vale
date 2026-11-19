@@ -196,6 +196,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         if let Geometry::Point {
             position,
             symbol_radius,
+            ..
         } = &input.features[*fi].geometry
             && *symbol_radius > 0.0
         {
@@ -249,6 +250,13 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         })
         .collect();
 
+    // Every point feature inside the bounds, for the labels that are not nearer to another point.
+    let points = input
+        .classes
+        .iter()
+        .any(|c| matches!(&c.placement, Placement::Point(pp) if pp.ambiguous != AmbiguousLabels::Keep))
+        .then(|| Points::new(input));
+
     // Step 1: candidates.
     let parallels = Parallels::new(&input.parallels, bounds);
     let generator = Generator {
@@ -256,6 +264,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         parallels: &parallels,
         polygons: &polygons,
         merged: &merged,
+        points: points.as_ref(),
     };
     let mut instances: Vec<Instance> = Vec::new();
     for (fi, shaped) in &valid {
@@ -358,6 +367,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                     if let Geometry::Point {
                         position,
                         symbol_radius,
+                        ..
                     } = &f.geometry
                     {
                         for c in &mut cands {
@@ -548,6 +558,103 @@ struct Generator<'a> {
     polygons: &'a [(usize, &'a [Vec<Point>], Rect)],
     /// The joined path of each line feature that absorbed connected lines.
     merged: &'a HashMap<usize, Vec<Point>>,
+    /// Set when a class removes ambiguous point labels.
+    points: Option<&'a Points>,
+}
+
+/// The point features inside the bounds.
+struct Points {
+    /// The index, class, position, and symbol radius of each point feature.
+    list: Vec<(usize, usize, Point, f64)>,
+    /// The symbol bounds of each point, by index in `list`.
+    grid: GridIndex,
+}
+
+impl Points {
+    fn new(input: &LabelInput) -> Self {
+        let mut list = Vec::new();
+        let mut grid = GridIndex::new(input.bounds, 32.0);
+        for (fi, f) in input.features.iter().enumerate() {
+            if let Geometry::Point {
+                position,
+                symbol_radius,
+                ..
+            } = &f.geometry
+                && inside(input.bounds, *position)
+            {
+                let r = symbol_radius.max(0.0);
+                grid.insert(
+                    list.len() as u32,
+                    Rect::new(
+                        position.x - r,
+                        position.y - r,
+                        position.x + r,
+                        position.y + r,
+                    ),
+                );
+                list.push((fi, f.class, *position, r));
+            }
+        }
+        Points { list, grid }
+    }
+
+    /// Removes the candidates of point feature `fi` whose text is nearer to another point than
+    /// to its own point.
+    fn unambiguous(
+        &self,
+        input: &LabelInput,
+        fi: usize,
+        class: &LabelClass,
+        mode: AmbiguousLabels,
+        cands: Vec<Candidate>,
+    ) -> Result<Vec<Candidate>, UnplacedReason> {
+        let f = &input.features[fi];
+        let Geometry::Point {
+            position,
+            symbol_radius,
+            outline,
+            ..
+        } = &f.geometry
+        else {
+            return Ok(cands);
+        };
+        if cands.is_empty() {
+            return Ok(cands);
+        }
+        let mut near: Vec<u32> = Vec::new();
+        let kept: Vec<Candidate> = cands
+            .into_iter()
+            .filter(|c| {
+                let ink: Vec<OrientedBox> =
+                    c.boxes.iter().map(|b| b.inflate(-class.margin)).collect();
+                let gap = |p: Point, r: f64| {
+                    ink.iter()
+                        .map(|b| b.distance_to_point(p) - r)
+                        .fold(f64::INFINITY, f64::min)
+                        .max(0.0)
+                };
+                let own = match outline {
+                    Some(ring) => ink
+                        .iter()
+                        .map(|b| point::outline_gap(b, ring))
+                        .fold(f64::INFINITY, f64::min),
+                    None => gap(*position, symbol_radius.max(0.0)),
+                };
+                self.grid.query(c.bounds.inflate(own, own), &mut near);
+                !near.iter().any(|&i| {
+                    let (ofi, oclass, p, r) = self.list[i as usize];
+                    ofi != fi
+                        && (mode == AmbiguousLabels::AllClasses || oclass == f.class)
+                        && gap(p, r) < own - 1e-9
+                })
+            })
+            .collect();
+        if kept.is_empty() {
+            Err(UnplacedReason::Ambiguous)
+        } else {
+            Ok(kept)
+        }
+    }
 }
 
 impl Generator<'_> {
@@ -566,16 +673,25 @@ impl Generator<'_> {
                 Geometry::Point {
                     position,
                     symbol_radius,
+                    angle,
+                    outline,
                 },
                 Placement::Point(pp),
-            ) => vec![Ok(point::candidates(
-                *position,
-                *symbol_radius,
-                class,
-                pp,
-                shaped,
-                self.parallels,
-            ))],
+            ) => {
+                let symbol = point::PointSymbol {
+                    position: *position,
+                    radius: *symbol_radius,
+                    angle: *angle,
+                    outline: outline.as_deref(),
+                };
+                let cands = point::candidates(&symbol, class, pp, shaped, self.parallels);
+                vec![match self.points {
+                    Some(points) if pp.ambiguous != AmbiguousLabels::Keep => {
+                        points.unambiguous(self.input, fi, class, pp.ambiguous, cands)
+                    }
+                    _ => Ok(cands),
+                }]
+            }
             (Geometry::Line { path, stroke_width }, Placement::Line(lp)) => {
                 let path = self.merged.get(&fi).unwrap_or(path);
                 line::slots(path, *stroke_width, class, lp, shaped, bounds)

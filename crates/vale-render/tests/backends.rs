@@ -68,6 +68,8 @@ fn tokyo() -> (GlyphRun, Rect) {
             geometry: Geometry::Point {
                 position: Point::new(100.0, 50.0),
                 symbol_radius: 2.0,
+                angle: None,
+                outline: None,
             },
         }],
         obstacles: vec![],

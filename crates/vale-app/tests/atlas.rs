@@ -64,6 +64,9 @@ use vale_app::ui::pad::labels::{
     STYLE, TEXT, UPSIDE_DOWN,
 };
 use vale_app::ui::pad::labels::{
+    AMBIGUOUS, ANGLE_FIELD, CENTER_SHIFT, MAX_OFFSET, NO_ANGLE_FIELD, OUTLINE_OFFSET,
+};
+use vale_app::ui::pad::labels::{
     ANCHOR_DISTANCE, ANCHOR_PERCENT, ANCHOR_TOLERANCE, BY_DIRECTION, FOLLOW_DIRECTION,
     LINE_POSITION, MERGE_LINES, MIN_LENGTH, ORIENTATION, SPREAD_FILL,
 };
@@ -5787,6 +5790,167 @@ fn the_line_options_change_the_class_and_the_labeler_placement() {
         (line.overrun, line.max_spread, line.min_length),
         (12.0, 2.0, 80.0)
     );
+}
+
+/// The labeler placement of the class of the places.
+fn places_placement(h: &Pad, map: MapId) -> vale_labeler::PointPlacement {
+    match labeler_placement(h, map, "Places", GeometryKind::Point) {
+        Placement::Point(point) => point,
+        other => panic!("not a point placement: {other:?}"),
+    }
+}
+
+#[test]
+fn the_point_options_reach_the_labeler() {
+    use vale_labeler::{AmbiguousLabels, PointPosition};
+    use vale_style::LabelPlacement;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad| classes(h, map, "Places")[0].clone();
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[1].0);
+    let start = class(&h);
+    assert_eq!(start.max_offset, start.offset);
+    assert_eq!(places_placement(&h, map).max_offset, None);
+    assert!(control(&h, UPSIDE_DOWN).is_none());
+    assert!(control(&h, &value_of(CENTER_SHIFT)).is_none());
+
+    // The largest offset follows the offset up.
+    step(&mut h, OFFSET, true);
+    let offset = start.offset + 0.5;
+    assert_eq!((class(&h).offset, class(&h).max_offset), (offset, offset));
+    assert_eq!(places_placement(&h, map).max_offset, None);
+
+    tap(&mut h, OUTLINE_OFFSET);
+    assert!(class(&h).offset_from_outline);
+
+    step(&mut h, MAX_OFFSET, true);
+    assert_eq!(class(&h).max_offset, offset + 0.5);
+    assert_eq!(places_placement(&h, map).max_offset, Some(offset + 0.5));
+
+    // A point class with an angle field can allow upside-down text.
+    scroll_to(&mut h, ANGLE_FIELD);
+    tap(&mut h, ANGLE_FIELD);
+    assert!(control(&h, NO_ANGLE_FIELD).is_some());
+    scroll_to(&mut h, "scalerank");
+    tap(&mut h, "scalerank");
+    assert_eq!(h.state().atlas.label_page, None);
+    assert_eq!(class(&h).angle_field.as_deref(), Some("scalerank"));
+    scroll_to(&mut h, UPSIDE_DOWN);
+    assert!(control(&h, UPSIDE_DOWN).is_some());
+
+    // A centered label has a shift and no positions or offsets.
+    place_points(&mut h, LabelPlacement::Center);
+    assert_eq!(class(&h).placement, LabelPlacement::Center);
+    assert_eq!(places_placement(&h, map).positions, [PointPosition::Center]);
+    for name in [
+        POSITIONS,
+        OUTLINE_OFFSET,
+        &value_of(OFFSET),
+        &value_of(MAX_OFFSET),
+    ] {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+    step(&mut h, CENTER_SHIFT, true);
+    assert_eq!(class(&h).center_shift, 0.5);
+    assert_eq!(places_placement(&h, map).center_shift, 0.5);
+
+    tap(&mut h, SEGMENTS[2].0);
+    scroll_to(&mut h, AMBIGUOUS);
+    tap(&mut h, AMBIGUOUS);
+    for a in vale_style::AmbiguousLabels::ALL {
+        assert!(control(&h, a.name()).is_some(), "{}", a.name());
+    }
+    tap(&mut h, vale_style::AmbiguousLabels::OwnClass.name());
+    assert_eq!(h.state().atlas.label_page, None);
+    assert_eq!(class(&h).ambiguous, vale_style::AmbiguousLabels::OwnClass);
+    assert_eq!(
+        places_placement(&h, map).ambiguous,
+        AmbiguousLabels::OwnClass
+    );
+
+    // Each change is one undo step.
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).ambiguous, vale_style::AmbiguousLabels::Keep);
+    assert_eq!(class(&h).center_shift, 0.5);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).center_shift, 0.0);
+    assert_eq!(class(&h).placement, LabelPlacement::Center);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).placement, LabelPlacement::Around);
+    assert!(class(&h).angle_field.is_some());
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).angle_field, None);
+    assert_eq!(class(&h).max_offset, offset + 0.5);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).max_offset, offset);
+    assert!(class(&h).offset_from_outline);
+    tap(&mut h, "Undo");
+    assert!(!class(&h).offset_from_outline);
+    assert_eq!(class(&h).offset, offset);
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h), start);
+}
+
+/// Picks the placement of the open point class on its Placement page.
+fn place_points(h: &mut Pad, placement: vale_style::LabelPlacement) {
+    scroll_up_to(h, PLACEMENT);
+    tap(h, PLACEMENT);
+    tap(h, placement.name());
+}
+
+#[test]
+fn the_point_controls_of_the_labels_tab_work_with_a_finger() {
+    use vale_style::LabelPlacement;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = labels_pad(size);
+        tap(&mut h, "Places");
+        tap(&mut h, SEGMENTS[1].0);
+        let rows = [
+            PLACEMENT,
+            POSITIONS,
+            &value_of(OFFSET),
+            &value_of(MAX_OFFSET),
+            OUTLINE_OFFSET,
+            ANGLE_FIELD,
+        ];
+        for name in rows {
+            scroll_up_to(&mut h, PLACEMENT);
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: point placement segment at {name}"));
+        }
+        tap(&mut h, ANGLE_FIELD);
+        check_controls(&h, &format!("{what}: angle field page"));
+        scroll_to(&mut h, "scalerank");
+        tap(&mut h, "scalerank");
+        scroll_up_to(&mut h, PLACEMENT);
+        tap(&mut h, PLACEMENT);
+        check_controls(&h, &format!("{what}: point placement page"));
+        tap(&mut h, LabelPlacement::Center.name());
+        for name in [value_of(CENTER_SHIFT).as_str(), ANGLE_FIELD, UPSIDE_DOWN] {
+            scroll_to(&mut h, name);
+            assert!(control(&h, name).is_some(), "{what}: {name}");
+            check_controls(&h, &format!("{what}: centered at {name}"));
+        }
+        if size == BOARDS[0] {
+            place_points(&mut h, LabelPlacement::Around);
+            screenshot::save(&mut h, "pad-atlas-label-point-placement");
+        }
+        tap(&mut h, SEGMENTS[2].0);
+        scroll_to(&mut h, AMBIGUOUS);
+        check_controls(&h, &format!("{what}: point conflicts segment"));
+        tap(&mut h, AMBIGUOUS);
+        check_controls(&h, &format!("{what}: ambiguous page"));
+    }
 }
 
 /// A pad with the Labels tab of a frame, and a polygon class "Land" with the text "Land".

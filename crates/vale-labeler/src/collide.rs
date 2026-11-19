@@ -124,6 +124,15 @@ impl OrientedBox {
         true
     }
 
+    /// The distance from `p` to the box, 0 inside.
+    pub fn distance_to_point(&self, p: Point) -> f64 {
+        let (s, c) = (-self.angle).sin_cos();
+        let d = p - self.center;
+        let x = (d.x * c - d.y * s).abs() - self.half.x;
+        let y = (d.x * s + d.y * c).abs() - self.half.y;
+        x.max(0.0).hypot(y.max(0.0))
+    }
+
     /// True when all four corners are inside `bounds`; edges count as inside.
     pub fn is_inside(&self, bounds: Rect) -> bool {
         self.corners()
@@ -240,6 +249,20 @@ mod tests {
 
     fn bx(x0: f64, y0: f64, x1: f64, y1: f64) -> OrientedBox {
         OrientedBox::from_rect(Rect::new(x0, y0, x1, y1))
+    }
+
+    #[test]
+    fn distance_to_point() {
+        let b = bx(0., 0., 10., 4.);
+        assert_eq!(b.distance_to_point(Point::new(5.0, 2.0)), 0.0);
+        assert!((b.distance_to_point(Point::new(13.0, 2.0)) - 3.0).abs() < 1e-12);
+        assert!((b.distance_to_point(Point::new(13.0, 8.0)) - 5.0).abs() < 1e-12);
+        let turned = OrientedBox {
+            angle: FRAC_PI_2,
+            ..bx(-5., -2., 5., 2.)
+        };
+        assert!((turned.distance_to_point(Point::new(0.0, 8.0)) - 3.0).abs() < 1e-12);
+        assert!((turned.distance_to_point(Point::new(4.0, 0.0)) - 2.0).abs() < 1e-12);
     }
 
     #[test]

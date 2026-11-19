@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 
 use kurbo::{Point, Rect};
 use vale_labeler::{
-    Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput, LeaderAnchor,
-    LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, ObstacleKind, Options,
-    Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
+    AmbiguousLabels, Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput,
+    LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, ObstacleKind,
+    Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
     TextStyle, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
@@ -14,7 +14,7 @@ use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
     LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
-    LeaderEnd, LeaderStyle, StackAlign, TextCase,
+    LeaderEnd, LeaderStyle, Paint, StackAlign, TextCase,
 };
 
 use crate::atlas::FrameTarget;
@@ -179,6 +179,20 @@ pub fn place(
                 } else {
                     0.0
                 };
+                let angle = c
+                    .angle_field
+                    .as_ref()
+                    .and_then(|a| feature.attributes.get(a))
+                    .and_then(|v| v.as_f64())
+                    .filter(|v| v.is_finite())
+                    .map(f64::to_radians);
+                let shape = if c.offset_from_outline && pl.kind == GeometryKind::Point {
+                    let mut paints = Vec::new();
+                    pl.entry.style.style.paints(&ctx, &mut paints);
+                    paints
+                } else {
+                    Vec::new()
+                };
                 labeled.insert((pl.layer.id, f.index));
                 let mut push = |geometry: Geometry| {
                     features.push(Feature {
@@ -205,6 +219,8 @@ pub fn place(
                             push(Geometry::Point {
                                 position: *p,
                                 symbol_radius,
+                                angle,
+                                outline: symbol_outline(&shape, *p),
                             });
                         }
                     }
@@ -440,14 +456,25 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
         })
     };
     match p {
-        StylePlacement::Around => Placement::Point(PointPlacement {
-            positions: (c.positions.iter())
-                .filter(|r| r.on)
-                .map(|r| point_position(r.position))
-                .collect(),
+        StylePlacement::Around | StylePlacement::Center => Placement::Point(PointPlacement {
+            positions: if p == StylePlacement::Center {
+                vec![PointPosition::Center]
+            } else {
+                (c.positions.iter())
+                    .filter(|r| r.on)
+                    .map(|r| point_position(r.position))
+                    .collect()
+            },
             offset: c.offset,
+            max_offset: (c.max_offset > c.offset).then_some(c.max_offset),
+            center_shift: c.center_shift,
             graticule: c.graticule,
             no_flip: c.no_flip,
+            ambiguous: match c.ambiguous {
+                vale_style::AmbiguousLabels::Keep => AmbiguousLabels::Keep,
+                vale_style::AmbiguousLabels::AllClasses => AmbiguousLabels::AllClasses,
+                vale_style::AmbiguousLabels::OwnClass => AmbiguousLabels::OwnClass,
+            },
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
@@ -484,6 +511,43 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             min_area: c.min_area,
         }),
     }
+}
+
+/// The outline on the page of the symbol of a point at `p`, from the paints
+/// of the feature: the largest marker, or the square of the largest symbol.
+fn symbol_outline(paints: &[Paint], p: Point) -> Option<Vec<Point>> {
+    let mut best: Option<(f64, Vec<Point>)> = None;
+    for paint in paints {
+        let (reach, ring) = match paint {
+            Paint::Marker {
+                radius,
+                shape,
+                stroke,
+                ..
+            } => {
+                let r = radius + stroke.as_ref().map_or(0.0, |s| s.width);
+                let ring = (shape.unit_outline().into_iter())
+                    .map(|(x, y)| p + kurbo::Vec2::new(x * r, y * r))
+                    .collect();
+                (radius * shape.reach(), ring)
+            }
+            Paint::Symbol { size, rotation, .. } => {
+                let h = size / 2.0;
+                // The rotation is in degrees clockwise, and the page y axis points down.
+                let (sin, cos) = rotation.to_radians().sin_cos();
+                let ring = [(-h, -h), (h, -h), (h, h), (-h, h)]
+                    .into_iter()
+                    .map(|(x, y)| p + kurbo::Vec2::new(x * cos - y * sin, x * sin + y * cos))
+                    .collect();
+                (h, ring)
+            }
+            _ => continue,
+        };
+        if best.as_ref().is_none_or(|(r, _)| reach > *r) {
+            best = Some((reach, ring));
+        }
+    }
+    best.map(|(_, ring)| ring)
 }
 
 /// The labeler position of a position of a class.
