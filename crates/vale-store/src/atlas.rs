@@ -834,6 +834,9 @@ pub struct ColorKeyItem {
     /// A strip of a height layer has a row for the sea and a row for the
     /// land.
     pub split_at_sea_level: bool,
+    /// The key shows all bands of the layer. Otherwise it shows the bands
+    /// that its frame shows.
+    pub all_bands: bool,
     /// The values of a strip in a second unit, below the strip.
     pub second_unit: Option<SecondUnit>,
     /// A list shows the name of each band inside its box.
@@ -1313,6 +1316,7 @@ impl ColorKeyItem {
         map.insert("layer".into(), serde_json::json!(self.layer.map(|l| l.0)));
         map.insert("layout".into(), self.layout.id().into());
         map.insert("split".into(), self.split_at_sea_level.into());
+        map.insert("all_bands".into(), self.all_bands.into());
         let unit = self
             .second_unit
             .as_ref()
@@ -1351,6 +1355,7 @@ impl ColorKeyItem {
             item.layout = KeyLayout::from_id(v.as_str()?)?;
         }
         read_flag(&map, "split", &mut item.split_at_sea_level)?;
+        read_flag(&map, "all_bands", &mut item.all_bands)?;
         match map.get("second_unit") {
             None | Some(serde_json::Value::Null) => {}
             Some(v) => {
@@ -1406,6 +1411,7 @@ impl Default for ColorKeyItem {
             layer: None,
             layout: KeyLayout::Strip,
             split_at_sea_level: true,
+            all_bands: false,
             second_unit: None,
             names_in_boxes: false,
             box_width: None,
@@ -2266,6 +2272,7 @@ mod tests {
                 layer: Some(LayerId(5)),
                 layout: KeyLayout::List,
                 split_at_sea_level: false,
+                all_bands: true,
                 second_unit: unit,
                 names_in_boxes: true,
                 box_width: Some(5.0),
@@ -2330,6 +2337,7 @@ mod tests {
         assert_eq!(key, ColorKeyItem::default());
         assert_eq!((key.layer, key.layout), (None, KeyLayout::Strip));
         assert!(key.split_at_sea_level && key.second_unit.is_none());
+        assert!(!key.all_bands);
         assert_eq!((key.box_width, key.box_height), (None, None));
         assert_eq!(ColorKeyItem::from_json(r#"{"box_width": -1}"#), None);
         assert_eq!(ColorKeyItem::from_json(r#"{"layout": "grid"}"#), None);
