@@ -105,6 +105,9 @@ pub struct Spec<'a> {
     pub select: bool,
     /// A hold lifts a row.
     pub reorder: bool,
+    /// The lifted row is free to leave the list, and a drop outside the
+    /// list springs back with no move.
+    pub confine: bool,
     /// The name of the name field of a row that the user renames.
     pub field: &'a str,
     /// True for a name that a rename applies.
@@ -121,6 +124,7 @@ impl Default for Spec<'_> {
         Spec {
             select: false,
             reorder: false,
+            confine: false,
             field: "Name",
             valid: &not_blank,
         }
@@ -145,6 +149,8 @@ pub struct Row<K> {
     /// A swipe to the right selects the row, in a list with
     /// [`Spec::select`].
     pub select: bool,
+    /// A hold lifts the row, in a list with [`Spec::reorder`].
+    pub lift: bool,
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
@@ -165,6 +171,7 @@ impl<K> Row<K> {
             delete: false,
             actions: &[],
             select: true,
+            lift: true,
             trailing: 0.0,
             height: PANEL_ROW,
         }
@@ -240,7 +247,7 @@ pub fn lifted(ctx: &egui::Context) -> bool {
     at.is_some_and(|at| at + 1 >= now)
 }
 
-fn set_lifted(ctx: &egui::Context) {
+pub(super) fn set_lifted(ctx: &egui::Context) {
     let now = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| d.insert_temp(lift_id(), now));
 }
@@ -347,8 +354,13 @@ where
     set_lifted(ui.ctx());
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
     let y = pointer.map_or(area.top() + tops[from] + lift.grab, |p| p.y);
-    let top = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    let inside = (area.top()..=area.bottom()).contains(&(y - lift.grab + PANEL_ROW / 2.0));
+    let clamped = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
+    let top = if spec.confine { y - lift.grab } else { clamped };
+    let to = match inside || !spec.confine {
+        true => ((clamped - area.top()) / PANEL_ROW).round() as usize,
+        false => from,
+    };
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (i, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
@@ -412,8 +424,13 @@ fn paint_still<K: Copy + PartialEq>(
     cell: &mut impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
 ) {
     let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
-    let painter = ui.painter().clone();
+    let mut painter = ui.painter().clone();
     if lifted {
+        // Above each other list, because the row can leave its own list.
+        painter.set_layer_id(egui::LayerId::new(
+            egui::Order::Tooltip,
+            ui.id().with("lifted"),
+        ));
         painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
     }
     let picked = state.is_picked(row.key);
@@ -546,7 +563,7 @@ fn rows_live<K>(
                 events.push(Event::Tap(key));
             }
         }
-        if spec.reorder && hold(ui, state, body) {
+        if spec.reorder && row.lift && hold(ui, state, body) {
             ui.ctx().set_dragged_id(body.id);
             state.lift = Some(Lift {
                 key,
@@ -886,6 +903,8 @@ pub struct Look<'a> {
     pub eye: Option<bool>,
     /// The arrow that opens the row, at the far right.
     pub open: bool,
+    /// The icon and the text are dim.
+    pub dim: bool,
 }
 
 impl Look<'_> {
@@ -912,13 +931,19 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
     }
     if let Some(icon) = look.icon {
         let kind = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(18.0, 18.0));
-        icons::paint(painter, kind, icon, 18.0, theme::MUTE);
+        icons::paint(
+            painter,
+            kind,
+            icon,
+            18.0,
+            widgets::fade(theme::MUTE, !look.dim),
+        );
         x += 28.0;
     }
     let shown = look.eye != Some(false);
     let color = match look.check {
         Some(false) => theme::MUTE,
-        _ => widgets::fade(theme::TEXT, shown),
+        _ => widgets::fade(theme::TEXT, shown && !look.dim),
     };
     let trailing = cell.trailing.translate(moved);
     let mut name_right = if look.trailing() > 0.0 {

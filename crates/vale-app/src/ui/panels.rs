@@ -583,19 +583,139 @@ fn named(resp: &egui::Response, kind: egui::WidgetType, on: bool, name: String) 
     resp.widget_info(|| egui::WidgetInfo::selected(kind, true, on, name.clone()));
 }
 
-/// The rows of the layers of each kind, with the top layer first. A
-/// checkbox shows or hides a layer, the name selects it, and the arrows
-/// move it in the draw order. The arrow at the end of the row of a raster
-/// layer opens its panel.
+/// The collection menu, and a group for each checked collection from the
+/// top of the stack, with the top layer first.
 fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    collection_rows(ui, state);
-    let shown = state.shown_layer_ids();
-    let layers = state.doc.project.shown_layers().into_iter().rev();
-    let rows: Vec<_> = layers
-        .map(|l| (l.id, LayerRef::of(l), l.name.clone(), l.visible))
+    collection_menu(ui, state);
+    let stack: Vec<CollectionId> = state.doc.project.globe_collections().to_vec();
+    if stack.is_empty() {
+        ui.weak(super::pad::collection::NO_CHECKED);
+    }
+    let count = stack.len();
+    for (index, id) in stack.into_iter().rev().enumerate() {
+        ui.separator();
+        ui.push_id(("collection", id.0), |ui| {
+            collection_header(ui, state, id, index, count);
+            if !state.doc.project.is_collapsed(id) {
+                collection_layers(ui, state, id);
+            }
+        });
+    }
+}
+
+/// The name of the button that moves a collection or a layer up or down.
+fn move_name(name: &str, up: bool) -> String {
+    let way = if up { "up" } else { "down" };
+    format!("Move {name} {way}")
+}
+
+/// The header of the group of a checked collection: the button that
+/// collapses it, its name field, the count of its layers while it is
+/// collapsed, the arrows that restack it, and its Delete button.
+fn collection_header(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    id: CollectionId,
+    index: usize,
+    count: usize,
+) {
+    use super::pad::collection::{COLLECTION_NAME, chevron_name};
+    let project = &state.doc.project;
+    let Some(c) = project.collection(id) else {
+        return;
+    };
+    let (name, layers) = (c.name.clone(), c.layers.len());
+    let collapsed = project.is_collapsed(id);
+    let world = project.world_collection();
+    ui.horizontal(|ui| {
+        let toggle = ui.small_button(if collapsed { "▸" } else { "▾" });
+        named(
+            &toggle,
+            egui::WidgetType::Button,
+            false,
+            chevron_name(&name, collapsed),
+        );
+        if toggle.clicked() {
+            state.set_collapsed(id, !collapsed);
+        }
+        // The field keeps its text while it has the focus, and the name
+        // changes when it loses the focus.
+        let key = ui.id().with(COLLECTION_NAME);
+        let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| name.clone());
+        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0));
+        named(
+            &field,
+            egui::WidgetType::TextEdit,
+            false,
+            format!("{COLLECTION_NAME} {name}"),
+        );
+        if field.lost_focus() {
+            state.rename_collection(id, &text);
+            ui.data_mut(|d| d.remove::<String>(key));
+        } else if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, text));
+        }
+        if collapsed {
+            ui.weak(layers.to_string());
+        }
+        for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
+            let button = ui.add_enabled(index != end, egui::Button::new(text).small());
+            named(
+                &button,
+                egui::WidgetType::Button,
+                false,
+                move_name(&name, up),
+            );
+            if button.clicked() {
+                let at = count - 1 - index;
+                let to = if up { at + 1 } else { at.saturating_sub(1) };
+                state.move_globe_collection(id, to);
+            }
+        }
+        let delete = ui.add_enabled(id != world, egui::Button::new(DELETE_COLLECTION).small());
+        named(
+            &delete,
+            egui::WidgetType::Button,
+            false,
+            format!("{DELETE_COLLECTION} {name}"),
+        );
+        if delete.clicked() {
+            state.delete_collection(id);
+        }
+    });
+}
+
+/// The rows of the layers of a collection, with the top layer first. A
+/// checkbox shows or hides a layer, the name selects it, and the arrows
+/// move it in the collection. A layer that a higher collection already
+/// draws has a gray row with no controls.
+fn collection_layers(ui: &mut egui::Ui, state: &mut AppState, id: CollectionId) {
+    use super::pad::collection::{EMPTY_COLLECTION, card_rows, dim_row};
+    let project = &state.doc.project;
+    let Some(collection) = project.collection(id).map(|c| c.name.clone()) else {
+        return;
+    };
+    let rows: Vec<_> = (card_rows(project, id).into_iter())
+        .filter_map(|(layer, dim)| {
+            let l = project.layer(layer)?;
+            Some((l.id, LayerRef::of(l), l.name.clone(), l.visible, dim))
+        })
         .collect();
+    if rows.is_empty() {
+        ui.weak(EMPTY_COLLECTION);
+    }
     let count = rows.len();
-    for (index, (id, layer, name, mut visible)) in rows.into_iter().enumerate() {
+    for (index, (id_of, layer, name, mut visible, dim)) in rows.into_iter().enumerate() {
+        if dim {
+            let label = ui.add_enabled(false, egui::Button::selectable(false, &name));
+            named(
+                &label,
+                egui::WidgetType::SelectableLabel,
+                false,
+                dim_row(&name, &collection),
+            );
+            continue;
+        }
         let selected = state.selected_layer == Some(layer);
         ui.horizontal(|ui| {
             let eye = ui.checkbox(&mut visible, "");
@@ -606,21 +726,20 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
                 format!("Show {name}"),
             );
             if eye.changed() {
-                state.set_layer_visible(id, visible);
+                state.set_layer_visible(id_of, visible);
             }
             for (text, up, end) in [("▲", true, 0), ("▼", false, count - 1)] {
                 let button = ui.add_enabled(index != end, egui::Button::new(text).small());
-                let way = if up { "up" } else { "down" };
                 named(
                     &button,
                     egui::WidgetType::Button,
                     false,
-                    format!("Move {name} {way}"),
+                    move_name(&name, up),
                 );
                 if button.clicked() {
                     let at = count - 1 - index;
                     let to = if up { at + 1 } else { at.saturating_sub(1) };
-                    state.move_layer_in(id, &shown, to);
+                    state.move_in_collection(id, id_of, to);
                 }
             }
             let kind = match layer {
@@ -662,41 +781,35 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The collection menu of the layer list, the name field of the checked
-/// collection, and the buttons that add and delete a collection.
-fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    use super::pad::collection::{
-        ALL_LAYERS, COLLECTION_MENU, COLLECTION_NAME, NEW_COLLECTION, checks_all, menu_value,
-    };
+/// The collection menu: a checkbox for each collection, with the checked
+/// collections from the top of the stack first, and "New collection…".
+fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
+    use super::pad::collection::{COLLECTION_MENU, NEW_COLLECTION, collection_row};
     let project = &state.doc.project;
     let checked = project.globe_collections();
-    // `None` is All layers, and `Some(None)` is a mix of collections.
-    let shown = match checked {
-        _ if checks_all(project) => None,
-        [one] => Some(Some(*one)),
-        _ => Some(None),
-    };
-    let world = project.world_collection();
-    let names: Vec<(CollectionId, String)> = (project.collections().iter())
-        .map(|c| (c.id, c.name.clone()))
+    let mut order: Vec<(CollectionId, bool)> = checked.iter().rev().map(|id| (*id, true)).collect();
+    order.extend(
+        (project.collections().iter())
+            .filter(|c| !checked.contains(&c.id))
+            .map(|c| (c.id, false)),
+    );
+    let rows: Vec<(CollectionId, String, bool)> = (order.into_iter())
+        .filter_map(|(id, on)| Some((id, project.collection(id)?.name.clone(), on)))
         .collect();
-    let text = menu_value(project);
-    let mut pick = shown;
-    ui.horizontal(|ui| {
-        let combo = egui::ComboBox::from_id_salt(COLLECTION_MENU)
-            .selected_text(text)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut pick, None, ALL_LAYERS);
-                for (id, name) in &names {
-                    ui.selectable_value(&mut pick, Some(Some(*id)), name);
-                }
-            });
-        named(
-            &combo.response,
-            egui::WidgetType::ComboBox,
-            false,
-            COLLECTION_MENU.to_string(),
-        );
+    let menu = ui.menu_button(COLLECTION_MENU, |ui| {
+        for (id, name, mut on) in rows {
+            let check = ui.checkbox(&mut on, &name);
+            named(
+                &check,
+                egui::WidgetType::Checkbox,
+                on,
+                collection_row(&name),
+            );
+            if check.changed() {
+                state.check_collection(id, on);
+            }
+        }
+        ui.separator();
         let add = ui.button(NEW_COLLECTION);
         named(
             &add,
@@ -706,48 +819,15 @@ fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
         );
         if add.clicked() {
             let name = state.doc.project.free_collection_name();
-            pick = state.add_collection(&name).map(Some).or(pick);
+            state.add_collection(&name);
         }
     });
-    if pick != shown {
-        match pick {
-            None => state.show_collection(None),
-            Some(Some(id)) => state.show_collection(Some(id)),
-            Some(None) => {}
-        }
-    }
-    let Some((id, name)) = (names.into_iter()).find(|(id, _)| pick == Some(Some(*id))) else {
-        return;
-    };
-    ui.horizontal(|ui| {
-        // The field keeps its text while it has the focus, and the name
-        // changes when it loses the focus.
-        let key = ui.id().with(COLLECTION_NAME).with(id);
-        let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| name.clone());
-        let field = ui.add(egui::TextEdit::singleline(&mut text).desired_width(160.0));
-        named(
-            &field,
-            egui::WidgetType::TextEdit,
-            false,
-            COLLECTION_NAME.to_string(),
-        );
-        if field.lost_focus() {
-            state.rename_collection(id, &text);
-            ui.data_mut(|d| d.remove::<String>(key));
-        } else if field.has_focus() {
-            ui.data_mut(|d| d.insert_temp(key, text));
-        }
-        let delete = ui.add_enabled(id != world, egui::Button::new(DELETE_COLLECTION));
-        named(
-            &delete,
-            egui::WidgetType::Button,
-            false,
-            DELETE_COLLECTION.to_string(),
-        );
-        if delete.clicked() {
-            state.delete_collection(id);
-        }
-    });
+    named(
+        &menu.response,
+        egui::WidgetType::Button,
+        false,
+        COLLECTION_MENU.to_string(),
+    );
 }
 
 /// The name of the button that deletes the shown collection.

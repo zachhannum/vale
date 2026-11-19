@@ -525,7 +525,9 @@ fn check_controls(h: &Pad, what: &str) {
 
 /// True for a control of the open collection menu.
 fn in_collection_menu(h: &Pad, name: &str) -> bool {
-    use vale_app::ui::pad::collection::{ALL_LAYERS, COLLECTION_NAME, NEW_COLLECTION};
+    use vale_app::ui::pad::collection::{
+        COLLECTION_NAME, COLLECTIONS_SIDE, MAPS_SIDE, NEW_COLLECTION,
+    };
     use vale_app::ui::pad::widgets::RENAME;
     let collections = h.state().doc.project.collections().iter();
     let names: Vec<String> = collections
@@ -537,7 +539,8 @@ fn in_collection_menu(h: &Pad, name: &str) -> bool {
             ]
         })
         .collect();
-    [ALL_LAYERS, NEW_COLLECTION, COLLECTION_NAME].contains(&name) || names.iter().any(|n| n == name)
+    [COLLECTIONS_SIDE, MAPS_SIDE, NEW_COLLECTION, COLLECTION_NAME].contains(&name)
+        || names.iter().any(|n| n == name)
 }
 
 /// The controls of the View popover.
@@ -760,7 +763,8 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         let top = |name: &str| control(&h, name).unwrap().top();
         let names = layer_names(&h);
         let rows: Vec<f32> = names.iter().map(|n| top(&format!("Layer {n}"))).collect();
-        assert!(rows.is_sorted() && rows[0] < rows[4], "{what}: {rows:?}");
+        // The top layer is in the first row.
+        assert!(rows.is_sorted_by(|a, b| a > b), "{what}: {rows:?}");
         for name in &names {
             for control_name in [format!("Hide {name}"), format!("Open {name}")] {
                 assert!(
@@ -1400,13 +1404,20 @@ fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
     }
 }
 
+/// The gestures and the selected rows of the card of World.
+fn layer_list(h: &Pad) -> &vale_app::ui::pad::list::ListState<vale_store::LayerId> {
+    let state = h.state();
+    let world = state.doc.project.world_collection();
+    state.pad.cards.lists.get(&world).expect("a card of World")
+}
+
 /// Holds a finger on a row of the layer list until the row lifts.
 fn hold(h: &mut Pad, name: &str) -> Pos2 {
     let pos = control(h, name).unwrap().center();
     touch(h, egui::TouchPhase::Start, pos, None);
     for _ in 0..200 {
         h.step();
-        if h.state().pad.layer_list.lift.is_some() {
+        if layer_list(h).lift.is_some() {
             break;
         }
     }
@@ -1421,7 +1432,7 @@ fn a_hold_and_a_drag_change_the_order() {
         let land = vector(&h, "Land");
         let places = control(&h, "Layer Places").unwrap().center();
         let from = hold(&mut h, "Layer Land");
-        assert_eq!(h.state().pad.layer_list.lift.map(|l| l.key), Some(land));
+        assert_eq!(layer_list(&h).lift.map(|l| l.key), Some(land));
         // The order changes when the finger goes up.
         for i in 1..=6 {
             let pos = from.lerp(places + vec2(0.0, 6.0), i as f32 / 6.0);
@@ -1431,7 +1442,7 @@ fn a_hold_and_a_drag_change_the_order() {
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         touch(&mut h, egui::TouchPhase::End, places, None);
         h.run_steps(3);
-        assert_eq!(h.state().pad.layer_list.lift, None);
+        assert_eq!(layer_list(&h).lift, None);
         assert_eq!(
             layer_names(&h),
             ["Height", "Rivers", "Places", "Land"],
@@ -1443,14 +1454,19 @@ fn a_hold_and_a_drag_change_the_order() {
             "{size:?}"
         );
 
-        // The row goes to the first place, below the raster layer.
-        let rivers = control(&h, "Layer Rivers").unwrap().center();
+        // The row goes to the last row, the bottom of the drawing.
+        let height = control(&h, "Layer Height").unwrap().center();
         let from = hold(&mut h, "Layer Land");
-        touch(&mut h, egui::TouchPhase::Move, from.lerp(rivers, 0.5), None);
+        touch(&mut h, egui::TouchPhase::Move, from.lerp(height, 0.5), None);
         h.step();
-        touch(&mut h, egui::TouchPhase::Move, pos2(from.x, 0.0), None);
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            height + vec2(0.0, 6.0),
+            None,
+        );
         h.step();
-        touch(&mut h, egui::TouchPhase::End, pos2(from.x, 0.0), None);
+        touch(&mut h, egui::TouchPhase::End, height + vec2(0.0, 6.0), None);
         h.run_steps(3);
         assert_eq!(
             layer_names(&h),
@@ -1498,7 +1514,7 @@ fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
         // The finger holds the raster row and moves it past two vector rows.
         let rivers = control(&h, "Layer Rivers").unwrap().center();
         let from = hold(&mut h, "Layer Height");
-        assert_eq!(h.state().pad.layer_list.lift.map(|l| l.key), Some(layer));
+        assert_eq!(layer_list(&h).lift.map(|l| l.key), Some(layer));
         for i in 1..=6 {
             let pos = from.lerp(rivers + vec2(0.0, 6.0), i as f32 / 6.0);
             touch(&mut h, egui::TouchPhase::Move, pos, None);
@@ -1680,7 +1696,7 @@ fn a_quick_drag_does_not_lift_a_row() {
     touch(&mut h, egui::TouchPhase::Move, from.lerp(to, 0.5), None);
     for _ in 0..8 {
         h.step();
-        assert_eq!(h.state().pad.layer_list.lift, None);
+        assert_eq!(layer_list(&h).lift, None);
     }
     touch(&mut h, egui::TouchPhase::End, to, None);
     h.run_steps(3);
@@ -1715,7 +1731,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         assert!(control(&h, "Delete Rivers").is_none(), "{what}");
         swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
-        let open = h.state().pad.layer_list.open.unwrap();
+        let open = layer_list(&h).open.unwrap();
         assert_eq!((open.row, open.moving), (rivers, false), "{what}");
         let delete = control(&h, "Delete Rivers").unwrap_or_else(|| panic!("{what}"));
         assert!(delete.width() >= 88.0 - 0.5, "{what}: {delete:?}");
@@ -1726,7 +1742,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         check_controls(&h, &format!("{what} with an open row"));
         tap(&mut h, "Delete Rivers");
         assert_eq!(layer_names(&h), ["Height", "Land", "Places"], "{what}");
-        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
+        assert_eq!(layer_list(&h).open, None, "{what}");
         step_and_save(&mut h, false);
         h.state_mut().undo();
         h.run_steps(2);
@@ -1738,7 +1754,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         let width = panel(&h, Panel::Layers).unwrap().width();
         swipe(&mut h, "Height", -0.9 * width);
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
-        let open = h.state().pad.layer_list.open.unwrap();
+        let open = layer_list(&h).open.unwrap();
         assert_eq!(
             open.offset,
             -vale_app::ui::pad::widgets::RENAME_WIDTH,
@@ -1762,7 +1778,7 @@ fn a_short_swipe_snaps_shut() {
         let mut h = pad(size);
         open_panel(&mut h, "Layers");
         swipe(&mut h, "Land", -30.0);
-        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
+        assert_eq!(layer_list(&h).open, None, "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert!(control(&h, "Hide Land").is_some(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");
@@ -1770,17 +1786,17 @@ fn a_short_swipe_snaps_shut() {
         // A tap on the body of an open row shuts it, and a press elsewhere
         // shuts it.
         swipe(&mut h, "Land", -120.0);
-        assert!(h.state().pad.layer_list.open.is_some(), "{what}");
+        assert!(layer_list(&h).open.is_some(), "{what}");
         tap(&mut h, "Layer Land");
-        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
+        assert_eq!(layer_list(&h).open, None, "{what}");
         swipe(&mut h, "Land", -120.0);
         tap(&mut h, "Layer Places");
-        assert_eq!(h.state().pad.layer_list.open, None, "{what}");
+        assert_eq!(layer_list(&h).open, None, "{what}");
         assert!(control(&h, "Hide Land").is_some(), "{what}");
         // Only one row is open.
         swipe(&mut h, "Land", -120.0);
         swipe(&mut h, "Places", -120.0);
-        let open = h.state().pad.layer_list.open.map(|s| s.row);
+        let open = layer_list(&h).open.map(|s| s.row);
         assert_eq!(open, Some(vector(&h, "Places")), "{what}");
         assert!(control(&h, "Delete Land").is_none(), "{what}");
         assert_eq!(layer_names(&h).len(), 4, "{what}");
@@ -1795,17 +1811,17 @@ fn a_vertical_drag_on_the_list_scrolls_and_opens_no_row() {
     }
     h.run_steps(2);
     open_panel(&mut h, "Layers");
-    let top = control(&h, "Layer Height").unwrap().center().y;
-    let from = control(&h, "Layer Places").unwrap().center();
+    let top = control(&h, "Layer Lines 12").unwrap().center().y;
+    let from = control(&h, "Layer Lines 10").unwrap().center();
     drag(&mut h, from, from - vec2(10.0, 150.0), None);
-    assert_eq!(h.state().pad.layer_list.open, None);
-    assert_eq!(h.state().pad.layer_list.lift, None);
+    assert_eq!(layer_list(&h).open, None);
+    assert_eq!(layer_list(&h).lift, None);
     assert!(
-        control(&h, "Layer Height").is_none_or(|r| r.center().y < top - 50.0),
+        control(&h, "Layer Lines 12").is_none_or(|r| r.center().y < top - 50.0),
         "the list did not scroll"
     );
     assert_eq!(layer_names(&h).len(), 16);
-    assert!(control(&h, "Delete Places").is_none());
+    assert!(control(&h, "Delete Lines 10").is_none());
 }
 
 #[test]
@@ -1817,12 +1833,12 @@ fn a_swipe_to_the_right_selects_layers_and_the_header_deletes_them_in_one_step()
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
         open_panel(&mut h, "Layers");
-        let picked = |h: &Pad| h.state().pad.layer_list.picked.clone();
+        let picked = |h: &Pad| layer_list(h).picked.clone();
         assert!(control(&h, DELETE_LAYERS).is_none(), "{what}");
         swipe_right(&mut h, "Layer Places");
         swipe_right(&mut h, "Layer Land");
         let (land, places) = (vector(&h, "Land"), vector(&h, "Places"));
-        assert_eq!(picked(&h), [land, places], "{what}");
+        assert_eq!(picked(&h), [places, land], "{what}");
         for name in [SELECT_ALL, DELETE_LAYERS, DESELECT_ALL, ADD_LAYER] {
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
@@ -1864,12 +1880,12 @@ fn a_tap_on_a_selected_layer_makes_it_the_active_layer() {
     open_panel(&mut h, "Layers");
     swipe_right(&mut h, "Layer Rivers");
     let rivers = vector(&h, "Rivers");
-    assert_eq!(h.state().pad.layer_list.picked, [rivers]);
+    assert_eq!(layer_list(&h).picked, [rivers]);
     // A `tap` lasts as long as a hold, and a hold clears the selection.
     quick_tap(&mut h, "Layer Land");
     let land = vector(&h, "Land");
     assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(land)));
-    assert_eq!(h.state().pad.layer_list.picked, [rivers]);
+    assert_eq!(layer_list(&h).picked, [rivers]);
 }
 
 /// Writes a 16-bit greyscale PNG with a slope from west to east.
@@ -19782,7 +19798,7 @@ fn a_swipe_opens_a_row_in_a_pane_above_another_pane() {
         let mut h = docked(BOARDS[0], &[&[Panel::Layers], &[below]]);
         swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
-        let open = h.state().pad.layer_list.open;
+        let open = layer_list(&h).open;
         assert_eq!(
             open.map(|o| (o.row, o.moving)),
             Some((rivers, false)),
@@ -19792,27 +19808,26 @@ fn a_swipe_opens_a_row_in_a_pane_above_another_pane() {
         // A swipe to the right selects a row.
         swipe(&mut h, "Land", 80.0);
         let land = vector(&h, "Land");
-        assert!(h.state().pad.layer_list.is_picked(land), "{below:?}");
+        assert!(layer_list(&h).is_picked(land), "{below:?}");
     }
 }
 
-/// The names of the rows of the Layers panel, from the bottom of the
-/// drawing up.
-fn listed_layers(h: &Pad) -> Vec<String> {
-    let state = h.state();
-    let rows = state.doc.project.layers().iter();
-    rows.filter(|l| control(h, &format!("Layer {}", l.name)).is_some())
-        .map(|l| l.name.clone())
-        .collect()
-}
-
-/// Opens the collection menu of the Layers panel.
+/// Opens the collection popover of the Layers panel.
 fn open_collection_menu(h: &mut Pad) {
     use vale_app::ui::pad::collection::COLLECTION_MENU;
     if !h.state().pad.collections_menu {
         tap(h, COLLECTION_MENU);
     }
     assert!(h.state().pad.collections_rect.is_some());
+}
+
+/// Closes the collection popover with its button.
+fn close_collection_menu(h: &mut Pad) {
+    use vale_app::ui::pad::collection::COLLECTION_MENU;
+    if h.state().pad.collections_menu {
+        tap(h, COLLECTION_MENU);
+    }
+    assert!(!h.state().pad.collections_menu);
 }
 
 /// Makes a collection with "New collection…" and gives it a name.
@@ -19830,7 +19845,7 @@ fn new_collection(h: &mut Pad, name: &str) {
     assert!(control(h, COLLECTION_NAME).is_none());
 }
 
-/// A swipe to the left on the row of a collection in the collection menu.
+/// A swipe to the left on the row of a collection in the popover.
 fn swipe_collection(h: &mut Pad, name: &str) {
     let row = collection_row(name);
     let rect = control(h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
@@ -19838,82 +19853,297 @@ fn swipe_collection(h: &mut Pad, name: &str) {
     drag(h, from, from - vec2(120.0, 0.0), None);
 }
 
-/// Checks one collection on the globe, or each collection for `None`, with
-/// the collection menu.
-fn show_collection(h: &mut Pad, name: Option<&str>) {
-    use vale_app::ui::pad::collection::ALL_LAYERS;
+/// Checks a collection, or clears its check, with the popover.
+fn toggle_collection(h: &mut Pad, name: &str) {
     open_collection_menu(h);
-    match name {
-        Some(name) => tap(h, &collection_row(name)),
-        None => tap(h, ALL_LAYERS),
-    }
-    assert!(!h.state().pad.collections_menu);
+    tap(h, &collection_row(name));
 }
 
-/// Opens the panel of a layer, opens its Collections page, and taps the
-/// switch of each collection in `names`.
-fn switch_collections(h: &mut Pad, layer: &str, names: &[&str]) {
-    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
-    tap(h, &format!("Open {layer}"));
-    tap(h, COLLECTIONS);
-    assert_eq!(h.state().pad.page, Some(Page::Collections));
-    for name in names {
-        tap(h, &switch_name(name));
+/// The names of the cards of the Layers panel, from the top.
+fn card_order(h: &Pad) -> Vec<String> {
+    use vale_app::ui::pad::collection::chevron_name;
+    let project = &h.state().doc.project;
+    let mut cards: Vec<(f32, String)> = (project.collections().iter())
+        .filter_map(|c| {
+            let collapsed = project.is_collapsed(c.id);
+            let rect = control(h, &chevron_name(&c.name, collapsed))?;
+            Some((rect.top(), c.name.clone()))
+        })
+        .collect();
+    cards.sort_by(|a, b| a.0.total_cmp(&b.0));
+    cards.into_iter().map(|c| c.1).collect()
+}
+
+/// The layers of a collection, from the bottom.
+fn members_of(h: &Pad, name: &str) -> Vec<String> {
+    let project = &h.state().doc.project;
+    let c = project
+        .collections()
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap();
+    (c.layers.iter())
+        .map(|id| project.layer(*id).unwrap().name.clone())
+        .collect()
+}
+
+fn raster_id(h: &Pad) -> RasterId {
+    h.state().doc.project.rasters()[0].id
+}
+
+fn collection_id(h: &Pad, name: &str) -> vale_store::CollectionId {
+    let project = &h.state().doc.project;
+    project
+        .collections()
+        .iter()
+        .find(|c| c.name == name)
+        .unwrap()
+        .id
+}
+
+/// Three checked collections, from the bottom: World with each layer,
+/// Travel with Rivers and Places, and Water with Height and Rivers.
+fn three_cards(h: &mut Pad) {
+    open_panel(h, "Layers");
+    new_collection(h, "Travel");
+    new_collection(h, "Water");
+    close_collection_menu(h);
+    let (travel, water) = (collection_id(h, "Travel"), collection_id(h, "Water"));
+    let height = h.state().doc.project.raster_layer(raster_id(h)).unwrap().id;
+    let [rivers, places] = ["Rivers", "Places"].map(|n| vector(h, n));
+    let state = h.state_mut();
+    for (c, layer) in [
+        (travel, rivers),
+        (travel, places),
+        (water, height),
+        (water, rivers),
+    ] {
+        assert!(state.set_in_collection(c, layer, true));
     }
-    tap(h, &format!("Back to {layer}"));
-    tap(h, "Back to Layers");
+    h.run_steps(2);
+    assert_eq!(members_of(h, "Travel"), ["Rivers", "Places"]);
+    assert_eq!(members_of(h, "Water"), ["Height", "Rivers"]);
 }
 
 #[test]
-fn a_collection_lists_only_its_layers_in_the_draw_order() {
+fn the_cards_of_the_checked_collections_are_in_the_stacking_order() {
+    use vale_app::ui::pad::collection::{chevron_name, dim_row, grip_name, layer_row};
     for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        three_cards(&mut h);
+        check_controls(&h, &format!("{what} with three cards"));
+        assert_eq!(card_order(&h), ["Water", "Travel", "World"], "{what}");
+        for name in ["Water", "Travel", "World"] {
+            for control_name in [chevron_name(name, false), grip_name(name)] {
+                let rect = control(&h, &control_name).unwrap();
+                assert!(rect.width() >= 44.0 && rect.height() >= 44.0, "{what}");
+            }
+        }
+        // On a short screen, the rows of World are below the panel.
+        if size != BOARDS[0] {
+            continue;
+        }
+        // The rows of a card are from the top.
+        let top = |h: &Pad, name: &str| control(h, name).unwrap().top();
+        assert!(top(&h, &layer_row("Rivers")) < top(&h, &layer_row("Height")));
+        assert!(top(&h, &layer_row("Places")) < top(&h, &layer_row("Land")));
+
+        // A layer that a higher card draws has a dim row with no controls.
+        for (layer, card) in [
+            ("Rivers", "Travel"),
+            ("Rivers", "World"),
+            ("Height", "World"),
+        ] {
+            let row = control(&h, &dim_row(layer, card)).unwrap();
+            let inside = h.state().pad.controls.iter();
+            let others = inside.filter(|c| c.rect.intersects(row.shrink(1.0)));
+            assert_eq!(others.count(), 1, "{what}: {layer} in {card}");
+        }
+        for name in ["Open Rivers", "Hide Rivers", "Open Height", "Open Places"] {
+            let count = h.state().pad.controls.iter().filter(|c| c.name == name);
+            assert_eq!(count.count(), 1, "{what}: {name}");
+        }
+        // A tap on a dim row does not select the layer.
+        h.state_mut().select(None);
+        tap(&mut h, &dim_row("Rivers", "World"));
+        assert_eq!(h.state().selected_layer, None, "{what}");
+
+        // With Water below Travel, Travel draws Rivers.
+        let water = collection_id(&h, "Water");
+        h.state_mut().move_globe_collection(water, 0);
+        h.run_steps(2);
+        assert!(
+            control(&h, &dim_row("Rivers", "Travel")).is_none(),
+            "{what}"
+        );
+        assert!(control(&h, &dim_row("Rivers", "Water")).is_some(), "{what}");
+    }
+}
+
+#[test]
+fn a_collapsed_card_shows_its_header_and_the_count_of_its_layers() {
+    use vale_app::ui::pad::collection::{chevron_name, dim_row, layer_row};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    three_cards(&mut h);
+    step_and_save(&mut h, false);
+    let steps = h.state().session.as_ref().unwrap().can_undo();
+    tap(&mut h, &chevron_name("World", false));
+    assert!(control(&h, &chevron_name("World", true)).is_some());
+    assert!(control(&h, &layer_row("Land")).is_none());
+    assert!(control(&h, &dim_row("Height", "World")).is_none());
+    assert!(h.query_by_label("4").is_some());
+    let project = &h.state().doc.project;
+    assert!(project.is_collapsed(project.world_collection()));
+    // A tap on the header row opens the card again, and a second tap
+    // collapses it.
+    tap(&mut h, &vale_app::ui::pad::collection::header_name("World"));
+    assert!(control(&h, &layer_row("Land")).is_some());
+    tap(&mut h, &chevron_name("World", false));
+    check_controls(&h, "a collapsed card");
+    assert_eq!(h.state().session.as_ref().unwrap().can_undo(), steps);
+    step_and_save(&mut h, false);
+    drop(h);
+
+    let mut doc = Document::sample();
+    let session = Session::open(&dir.path().join("w.gpkg"), &mut doc).unwrap();
+    let project = &doc.project;
+    assert!(project.is_collapsed(project.world_collection()));
+    drop(session);
+}
+
+/// Holds a row or a grip and drags it to `to`, in small steps.
+fn hold_and_drag(h: &mut Pad, name: &str, to: Pos2) {
+    let from = hold(h, name);
+    for i in 1..=8 {
+        touch(
+            h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 8.0),
+            None,
+        );
+        h.step();
+    }
+    touch(h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+}
+
+#[test]
+fn a_drag_in_a_card_changes_the_order_of_its_collection_in_one_step() {
+    use vale_app::ui::pad::collection::layer_row;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    three_cards(&mut h);
+    let world = ["Height", "Land", "Rivers", "Places"];
+    assert_eq!(members_of(&h, "World"), world);
+    step_and_save(&mut h, false);
+    // Places goes from the top of Travel to its bottom.
+    let rivers = control(&h, "Layer Rivers in Travel").unwrap().center();
+    hold_and_drag(&mut h, &layer_row("Places"), rivers + vec2(0.0, 6.0));
+    assert_eq!(members_of(&h, "Travel"), ["Places", "Rivers"]);
+    assert_eq!(members_of(&h, "World"), world);
+    assert_eq!(members_of(&h, "Water"), ["Height", "Rivers"]);
+    step_and_save(&mut h, false);
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(members_of(&h, "Travel"), ["Rivers", "Places"]);
+    h.state_mut().redo();
+    h.run_steps(2);
+    assert_eq!(members_of(&h, "Travel"), ["Places", "Rivers"]);
+}
+
+#[test]
+fn a_drop_outside_its_own_card_springs_back() {
+    use vale_app::ui::pad::collection::{chevron_name, layer_row};
+    let mut h = pad(BOARDS[0]);
+    three_cards(&mut h);
+    let before: Vec<Vec<String>> = ["World", "Travel", "Water"]
+        .map(|c| members_of(&h, c))
+        .into();
+    let order = layer_names(&h);
+    let land = control(&h, &layer_row("Land")).unwrap();
+    // Land drops on the card of Water.
+    let water = control(&h, &chevron_name("Water", false)).unwrap();
+    hold_and_drag(&mut h, &layer_row("Land"), water.center() + vec2(0.0, 50.0));
+    let after: Vec<Vec<String>> = ["World", "Travel", "Water"]
+        .map(|c| members_of(&h, c))
+        .into();
+    assert_eq!(after, before);
+    assert_eq!(layer_names(&h), order);
+    assert_eq!(layer_list(&h).lift, None);
+    h.run_steps(30);
+    assert_eq!(control(&h, &layer_row("Land")).unwrap(), land);
+}
+
+#[test]
+fn a_drag_of_a_card_restacks_the_collections_in_one_step() {
+    use vale_app::ui::pad::collection::{chevron_name, grip_name};
+    for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
+        three_cards(&mut h);
+        // Collapsed cards fit on each screen.
+        for name in ["Water", "Travel", "World"] {
+            tap(&mut h, &chevron_name(name, false));
+        }
+        step_and_save(&mut h, false);
+        let stack = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
+        let ids = ["World", "Travel", "Water"].map(|n| collection_id(&h, n));
+        assert_eq!(stack(&h), ids, "{what}");
+        // A drag of the grip of World to the top of the panel.
+        let grip = control(&h, &grip_name("World")).unwrap().center();
+        let top = control(&h, &chevron_name("Water", true)).unwrap();
+        drag(&mut h, grip, pos2(grip.x, top.top() + 4.0), None);
+        assert_eq!(h.state().pad.cards.lift, None, "{what}");
+        assert_eq!(card_order(&h), ["World", "Water", "Travel"], "{what}");
+        assert_eq!(stack(&h), [ids[1], ids[2], ids[0]], "{what}");
+        step_and_save(&mut h, false);
+        h.state_mut().undo();
+        h.run_steps(2);
+        assert_eq!(stack(&h), ids, "{what}");
+
+        // A drop next to the card itself changes nothing.
+        let grip = control(&h, &grip_name("Travel")).unwrap().center();
+        drag(&mut h, grip, grip + vec2(0.0, 10.0), None);
+        assert_eq!(stack(&h), ids, "{what}");
+    }
+}
+
+#[test]
+fn the_collection_popover_checks_and_clears_collections() {
+    use vale_app::ui::pad::collection::{COLLECTIONS_SIDE, MAPS_SIDE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
         open_panel(&mut h, "Layers");
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
-        check_controls(&h, &format!("{what} with the collection menu"));
+        check_controls(&h, &format!("{what} with the collection popover"));
         let menu = h.state().pad.collections_rect.unwrap();
         for name in ["World", "Travel", "Water"].map(collection_row) {
             let row = control(&h, &name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(row.height() >= 44.0 && menu.contains_rect(row), "{what}");
         }
-        // A new collection does not change the checks of the globe.
-        let world = h.state().doc.project.world_collection();
-        assert_eq!(h.state().doc.project.globe_collections(), [world], "{what}");
-        show_collection(&mut h, None);
+        assert!(!disabled(&h, COLLECTIONS_SIDE), "{what}");
+        assert!(disabled(&h, MAPS_SIDE), "{what}");
+        // A new collection is checked on top of the stack.
+        let ids = ["World", "Travel", "Water"].map(|n| collection_id(&h, n));
+        let stack = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
+        assert_eq!(stack(&h), ids, "{what}");
+        // The popover lists the checked collections from the top.
+        let top = |h: &Pad, name: &str| control(h, &collection_row(name)).unwrap().top();
+        assert!(top(&h, "Water") < top(&h, "Travel"), "{what}");
+        assert!(top(&h, "Travel") < top(&h, "World"), "{what}");
 
-        // Rivers is in both collections, and Land is only in World.
-        switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
-        switch_collections(&mut h, "Places", &["Travel"]);
-        switch_collections(&mut h, "Height", &["Water"]);
-        assert_eq!(
-            listed_layers(&h),
-            ["Height", "Land", "Rivers", "Places"],
-            "{what}"
-        );
-        show_collection(&mut h, Some("Travel"));
-        assert_eq!(listed_layers(&h), ["Rivers", "Places"], "{what}");
-        show_collection(&mut h, Some("Water"));
-        assert_eq!(listed_layers(&h), ["Height", "Rivers"], "{what}");
-        check_controls(&h, &format!("{what} with a collection"));
-
-        // A move in a collection keeps the order of the other layers.
-        let height = h.state().doc.project.layers()[0].id;
-        let shown = h.state().shown_layer_ids();
-        assert!(h.state_mut().move_layer_in(height, &shown, 1));
-        assert_eq!(
-            layer_names(&h),
-            ["Land", "Rivers", "Height", "Places"],
-            "{what}"
-        );
-        h.run_steps(2);
-        assert_eq!(listed_layers(&h), ["Rivers", "Height"], "{what}");
-        show_collection(&mut h, Some("World"));
-        assert_eq!(listed_layers(&h).len(), 4, "{what}");
-        show_collection(&mut h, None);
-        assert_eq!(listed_layers(&h).len(), 4, "{what}");
+        toggle_collection(&mut h, "Travel");
+        assert!(h.state().pad.collections_menu, "{what}");
+        assert_eq!(stack(&h), [ids[0], ids[2]], "{what}");
+        toggle_collection(&mut h, "Travel");
+        assert_eq!(stack(&h), [ids[0], ids[2], ids[1]], "{what}");
+        close_collection_menu(&mut h);
+        assert_eq!(card_order(&h), ["Travel", "Water", "World"], "{what}");
     }
 }
 
@@ -19941,7 +20171,7 @@ fn the_collections_page_keeps_each_layer_in_a_collection() {
 
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
-        show_collection(&mut h, None);
+        close_collection_menu(&mut h);
         tap(&mut h, "Open Rivers");
         tap(&mut h, COLLECTIONS);
         check_controls(&h, &format!("{what} on the Collections page"));
@@ -19964,7 +20194,6 @@ fn the_collections_page_keeps_each_layer_in_a_collection() {
 
 #[test]
 fn each_change_of_a_collection_is_one_undo_step() {
-    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
     use vale_app::ui::pad::widgets::RENAME;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
@@ -19973,6 +20202,7 @@ fn each_change_of_a_collection_is_one_undo_step() {
         let collections = h.state().doc.project.collections().iter();
         collections.map(|c| c.name.clone()).collect()
     };
+    let checks = |h: &Pad| h.state().doc.project.globe_collections().len();
     let undo = |h: &mut Pad| {
         step_and_save(h, false);
         h.state_mut().undo();
@@ -19982,16 +20212,20 @@ fn each_change_of_a_collection_is_one_undo_step() {
         h.state_mut().redo();
         h.run_steps(2);
     };
-    // The new collection is one step, and its name is one more.
+    // The new collection and its check are one step, and its name is one
+    // more.
     new_collection(&mut h, "Travel");
     assert_eq!(names(&h), ["World", "Travel"]);
+    assert_eq!(checks(&h), 2);
     undo(&mut h);
     assert_eq!(names(&h), ["World", "Collection 1"]);
     undo(&mut h);
     assert_eq!(names(&h), ["World"]);
+    assert_eq!(checks(&h), 1);
     redo(&mut h);
     redo(&mut h);
     assert_eq!(names(&h), ["World", "Travel"]);
+    assert_eq!(checks(&h), 2);
 
     // A rename by a swipe.
     open_collection_menu(&mut h);
@@ -20008,72 +20242,27 @@ fn each_change_of_a_collection_is_one_undo_step() {
     assert_eq!(names(&h), ["World", "Travel"]);
     redo(&mut h);
 
-    // A tap in the collection menu checks collections.
-    let world = h.state().doc.project.world_collection();
-    let checks = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
-    show_collection(&mut h, None);
-    let trade = h.state().doc.project.collections()[1].id;
-    assert_eq!(checks(&h), [world, trade]);
+    // A tap in the popover clears a check.
+    toggle_collection(&mut h, "Trade");
+    assert_eq!(checks(&h), 1);
     undo(&mut h);
-    assert_eq!(checks(&h), [world]);
-    redo(&mut h);
-
-    // A change of the layers of a collection.
-    tap(&mut h, "Open Rivers");
-    tap(&mut h, COLLECTIONS);
-    tap(&mut h, &switch_name("Trade"));
-    let rivers = vector(&h, "Rivers");
-    let members = |h: &Pad| h.state().doc.project.collections_of(rivers).len();
-    assert_eq!(members(&h), 2);
-    undo(&mut h);
-    assert_eq!(members(&h), 1);
-    redo(&mut h);
-    assert_eq!(members(&h), 2);
-    // Out of World and then out of Trade, Rivers goes back into World.
-    tap(&mut h, &switch_name("World"));
-    tap(&mut h, &switch_name("Trade"));
-    let only_world = |h: &Pad| {
-        let project = &h.state().doc.project;
-        project
-            .collections_of(rivers)
-            .iter()
-            .map(|c| c.id)
-            .collect::<Vec<_>>()
-            == [world]
-    };
-    assert!(only_world(&h));
-    undo(&mut h);
-    let project = &h.state().doc.project;
-    assert_eq!(project.collections_of(rivers)[0].id, trade);
-    assert_eq!(members(&h), 1);
-    redo(&mut h);
-    assert!(only_world(&h));
-    tap(&mut h, &switch_name("Trade"));
-    tap(&mut h, "Back to Rivers");
-    tap(&mut h, "Back to Layers");
+    assert_eq!(checks(&h), 2);
 
     // World has no delete action.
     open_collection_menu(&mut h);
     swipe_collection(&mut h, "World");
     assert!(control(&h, "Delete World").is_none());
-    tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
+    close_collection_menu(&mut h);
 
-    // A delete by a swipe keeps the layers, and the globe checks World.
-    show_collection(&mut h, Some("Trade"));
-    assert_eq!(listed_layers(&h), ["Rivers"]);
+    // A delete by a swipe keeps the layers.
     open_collection_menu(&mut h);
     swipe_collection(&mut h, "Trade");
     check_controls(&h, "an open collection row");
     tap(&mut h, "Delete Trade");
     assert_eq!(names(&h), ["World"]);
     assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
-    assert_eq!(checks(&h), [world]);
-    tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
-    assert_eq!(listed_layers(&h).len(), 4);
     undo(&mut h);
     assert_eq!(names(&h), ["World", "Trade"]);
-    assert_eq!(members(&h), 2);
-    assert_eq!(checks(&h), [trade]);
 }
 
 #[test]
@@ -20083,10 +20272,10 @@ fn a_reopened_project_has_the_same_checks() {
     open_panel(&mut h, "Layers");
     new_collection(&mut h, "Travel");
     new_collection(&mut h, "Water");
-    show_collection(&mut h, None);
-    switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
-    show_collection(&mut h, Some("Water"));
-    assert_eq!(listed_layers(&h), ["Rivers"]);
+    toggle_collection(&mut h, "World");
+    toggle_collection(&mut h, "Travel");
+    close_collection_menu(&mut h);
+    assert_eq!(card_order(&h), ["Water"]);
     step_and_save(&mut h, false);
     drop(h);
 
@@ -20105,27 +20294,24 @@ fn a_reopened_project_has_the_same_checks() {
     let water = project.collections().iter().find(|c| c.name == "Water");
     assert_eq!(project.globe_collections(), [water.unwrap().id]);
     open_panel(&mut h, "Layers");
-    assert_eq!(listed_layers(&h), ["Rivers"]);
+    assert_eq!(card_order(&h), ["Water"]);
 }
 
 #[test]
 fn manual_collection_screenshots() {
-    use vale_app::ui::pad::collection::COLLECTIONS;
+    use vale_app::ui::pad::collection::{COLLECTIONS, chevron_name};
     for (size, what) in [(BOARDS[0], "landscape"), (BOARDS[3], "narrow")] {
         let mut h = pad(size);
-        open_panel(&mut h, "Layers");
-        new_collection(&mut h, "Travel");
-        new_collection(&mut h, "Water");
-        show_collection(&mut h, None);
-        switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
-        show_collection(&mut h, Some("Travel"));
+        three_cards(&mut h);
+        screenshot::save(&mut h, &format!("pad-collection-cards-{what}"));
+        tap(&mut h, &chevron_name("Travel", false));
+        screenshot::save(&mut h, &format!("pad-collection-collapsed-{what}"));
         open_collection_menu(&mut h);
-        swipe_collection(&mut h, "Water");
         screenshot::save(&mut h, &format!("pad-collection-menu-{what}"));
-        tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
-        screenshot::save(&mut h, &format!("pad-collection-list-{what}"));
+        swipe_collection(&mut h, "Water");
+        screenshot::save(&mut h, &format!("pad-collection-swipe-{what}"));
+        close_collection_menu(&mut h);
         tap(&mut h, "Open Rivers");
-        screenshot::save(&mut h, &format!("pad-collection-row-{what}"));
         tap(&mut h, COLLECTIONS);
         screenshot::save(&mut h, &format!("pad-collections-page-{what}"));
     }

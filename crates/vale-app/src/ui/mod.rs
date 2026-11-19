@@ -2933,7 +2933,7 @@ impl AppState {
         self.image_tiles.clear();
         self.pad.layer = None;
         self.pad.add = false;
-        self.pad.layer_list = Default::default();
+        self.pad.cards = Default::default();
         // A layer of the next world can have the ID of an old layer.
         self.pipeline = Pipeline::new();
         self.touch();
@@ -3355,29 +3355,64 @@ impl AppState {
         }
     }
 
-    /// Checks one collection on the globe, or each collection for `None`,
-    /// as one undo step.
-    pub fn show_collection(&mut self, id: Option<CollectionId>) {
-        let project = &self.doc.project;
-        let checks = match id {
-            Some(id) => vec![id],
-            None => project.collections().iter().map(|c| c.id).collect(),
-        };
-        if project.globe_collections() == checks.as_slice() {
-            return;
-        }
+    /// Checks a collection on top of the globe's stack, or clears its
+    /// check, as one undo step.
+    pub fn check_collection(&mut self, id: CollectionId, on: bool) -> bool {
         self.save_edit();
-        if self.doc.project.set_globe_collections(checks) {
-            self.pad.layer_list = Default::default();
-        }
+        let changed = self.doc.project.check_collection(id, on);
         self.save_edit();
+        changed
     }
 
-    /// Adds an empty collection as one undo step. `None` if the name is
-    /// blank or another collection has it.
+    /// Moves a checked collection to index `to` of the globe's stack, as
+    /// one undo step. Index 0 is the bottom.
+    pub fn move_globe_collection(&mut self, id: CollectionId, to: usize) -> bool {
+        self.save_edit();
+        let moved = self.doc.project.move_globe_collection(id, to);
+        self.save_edit();
+        moved
+    }
+
+    /// Moves a layer to index `to` of a collection, as one undo step. Index
+    /// 0 is the bottom. The layer also moves in the draw order, directly
+    /// above or below its new neighbor in the collection.
+    pub fn move_in_collection(&mut self, id: CollectionId, layer: LayerId, to: usize) -> bool {
+        let Some(before) = self.doc.project.collection(id).map(|c| c.layers.clone()) else {
+            return false;
+        };
+        self.save_edit();
+        let moved = self.doc.project.move_in_collection(id, layer, to);
+        if moved {
+            self.doc.move_in(layer, &before, to);
+            self.sync_globe();
+            self.touch();
+        }
+        self.save_edit();
+        moved
+    }
+
+    /// Collapses a collection in the Layers panel, or expands it. The
+    /// project file gets the change with no undo step.
+    pub fn set_collapsed(&mut self, id: CollectionId, collapsed: bool) {
+        if !self.doc.project.set_collapsed(id, collapsed) {
+            return;
+        }
+        if let Some(session) = &mut self.session
+            && let Err(e) = session.save_collapsed_collections(&self.doc.project)
+        {
+            self.status = format!("Could not save project: {e}");
+        }
+    }
+
+    /// Adds an empty collection and checks it on top of the globe's stack,
+    /// as one undo step. `None` if the name is blank or another collection
+    /// has it.
     pub fn add_collection(&mut self, name: &str) -> Option<CollectionId> {
         self.save_edit();
         let id = self.doc.project.add_collection(name);
+        if let Some(id) = id {
+            self.doc.project.check_collection(id, true);
+        }
         self.save_edit();
         id
     }
@@ -3403,7 +3438,6 @@ impl AppState {
         let shown = self.doc.project.globe_collections().contains(&id);
         let removed = self.doc.project.remove_collection(id);
         if removed && shown {
-            self.pad.layer_list = Default::default();
             let project = &mut self.doc.project;
             if project.globe_collections().is_empty() {
                 project.check_collection(project.world_collection(), true);
