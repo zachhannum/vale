@@ -156,6 +156,9 @@ pub struct StyleState {
     /// The part of the bands that the user chose on the card of a ramp.
     /// `None`: the part that the colors of the ramp give.
     ramp_part: Option<Part>,
+    /// Whether the user chose all bands on the card of a ramp in a frame.
+    /// `None`: the mode of the stops page.
+    ramp_all: Option<bool>,
     /// The layer whose color picker of the shade color is open.
     shade_color: Option<RasterId>,
     /// The color picker of the shade color showed in this frame.
@@ -572,6 +575,7 @@ pub fn ramps_body(
                 let style = &mut state.pad.style;
                 style.ramp = (open != Some(index)).then_some((user, index));
                 style.ramp_part = None;
+                style.ramp_all = None;
             }
             list::Event::Rename(index, name) => {
                 if let Err(e) = state.ramps.rename(index, &name) {
@@ -811,6 +815,8 @@ pub const PARTS: [Part; 3] = [Part::All, Part::Sea, Part::Land];
 /// The row of the part on the card of a ramp, and its choices.
 pub const RAMP_PART: &str = "Apply to";
 pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
+/// The choices of the bands on the card of a ramp in a frame.
+pub const SCOPE_NAMES: [&str; 2] = ["Bands in frame", "All bands"];
 
 /// The number of bands of a part, and the name of the part with a space,
 /// or an empty name for all bands.
@@ -1236,8 +1242,9 @@ pub fn reset_card(
 /// The card of the ramp of a row. If the ramp has as many colors as the
 /// layer has bands, the card applies it. Otherwise, the layer keeps its
 /// stops, or it gets one band for each color. A touch outside the card and
-/// the row closes it. With frame `frame`, the card applies the ramp to the
-/// bands that the frame shows.
+/// the row closes it. With frame `frame`, the card has a choice of the bands
+/// that the frame shows or all bands. It starts on the mode of the stops
+/// page, and it is on all bands while the values of the frame are unknown.
 pub fn ramp_card(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -1260,10 +1267,15 @@ pub fn ramp_card(
     let built_in = ramp.built_in;
     let labeled = ramp.labels.iter().any(|l| !l.is_empty());
     let ramp_colors = ramp.colors.clone();
-    let window = match (user, frame) {
-        (RampUser::Raster(id), Some(frame)) => frame_window(ctx, state, frame, id).map(|w| w.0),
+    let known = match (user, frame) {
+        (RampUser::Raster(id), Some(frame)) => frame_window(ctx, state, frame, id)
+            .filter(|(_, bins)| bins.as_ref().is_some_and(|b| !b.is_empty()))
+            .map(|w| w.0),
         _ => None,
     };
+    let scoped = frame.is_some() && matches!(user, RampUser::Raster(_));
+    let all = known.is_none() || (state.pad.style.ramp_all).unwrap_or(state.atlas.stops_all);
+    let window = known.clone().filter(|_| !all);
     let Some(ramp) = state.ramps.list().get(index) else {
         return;
     };
@@ -1319,7 +1331,8 @@ pub fn ramp_card(
     }
     let name = &ramp.name;
     let text = format!("{name} · {colors} colors");
-    let choice = if split { PANEL_ROW + 8.0 } else { 0.0 };
+    let row_height = PANEL_ROW + 8.0;
+    let choice = f32::from(u8::from(split) + u8::from(scoped)) * row_height;
     let font = theme::body();
     let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
     let text = ctx.fonts_mut(|f| f.layout(text, font, theme::MUTE, wrap));
@@ -1333,6 +1346,7 @@ pub fn ramp_card(
     state.pad.style.ramp_card = Some(rect);
     let mut chosen = None;
     let mut new_part = None;
+    let mut new_all = None;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     let backdrop = state.globe.backdrop();
@@ -1347,6 +1361,15 @@ pub fn ramp_card(
         let (place, _) = ui.allocate_exact_size(text.size(), Sense::hover());
         ui.painter().galley(place.min, text, theme::MUTE);
         ui.add_space(12.0);
+        if scoped {
+            let (row, _) = ui.allocate_exact_size(vec2(inner.width(), PANEL_ROW), Sense::hover());
+            let field = Rect::from_center_size(row.center(), vec2(row.width(), TOUCH));
+            let active = Some(usize::from(all));
+            let enabled = |i: usize| i == 1 || known.is_some();
+            let picked = widgets::segmented_at(ui, controls, field, &SCOPE_NAMES, active, enabled);
+            new_all = picked.map(|i| i == 1);
+            ui.add_space(8.0);
+        }
         if split {
             let active = PARTS.iter().position(|p| *p == part);
             let picked = widgets::choice_row(ui, controls, RAMP_PART, &PART_NAMES, active);
@@ -1363,6 +1386,9 @@ pub fn ramp_card(
     paint_point(ctx, key, point);
     if new_part.is_some() {
         state.pad.style.ramp_part = new_part;
+    }
+    if new_all.is_some() {
+        state.pad.style.ramp_all = new_all;
     }
     let Some(chosen) = chosen else {
         return;

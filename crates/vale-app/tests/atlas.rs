@@ -12681,8 +12681,12 @@ fn wait_areas(h: &mut Pad) {
 /// and a height layer whose height grows with the latitude. The page of
 /// the color stops of the layer in the Layers tab of the inset is open.
 fn frame_stops_pad(lat: f64) -> (Pad, vale_store::RasterId, LayerId) {
+    frame_stops_on(inset_pad(BOARDS[0]), lat)
+}
+
+/// `frame_stops_pad` on `h`, a pad with two frames.
+fn frame_stops_on(mut h: Pad, lat: f64) -> (Pad, vale_store::RasterId, LayerId) {
     use vale_app::ui::pad::raster::COLOR_STOPS;
-    let mut h = inset_pad(BOARDS[0]);
     let height = h.state_mut().add_height();
     let layer = h.state().doc.project.raster_layer(height).unwrap();
     let (layer, name) = (layer.id, layer.name.clone());
@@ -12960,4 +12964,69 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
     tap(&mut h, "Make 32 land bands");
     assert!(shown(&h, TOO_MANY_BANDS));
     assert_eq!(inset_bands(&h, layer), count);
+}
+
+/// Three land colors for a ramp.
+const LAND_RAMP: [[u8; 3]; 3] = [[200, 40, 40], [220, 180, 40], [250, 250, 200]];
+
+#[test]
+fn the_ramp_card_in_a_frame_starts_on_the_mode_of_the_page() {
+    use vale_app::ui::pad::Page;
+    use vale_app::ui::pad::raster::SCOPE_NAMES;
+    use vale_app::ui::pad::stops::ALL_BANDS;
+    let (mut h, height, _) = frame_stops_pad(45.0);
+    let w = stops_window(&h);
+    let bands = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let land = bands.part_bands(vale_terrain::Part::Land).len();
+    assert_ne!(land, w.bands.len());
+    open_ramp_card(&mut h, "Scope one", LAND_RAMP.to_vec());
+    screenshot::save(&mut h, "pad-atlas-frame-ramp-card");
+    check_controls(&h, "ramp card in a frame");
+    assert_eq!(toggled(&h, SCOPE_NAMES[0]), Some(true));
+    assert_eq!(toggled(&h, SCOPE_NAMES[1]), Some(false));
+    let fit = |n: usize| format!("Fit to {n} land bands");
+    assert!(control(&h, &fit(w.bands.len())).is_some());
+
+    // On "All", the card starts on all bands.
+    tap(&mut h, "Scope one");
+    h.state_mut().atlas.layer_page = Some(Page::Stops);
+    h.run_steps(2);
+    tap(&mut h, ALL_BANDS);
+    open_ramp_card(&mut h, "Scope two", LAND_RAMP.to_vec());
+    assert_eq!(toggled(&h, SCOPE_NAMES[1]), Some(true));
+    assert!(control(&h, &fit(land)).is_some());
+    // The choice changes the counts.
+    tap(&mut h, SCOPE_NAMES[0]);
+    assert_eq!(toggled(&h, SCOPE_NAMES[0]), Some(true));
+    assert!(control(&h, &fit(w.bands.len())).is_some());
+}
+
+#[test]
+fn all_bands_on_the_ramp_card_in_a_frame_changes_the_bands_out_of_the_frame() {
+    use vale_app::ui::pad::raster::SCOPE_NAMES;
+    for all in [false, true] {
+        let (mut h, height, layer) = frame_stops_pad(45.0);
+        let w = stops_window(&h);
+        let before = h.state_mut().globe.bands_mut(height).unwrap().clone();
+        let globe = raster_style(&h, None, layer);
+        let sea = before.sea().unwrap();
+        open_ramp_card(&mut h, "Scope", LAND_RAMP.to_vec());
+        if all {
+            tap(&mut h, SCOPE_NAMES[1]);
+        }
+        tap(&mut h, "Make 3 land bands");
+        let after = raster_style(&h, Some(frame(&h, 1).map), layer);
+        let (a, b) = (w.bands.start, w.bands.end);
+        let old = before.colors();
+        if all {
+            assert_eq!(after.colors.len(), sea + 3, "{all}");
+            assert_eq!(after.colors[..sea], old[..sea]);
+            assert_eq!(after.colors[sea..], LAND_RAMP);
+        } else {
+            let tail = old.len() - b;
+            assert_eq!(after.colors[..a], old[..a]);
+            assert_eq!(after.colors[after.colors.len() - tail..], old[b..]);
+        }
+        assert_eq!(raster_style(&h, None, layer), globe, "{all}");
+    }
 }

@@ -1933,7 +1933,7 @@ fn raster_cards(ctx: &egui::Context, state: &mut AppState, controls: &mut Contro
         }
         return;
     };
-    let frame = state.atlas.frame().filter(|_| !state.atlas.stops_all);
+    let frame = state.atlas.frame();
     state.edit_map_raster(map, layer, raster, |state| {
         super::raster::band_card(ctx, state, controls, rects);
         super::raster::shade_color_frame(ctx, state);

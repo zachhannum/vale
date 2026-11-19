@@ -7180,6 +7180,20 @@ fn open_new_ramp(h: &mut Pad) -> RasterId {
 }
 
 #[test]
+fn the_card_of_a_ramp_on_the_globe_has_no_choice_of_the_frame_bands() {
+    use vale_app::ui::pad::raster::SCOPE_NAMES;
+    let mut h = painted_pad(BOARDS[0]);
+    open_ramps_page(&mut h);
+    scroll_to_control(&mut h, "Viridis");
+    tap(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    assert!(control(&h, "Sea").is_some());
+    for name in SCOPE_NAMES {
+        assert!(control(&h, name).is_none(), "{name}");
+    }
+}
+
+#[test]
 fn save_as_ramp_opens_the_editor_with_the_band_colors_and_names() {
     use vale_app::ui::pad::ramp_editor::SAVE_RAMP;
     use vale_app::ui::pad::raster::SAVE_AS_RAMP;
