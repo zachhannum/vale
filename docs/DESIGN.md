@@ -154,7 +154,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Symbol | A point symbol that the user adds: a unique name and the text of an SVG file. The symbols are in the order of addition, and they are not in the undo log. |
 | Layer | Name, type (raster, image, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, to an image, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
-| Collection | A unique name and the layers in it. The collections are in the order of creation. The project also keeps the collection that the Layers panel shows. |
+| Collection | A unique name and its layers in order, from the bottom to the top. The collections are in the order of creation, and World is first. The project also keeps the checked collections of the globe in their stacking order, and each map keeps its stack of collections. |
 | Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
 | Label class | Name, layer, text expression, filter, font family, weight, italic, size, case, letter spacing, color, halo color and width, placement, priority, fallbacks. The map holds its classes as JSON for each layer. |
 | Map | Name, projection preset and center, map style, the layers that are off or on in the map, layer styles, label classes |
@@ -167,7 +167,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Page template | Page size, margins, positions of the furniture |
 | Atlas | Ordered list of pages |
 
-The order of the layer records is the draw order. The first layer is at the bottom.
+The layer records are in storage order. The first layer is at the bottom. The globe, the flat view, and the map frames draw the layers in this order.
 
 The shape of a map frame is a list of rings in millimeters from the top-left corner of the page. The first ring is the outer ring, and the other rings are holes. The frames and the furniture of a page are in draw order. The scale of a frame is a ratio 1:N on the standard lines of the projection. The projection uses the radius of the world, so the ratio is true for any radius. The rotation is in degrees clockwise.
 
@@ -195,7 +195,7 @@ Overrides belong to a map frame and not to the feature. A label that you move in
 
 Each edit is one SQLite transaction with an entry in an undo log table. Undo and redo then work across sessions, and a crash cannot leave a half-written project.
 
-The log is three tables. A step is one edit. A step holds an image of each record and each raster tile that the edit changed, from before the edit. A record is the world, one raster, one vector layer with its features, the atlas, or the collections. An image is one compressed blob. The image is empty if the record or the tile was not there. An undo swaps each image of the step with the record or the tile in the file, in one transaction. The step then holds the images from after the edit, and a redo swaps them back. A new edit removes the redo steps. An undo does not put back the next ID of a layer, of a raster, or of a collection, so an ID is not used again. A change of the shown collection is not an edit.
+The log is three tables. A step is one edit. A step holds an image of each record and each raster tile that the edit changed, from before the edit. A record is the world, one raster, one vector layer with its features, the atlas, or the collections. An image is one compressed blob. The image is empty if the record or the tile was not there. An undo swaps each image of the step with the record or the tile in the file, in one transaction. The step then holds the images from after the edit, and a redo swaps them back. A new edit removes the redo steps. An undo does not put back the next ID of a layer, of a raster, or of a collection, so an ID is not used again. The collections record holds each collection with its layers in order, the checked collections of the globe in their stacking order, and the stack of each map.
 
 A step also holds the selection from before the edit and the selection from after it. The selection is the selected features with the key feature, and the selected frame or item of the atlas. An undo selects the selection from before, and a redo selects the selection from after. A restored selection leaves out each feature, frame, or item that is not there, and a frame or an item that is not on the open page. A restored selection that is not the entered frame of the Select tool exits that frame. A change of the selection alone is not an edit, so it makes no step. A step from a file of format version 35 or older has no selection, and its undo does not change the selection. The vertex selections are not in a step.
 
@@ -623,17 +623,23 @@ The service has two parts. A position snap gives the snapped point, the feature,
 
 ### Collections
 
-A collection is a named set of layers. It gives the Layers panel a short list when a project has many layers. A layer can be in more than one collection or in none. A collection does not change the draw order, because the project keeps one draw order.
+A collection is a named, ordered stack of layers. A layer can be in more than one collection. A view, such as the globe or a map, has a stack of collections.
 
-The Layers panel of the globe workspace has a collection menu at the top. The menu has "All layers", each collection, and "New collection…". With a collection shown, the panel lists only its layers, in the draw order, and the tools edit them as usual. A move in the list puts the layer directly above or below its neighbor in the list, and each other layer keeps its place. A new layer goes into the shown collection.
+World is the default collection. A new project has World. When an older file opens, World gets each layer in storage order, each other collection keeps its layers in that order, and each map gets World alone. World can be renamed, and it cannot be deleted. A layer is always in at least one collection. A layer can be in another collection without World. When a layer leaves its last collection, it goes on top of World. A delete of a collection puts each of its layers that is in no other collection on top of World, in the order of the collection. A layer that is only in World cannot leave World. Delete layer takes a layer out of each collection.
 
-"New collection…" adds an empty collection with a name such as "Collection 1", and its row in the menu becomes a name field. A swipe to the left on a collection in the menu shows its Rename button and its Delete button. A blank name, or the name of another collection, keeps the old name. A delete removes the collection and keeps its layers. If the panel shows the deleted collection, it shows all layers.
+The globe workspace has a list of checked collections in a stacking order, from the bottom to the top. A check puts a collection on top of the stack. A new layer goes on top of the topmost checked collection, or on top of World if no collection is checked.
 
-The panel of a layer has a Collections row. The row shows "None", the name of the one collection of the layer, or the number of its collections. The row opens a page with a switch for each collection.
+Each map has a stack of collections. A new map has World alone.
 
-A new collection, a rename, a delete, and a change to the layers of a collection are each one undo step. The deletion of a layer takes it out of each collection in the same step. An undo does not change the shown collection, unless the shown collection no longer exists. Then the panel shows all layers.
+A new collection, a rename, a delete, a change to the layers of a collection, a change to the order of a collection, a change to the checks or the stacking order of the globe, and a change to the stack of a map are each one undo step. A layer that goes back into World goes in the same step. An undo of Delete layer puts the layer back at its place in each collection.
 
-On the desktop, the layer list has a collection menu, the button "New collection…", and, for a shown collection, its name field and the button "Delete collection". The controls of the selected layer have a check box for each collection.
+The Layers panel of the globe workspace has a collection menu at the top. The menu has "All layers", each collection, and "New collection…". A checkmark is on each checked collection, and on "All layers" when each collection is checked. A tap on a collection checks only that collection. A tap on "All layers" checks each collection, in the order of creation. The panel lists the layers of the checked collections in storage order, and the tools edit them as usual. A move in the list puts the layer directly above or below its neighbor in the list, and each other layer keeps its place.
+
+"New collection…" adds an empty collection with a name such as "Collection 1", and its row in the menu becomes a name field. A swipe to the left on a collection in the menu shows its Rename button and its Delete button. World has no Delete button. A blank name, or the name of another collection, keeps the old name. If a delete leaves the globe with no checked collection, the globe checks World in the same step.
+
+The panel of a layer has a Collections row. The row shows the name of the one collection of the layer, or the number of its collections. The row opens a page with a switch for each collection. The switch of World is dim and does not change while the layer is only in World.
+
+On the desktop, the layer list has a collection menu, the button "New collection…", and, for one checked collection, its name field and the button "Delete collection". The controls of the selected layer have a check box for each collection, with the same rules as the switches.
 
 ### Import
 
