@@ -1,6 +1,7 @@
 //! The Style section of the panel of a raster layer: the display and the
 //! color stops.
 
+use std::ops::{Range, RangeInclusive};
 use std::sync::Arc;
 
 use eframe::egui::{self, Align2, Order, Pos2, Rect, Sense, Vec2, pos2, vec2};
@@ -17,7 +18,7 @@ use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
 use crate::areas::{FrameBins, FrameKey};
 use crate::globe::preview::{LAKE_KM2, LAKE_KM2_RANGE};
-use crate::ui::{Action, AppState, RampSource, elevation, gradient};
+use crate::ui::{Action, AppState, RampApply, RampSource, elevation, gradient};
 use crate::world;
 
 /// The name of the segmented control of the displays.
@@ -162,6 +163,9 @@ pub struct StyleState {
     /// Whether the user chose all bands on the card of a ramp in a frame.
     /// `None`: the mode of the stops page.
     ramp_all: Option<bool>,
+    /// The number of bands that the user chose on the card of a ramp.
+    /// `None`: one band for each color.
+    ramp_count: Option<usize>,
     /// The layer whose color picker of the shade color is open.
     shade_color: Option<RasterId>,
     /// The color picker of the shade color showed in this frame.
@@ -601,6 +605,7 @@ pub fn ramps_body(
                 style.ramp = (open != Some(index)).then_some((user, index));
                 style.ramp_part = None;
                 style.ramp_all = None;
+                style.ramp_count = None;
             }
             list::Event::Rename(index, name) => {
                 if let Err(e) = state.ramps.rename(index, &name) {
@@ -822,9 +827,7 @@ pub fn shade_color_frame(ctx: &egui::Context, state: &mut AppState) {
 /// A button of the card of a ramp.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RampChoice {
-    /// With `true`, the layer keeps its stops. With as many colors as
-    /// bands, the two ways are the same.
-    Apply(bool),
+    Apply(RampApply),
     Reverse,
     Delete,
     /// Opens the page of the labels of the colors.
@@ -842,6 +845,9 @@ pub const RAMP_PART: &str = "Apply to";
 pub const PART_NAMES: [&str; 3] = ["All", "Sea", "Land"];
 /// The choices of the bands on the card of a ramp in a frame.
 pub const SCOPE_NAMES: [&str; 2] = ["Bands in frame", "All bands"];
+/// The stepper of the number of bands that "Make" gives on the card of a
+/// ramp.
+pub const BAND_COUNT: &str = "Bands";
 
 /// The number of bands of a part, and the name of the part with a space,
 /// or an empty name for all bands.
@@ -853,6 +859,18 @@ pub fn ramp_fit(bands: &Bands, part: Part) -> (usize, &'static str) {
         Part::Land => "land ",
     };
     (bands.part_bands(part).len(), kind)
+}
+
+/// The fewest and the most bands that "Make" can give the bands `bands` of
+/// a part: two for bands that cross sea level, else one, and at most the
+/// bands that fit next to the other bands.
+pub fn make_range(layer: &Bands, part: Part, bands: Range<usize>) -> RangeInclusive<usize> {
+    let p = layer.part_bands(part_of(layer, part));
+    let r = bands.start.max(p.start)..bands.end.min(p.end);
+    let crosses = layer.sea().is_some_and(|sea| r.start < sea && sea < r.end);
+    let other = layer.colors().len() - r.len();
+    let fewest = if crosses { 2 } else { 1 };
+    fewest..=MAX_BANDS.saturating_sub(other).max(fewest)
 }
 
 /// The part, or all bands with no sea split.
@@ -1282,6 +1300,11 @@ pub fn ramp_card(
         (state.pad.style.ramp, state.pad.style.ramp_anchor.take())
     else {
         state.pad.style.ramp = None;
+        // The keypad of the stepper closes with the card.
+        let field = format!("{BAND_COUNT} value");
+        if widgets::keypad_field(ctx).as_deref() == Some(field.as_str()) {
+            widgets::close_keypad(ctx);
+        }
         return;
     };
     let panel = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
@@ -1306,6 +1329,7 @@ pub fn ramp_card(
     };
     let (keep, fresh);
     let mut none = false;
+    let mut count = None;
     let (mut buttons, split, part): (Vec<(&str, egui::Color32, RampChoice)>, bool, Part) =
         match user {
             RampUser::Raster(id) => {
@@ -1328,16 +1352,32 @@ pub fn ramp_card(
                         .saturating_sub(w.bands.start.max(p.start));
                     none = bands == 0;
                 }
-                keep = format!("Fit to {bands} {kind}bands");
-                fresh = format!("Make {colors} {kind}bands");
-                let buttons = if colors == bands {
-                    vec![(APPLY_RAMP, theme::ACCENT, RampChoice::Apply(true))]
-                } else {
-                    vec![
-                        (keep.as_str(), theme::ACCENT, RampChoice::Apply(true)),
-                        (fresh.as_str(), theme::ACCENT, RampChoice::Apply(false)),
-                    ]
+                let all = 0..layer.colors().len();
+                let range = make_range(
+                    layer,
+                    part,
+                    window.as_ref().map_or(all, |w| w.bands.clone()),
+                );
+                let made = state.pad.style.ramp_count.unwrap_or(colors);
+                let made = made.clamp(*range.start(), *range.end());
+                count = Some((made, range));
+                keep = match colors == bands {
+                    true => APPLY_RAMP.to_owned(),
+                    false => format!("Fit to {bands} {kind}bands"),
                 };
+                fresh = format!("Make {made} {kind}bands");
+                let buttons = vec![
+                    (
+                        keep.as_str(),
+                        theme::ACCENT,
+                        RampChoice::Apply(RampApply::Fit),
+                    ),
+                    (
+                        fresh.as_str(),
+                        theme::ACCENT,
+                        RampChoice::Apply(RampApply::Make(made)),
+                    ),
+                ];
                 (buttons, split, part)
             }
             RampUser::Classify(_) => (
@@ -1361,10 +1401,15 @@ pub fn ramp_card(
     let font = theme::body();
     let wrap = CARD_WIDTH - 2.0 * CARD_PAD;
     let text = ctx.fonts_mut(|f| f.layout(text, font, theme::MUTE, wrap));
-    let size = text.size().y + 12.0 + choice + buttons.len() as f32 * PANEL_ROW + 2.0 * CARD_PAD;
+    let rows = buttons.len() + usize::from(count.is_some());
+    let size = text.size().y + 12.0 + choice + rows as f32 * PANEL_ROW + 2.0 * CARD_PAD;
     let at = pos2(row.left() + 40.0, row.center().y);
     let (rect, point) = place(rects, panel, at, row, size);
-    if pressed_outside(ctx, rect, row) {
+    let on_keypad = ctx
+        .input(|i| i.pointer.interact_pos())
+        .and_then(|pos| ctx.layer_id_at(pos))
+        == Some(super::number::keypad_layer(BAND_COUNT));
+    if pressed_outside(ctx, rect, row) && !on_keypad {
         state.pad.style.ramp = None;
         return;
     }
@@ -1372,6 +1417,7 @@ pub fn ramp_card(
     let mut chosen = None;
     let mut new_part = None;
     let mut new_all = None;
+    let mut new_count = None;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     let backdrop = state.globe.backdrop();
@@ -1402,6 +1448,14 @@ pub fn ramp_card(
             ui.add_space(8.0);
         }
         for (name, fill, choice) in &buttons {
+            if let (RampChoice::Apply(RampApply::Make(made)), Some((_, range))) = (choice, &count) {
+                let range = *range.start() as f64..=*range.end() as f64;
+                new_count = Number::new(BAND_COUNT, *made as f64, range)
+                    .step(1.0)
+                    .enabled(!none)
+                    .stepper(ui, controls)
+                    .map(|v| v.round() as usize);
+            }
             let on = !(none && matches!(choice, RampChoice::Apply(_)));
             if widgets::button_row_in(ui, controls, name, on, *fill).clicked() {
                 chosen = Some(*choice);
@@ -1415,6 +1469,9 @@ pub fn ramp_card(
     if new_all.is_some() {
         state.pad.style.ramp_all = new_all;
     }
+    if new_count.is_some() {
+        state.pad.style.ramp_count = new_count;
+    }
     let Some(chosen) = chosen else {
         return;
     };
@@ -1423,8 +1480,8 @@ pub fn ramp_card(
         state.pad.style.ramp = None;
     }
     let result = match (chosen, user) {
-        (RampChoice::Apply(keep), RampUser::Raster(id)) => {
-            state.apply_ramp(id, index, keep, part, window.as_ref())
+        (RampChoice::Apply(how), RampUser::Raster(id)) => {
+            state.apply_ramp(id, index, how, part, window.as_ref())
         }
         (RampChoice::Apply(_), RampUser::Classify(_)) => Ok(()),
         (RampChoice::Use, RampUser::Classify(id)) => {

@@ -37,7 +37,7 @@ use vale_app::ui::raster_form::{self, PRESETS, RasterForm, face_size_name};
 use vale_app::ui::select;
 use vale_app::ui::table::SHOW_IN_TABLE;
 use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER, WorldForm};
-use vale_app::ui::{Action, AppState, FontTarget, Layout, Workspace, draw, panels};
+use vale_app::ui::{Action, AppState, FontTarget, Layout, RampApply, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{GeometryKind, Hillshade, LayerKind, RasterDisplay, RasterId, Units, World};
 use vale_terrain::{Mode, Rain, meters_to_level};
@@ -6994,7 +6994,7 @@ fn an_imported_ramp_gives_one_color_per_band() {
     // take the end colors, and the bands between blend the colors, so no
     // two bands next to each other have the same color.
     h.state_mut()
-        .apply_ramp(height, at, true, Part::All, None)
+        .apply_ramp(height, at, RampApply::Fit, Part::All, None)
         .unwrap();
     let bands = h.state().globe.map.bands.clone();
     assert_eq!(bands.stops(), before.stops());
@@ -7007,9 +7007,33 @@ fn an_imported_ramp_gives_one_color_per_band() {
 
     // A ramp with new stops gives one band for each color.
     h.state_mut()
-        .apply_ramp(height, at, false, Part::All, None)
+        .apply_ramp(height, at, RampApply::Make(3), Part::All, None)
         .unwrap();
     assert_eq!(h.state().globe.map.bands.colors(), colors);
+}
+
+#[test]
+fn a_fit_of_a_sea_and_land_ramp_keeps_the_sea_blue() {
+    use vale_terrain::Part;
+    let mut h = painted_pad(BOARDS[0]);
+    let height = open_height(&mut h);
+    let ramps = h.state().ramps.list();
+    let at = ramps.iter().position(|r| r.name == "Topography").unwrap();
+    let topography = ramps[at].colors.clone();
+    let before = h.state().globe.map.bands.clone();
+    let sea = before.sea().unwrap();
+    h.state_mut()
+        .apply_ramp(height, at, RampApply::Fit, Part::All, None)
+        .unwrap();
+    let bands = h.state().globe.map.bands.clone();
+    assert_eq!(bands.stops(), before.stops());
+    // Topography has 8 sea colors that are mostly blue, and the land
+    // colors are not.
+    let blue = |c: &[u8; 3]| c[2] > c[0] && c[2] >= c[1];
+    assert!(topography[..8].iter().all(blue) && !topography[8..].iter().any(blue));
+    assert!(bands.colors()[..sea].iter().all(blue));
+    assert!(!bands.colors()[sea..].iter().any(blue));
+    assert_eq!(bands.colors()[0], topography[0]);
 }
 
 #[test]
@@ -7422,7 +7446,9 @@ fn duplicate_from_classify_returns_to_its_ramps() {
 
 #[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
-    use vale_app::ui::pad::raster::{COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP};
+    use vale_app::ui::pad::raster::{
+        BAND_COUNT, COLOR_RAMPS, DELETE_RAMP, IMPORT_RAMP, REVERSE_RAMP,
+    };
     let mut h = painted_pad(BOARDS[0]);
     let height = open_height(&mut h);
     open_stops(&mut h);
@@ -7481,11 +7507,25 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     assert_eq!(found, colors);
     assert_eq!(h.state().pad.style.ramp_card, None);
 
+    // The stepper sets the number of new bands.
+    scroll_to_control(&mut h, "legend");
+    tap(&mut h, "legend");
+    assert!(control(&h, &format!("Increase {BAND_COUNT}")).is_some());
+    // The value field of the stepper has a keypad.
+    tap(&mut h, &format!("{BAND_COUNT} value"));
+    tap(&mut h, &format!("{BAND_COUNT} value 5"));
+    tap(&mut h, &format!("{BAND_COUNT} value Done"));
+    tap(&mut h, "Make 5 bands");
+    let made = h.state().globe.map.bands.clone();
+    assert_eq!(made.colors().len(), 5);
+    assert_eq!(made.colors()[0], colors[0]);
+    assert_eq!(made.colors()[4], colors[2]);
+
     scroll_to_control(&mut h, "legend");
     tap(&mut h, "legend");
     tap(&mut h, DELETE_RAMP);
     assert!(h.state().ramps.custom().is_empty());
-    assert_eq!(h.state().globe.map.bands.bands().len(), 3);
+    assert_eq!(h.state().globe.map.bands.bands().len(), 5);
 
     // A built-in ramp applies, but it does not reverse, and it stays.
     scroll_to_control(&mut h, "Viridis");
@@ -7506,6 +7546,7 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     scroll_to_control(&mut h, "land");
     tap(&mut h, "land");
     check_controls(&h, "with the card of a land ramp");
+    screenshot::save(&mut h, "pad-ramp-card");
     // The user can choose another part.
     tap(&mut h, "Sea");
     assert!(control(&h, "Make 3 sea bands").is_some());
@@ -7520,7 +7561,8 @@ fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
         .iter()
         .map(|b| b.color)
         .collect();
-    assert_eq!(found, [colors[0], land[0], land[1], land[2]]);
+    // The two sea bands of the five bands keep the one sea color.
+    assert_eq!(found, [colors[0], colors[0], land[0], land[1], land[2]]);
 
     let path = dir.path().join("none.png");
     h.state_mut()

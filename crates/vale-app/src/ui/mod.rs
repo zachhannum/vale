@@ -235,6 +235,16 @@ pub enum Screen {
     Browser,
 }
 
+/// The way that a ramp colors the bands of a raster layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampApply {
+    /// The bands keep their stops.
+    Fit,
+    /// The bands of the part are this number of new bands with even
+    /// spacing.
+    Make(usize),
+}
+
 /// The text of the last import or export of a heightmap.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Note {
@@ -4239,15 +4249,15 @@ impl AppState {
     }
 
     /// Gives the bands of a part of a raster layer the colors of a ramp.
-    /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
-    /// band for each color. With `window`, only the bands of the window in
+    /// With `RampApply::Fit`, the layer keeps its stops. Otherwise, the part
+    /// gets the number of bands of `RampApply::Make`. With `window`, only the bands of the window in
     /// the part change, and new bands spread from its lowest value to its
     /// highest value.
     pub fn apply_ramp(
         &mut self,
         id: RasterId,
         index: usize,
-        keep: bool,
+        how: RampApply,
         part: vale_terrain::Part,
         window: Option<&pad::stops::FrameWindow>,
     ) -> Result<(), String> {
@@ -4271,17 +4281,18 @@ impl AppState {
             .end
             .min(p.end)
             .saturating_sub(range.start.max(p.start));
-        if !keep && count - replaced + colors.len() > vale_terrain::MAX_BANDS {
-            return Err(TOO_MANY_BANDS.to_owned());
-        }
-        let applied = if keep {
-            bands.stretched_in(&colors, &labels, part, range, qualitative)
-        } else {
-            bands.painted_in(&colors, &labels, part, range, lo, hi)
-        };
-        let Some(applied) = applied else {
-            let count = colors.len();
-            return Err(format!("Range is too small for {count} bands."));
+        let applied = match how {
+            RampApply::Fit => bands
+                .stretched_in(&colors, &labels, part, range, qualitative)
+                .ok_or_else(|| "No bands to color.".to_owned())?,
+            RampApply::Make(made) => {
+                if count - replaced + made > vale_terrain::MAX_BANDS {
+                    return Err(TOO_MANY_BANDS.to_owned());
+                }
+                bands
+                    .painted_count(&colors, &labels, part, range, lo, hi, made, qualitative)
+                    .ok_or_else(|| format!("Range is too small for {made} bands."))?
+            }
         };
         *bands = applied;
         self.globe.preview.selected = None;

@@ -13125,9 +13125,19 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
     open_ramp_card(&mut h, "Frame many", many);
     let land = w.bands.end - w.bands.start.max(before.sea().unwrap());
     assert!(count - land + 32 > 32);
-    tap(&mut h, "Make 32 land bands");
-    assert!(shown(&h, TOO_MANY_BANDS));
-    assert_eq!(inset_bands(&h, layer), count);
+    // The card offers only the bands that fit.
+    assert!(control(&h, "Make 32 land bands").is_none());
+    let make = h
+        .state()
+        .pad
+        .controls
+        .iter()
+        .map(|c| c.name.clone())
+        .find(|n| n.starts_with("Make ") && n.ends_with(" land bands"))
+        .unwrap();
+    tap(&mut h, &make);
+    assert!(!shown(&h, TOO_MANY_BANDS));
+    assert_eq!(inset_bands(&h, layer), 32);
 }
 
 /// Three land colors for a ramp.

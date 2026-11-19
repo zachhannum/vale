@@ -629,12 +629,14 @@ fn apply_ramp(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Result<(
         _ => {
             let last = state.ramps.list().len().saturating_sub(1);
             let colors = state.ramps.list().get(last).map(|r| r.colors.clone());
+            let made = colors.as_ref().map_or(0, Vec::len);
+            let how = crate::ui::RampApply::Make(made);
             let part = state
                 .globe
                 .bands_mut(id)
                 .zip(colors)
                 .map_or(vale_terrain::Part::All, |(b, c)| b.part(&c));
-            if let Err(text) = state.apply_ramp(id, last, false, part, None) {
+            if let Err(text) = state.apply_ramp(id, last, how, part, None) {
                 bail!("{text}");
             }
         }

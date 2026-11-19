@@ -7,7 +7,7 @@ use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
-use super::{Action, AppState, LayerRef, number, pad, style_editor};
+use super::{Action, AppState, LayerRef, RampApply, number, pad, style_editor};
 use crate::globe::preview::{LAKE_KM2_RANGE, Preview};
 use crate::ramps::Ramps;
 use crate::world;
@@ -321,6 +321,11 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         let picked: Option<usize> = ui.data(|d| d.get_temp(key));
         let part = picked.map_or(layer.part(&ramp.colors), |i| pad::raster::PARTS[i]);
         let (bands, kind) = pad::raster::ramp_fit(&layer, part);
+        // The number of bands of "Make" also stays in the memory of egui.
+        let count_key = egui::Id::new(("ramp-count", id, index));
+        let range = pad::raster::make_range(&layer, part, 0..layer.colors().len());
+        let made: usize = ui.data(|d| d.get_temp(count_key)).unwrap_or(colors);
+        let mut made = made.clamp(*range.start(), *range.end());
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
             if split {
                 ui.horizontal(|ui| {
@@ -349,14 +354,21 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                     }
                 }
             };
+            let fit = RampChoice::Apply(RampApply::Fit);
             if colors == bands {
-                choose(ui, pad::raster::APPLY_RAMP, RampChoice::Apply(true));
+                choose(ui, pad::raster::APPLY_RAMP, fit);
             } else {
-                let keep = format!("Fit to {bands} {kind}bands");
-                choose(ui, &keep, RampChoice::Apply(true));
-                let fresh = format!("Make {colors} {kind}bands");
-                choose(ui, &fresh, RampChoice::Apply(false));
+                choose(ui, &format!("Fit to {bands} {kind}bands"), fit);
             }
+            ui.horizontal(|ui| {
+                ui.label(pad::raster::BAND_COUNT);
+                let drag = egui::DragValue::new(&mut made).range(range.clone());
+                if ui.add(drag).changed() {
+                    ui.data_mut(|d| d.insert_temp(count_key, made));
+                }
+            });
+            let fresh = format!("Make {made} {kind}bands");
+            choose(ui, &fresh, RampChoice::Apply(RampApply::Make(made)));
             ui.separator();
             choose(ui, pad::raster::DUPLICATE_RAMP, RampChoice::Duplicate);
             if !ramp.built_in {
@@ -400,7 +412,7 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         return;
     };
     let result = match choice {
-        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part, None),
+        RampChoice::Apply(how) => state.apply_ramp(id, index, how, part, None),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
         RampChoice::Duplicate => {

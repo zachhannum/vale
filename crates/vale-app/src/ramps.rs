@@ -69,11 +69,7 @@ impl Ramp {
     /// ramp, and even steps from the first color to the last color for
     /// another ramp.
     pub fn classes(&self, n: usize) -> Vec<Rgb> {
-        if self.qualitative {
-            cycle(&self.colors, n)
-        } else {
-            sample(&self.colors, n)
-        }
+        vale_terrain::sample_ramp(&self.colors, n, self.qualitative)
     }
 }
 
@@ -737,33 +733,6 @@ fn built_in() -> Vec<Ramp> {
     list
 }
 
-/// `n` colors of a ramp from its first color to its last color, with
-/// linear steps between its colors. One color is the middle of the ramp.
-fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
-    let Some(last) = colors.len().checked_sub(1) else {
-        return Vec::new();
-    };
-    (0..n)
-        .map(|k| {
-            let t = if n < 2 {
-                0.5
-            } else {
-                k as f64 / (n - 1) as f64
-            } * last as f64;
-            let i = (t.floor() as usize).min(last.saturating_sub(1));
-            let (a, b) = (colors[i], colors[(i + 1).min(last)]);
-            let f = t - i as f64;
-            std::array::from_fn(|c| (a[c] as f64 + (b[c] as f64 - a[c] as f64) * f).round() as u8)
-        })
-        .collect()
-}
-
-/// `n` colors of a qualitative ramp: its colors in order, again from the
-/// first color after the last.
-fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
-    colors.iter().copied().cycle().take(n).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -827,14 +796,17 @@ mod tests {
     fn a_sample_has_both_ends_and_the_steps_between() {
         let colors = [[0, 0, 0], [100, 200, 50]];
         assert_eq!(
-            sample(&colors, 3),
+            vale_terrain::sample_ramp(&colors, 3, false),
             vec![[0, 0, 0], [50, 100, 25], [100, 200, 50]]
         );
-        assert_eq!(sample(&colors, 1), vec![[50, 100, 25]]);
-        let five = BUILT_IN[0].1;
-        assert_eq!(sample(five, 5), five.to_vec());
         assert_eq!(
-            cycle(&colors, 3),
+            vale_terrain::sample_ramp(&colors, 1, false),
+            vec![[50, 100, 25]]
+        );
+        let five = BUILT_IN[0].1;
+        assert_eq!(vale_terrain::sample_ramp(five, 5, false), five.to_vec());
+        assert_eq!(
+            vale_terrain::sample_ramp(&colors, 3, true),
             vec![[0, 0, 0], [100, 200, 50], [0, 0, 0]]
         );
     }
