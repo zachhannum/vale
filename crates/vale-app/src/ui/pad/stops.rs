@@ -5,7 +5,9 @@ use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Sense, pos2,
 use vale_store::RasterDisplay;
 use vale_terrain::{Bands, MAX_BANDS, MIN_BAND};
 
+use super::geometry::TOUCH;
 use super::icons::{self, Icon};
+use super::number::speed;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::elevation::{self, SNAPS};
@@ -24,6 +26,9 @@ const LABELS: f32 = 16.0;
 const COLUMN: f32 = 2.0;
 /// The width of the color cells of the rows.
 const CELL: f32 = 40.0;
+/// The points of a drag at full speed that move a stop across the whole
+/// range.
+const SCRUB_LENGTH: f32 = 300.0;
 /// The space between the cells and the value of a stop.
 const PILL_GAP: f32 = 8.0;
 const PILL_HEIGHT: f32 = 24.0;
@@ -40,11 +45,18 @@ pub fn stop_name(index: usize) -> String {
     format!("Stop {index}")
 }
 
-/// The place of a stop on the bar after a vertical drag of `d` points, up
-/// positive, from the place `f0`. Near the start, a point is one step of
-/// the snap. The step grows with the distance.
-pub fn scrub_fraction(f0: f64, d: f64) -> f64 {
-    f0 + d / SNAPS + d.signum() * (d / 240.0).powi(2)
+/// The name of the color cell of the row of a band.
+pub fn cell_name(index: usize) -> String {
+    format!("{} color", band_row(index))
+}
+
+/// The place of a stop on the bar after a move of `dy` points up, with the
+/// finger `away` points to the side of the start of the drag, and the name
+/// of the speed if it is slower than full speed.
+fn scrub_place(place: f64, dy: f32, away: f32) -> (f64, Option<&'static str>) {
+    let (speed, note) = speed(away);
+    let place = place + f64::from(dy / SCRUB_LENGTH) * speed;
+    (place.clamp(0.0, 1.0), note)
 }
 
 /// The value of the new stop of the band `band`: the middle of the band,
@@ -71,13 +83,16 @@ pub struct Legend {
     pub scrub: Option<usize>,
 }
 
-/// A drag on the value of a stop: the stop, its place on the bar at the
-/// start, and the height of the start.
+/// A drag that moves a stop: the stop, its place on the bar before the
+/// snap, the last place of the finger, the x of the start, and the name of
+/// the speed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Scrub {
     index: usize,
-    f0: f64,
-    y0: f32,
+    place: f64,
+    last: Pos2,
+    x0: f32,
+    note: Option<&'static str>,
 }
 
 fn color32(c: vale_terrain::Rgb) -> Color32 {
@@ -185,9 +200,9 @@ pub fn paint_histogram(
 /// share of the area of the world, from `bins`, the area of each level bin. `selected` is a band. A tap on
 /// a row or on the value of the stop at its lower edge selects the band, or
 /// clears the selection if the band is selected. A drag on the value of a
-/// stop that moves changes the value, and each other drag scrolls the
-/// panel. The selected row has a button that adds a stop in the middle of
-/// the band.
+/// stop that moves, or on the color cell of the band above it, changes the
+/// value, and each other drag scrolls the panel. The selected row has a
+/// button that adds a stop in the middle of the band.
 pub fn legend(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -264,7 +279,22 @@ pub fn legend(
     let origin = ui.input(|i| i.pointer.press_origin());
     let mut dragging = false;
     let inner = bands.stops().len().saturating_sub(1);
-    for i in 1..inner.min(count) {
+    // The color cells, 44 points wide into the margin at their left. The
+    // cell of a band moves the stop at its lower edge.
+    let mut cells = Vec::with_capacity(count);
+    for (i, row) in row_of.iter().enumerate() {
+        let hit = Rect::from_min_max(
+            row.min - vec2(TOUCH - CELL, 0.0),
+            pos2(row.left() + CELL, row.bottom()),
+        );
+        let resp = widgets::tap_area(ui, controls, hit, &cell_name(i), true);
+        if resp.clicked() {
+            *selected = toggle(*selected, i);
+        }
+        down[i] |= resp.is_pointer_button_down_on();
+        cells.push(resp);
+    }
+    for (i, cell) in cells.iter().enumerate().take(inner.min(count)).skip(1) {
         let value = bands.stops()[i].value;
         let w = pill_width(ui, value, false);
         let hit = Rect::from_center_size(
@@ -278,30 +308,39 @@ pub fn legend(
         if bands.fixed(i) {
             continue;
         }
-        let taken = widgets::take_drag(ui, &resp, |_| true);
-        if taken && let Some(origin) = origin {
-            let f0 = elevation::bar_fraction(bands, value);
-            scrub = Some(Scrub {
-                index: i,
-                f0,
-                y0: origin.y,
-            });
-            ui.data_mut(|d| d.insert_temp(scrub_id, scrub.unwrap()));
-        }
-        let ours = scrub.is_some_and(|s| s.index == i);
-        if ours && (taken || resp.dragged()) {
-            dragging = true;
-            let s = scrub.unwrap();
-            if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
-                let f = scrub_fraction(s.f0, f64::from(s.y0 - pos.y));
-                bands.move_to(i, gradient::snap_value(bands, f));
+        for resp in [&resp, cell] {
+            let taken = widgets::take_drag(ui, resp, |_| true);
+            if taken && let Some(origin) = origin {
+                scrub = Some(Scrub {
+                    index: i,
+                    place: elevation::bar_fraction(bands, value),
+                    last: origin,
+                    x0: origin.x,
+                    note: None,
+                });
+            }
+            let Some(mut s) = scrub.filter(|s| s.index == i) else {
+                continue;
+            };
+            if taken || resp.dragged() {
+                dragging = true;
+                if let Some(pos) = ui.input(|i| i.pointer.latest_pos()) {
+                    let away = (pos.x - s.x0).abs();
+                    (s.place, s.note) = scrub_place(s.place, s.last.y - pos.y, away);
+                    s.last = pos;
+                    bands.move_to(i, gradient::snap_value(bands, s.place));
+                    scrub = Some(s);
+                    ui.data_mut(|d| d.insert_temp(scrub_id, s));
+                }
+            }
+            if resp.drag_stopped() {
+                ui.data_mut(|d| d.remove::<Scrub>(scrub_id));
             }
         }
-        if ours && resp.drag_stopped() {
-            ui.data_mut(|d| d.remove::<Scrub>(scrub_id));
-        }
     }
-    let scrub = scrub.filter(|_| dragging).map(|s| s.index);
+    let scrub = scrub.filter(|_| dragging);
+    let note = scrub.and_then(|s| s.note);
+    let scrub = scrub.map(|s| s.index);
     if scrub.is_none() && !ui.input(|i| i.pointer.primary_down()) {
         ui.data_mut(|d| d.remove::<Scrub>(scrub_id));
     }
@@ -401,7 +440,9 @@ pub fn legend(
                 theme::MUTE,
             );
         };
-        if on {
+        if let Some(note) = note.filter(|_| on) {
+            hint(x, note.to_string());
+        } else if on {
             let lo = world::value_text(stops[i - 1].value, span, unit);
             let hi = world::value_text(stops[i + 1].value, span, unit);
             hint(x, format!("{lo} to {hi}"));
@@ -427,20 +468,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scrub_is_fine_near_the_start_and_monotone() {
-        // A point near the start is one step of the snap.
-        let step = scrub_fraction(0.5, 1.0) - 0.5;
-        assert!((step - 1.0 / SNAPS).abs() < 1e-4);
-        assert_eq!(scrub_fraction(0.5, 0.0), 0.5);
-        let mut last = f64::NEG_INFINITY;
-        for d in -600..=600 {
-            let f = scrub_fraction(0.5, f64::from(d));
-            assert!(f > last);
-            last = f;
-        }
-        // A long drag crosses the whole bar.
-        assert!(scrub_fraction(0.0, 300.0) > 1.0);
-        assert!(scrub_fraction(1.0, -300.0) < 0.0);
+    fn the_scrub_slows_when_the_finger_moves_sideways() {
+        let step = |away: f32| scrub_place(0.5, 40.0, away).0 - 0.5;
+        assert!((step(0.0) - 40.0 / f64::from(SCRUB_LENGTH)).abs() < 1e-6);
+        assert!((step(0.0) - 2.0 * step(70.0)).abs() < 1e-6);
+        assert!((step(0.0) - 8.0 * step(200.0)).abs() < 1e-6);
+        assert_eq!(scrub_place(0.5, 40.0, 0.0).1, None);
+        assert_eq!(scrub_place(0.5, 40.0, 70.0).1, Some("Half speed"));
+        // A drag down lowers the place, and the place stays on the bar.
+        assert!(scrub_place(0.5, -40.0, 0.0).0 < 0.5);
+        assert_eq!(scrub_place(0.9, 300.0, 0.0).0, 1.0);
+        assert_eq!(scrub_place(0.1, -300.0, 0.0).0, 0.0);
     }
 
     #[test]

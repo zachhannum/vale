@@ -23,7 +23,7 @@ use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::number::TRACK_INSET;
 use vale_app::ui::pad::raster;
-use vale_app::ui::pad::stops::{ADD_STOP, HISTOGRAM, stop_name};
+use vale_app::ui::pad::stops::{ADD_STOP, HISTOGRAM, cell_name, stop_name};
 use vale_app::ui::pad::widgets::PANEL_ROW;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
@@ -509,6 +509,13 @@ fn check_controls(h: &Pad, what: &str) {
                 numbered(c, "Stop ") || c.name == vale_app::ui::pad::stops::ADD_STOP
             };
             let band = |c: &vale_app::ui::pad::widgets::Control| numbered(c, "Band ");
+            // The color cell of a row is over the row.
+            let cell = |c: &vale_app::ui::pad::widgets::Control| {
+                (c.name.strip_suffix(" color")).is_some_and(|n| {
+                    (n.strip_prefix("Band ")).is_some_and(|n| n.parse::<usize>().is_ok())
+                })
+            };
+            let over = |c: &vale_app::ui::pad::widgets::Control| over(c) || cell(c);
             let covered = covered || (band(a) && over(b)) || (over(a) && band(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
@@ -6159,41 +6166,166 @@ fn a_vertical_drag_on_a_stop_value_moves_it_between_its_neighbours() {
     assert_eq!(stops(&h), before);
 }
 
+/// The middle of the color cell of the row of a band.
+fn cell(h: &Pad, index: usize) -> Pos2 {
+    h.get_by_label(&cell_name(index)).rect().center()
+}
+
+/// A touch that moves through `path` in steps, and does not end.
+fn hold_through(h: &mut Pad, path: &[Pos2]) {
+    touch(h, egui::TouchPhase::Start, path[0], None);
+    h.step();
+    for pair in path.windows(2) {
+        for i in 1..=6 {
+            let pos = pair[0].lerp(pair[1], i as f32 / 6.0);
+            touch(h, egui::TouchPhase::Move, pos, None);
+            h.step();
+        }
+    }
+}
+
 #[test]
-fn a_vertical_drag_on_a_cell_a_share_or_sea_level_scrolls_the_page() {
-    // With 20 stops, the page is longer than its card.
+fn a_vertical_drag_on_a_color_cell_moves_the_stop_below_it() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
+    let before = stops(&h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    let index = sea + 2;
+    show_stop(&mut h, index);
+    tap_handle(&mut h, index);
+    assert!(h.state().pad.style.card.is_some());
+    // A drag up on the cell of the band moves the stop at its lower edge
+    // up, and the card hides during the drag.
+    let row = band_rect(&h, index);
+    let from = cell(&h, index);
+    let to = from - vec2(0.0, 20.0);
+    hold_through(&mut h, &[from, to]);
+    let moved = stops(&h);
+    assert!(moved[index].value > before[index].value, "{moved:?}");
+    assert!(moved[index].value < before[index + 1].value, "{moved:?}");
+    for i in (0..before.len()).filter(|&i| i != index) {
+        assert_eq!(moved[i], before[i], "{i}");
+    }
+    assert_eq!(h.state().pad.style.card, None);
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    assert!(h.state().pad.style.card.is_some());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert_eq!(band_rect(&h, index), row);
+    // A tap on the cell clears the selection, and a second tap selects the
+    // band again.
+    let at = cell(&h, index);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.preview.selected, None);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+}
+
+/// The height layer with 20 stops, so that the page is longer than its
+/// card, on the page of the color stops.
+fn long_stops(size: (f32, f32)) -> Pad {
+    let mut h = painted_pad(size);
+    open_height(&mut h);
+    add_stops(&mut h, 20);
+    open_stops(&mut h);
+    h
+}
+
+/// Drags from `from` by `dy` and checks that the page scrolls and that no
+/// stop moves.
+fn check_scrolls(h: &mut Pad, what: &str, from: Pos2, dy: f32) {
+    let stops = h.state().globe.map.bands.stops().to_vec();
+    let top = band_rect(h, 0).top();
+    drag(h, from, from + vec2(0.0, dy), None);
+    let moved = band_rect(h, 0).top() - top;
+    assert!(moved * dy > 100.0, "{what}: {moved}");
+    assert_eq!(h.state().globe.map.bands.stops(), stops, "{what}");
+}
+
+#[test]
+fn a_vertical_drag_on_a_name_a_share_or_sea_level_scrolls_the_page() {
     for size in [BOARDS[2], BOARDS[3]] {
-        let mut h = painted_pad(size);
-        open_height(&mut h);
-        add_stops(&mut h, 20);
-        open_stops(&mut h);
+        let mut h = long_stops(size);
         let stops = h.state().globe.map.bands.stops().to_vec();
         let sea = h.state().globe.map.bands.sea().unwrap();
         show_stop(&mut h, sea);
         let card = panel(&h, Panel::Layers).unwrap();
         let inside = |p: &Pos2| card.top() + 80.0 < p.y && p.y < card.bottom() - 80.0;
-        let row = (0..stops.len() - 1)
-            .map(|i| band_rect(&h, i))
-            .find(|r| inside(&r.center()))
+        let index = (0..stops.len() - 1)
+            .find(|&i| inside(&band_rect(&h, i).center()))
             .unwrap();
-        let cell = pos2(row.left() + 12.0, row.center().y);
-        let share = pos2(row.right() - 16.0, row.center().y);
+        let name = |h: &Pad| pos2(band_rect(h, index).left() + 90.0, handle(h, index).y);
+        let share = |h: &Pad| pos2(band_rect(h, index).right() - 16.0, handle(h, index).y);
         let level = seam(&h, sea);
         assert!(inside(&level), "{level:?}");
         // A drag up scrolls up, and a drag down scrolls back down.
-        for (what, from, dy) in [
-            ("sea level", level, -30.0),
-            ("cell", cell, 30.0),
-            ("share", share, -30.0),
-        ] {
-            let top = band_rect(&h, 0).top();
-            drag(&mut h, from, from + vec2(0.0, dy), None);
-            let moved = band_rect(&h, 0).top() - top;
-            assert!(moved * dy > 100.0, "{size:?} {what}: {moved}");
-            assert_eq!(h.state().globe.map.bands.stops(), stops, "{size:?} {what}");
-        }
+        check_scrolls(&mut h, &format!("{size:?} sea level"), level, -30.0);
+        let from = name(&h);
+        check_scrolls(&mut h, &format!("{size:?} name"), from, 30.0);
+        let from = share(&h);
+        check_scrolls(&mut h, &format!("{size:?} share"), from, -30.0);
         assert_eq!(h.state().globe.preview.selected, None, "{size:?}");
     }
+}
+
+#[test]
+fn a_drag_on_the_cell_of_the_lowest_band_or_above_sea_level_scrolls_the_page() {
+    let mut h = long_stops(BOARDS[2]);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, 0);
+    let from = cell(&h, 0);
+    check_scrolls(&mut h, "the lowest band", from, -30.0);
+    show_stop(&mut h, sea);
+    let from = cell(&h, sea);
+    check_scrolls(&mut h, "the band above sea level", from, 30.0);
+}
+
+#[test]
+fn a_stop_drag_slows_when_the_finger_moves_sideways() {
+    use vale_app::ui::elevation::bar_fraction;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    let bands = h.state().globe.map.bands.clone();
+    let index = bands.sea().unwrap() + 2;
+    show_stop(&mut h, index);
+    let place = |h: &Pad| {
+        let bands = &h.state().globe.map.bands;
+        bar_fraction(bands, bands.stops()[index].value)
+    };
+    let start = place(&h);
+    // A drag of 12 points up at full speed.
+    let from = seam(&h, index);
+    hold_through(&mut h, &[from, from - vec2(0.0, 12.0)]);
+    let full = place(&h) - start;
+    touch(&mut h, egui::TouchPhase::End, from, None);
+    h.run_steps(3);
+    let high = bands.stops()[index + 1].value - vale_terrain::MIN_BAND;
+    assert!(h.state().globe.map.bands.stops()[index].value < high);
+    h.state_mut().globe.map.bands = bands.clone();
+    h.run_steps(2);
+    // The same drag with the finger 80 points to the side moves the stop
+    // half as far, and the range gives way to the name of the speed.
+    let side = from + vec2(80.0, 0.0);
+    hold_through(&mut h, &[from, side, side - vec2(0.0, 12.0)]);
+    let half = place(&h) - start;
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|(t, _)| t == "Half speed"), "{texts:?}");
+    let span = bands.max() - bands.min();
+    let text = |v: f64| vale_app::world::value_text(v, span, "m");
+    let stops = bands.stops();
+    let range = format!(
+        "{} to {}",
+        text(stops[index - 1].value),
+        text(stops[index + 1].value)
+    );
+    assert!(!texts.iter().any(|(t, _)| *t == range), "{texts:?}");
+    touch(&mut h, egui::TouchPhase::End, side, None);
+    h.run_steps(3);
+    assert!(full > 0.03, "{full}");
+    assert!((half - full / 2.0).abs() < 0.005, "{full} {half}");
 }
 
 #[test]
