@@ -4282,8 +4282,11 @@ impl AppState {
             self.status = "A PDF is already exporting".to_string();
             return;
         }
+        // The color keys show the bands of their frames as on the screen.
+        atlas::update_key_levels(self, &pages, false, true);
         match PdfExport::new(self.doc.clone(), path, pages, options) {
             Ok(mut job) => {
+                job.set_frame_levels(self.pipeline.frame_levels().clone());
                 let side = self.globe.max_face_size().min(u32::MAX as usize) as u32;
                 job.set_max_side(self.export_max_side.unwrap_or(side));
                 let rasters = self.pipeline.rasters_mut();

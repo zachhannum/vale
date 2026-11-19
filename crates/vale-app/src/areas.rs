@@ -176,6 +176,22 @@ impl Areas {
         entry.bins.done.clone()
     }
 
+    /// [`Areas::frame_bins`] that waits for the areas of `key` and `live`.
+    pub fn frame_bins_now(
+        &mut self,
+        frame: FrameId,
+        id: RasterId,
+        key: FrameKey,
+        live: &Heightmap,
+    ) -> Option<Arc<FrameBins>> {
+        // A job of an older frame runs to its end before the new job starts.
+        for _ in 0..2 {
+            self.frame_bins(frame, id, key.clone(), live, false);
+            self.frames.get_mut(&(frame, id))?.bins.poll(true);
+        }
+        self.frame_bins(frame, id, key, live, true)
+    }
+
     /// Takes the areas of the finished jobs. `block`: waits for each
     /// running job. True while a job runs.
     pub fn poll(&mut self, block: bool) -> bool {
@@ -189,10 +205,16 @@ impl Areas {
         busy
     }
 
-    /// Keeps only the layers for which `keep` is true.
+    /// Keeps the areas of the world of only the layers for which `keep` is
+    /// true.
     pub fn retain(&mut self, mut keep: impl FnMut(RasterId) -> bool) {
         self.entries.retain(|id, _| keep(*id));
-        self.frames.retain(|(_, id), _| keep(*id));
+    }
+
+    /// Keeps the areas of only the frames and the layers for which `keep`
+    /// is true.
+    pub fn retain_frames(&mut self, mut keep: impl FnMut(FrameId, RasterId) -> bool) {
+        self.frames.retain(|(frame, id), _| keep(*frame, *id));
     }
 }
 

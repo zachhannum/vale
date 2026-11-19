@@ -148,9 +148,11 @@ pub fn poll(ui: &egui::Ui, state: &mut AppState) {
         let keys: HashMap<PageId, Key> = (stale.iter())
             .map(|page| (page.id, (generation, page.clone())))
             .collect();
+        super::atlas::update_key_levels(state, &stale, false, true);
         // The pages of one job have the scale of the first page.
         match PdfExport::images(state.doc.clone(), stale, ratio) {
             Ok(mut export) => {
+                export.set_frame_levels(state.pipeline.frame_levels().clone());
                 let rasters = state.pipeline.rasters_mut();
                 export.set_rasters(rasters.frozen());
                 state.export_thumbs.job = Some(Job {

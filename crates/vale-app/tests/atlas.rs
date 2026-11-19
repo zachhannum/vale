@@ -13155,3 +13155,163 @@ fn the_bar_of_the_style_section_of_a_frame_shows_the_bands_of_the_frame() {
     assert!(!has(&text(bands.max(), span)), "{texts:?}");
     assert!(!has("Sea level"), "{texts:?}");
 }
+
+/// `frame_stops_pad(lat)` with a color key of the height layer in the
+/// inset frame on the page, in `layout`, and the panel of the key. Gives
+/// the ID of the key.
+fn frame_key_pad(
+    lat: f64,
+    layout: vale_store::KeyLayout,
+) -> (Pad, LayerId, vale_store::FurnitureId) {
+    let (mut h, _, layer) = frame_stops_pad(lat);
+    let inset = frame(&h, 1).id;
+    let s = h.state_mut();
+    let id = atlas::add_item_in(s, ItemKind::ColorKey, [10.0, 10.0, 200.0, 120.0]).unwrap();
+    atlas::edit_key(s, id, false, |k| {
+        k.frame = Some(inset);
+        k.layer = Some(layer);
+        k.layout = layout;
+    });
+    h.run_steps(3);
+    show_tab(&mut h, FRAME_TABS[0]);
+    (h, layer, id)
+}
+
+/// The text of the items of the key `id` in an export.
+fn key_texts(h: &mut Pad, id: vale_store::FurnitureId) -> Vec<String> {
+    let s = h.state_mut();
+    let rec = s.doc.project.atlas.furniture(id).unwrap().clone();
+    let target = vale_app::atlas::FrameTarget {
+        origin: Point::ZERO,
+        pts_per_mm: vale_app::atlas::PT_PER_MM,
+    };
+    let mut fonts = vale_app::pipeline::fonts().unwrap();
+    let purpose = vale_app::furniture::Purpose::Export;
+    let items =
+        vale_app::furniture::items(&mut s.pipeline, &s.doc, &rec, target, &mut fonts, purpose);
+    (items.iter())
+        .filter_map(|i| match i {
+            vale_render::Item::Glyphs(run) => Some(run.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_new_color_key_lists_the_bands_of_its_frame() {
+    let (mut h, _, id) = frame_key_pad(45.0, vale_store::KeyLayout::List);
+    let k = key_of(&h, id);
+    assert!(!k.all_bands);
+    let w = stops_window(&h);
+    let rows = atlas::key_data(h.state(), &k).unwrap().rows;
+    let indices: Vec<usize> = rows.iter().map(|r| r.index).collect();
+    assert_eq!(indices, w.bands.clone().collect::<Vec<_>>());
+    // The list has the bands of the frame from the top, and no other band.
+    let labels: Vec<String> = rows.iter().rev().map(|r| r.label.clone()).collect();
+    assert_eq!(key_texts(&mut h, id), labels);
+}
+
+/// The color key with the ID `id`.
+fn key_of(h: &Pad, id: vale_store::FurnitureId) -> vale_store::ColorKeyItem {
+    match &h.state().doc.project.atlas.furniture(id).unwrap().item {
+        Furniture::ColorKey(k) => k.clone(),
+        other => panic!("not a color key: {other:?}"),
+    }
+}
+
+/// The text of the values of a strip from `from` to `to`: depths with no
+/// sign.
+fn strip_values(values: &[f64]) -> Vec<String> {
+    let text = |v: f64| vale_app::color_key::number_text(v.abs());
+    values.iter().map(|&v| text(v)).collect()
+}
+
+#[test]
+fn in_frame_the_strip_has_closed_ends_at_the_bands_of_the_frame() {
+    let (mut h, layer, id) = frame_key_pad(45.0, vale_store::KeyLayout::Strip);
+    let w = stops_window(&h);
+    let values = inset_values(&h, layer);
+    // Only land: one row, closed at both ends.
+    let mut want = strip_values(&values[w.bands.start..=w.bands.end]);
+    want.push("meters".to_string());
+    assert_eq!(key_texts(&mut h, id), want);
+
+    // Land and sea: a row for each, split at sea level.
+    let (mut h, layer, id) = frame_key_pad(0.0, vale_store::KeyLayout::Strip);
+    screenshot::save(&mut h, "pad-atlas-color-key-in-frame");
+    let w = stops_window(&h);
+    let values = inset_values(&h, layer);
+    let sea = values.iter().position(|v| *v == 0.0).unwrap();
+    assert!(w.bands.start < sea && sea < w.bands.end, "{w:?}");
+    let mut want = strip_values(&values[w.bands.start..=sea]);
+    want.push("meters".to_string());
+    want.extend(strip_values(&values[sea..=w.bands.end]));
+    want.push("meters".to_string());
+    assert_eq!(key_texts(&mut h, id), want);
+}
+
+#[test]
+fn the_export_of_a_color_key_shows_the_bands_of_its_frame() {
+    let (mut h, layer, _) = frame_key_pad(45.0, vale_store::KeyLayout::List);
+    let inset = frame(&h, 1).id;
+    let w = stops_window(&h);
+    let style = raster_style(&h, Some(frame(&h, 1).map), layer);
+    // A page with no frame and a key of the inset frame, so that the
+    // export needs no GPU.
+    let s = h.state_mut();
+    atlas::add_page(s);
+    atlas::edit_page(s, |p| {
+        p.frames.clear();
+        p.furniture.clear();
+        (p.width_mm, p.height_mm, p.dpi) = (120.0, 240.0, 72);
+    });
+    let id = atlas::add_item_in(s, ItemKind::ColorKey, [5.0, 5.0, 115.0, 235.0]).unwrap();
+    atlas::edit_key(s, id, false, |k| {
+        k.frame = Some(inset);
+        k.layer = Some(layer);
+        k.layout = vale_store::KeyLayout::List;
+        (k.box_width, k.box_height) = (Some(20.0), Some(6.0));
+    });
+    // The export counts the levels of the frame itself.
+    s.areas = Default::default();
+    s.pipeline.set_frame_levels(Default::default());
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("key.png");
+    s.run_action(Action::Export(path.clone()));
+    assert!(s.status.starts_with("Exported"), "{}", s.status);
+    let image = image::open(&path).unwrap().to_rgb8();
+    let colors: std::collections::HashSet<[u8; 3]> = image.pixels().map(|p| p.0).collect();
+    let inside: Vec<[u8; 3]> = w.bands.clone().map(|i| style.colors[i]).collect();
+    for c in &inside {
+        assert!(colors.contains(c), "{c:?}");
+    }
+    let outside = (0..style.colors.len()).filter(|i| !w.bands.contains(i));
+    for c in outside
+        .map(|i| style.colors[i])
+        .filter(|c| !inside.contains(c))
+    {
+        assert!(!colors.contains(&c), "{c:?}");
+    }
+}
+
+#[test]
+fn a_color_key_shows_the_bands_of_a_moved_frame_when_the_finger_lifts() {
+    let (mut h, _, id) = frame_key_pad(45.0, vale_store::KeyLayout::List);
+    let rows = |h: &Pad| {
+        let rows = atlas::key_data(h.state(), &key_of(h, id)).unwrap().rows;
+        rows.iter().map(|r| r.index).collect::<Vec<_>>()
+    };
+    let before = rows(&h);
+    // A finger is down while the frame moves to the equator.
+    let away = pos2(600.0, 760.0);
+    touch(&mut h, 1, egui::TouchPhase::Start, away, None);
+    h.run_steps(1);
+    look_at(&mut h, 0.0);
+    h.run_steps(3);
+    assert_eq!(rows(&h), before);
+    touch(&mut h, 1, egui::TouchPhase::End, away, None);
+    wait_areas(&mut h);
+    let after = rows(&h);
+    assert_ne!(after, before);
+    assert!(after[0] < before[0], "{before:?} {after:?}");
+}

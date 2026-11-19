@@ -2,10 +2,15 @@
 //! of boxes with the values at their edges or as a list of boxes with text,
 //! with vector paths and glyphs.
 
+use std::collections::HashMap;
+use std::ops::Range;
+
 use kurbo::{Affine, Rect, Shape};
 use vale_labeler::Fonts;
 use vale_render::{Color, FillRule, Item};
-use vale_store::{ColorKeyItem, FrameRecord, KeyLayout, RasterDisplay, SecondUnit};
+use vale_store::{
+    ColorKeyItem, FrameId, FrameRecord, KeyLayout, RasterDisplay, RasterId, SecondUnit,
+};
 use vale_terrain::{Band, Bands, SEA_LEVEL};
 
 use crate::atlas::PT_PER_MM;
@@ -35,11 +40,31 @@ pub struct KeyRow {
     pub hidden: bool,
 }
 
+/// The lowest and the highest level of a raster layer inside the shape of
+/// a frame, for each frame and layer whose levels are known.
+pub type FrameLevels = HashMap<(FrameId, RasterId), (u16, u16)>;
+
+/// The bands from the band of value `lo` to the band of value `hi`.
+pub fn bands_between(bands: &Bands, lo: f64, hi: f64) -> Range<usize> {
+    let count = bands.colors().len().max(1);
+    let band = |v: f64| {
+        bands
+            .stops()
+            .partition_point(|s| s.value <= v)
+            .clamp(1, count)
+            - 1
+    };
+    band(lo)..band(hi) + 1
+}
+
 /// The bands of the layer of a color key in the map of its frame.
 #[derive(Clone, Debug)]
 pub struct KeyData {
-    /// All bands, from the lowest band.
+    /// The bands that the key shows, from the lowest band: all bands, or
+    /// the bands that the frame shows.
     pub rows: Vec<KeyRow>,
+    /// The number of bands of the layer.
+    pub count: usize,
     pub bands: Bands,
     pub display: RasterDisplay,
     /// The unit word of the layer.
@@ -139,13 +164,23 @@ pub fn preset_unit(unit: &str) -> Option<SecondUnit> {
 }
 
 /// The bands of the layer of a key in the map of its frame. `None` if the
-/// key has no layer, or if the map does not show it.
-pub fn data(doc: &Document, frame: &FrameRecord, key: &ColorKeyItem) -> Option<KeyData> {
+/// key has no layer, or if the map does not show it. A key that shows the
+/// bands of its frame shows all bands if `levels` has no levels of the
+/// frame.
+pub fn data(
+    doc: &Document,
+    frame: &FrameRecord,
+    key: &ColorKeyItem,
+    levels: &FrameLevels,
+) -> Option<KeyData> {
     let layer = key.layer?;
     if !doc.shown(frame.map, layer) {
         return None;
     }
     let raster = doc.project.layer(layer)?.raster()?;
+    let in_frame = (!key.all_bands)
+        .then(|| levels.get(&(frame.id, raster)))
+        .flatten();
     let mut record = doc.project.raster(raster)?.clone();
     if let Some(style) = doc.map_style(frame.map, layer)
         && let Some(s) = style.raster_symbolizer()
@@ -155,7 +190,12 @@ pub fn data(doc: &Document, frame: &FrameRecord, key: &ColorKeyItem) -> Option<K
     let bands = bands_of(&record);
     let list = bands.bands();
     let count = list.len();
+    let shown = match in_frame {
+        Some(&(lo, hi)) => bands_between(&bands, bands.value(lo), bands.value(hi)),
+        None => 0..count,
+    };
     let rows = (list.into_iter().enumerate())
+        .filter(|(index, _)| shown.contains(index))
         .map(|(index, band)| {
             let name = bands.name(index).to_string();
             let key_text = band_key(&name, band.min);
@@ -181,6 +221,7 @@ pub fn data(doc: &Document, frame: &FrameRecord, key: &ColorKeyItem) -> Option<K
         .flatten();
     Some(KeyData {
         rows,
+        count,
         display: record.display,
         unit: unit_word(&record.unit),
         sea,
@@ -299,11 +340,14 @@ struct Draw<'a> {
 impl Draw<'_> {
     /// The rows of a strip.
     fn strip_rows(data: &KeyData) -> Vec<StripRow> {
+        let (Some(first), Some(last)) = (data.rows.first(), data.rows.last()) else {
+            return Vec::new();
+        };
         if data.display == RasterDisplay::Grey {
             return vec![StripRow {
                 segments: vec![Segment {
-                    min: data.bands.min(),
-                    max: data.bands.max(),
+                    min: first.band.min,
+                    max: last.band.max,
                     band: None,
                 }],
                 closed_start: true,
@@ -316,33 +360,35 @@ impl Draw<'_> {
             max: r.band.max,
             band: Some(r.band),
         };
-        let shown = |range: std::ops::Range<usize>| -> Vec<Segment> {
-            (data.rows[range].iter())
-                .filter(|r| !r.hidden)
+        let shown = |range: Range<usize>| -> Vec<Segment> {
+            (data.rows.iter())
+                .filter(|r| range.contains(&r.index) && !r.hidden)
                 .map(segment)
                 .collect()
         };
-        let n = data.rows.len();
+        // An end of the shown bands that is not an end of the layer is
+        // closed.
+        let (start, end) = (first.index, last.index + 1);
         let rows = match data.sea {
-            Some(sea) => vec![
+            Some(sea) if start < sea && sea < end => vec![
                 StripRow {
-                    segments: shown(0..sea),
-                    closed_start: false,
+                    segments: shown(start..sea),
+                    closed_start: start > 0,
                     closed_end: true,
                     depth: true,
                 },
                 StripRow {
-                    segments: shown(sea..n),
+                    segments: shown(sea..end),
                     closed_start: true,
-                    closed_end: false,
+                    closed_end: end < data.count,
                     depth: false,
                 },
             ],
-            None => vec![StripRow {
-                segments: shown(0..n),
-                closed_start: false,
-                closed_end: false,
-                depth: false,
+            sea => vec![StripRow {
+                segments: shown(start..end),
+                closed_start: start > 0,
+                closed_end: end < data.count,
+                depth: sea.is_some_and(|sea| end <= sea),
             }],
         };
         rows.into_iter()
@@ -441,8 +487,24 @@ impl Draw<'_> {
                 left = left.max(w - width);
             }
         }
+        // A unit after a closed end reaches right of the end.
+        let mut right = reach;
+        for row in rows.iter().filter(|r| r.closed_start && r.closed_end) {
+            let last = row.segments[row.segments.len() - 1].max;
+            let mut units = vec![(false, Self::value_text(row, last), data.unit.clone())];
+            if let Some(second) = &key.second_unit {
+                let text = Self::second_text(row, last, second);
+                units.push((true, text, second.name.clone()));
+            }
+            for (in_second, text, unit) in units.iter().filter(|(_, _, u)| !u.is_empty()) {
+                let ink = if *in_second { &self.second } else { &self.ink };
+                let space = space * ink.style.size / size;
+                let w = ink.advance(text, self.fonts) / 2.0 + space + ink.advance(unit, self.fonts);
+                right = right.max(w);
+            }
+        }
         let x0 = inner.x0 + left;
-        width = width.min((inner.x1 - reach - x0) / most as f64);
+        width = width.min((inner.x1 - right - x0) / most as f64);
         if width <= 0.0 {
             return;
         }

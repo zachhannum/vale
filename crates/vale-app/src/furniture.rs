@@ -630,6 +630,7 @@ pub fn items(
     let Some(frame) = (rec.item.frame()).and_then(|id| doc.project.atlas.frame(id)) else {
         return placeholder();
     };
+    let levels = &pipeline.frame_levels().clone();
     let Ok(projection) = pipeline.projection(doc, frame.map) else {
         return placeholder();
     };
@@ -651,7 +652,7 @@ pub fn items(
             None => placeholder(),
         },
         Furniture::Legend(item) => legend_items(doc, projection, frame, item, rect, unit, fonts),
-        Furniture::ColorKey(item) => match crate::color_key::data(doc, frame, item) {
+        Furniture::ColorKey(item) => match crate::color_key::data(doc, frame, item, levels) {
             Some(data) => crate::color_key::draw(item, &data, rect, unit, fonts),
             None => placeholder(),
         },

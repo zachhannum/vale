@@ -483,17 +483,10 @@ pub(crate) fn frame_window(
             Some(b) => (bands.value(b.lo), bands.value(b.hi)),
             None => (bands.min(), bands.max()),
         };
-        let band = |v: f64| {
-            bands
-                .stops()
-                .partition_point(|s| s.value <= v)
-                .clamp(1, count)
-                - 1
-        };
         stops::FrameWindow {
             frame,
             raster: id,
-            bands: band(lo)..band(hi) + 1,
+            bands: crate::color_key::bands_between(bands, lo, hi),
             lo,
             hi,
         }
