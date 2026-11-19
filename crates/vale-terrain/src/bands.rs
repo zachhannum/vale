@@ -1,5 +1,7 @@
 //! The value range and the color stops of the preview.
 
+use std::ops::Range;
+
 use crate::cube::{ELEV_MAX, ELEV_MIN};
 
 pub type Rgb = [u8; 3];
@@ -491,7 +493,7 @@ impl Bands {
     }
 
     /// The indices of the bands of a part.
-    pub fn part_bands(&self, part: Part) -> std::ops::Range<usize> {
+    pub fn part_bands(&self, part: Part) -> Range<usize> {
         let m = self.colors.len();
         match (part, self.sea()) {
             (Part::Sea, Some(sea)) => 0..sea,
@@ -517,19 +519,47 @@ impl Bands {
     /// The new bands of the part take the labels of their colors as their
     /// names.
     pub fn painted_part(&self, colors: &[Rgb], labels: &[String], part: Part) -> Option<Bands> {
+        let all = 0..self.colors.len();
+        self.painted_in(colors, labels, part, all, self.min, self.max)
+    }
+
+    /// `painted_part` for the bands of `bands` in the part. The ramp spreads
+    /// its colors over the values from `lo` to `hi`, with even spacing. The
+    /// values stay between the stops at the two ends of these bands, so the
+    /// first and the last new band reach out to those stops. With a sea
+    /// split, the values of the land stay at sea level or above, and the
+    /// values of the sea stay at sea level or below. Bands that cross sea
+    /// level split the colors as `painted` does, with even spacing on each
+    /// side from `lo` to sea level and from sea level to `hi`. The stops and
+    /// the bands out of these bands do not change. Returns `None` if no band
+    /// is in both, if `lo` is not less than `hi`, or for the reasons of
+    /// `painted`.
+    pub fn painted_in(
+        &self,
+        colors: &[Rgb],
+        labels: &[String],
+        part: Part,
+        bands: Range<usize>,
+        lo: f64,
+        hi: f64,
+    ) -> Option<Bands> {
         let n = colors.len();
-        if n == 0 || n > MAX_BANDS {
+        let r = self.window(part, bands);
+        if n == 0 || n > MAX_BANDS || r.is_empty() {
             return None;
         }
-        let part = if self.split { part } else { Part::All };
-        if n == self.part_bands(part).len() {
-            return self.stretched_part(colors, labels, part);
+        if n == r.len() {
+            return self.stretched_in(colors, labels, part, r);
+        }
+        let (bottom, top) = (self.stops[r.start].value, self.stops[r.end].value);
+        let (lo, hi) = (lo.max(bottom), hi.min(top));
+        if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+            return None;
         }
         let labels = match labels.len() == n {
             true => labels.to_vec(),
             false => vec![String::new(); n],
         };
-        let names = self.padded_names();
         let fresh = |value: f64| Stop {
             value,
             line: StopLine::default(),
@@ -539,52 +569,39 @@ impl Bands {
             let step = (to - from) / count as f64;
             (1..count).map(move |i| from + step * i as f64)
         };
-        let old = &self.colors;
-        let sea = self.sea().unwrap_or_default();
-        let (stops, all, names): (Vec<Stop>, Vec<Rgb>, Vec<String>) = match part {
-            Part::All => {
-                if self.split && n < 2 {
-                    return None;
-                }
-                let sides: Vec<(f64, f64, usize)> = if self.split {
-                    let blue = colors.iter().take_while(|c| is_blue(**c)).count();
-                    let part = (SEA_LEVEL - self.min) / (self.max - self.min);
-                    let sea = if (1..n).contains(&blue) {
-                        blue
-                    } else {
-                        ((n as f64 * part).round() as usize).clamp(1, n - 1)
-                    };
-                    vec![(self.min, SEA_LEVEL, sea), (SEA_LEVEL, self.max, n - sea)]
-                } else {
-                    vec![(self.min, self.max, n)]
-                };
-                let mut values = vec![self.min];
-                for (from, to, count) in sides {
-                    values.extend(inner(from, to, count));
-                    values.push(to);
-                }
-                let stops = values.into_iter().map(fresh).collect();
-                (stops, colors.to_vec(), labels)
+        let crosses = self.sea().is_some_and(|sea| r.start < sea && sea < r.end);
+        let sides: Vec<(f64, f64, usize)> = if crosses {
+            if n < 2 {
+                return None;
             }
-            Part::Sea => {
-                let stops = std::iter::once(self.stops[0])
-                    .chain(inner(self.min, SEA_LEVEL, n).map(fresh))
-                    .chain(self.stops[sea..].iter().copied())
-                    .collect();
-                let names = [&labels[..], &names[sea..]].concat();
-                (stops, [colors, &old[sea..]].concat(), names)
-            }
-            Part::Land => {
-                let stops = self.stops[..=sea]
-                    .iter()
-                    .copied()
-                    .chain(inner(SEA_LEVEL, self.max, n).map(fresh))
-                    .chain(self.stops.last().copied())
-                    .collect();
-                let names = [&names[..sea], &labels[..]].concat();
-                (stops, [&old[..sea], colors].concat(), names)
-            }
+            let blue = colors.iter().take_while(|c| is_blue(**c)).count();
+            let part = (SEA_LEVEL - lo) / (hi - lo);
+            let sea = if (1..n).contains(&blue) {
+                blue
+            } else {
+                ((n as f64 * part).round() as usize).clamp(1, n - 1)
+            };
+            vec![(lo, SEA_LEVEL, sea), (SEA_LEVEL, hi, n - sea)]
+        } else {
+            vec![(lo, hi, n)]
         };
+        let mut values = Vec::new();
+        for (i, (from, to, count)) in sides.into_iter().enumerate() {
+            if i > 0 {
+                values.push(from);
+            }
+            values.extend(inner(from, to, count));
+        }
+        let stops: Vec<Stop> = self.stops[..=r.start]
+            .iter()
+            .copied()
+            .chain(values.into_iter().map(fresh))
+            .chain(self.stops[r.end..].iter().copied())
+            .collect();
+        let old = &self.colors;
+        let all = [&old[..r.start], colors, &old[r.end..]].concat();
+        let names = self.padded_names();
+        let names = [&names[..r.start], &labels[..], &names[r.end..]].concat();
         Bands::from_range_parts(self.min, self.max, self.split, &stops, &all)
             .map(|b| b.with_names(&names))
     }
@@ -603,12 +620,24 @@ impl Bands {
     /// If a label is not empty, each band of the part takes the label of
     /// its color as its name. Otherwise, the bands keep their names.
     pub fn stretched_part(&self, colors: &[Rgb], labels: &[String], part: Part) -> Option<Bands> {
+        self.stretched_in(colors, labels, part, 0..self.colors.len())
+    }
+
+    /// `stretched_part` for the bands of `bands` in the part. The ramp
+    /// spans these bands, and the other bands do not change. Returns `None`
+    /// if there are no colors or if no band is in both.
+    pub fn stretched_in(
+        &self,
+        colors: &[Rgb],
+        labels: &[String],
+        part: Part,
+        bands: Range<usize>,
+    ) -> Option<Bands> {
         let n = colors.len();
-        if n == 0 {
+        let range = self.window(part, bands);
+        if n == 0 || range.is_empty() {
             return None;
         }
-        let part = if self.split { part } else { Part::All };
-        let range = self.part_bands(part);
         let m = range.len();
         let labeled = labels.len() == n && labels.iter().any(|l| !l.is_empty());
         let mut all = self.colors.clone();
@@ -622,6 +651,12 @@ impl Bands {
         }
         Bands::from_range_parts(self.min, self.max, self.split, &self.stops, &all)
             .map(|b| b.with_names(&names))
+    }
+
+    /// The bands of `bands` that are in a part.
+    fn window(&self, part: Part, bands: Range<usize>) -> Range<usize> {
+        let p = self.part_bands(part);
+        bands.start.max(p.start)..bands.end.min(p.end)
     }
 
     /// The band at `i`, from stop `i` to stop `i + 1`.
@@ -1604,5 +1639,84 @@ mod tests {
         assert!(plain.painted(&greys(MAX_BANDS)).is_some());
         let small = Bands::with_range(0.0, 4.0, false).unwrap();
         assert!(small.painted(&greys(8)).is_none());
+    }
+
+    #[test]
+    fn stretched_in_colors_only_the_window() {
+        let bands = Bands::default();
+        let fit = bands
+            .stretched_in(&greys(2), &[], Part::Land, 7..10)
+            .unwrap();
+        assert_eq!(fit.stops(), bands.stops());
+        let g = greys(2);
+        assert_eq!(fit.colors()[7..10], [g[0], g[1], g[1]]);
+        assert_eq!(fit.colors()[..7], bands.colors()[..7]);
+        assert_eq!(fit.colors()[10..], bands.colors()[10..]);
+        // The window is in the part, so a sea window colors nothing.
+        assert!(bands.stretched_in(&g, &[], Part::Land, 0..5).is_none());
+    }
+
+    #[test]
+    fn painted_in_keeps_the_stops_out_of_the_window() {
+        let bands = Bands::default();
+        let made = bands
+            .painted_in(&greys(4), &[], Part::Land, 7..10, 600.0, 1800.0)
+            .unwrap();
+        // The end bands reach out to the stops at 500 m and 3000 m.
+        assert_eq!(made.stops()[..=7], bands.stops()[..=7]);
+        assert_eq!(values(&made)[7..12], [500.0, 900.0, 1200.0, 1500.0, 3000.0]);
+        assert_eq!(made.stops()[11..], bands.stops()[10..]);
+        let old = bands.colors();
+        assert_eq!(made.colors(), [&old[..7], &greys(4), &old[10..]].concat());
+    }
+
+    #[test]
+    fn painted_in_across_sea_level_splits_the_colors() {
+        let bands = Bands::default();
+        let made = bands
+            .painted_in(&greys(4), &[], Part::All, 3..8, -600.0, 600.0)
+            .unwrap();
+        assert_eq!(values(&made)[3..8], [-1000.0, -300.0, 0.0, 300.0, 1000.0]);
+        assert_eq!(made.sea(), Some(5));
+        assert_eq!(made.stops()[7..], bands.stops()[8..]);
+        assert_eq!(made.colors()[3..7], greys(4));
+        // One color can not cover both sides.
+        let one = bands.painted_in(&greys(1), &[], Part::All, 3..8, -600.0, 600.0);
+        assert!(one.is_none());
+    }
+
+    #[test]
+    fn painted_in_refuses_too_many_bands_and_an_empty_range() {
+        let bands = Bands::default();
+        let n = bands.colors().len();
+        let many = greys(MAX_BANDS - n + 2);
+        assert!(
+            bands
+                .painted_in(&many, &[], Part::Land, 7..8, 500.0, 1000.0)
+                .is_none()
+        );
+        let fits = greys(MAX_BANDS - n + 1);
+        assert!(
+            bands
+                .painted_in(&fits, &[], Part::Land, 7..8, 500.0, 1000.0)
+                .is_some()
+        );
+        let empty = bands.painted_in(&greys(2), &[], Part::Land, 7..10, 900.0, 900.0);
+        assert!(empty.is_none());
+    }
+
+    #[test]
+    fn painted_in_keeps_a_land_ramp_above_sea_level() {
+        let bands = Bands::default();
+        let sea = bands.sea().unwrap();
+        let land = bands
+            .painted_in(&greys(2), &[], Part::Land, 0..12, -5000.0, 2000.0)
+            .unwrap();
+        assert_eq!(land.stops()[..=sea], bands.stops()[..=sea]);
+        assert_eq!(values(&land)[sea..], [0.0, 1000.0, ELEV_MAX]);
+        let water = bands
+            .painted_in(&greys(2), &[], Part::Sea, 0..12, -3000.0, 2000.0)
+            .unwrap();
+        assert_eq!(values(&water)[..3], [ELEV_MIN, -1500.0, 0.0]);
     }
 }
