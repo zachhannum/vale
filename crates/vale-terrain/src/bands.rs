@@ -653,6 +653,58 @@ impl Bands {
             .map(|b| b.with_names(&names))
     }
 
+    /// The bands with the inner stops moved so that they span the values
+    /// from `lo` to `hi`, with the same relative spacing. The ends of the
+    /// range, the colors, the names, and the lines do not change. With a
+    /// sea split, sea level stays, and each side moves on its own:
+    /// - If `lo` is below sea level and `hi` is above it, the sea goes to
+    ///   the values from `lo` to sea level, and the land goes to the values
+    ///   from sea level to `hi`.
+    /// - If `lo` is at sea level or above, only the land moves, to the
+    ///   values from `lo` to `hi`.
+    /// - If `hi` is at sea level or below, only the sea moves, to the
+    ///   values from `lo` to `hi`.
+    ///
+    /// The values out of the range go to its nearest end. Returns `None` if
+    /// `lo` is not less than `hi`, if a value is not finite, or if two stops
+    /// come closer than `MIN_BAND`.
+    pub fn fitted_to(&self, lo: f64, hi: f64) -> Option<Bands> {
+        if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+            return None;
+        }
+        let (lo, hi) = (lo.max(self.min), hi.min(self.max));
+        // The map of the values from `a..b` to `c..d`.
+        let map = |a: f64, b: f64, c: f64, d: f64| move |v: f64| c + (v - a) * (d - c) / (b - a);
+        let sea = self.sea();
+        let mut stops = self.stops.clone();
+        for (i, stop) in stops.iter_mut().enumerate() {
+            if self.fixed(i) {
+                continue;
+            }
+            let v = stop.value;
+            stop.value = match sea {
+                None => map(self.min, self.max, lo, hi)(v),
+                Some(s) => {
+                    let below = i < s;
+                    if lo < SEA_LEVEL && SEA_LEVEL < hi {
+                        match below {
+                            true => map(self.min, SEA_LEVEL, lo, SEA_LEVEL)(v),
+                            false => map(SEA_LEVEL, self.max, SEA_LEVEL, hi)(v),
+                        }
+                    } else if lo >= SEA_LEVEL && !below {
+                        map(SEA_LEVEL, self.max, lo, hi)(v)
+                    } else if hi <= SEA_LEVEL && below {
+                        map(self.min, SEA_LEVEL, lo, hi)(v)
+                    } else {
+                        v
+                    }
+                }
+            };
+        }
+        Bands::from_range_parts(self.min, self.max, self.split, &stops, &self.colors)
+            .map(|b| b.with_names(&self.names))
+    }
+
     /// The bands of `bands` that are in a part.
     fn window(&self, part: Part, bands: Range<usize>) -> Range<usize> {
         let p = self.part_bands(part);
@@ -1718,5 +1770,74 @@ mod tests {
             .painted_in(&greys(2), &[], Part::Sea, 0..12, -3000.0, 2000.0)
             .unwrap();
         assert_eq!(values(&water)[..3], [ELEV_MIN, -1500.0, 0.0]);
+    }
+
+    #[test]
+    fn fitted_to_moves_the_inner_stops_into_the_window() {
+        let mut bands = grey(0.0, 1000.0, false, &[0.0, 100.0, 500.0, 1000.0]).unwrap();
+        let line = StopLine {
+            on: true,
+            ..StopLine::default()
+        };
+        bands.set_line(1, line);
+        bands.set_color(2, BLUE);
+        bands.set_name(1, "Hills");
+        let fitted = bands.fitted_to(200.0, 400.0).unwrap();
+        assert_eq!(values(&fitted), [0.0, 220.0, 300.0, 1000.0]);
+        assert_eq!(fitted.colors(), bands.colors());
+        assert_eq!(fitted.names(), bands.names());
+        assert_eq!(fitted.stops()[1].line, line);
+    }
+
+    #[test]
+    fn fitted_to_keeps_sea_level_for_a_window_across_it() {
+        let bands = grey(
+            -1000.0,
+            3000.0,
+            true,
+            &[-1000.0, -500.0, 0.0, 1500.0, 3000.0],
+        )
+        .unwrap();
+        let fitted = bands.fitted_to(-200.0, 600.0).unwrap();
+        assert_eq!(values(&fitted), [-1000.0, -100.0, 0.0, 300.0, 3000.0]);
+    }
+
+    #[test]
+    fn fitted_to_moves_only_the_land_for_a_window_on_land() {
+        let bands = grey(
+            -1000.0,
+            3000.0,
+            true,
+            &[-1000.0, -500.0, 0.0, 1500.0, 3000.0],
+        )
+        .unwrap();
+        let fitted = bands.fitted_to(1000.0, 2000.0).unwrap();
+        assert_eq!(values(&fitted), [-1000.0, -500.0, 0.0, 1500.0, 3000.0]);
+        let fitted = bands.fitted_to(200.0, 1400.0).unwrap();
+        assert_eq!(values(&fitted), [-1000.0, -500.0, 0.0, 800.0, 3000.0]);
+    }
+
+    #[test]
+    fn fitted_to_moves_only_the_sea_for_a_window_in_the_sea() {
+        let bands = grey(
+            -1000.0,
+            3000.0,
+            true,
+            &[-1000.0, -500.0, 0.0, 1500.0, 3000.0],
+        )
+        .unwrap();
+        let fitted = bands.fitted_to(-800.0, -400.0).unwrap();
+        assert_eq!(values(&fitted), [-1000.0, -600.0, 0.0, 1500.0, 3000.0]);
+    }
+
+    #[test]
+    fn fitted_to_rejects_a_bad_window() {
+        let bands = grey(0.0, 1000.0, false, &[0.0, 100.0, 500.0, 1000.0]).unwrap();
+        assert!(bands.fitted_to(400.0, 400.0).is_none());
+        assert!(bands.fitted_to(500.0, 400.0).is_none());
+        assert!(bands.fitted_to(f64::NAN, 400.0).is_none());
+        assert!(bands.fitted_to(0.0, f64::INFINITY).is_none());
+        // The two inner stops would be 0.4 apart.
+        assert!(bands.fitted_to(400.0, 401.0).is_none());
     }
 }
