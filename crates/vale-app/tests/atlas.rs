@@ -13252,8 +13252,12 @@ fn in_frame_the_strip_has_closed_ends_at_the_bands_of_the_frame() {
 
 #[test]
 fn all_on_the_panel_of_a_color_key_shows_every_band() {
-    use vale_app::ui::pad::furniture::KEY_BAND_CHOICES;
+    use vale_app::ui::pad::furniture::{KEY_BAND_CHOICES, KEY_EXTENT};
     let (mut h, layer, id) = frame_key_pad(45.0, vale_store::KeyLayout::List);
+    // The choice has its own name, apart from the row of the band list.
+    let texts = frame_texts(&h);
+    let count = |t: &str| texts.iter().filter(|(s, _)| s == t).count();
+    assert_eq!((count(KEY_EXTENT), count(item::BANDS)), (1, 1), "{texts:?}");
     let count = inset_values(&h, layer).len() - 1;
     let shown = |h: &Pad| {
         atlas::key_data(h.state(), &key_of(h, id))
