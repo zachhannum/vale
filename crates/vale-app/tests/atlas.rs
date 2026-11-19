@@ -3882,6 +3882,7 @@ fn a_band_name_in_a_map_is_a_local_change() {
     tap(&mut h, &open);
     scroll_to(&mut h, COLOR_STOPS);
     tap(&mut h, COLOR_STOPS);
+    wait_areas(&mut h);
     tap(&mut h, vale_app::ui::pad::stops::ALL_BANDS);
     scroll_to(&mut h, &band_row(1));
     tap(&mut h, &band_row(1));
@@ -3924,6 +3925,7 @@ fn the_raster_panel_changes_a_band_color_and_the_hillshade_in_this_map_only() {
         // A band color.
         scroll_to(&mut h, COLOR_STOPS);
         tap(&mut h, COLOR_STOPS);
+        wait_areas(&mut h);
         assert_eq!(h.state().atlas.layer_page, Some(Page::Stops), "{what}");
         check_controls(&h, &format!("{what}: stops"));
         // The new layer is flat, so the frame shows one band.
@@ -10505,6 +10507,7 @@ fn the_ramp_editor_works_in_a_frame() {
         tap(&mut h, &open);
         scroll_to(&mut h, COLOR_STOPS);
         tap(&mut h, COLOR_STOPS);
+        wait_areas(&mut h);
 
         // Back from "Save as ramp…" goes to the color stops.
         scroll_to(&mut h, SAVE_AS_RAMP);
@@ -12741,6 +12744,7 @@ fn the_stops_page_of_a_frame_has_the_switch_and_opens_in_frame() {
     use vale_app::ui::pad::raster::COLOR_STOPS;
     use vale_app::ui::pad::stops::{ALL_BANDS, IN_FRAME};
     let (mut h, _, _) = frame_stops_pad(45.0);
+    screenshot::save(&mut h, "pad-atlas-frame-stops");
     assert_eq!(h.state().atlas.layer_page, Some(Page::Stops));
     assert!(control(&h, IN_FRAME).is_some());
     assert!(control(&h, ALL_BANDS).is_some());
