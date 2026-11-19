@@ -30,12 +30,9 @@ pub const NO_CHECKED: &str = "No collection is checked.";
 const MENU_WIDTH: f32 = 300.0;
 /// The space between two cards.
 const CARD_GAP: f32 = 10.0;
-/// The space between the edge of a card and its rows. The highlight of a
-/// row is then as far from the edge of the card as its radius is less than
-/// the radius of the card.
-const CARD_INSET: f32 = 15.0;
-/// The space below the last row of a card.
-const CARD_BOTTOM: f32 = 5.0;
+/// The space between the edge of a card and the content of its rows. The
+/// highlight of a row reaches the edge of the card.
+const CARD_INSET: f32 = 8.0;
 const CARD_RADIUS: f32 = 12.0;
 
 /// The name of the popover row of a collection.
@@ -266,8 +263,8 @@ fn card(
     let rows = card_rows(project, id);
     let body = match (collapsed, rows.len()) {
         (true, _) => 0.0,
-        (false, 0) => PANEL_ROW + CARD_BOTTOM,
-        (false, n) => n as f32 * PANEL_ROW + CARD_BOTTOM,
+        (false, 0) => PANEL_ROW,
+        (false, n) => n as f32 * PANEL_ROW,
     };
     let size = vec2(ui.available_width(), PANEL_ROW + body);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -290,7 +287,7 @@ fn card(
     }
     let inner = Rect::from_min_max(
         pos2(rect.left() + CARD_INSET, head.bottom()),
-        pos2(rect.right() - CARD_INSET, rect.bottom() - CARD_BOTTOM),
+        pos2(rect.right() - CARD_INSET, rect.bottom()),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -526,6 +523,7 @@ fn layer_rows(
         select: true,
         reorder: true,
         confine: true,
+        grouped: Some(CARD_RADIUS),
         field: super::LAYER_NAME,
         ..list::Spec::default()
     };
