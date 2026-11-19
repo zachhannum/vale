@@ -620,6 +620,8 @@ pub struct AppState {
     pub export_thumbs: export_thumbs::Thumbs,
     /// The color ramps of the app.
     pub ramps: crate::ramps::Ramps,
+    /// The area at each level of the layer on the page of the color stops.
+    pub areas: crate::areas::Areas,
     /// The text of the last import of a color ramp.
     pub ramp_note: Option<Note>,
     /// The ramp in the editor.
@@ -839,6 +841,7 @@ impl AppState {
             export_options: export_form::Options::default(),
             export_thumbs: Default::default(),
             ramps: Default::default(),
+            areas: Default::default(),
             ramp_note: None,
             ramp_draft: None,
             symbol_note: None,
