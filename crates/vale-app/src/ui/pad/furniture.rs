@@ -50,6 +50,11 @@ pub const KEY_LAYER: &str = "Layer";
 pub const NO_RASTERS: &str = "The map shows no raster layers.";
 pub const LAYER_HIDDEN: &str = "The map frame does not show this layer.";
 pub const KEY_LAYOUT: &str = "Layout";
+/// The row of the choice of the bands that a color key shows.
+pub const KEY_BANDS: &str = "Bands";
+/// The choices of [`KEY_BANDS`]: the bands that the frame shows, and all
+/// bands.
+pub const KEY_BAND_CHOICES: [&str; 2] = [super::stops::IN_FRAME, super::stops::ALL_BANDS];
 /// The names of [`KeyLayout::ALL`].
 pub const KEY_LAYOUTS: [&str; 2] = ["Strip", "List"];
 pub const SPLIT: &str = "Split at sea level";
@@ -749,6 +754,10 @@ fn key_body(
     }
     if key.frame.is_some() && atlas::key_data(state, key).is_none() {
         hint(ui, LAYER_HIDDEN);
+    }
+    let active = Some(usize::from(key.all_bands));
+    if let Some(i) = widgets::choice_row(ui, controls, KEY_BANDS, &KEY_BAND_CHOICES, active) {
+        atlas::edit_key(state, id, true, |k| k.all_bands = i == 1);
     }
     let all = KeyLayout::ALL;
     let active = all.iter().position(|l| *l == key.layout);
