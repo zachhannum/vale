@@ -70,6 +70,13 @@ pub struct CardLift {
     pub id: CollectionId,
     /// The distance from the top of the header to the finger.
     pub grab: f32,
+    /// The place of the finger when the card lifted.
+    pub origin: egui::Pos2,
+    /// The finger moved from `origin` by more than the slop of a hold.
+    pub moved: bool,
+    /// The space above the header rows, so that the row of the lifted card
+    /// starts under the finger. Set in the first frame of the lift.
+    pub offset: Option<f32>,
 }
 
 /// The state of the cards of the Layers panel.
@@ -77,7 +84,11 @@ pub struct CardLift {
 pub struct Cards {
     /// The gestures and the selected rows of the list of each card.
     pub lists: HashMap<CollectionId, list::ListState<LayerId>>,
+    /// The card that a hold of its header lifted. While a card is lifted,
+    /// each card shows its header row alone, in a list that reorders.
     pub lift: Option<CardLift>,
+    /// The list of the header rows while a card is lifted.
+    pub stack: list::ListState<CollectionId>,
 }
 
 impl Cards {
@@ -233,17 +244,120 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
         return;
     }
     state.pad.cards.lists.retain(|id, _| stack.contains(id));
-    let mut placed = Vec::new();
+    if state.pad.cards.lift.is_some() {
+        restack(ui, state, controls, &stack);
+        return;
+    }
     for (i, id) in stack.iter().rev().enumerate() {
         if i > 0 {
             ui.add_space(CARD_GAP);
         }
-        let rect = ui
-            .push_id(("card", id.0), |ui| card(ui, state, controls, *id))
-            .inner;
-        placed.push((*id, rect));
+        ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id));
     }
-    move_card(ui, state, &placed);
+}
+
+/// The header rows of the cards in a list that reorders, while a card is
+/// lifted. When the finger lets go, the lifted card moves to its new place
+/// in the stack, as one undo step, and the cards open again. A hold that
+/// ends in place collapses the card or opens it, as a tap does.
+fn restack(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    stack: &[CollectionId],
+) {
+    let top_first: Vec<CollectionId> = stack.iter().rev().copied().collect();
+    let cards = &mut state.pad.cards;
+    let Some(mut lift) = cards.lift else {
+        return;
+    };
+    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+        lift.moved |= p.distance(lift.origin) > list::HOLD_SLOP;
+        cards.lift = Some(lift);
+    }
+    let Some(from) = top_first.iter().position(|id| *id == lift.id) else {
+        cards.lift = None;
+        return;
+    };
+    if cards.stack.lift.is_none() {
+        // The list takes the hold of the header.
+        cards.stack = list::ListState::default();
+        cards.stack.lift = Some(list::Lift {
+            key: lift.id,
+            from,
+            grab: lift.grab,
+            last: None,
+        });
+    }
+    let project = &state.doc.project;
+    let rows: Vec<list::Row<CollectionId>> = (top_first.iter())
+        .filter_map(|id| {
+            let c = project.collection(*id)?;
+            Some(list::Row {
+                label: header_name(&c.name),
+                select: false,
+                ..list::Row::new(c.id, c.name.clone())
+            })
+        })
+        .collect();
+    let spec = list::Spec {
+        reorder: true,
+        plain: true,
+        ..list::Spec::default()
+    };
+    let width = ui.available_width();
+    let top = ui.cursor().top();
+    let offset = *lift.offset.get_or_insert_with(|| {
+        let slot = top + from as f32 * PANEL_ROW;
+        (lift.origin.y - lift.grab - slot).max(0.0)
+    });
+    state.pad.cards.lift = Some(lift);
+    ui.add_space(offset);
+    let (area, _) = ui.allocate_exact_size(vec2(width, 0.0), Sense::hover());
+    let inner = Rect::from_min_max(
+        pos2(area.left() + 8.0, area.top()),
+        pos2(
+            area.right() - 8.0,
+            area.top() + rows.len() as f32 * PANEL_ROW,
+        ),
+    );
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let list = &mut state.pad.cards.stack;
+    let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
+        let pill = cell.rect.expand2(vec2(8.0, -CARD_GAP / 2.0));
+        let fill = if cell.lifted {
+            theme::menu()
+        } else {
+            theme::raise()
+        };
+        cell.painter.rect_filled(pill, CARD_RADIUS, fill);
+        let chevron = Rect::from_center_size(
+            pos2(pill.left() + 4.0 + TOUCH / 2.0, pill.center().y),
+            vec2(18.0, 18.0),
+        );
+        icons::paint(&cell.painter, chevron, Icon::Open, 18.0, theme::MUTE);
+        paint_name(&cell.painter, pill, &rows[i].name);
+        None
+    });
+    ui.allocate_exact_size(vec2(width, inner.height()), Sense::hover());
+    if state.pad.cards.stack.lift.is_none() {
+        state.pad.cards.lift = None;
+        // A hold that ends in place acts as a tap on the header row.
+        if !lift.moved && events.is_empty() {
+            let collapsed = state.doc.project.is_collapsed(lift.id);
+            state.set_collapsed(lift.id, !collapsed);
+        }
+    }
+    for event in events {
+        if let list::Event::Move { key, to, .. } = event {
+            // The rows are from the top, and the stack is from the bottom.
+            state.move_globe_collection(key, top_first.len() - 1 - to);
+        }
+    }
 }
 
 /// One card: the header row and, while the card is open, the rows of its
@@ -347,9 +461,17 @@ fn header(
     }
     if held(ui, &row) {
         ui.ctx().set_dragged_id(row.id);
-        let grab = ui.input(|i| i.pointer.interact_pos());
-        let grab = grab.map_or(PANEL_ROW / 2.0, |p| p.y - head.top());
-        state.pad.cards.lift = Some(CardLift { id, grab });
+        let origin = ui
+            .input(|i| i.pointer.interact_pos())
+            .unwrap_or(head.center());
+        let grab = origin.y - head.top();
+        state.pad.cards.lift = Some(CardLift {
+            id,
+            grab,
+            origin,
+            moved: false,
+            offset: None,
+        });
         state.pad.cards.shut();
         ui.ctx().request_repaint();
     }
@@ -392,85 +514,6 @@ fn held(ui: &egui::Ui, row: &egui::Response) -> bool {
         }
         _ => false,
     }
-}
-
-/// The gap between the cards where a lifted card goes: 0 is above the
-/// first card. `placed` are the cards from the top.
-fn card_gap(placed: &[(CollectionId, Rect)], y: f32) -> usize {
-    placed.iter().filter(|(_, r)| r.center().y < y).count()
-}
-
-/// Follows a lifted card. The header of the card moves with the finger, and
-/// a line shows the gap where the card goes. When the finger lets go, the
-/// card moves to that gap, as one undo step.
-fn move_card(ui: &mut egui::Ui, state: &mut AppState, placed: &[(CollectionId, Rect)]) {
-    let Some(lift) = state.pad.cards.lift else {
-        return;
-    };
-    let Some(from) = placed.iter().position(|(id, _)| *id == lift.id) else {
-        state.pad.cards.lift = None;
-        return;
-    };
-    list::set_lifted(ui.ctx());
-    let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
-    let y = pointer.map_or(placed[from].1.top() + lift.grab, |p| p.y);
-    let gap = card_gap(placed, y);
-    if !down {
-        state.pad.cards.lift = None;
-        // The gap above or below the card itself leaves it in place.
-        let to = if gap > from { gap - 1 } else { gap };
-        if to != from {
-            // `placed` is from the top, and the stack is from the bottom.
-            let last = placed.len() - 1;
-            state.move_globe_collection(lift.id, last - to);
-        }
-        return;
-    }
-    let line_y = match gap {
-        0 => placed[0].1.top() - CARD_GAP / 2.0,
-        g if g == placed.len() => placed[g - 1].1.bottom() + CARD_GAP / 2.0,
-        g => (placed[g - 1].1.bottom() + placed[g].1.top()) / 2.0,
-    };
-    let card = placed[from].1;
-    let layer = egui::LayerId::new(egui::Order::Tooltip, ui.id().with("card-lifted"));
-    let painter = ui.painter().clone().with_layer_id(layer);
-    if gap != from && gap != from + 1 {
-        let line = Rect::from_min_max(
-            pos2(card.left() + 8.0, line_y - 1.0),
-            pos2(card.right() - 8.0, line_y + 1.0),
-        );
-        painter.rect_filled(line, 1.0, theme::ACCENT);
-    }
-    let project = &state.doc.project;
-    if let Some(c) = project.collection(lift.id) {
-        let head = Rect::from_min_size(
-            pos2(card.left(), y - lift.grab),
-            vec2(card.width(), PANEL_ROW),
-        );
-        painter.rect_filled(head, CARD_RADIUS, theme::menu());
-        let chevron = Rect::from_center_size(
-            pos2(head.left() + 4.0 + TOUCH / 2.0, head.center().y),
-            vec2(18.0, 18.0),
-        );
-        icons::paint(&painter, chevron, Icon::Open, 18.0, theme::MUTE);
-        paint_name(&painter, head, &c.name);
-    }
-    // A finger near the top or the bottom of the panel scrolls it.
-    if let Some(p) = pointer {
-        let clip = ui.clip_rect();
-        let delta = if p.y - clip.top() < PANEL_ROW {
-            8.0
-        } else if clip.bottom() - p.y < PANEL_ROW {
-            -8.0
-        } else {
-            0.0
-        };
-        if delta != 0.0 {
-            let none = egui::style::ScrollAnimation::none();
-            ui.scroll_with_delta_animation(vec2(0.0, delta), none);
-        }
-    }
-    ui.ctx().request_repaint();
 }
 
 /// The rows of the layers of an open card, from the top. A row that a

@@ -55,7 +55,9 @@ pub struct Lift<K> {
     /// The place of the row in the list when it lifted.
     pub from: usize,
     /// The distance from the top of the row to the finger.
-    grab: f32,
+    pub grab: f32,
+    /// The last place of the finger.
+    pub last: Option<egui::Pos2>,
 }
 
 /// The state of a list. `K` identifies a row.
@@ -105,14 +107,15 @@ pub struct Spec<'a> {
     pub select: bool,
     /// A hold lifts a row.
     pub reorder: bool,
-    /// The lifted row is free to leave the list, and a drop outside the
-    /// list springs back with no move.
+    /// A drop with the finger outside the list puts the lifted row back,
+    /// with no move.
     pub confine: bool,
     /// The rows fill the width of a card with this corner radius. A
-    /// highlight and the buttons behind a row then reach the edges of the
-    /// card, with square corners, and the bottom corners of the last row
-    /// follow the card.
+    /// highlight then reaches the edges of the card, and the bottom
+    /// corners of the last row follow the card.
     pub grouped: Option<f32>,
+    /// The list paints no highlight, and the caller paints each row.
+    pub plain: bool,
     /// The name of the name field of a row that the user renames.
     pub field: &'a str,
     /// True for a name that a rename applies.
@@ -131,6 +134,7 @@ impl Default for Spec<'_> {
             reorder: false,
             confine: false,
             grouped: None,
+            plain: false,
             field: "Name",
             valid: &not_blank,
         }
@@ -363,36 +367,42 @@ where
     set_lifted(ui.ctx());
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
     let y = pointer.map_or(area.top() + tops[from] + lift.grab, |p| p.y);
-    let inside = (area.top()..=area.bottom()).contains(&(y - lift.grab + PANEL_ROW / 2.0));
-    let clamped = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let top = if spec.confine { y - lift.grab } else { clamped };
-    let to = match inside || !spec.confine {
-        true => ((clamped - area.top()) / PANEL_ROW).round() as usize,
-        false => from,
-    };
+    let top = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
+    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    if let (Some(lifted), Some(p)) = (state.lift.as_mut(), pointer) {
+        lifted.last = Some(p);
+    }
+    let last = pointer.or(lift.last);
+    let outside = last.is_some_and(|p| {
+        let near = area.expand2(vec2(8.0, PANEL_ROW / 2.0));
+        !near.contains(p)
+    });
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (i, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
         let at = if k < to { k } else { k + 1 };
         let rect = spring(row.key, at as f32 * PANEL_ROW, PANEL_ROW);
         let shape = Shape::of(spec, at, rows.len());
-        paint_still(ui, controls, state, row, rect, false, i, shape, &mut cell);
+        paint_still(
+            ui, controls, state, spec, row, rect, false, i, shape, &mut cell,
+        );
     }
     motion::set(ui.ctx(), place_spring(list_id, lift.key), top - area.top());
     paint_still(
         ui,
         controls,
         state,
+        spec,
         &rows[from],
         slot(top),
         true,
         from,
-        Shape::FREE,
+        Shape::of(spec, to, rows.len()),
         &mut cell,
     );
     if !down {
         state.clear_for_change();
-        if to != from {
+        if to != from && !(spec.confine && outside) {
             events.push(Event::Move {
                 key: lift.key,
                 from,
@@ -428,6 +438,7 @@ fn paint_still<K: Copy + PartialEq>(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     state: &ListState<K>,
+    spec: Spec,
     row: &Row<K>,
     rect: Rect,
     lifted: bool,
@@ -435,25 +446,16 @@ fn paint_still<K: Copy + PartialEq>(
     shape: Shape,
     cell: &mut impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
 ) {
-    let shape = if lifted { Shape::FREE } else { shape };
     let highlight = shape.highlight(rect);
-    let mut painter = ui.painter().clone();
-    if lifted {
-        // Above each other list, because the row can leave its own list.
-        painter.set_layer_id(egui::LayerId::new(
-            egui::Order::Tooltip,
-            ui.id().with("lifted"),
-        ));
-        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
-    }
+    let painter = ui.painter().clone();
     let picked = state.is_picked(row.key);
-    paint_back(
-        &painter,
-        highlight,
-        shape.corners(true),
-        picked,
-        row.on || lifted,
-    );
+    if !spec.plain {
+        let corners = shape.corners(false);
+        if lifted {
+            painter.rect_filled(highlight, corners, theme::card(false).to_opaque());
+        }
+        paint_back(&painter, highlight, corners, picked, row.on || lifted);
+    }
     let at = Cell {
         rect,
         painter,
@@ -466,16 +468,17 @@ fn paint_still<K: Copy + PartialEq>(
     cell(ui, controls, &at, i);
 }
 
-/// The highlight of a row and the buttons behind it.
+/// The highlight of a row and the place of the buttons behind it.
 #[derive(Copy, Clone)]
 struct Shape {
     /// The space above and below the highlight.
     inset: f32,
+    /// The radius of the corners at the left of the highlight.
     radius: f32,
     /// The radius of the bottom corners of the last row of a grouped list.
     bottom: f32,
-    /// The space at the left of each button behind the row.
-    gap: f32,
+    /// The space at the right of the buttons behind the row.
+    margin: f32,
 }
 
 impl Shape {
@@ -486,46 +489,43 @@ impl Shape {
                 inset: 0.0,
                 radius: 0.0,
                 bottom: if i + 1 == count { radius } else { 0.0 },
-                gap: 0.0,
+                margin: BUTTON_GAP,
             },
             None => Shape::FREE,
         }
     }
 
-    /// The shape of a row of a list that is not grouped, and of a lifted
-    /// row.
+    /// The shape of a row of a list that is not grouped.
     const FREE: Shape = Shape {
         inset: HIGHLIGHT_INSET,
         radius: 5.0,
         bottom: 5.0,
-        gap: BUTTON_GAP,
+        margin: 0.0,
     };
 
     fn highlight(self, rect: Rect) -> Rect {
         rect.expand2(vec2(8.0, -self.inset))
     }
 
-    /// The corners of a highlight. `right` is false for a highlight that
-    /// meets the buttons behind its row.
-    fn corners(self, right: bool) -> egui::CornerRadius {
+    /// The corners of a highlight. `open`: the buttons behind the row
+    /// show, and the right corners have the radius of a button.
+    fn corners(self, open: bool) -> egui::CornerRadius {
         let r = |v: f32| v.round() as u8;
-        let side = if right {
-            self.radius
-        } else {
-            self.radius.min(self.gap)
+        let (ne, se) = match open {
+            true => (BUTTON_RADIUS, BUTTON_RADIUS),
+            false => (self.radius, self.bottom),
         };
         egui::CornerRadius {
             nw: r(self.radius),
-            ne: r(side),
+            ne: r(ne),
             sw: r(self.bottom),
-            se: r(if right {
-                self.bottom
-            } else {
-                side.min(self.bottom)
-            }),
+            se: r(se),
         }
     }
 }
+
+/// The radius of the corners of a button behind a row.
+const BUTTON_RADIUS: f32 = 5.0;
 
 /// The tint of a selected row, or the highlight of a row that is chosen
 /// or pressed.
@@ -588,7 +588,11 @@ fn rows_live<K>(
             }
             continue;
         }
-        let width = row.behind();
+        let shape = Shape::of(spec, i, rows.len());
+        let width = match row.behind() {
+            w if w > 0.0 => w + shape.margin,
+            _ => 0.0,
+        };
         let opened = state.open.filter(|o| o.row == key);
         let target = match (opened, state.mark) {
             (Some(o), _) => (o.offset, o.moving),
@@ -612,7 +616,7 @@ fn rows_live<K>(
                     shift,
                     state.is_picked(key),
                     i,
-                    Shape::of(spec, i, rows.len()),
+                    shape,
                     cell,
                 )
             })
@@ -658,6 +662,7 @@ fn rows_live<K>(
                 grab: ui
                     .input(|i| i.pointer.interact_pos())
                     .map_or(0.0, |p| p.y - rect.top()),
+                last: None,
             });
             state.open = None;
             state.picked.clear();
@@ -911,7 +916,7 @@ fn paint_row<K>(
     paint_back(
         &painter,
         highlight,
-        shape.corners(shift >= 0.0),
+        shape.corners(shift < 0.0),
         picked,
         row.on || pressed,
     );
@@ -954,7 +959,7 @@ fn behind(
     name: &str,
 ) -> bool {
     let edge = rect.right() + 8.0;
-    let right = edge - slot as f32 * DELETE_WIDTH;
+    let right = edge - shape.margin - slot as f32 * DELETE_WIDTH;
     let reveal = edge + shift;
     if reveal >= right {
         return false;
@@ -964,30 +969,17 @@ fn behind(
     } else {
         reveal.max(right - DELETE_WIDTH)
     };
-    let highlight = shape.highlight(rect);
+    let highlight = Shape::FREE.highlight(rect);
     // The buttons have a gap between them and at the left of the first one.
-    let back = Rect::from_x_y_ranges(left + shape.gap..=right, highlight.y_range());
+    let back = Rect::from_x_y_ranges(left + BUTTON_GAP..=right, highlight.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
     let color = match text {
         "Delete" => theme::WARN,
         RENAME => theme::MUTE,
         _ => theme::ACCENT,
     };
-    // The button at the right edge of the last row of a grouped list has
-    // the corner of the card.
-    let r = |v: f32| v.round() as u8;
-    let corners = egui::CornerRadius {
-        nw: r(shape.radius),
-        ne: r(shape.radius),
-        sw: r(shape.radius),
-        se: r(if slot == 0 {
-            shape.bottom
-        } else {
-            shape.radius
-        }),
-    };
-    painter.rect_filled(back, corners, color);
-    let at = pos2(right - (DELETE_WIDTH - shape.gap) / 2.0, rect.center().y);
+    painter.rect_filled(back, BUTTON_RADIUS, color);
+    let at = pos2(right - (DELETE_WIDTH - BUTTON_GAP) / 2.0, rect.center().y);
     painter.text(
         at,
         Align2::CENTER_CENTER,

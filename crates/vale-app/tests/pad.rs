@@ -1755,9 +1755,10 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         swipe(&mut h, "Height", -0.9 * width);
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         let open = layer_list(&h).open.unwrap();
+        // The buttons of a row in a card have a space at their right.
         assert_eq!(
             open.offset,
-            -vale_app::ui::pad::widgets::RENAME_WIDTH,
+            -vale_app::ui::pad::widgets::RENAME_WIDTH - 6.0,
             "{what}"
         );
         tap(&mut h, "Delete Height");
@@ -20420,7 +20421,7 @@ fn a_reopened_project_has_the_same_checks() {
 
 #[test]
 fn manual_collection_screenshots() {
-    use vale_app::ui::pad::collection::{COLLECTIONS, chevron_name};
+    use vale_app::ui::pad::collection::{COLLECTIONS, chevron_name, header_name};
     for (size, what) in [(BOARDS[0], "landscape"), (BOARDS[3], "narrow")] {
         let mut h = pad(size);
         three_cards(&mut h);
@@ -20432,6 +20433,20 @@ fn manual_collection_screenshots() {
         swipe(&mut h, "Height", -120.0);
         screenshot::save(&mut h, &format!("pad-collection-last-swipe-{what}"));
         swipe(&mut h, "Height", 120.0);
+        // A card in the middle of a restack.
+        let world = control(&h, &header_name("World")).unwrap().center();
+        touch(&mut h, egui::TouchPhase::Start, world, None);
+        for _ in 0..4 {
+            h.step();
+        }
+        for i in 1..=4 {
+            let pos = world - vec2(0.0, 20.0 * i as f32);
+            touch(&mut h, egui::TouchPhase::Move, pos, None);
+            h.step();
+        }
+        screenshot::save(&mut h, &format!("pad-collection-restack-{what}"));
+        touch(&mut h, egui::TouchPhase::End, world, None);
+        h.run_steps(30);
         tap(&mut h, &chevron_name("Travel", false));
         screenshot::save(&mut h, &format!("pad-collection-collapsed-{what}"));
         open_collection_menu(&mut h);
