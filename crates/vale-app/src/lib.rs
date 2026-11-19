@@ -1,6 +1,7 @@
 //! Vale app library: the map pipeline and the UI.
 
 pub mod app;
+pub mod areas;
 pub mod atlas;
 pub mod atlas_export;
 pub mod classify;

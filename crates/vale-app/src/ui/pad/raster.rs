@@ -9,6 +9,7 @@ use super::geometry::{PAD, Rects, TOUCH};
 use super::icons::Icon;
 use super::list;
 use super::number::Number;
+use super::stops;
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
 use super::{Page, Panel};
@@ -128,8 +129,8 @@ pub struct StyleState {
     stop: Option<(RasterId, usize)>,
     /// The color of the selected band that the color picker edits.
     side: Option<(RasterId, usize, Paint)>,
-    /// The layer, the selected band, the left of its row, and the gradient
-    /// control in this frame.
+    /// The layer, the selected band, the left of its row, and the histogram
+    /// and the list of the bands in this frame.
     anchor: Option<(RasterId, usize, Pos2, Rect)>,
     /// The height of the contents of the card of the selected band.
     height: Option<f32>,
@@ -297,9 +298,10 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
 }
 
-/// The page of the color stops of the Layers panel: the gradient control
-/// with a row for each band, the reset row, and the row of the color
-/// ramps. A tap on a band opens its card, which `band_card` shows.
+/// The page of the color stops of the Layers panel: the histogram of the
+/// area at each value, the list of the bands, the reset row, and the row of
+/// the color ramps. A tap on a band opens its card, which `band_card`
+/// shows.
 pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
@@ -309,6 +311,12 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         raster.unit.clone(),
         crate::ui::is_height(raster),
     );
+    state.areas.retain(|r| r == id);
+    let bins = (state.globe.value_map(id)).and_then(|map| state.areas.bins(id, map));
+    if state.areas.poll(false) {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(50));
+    }
     let style = &mut state.pad.style;
     let globe = &mut state.globe;
     let mut selected = elevation::selected(&globe.preview, Some(id));
@@ -316,23 +324,30 @@ pub fn stops_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     let before = selected;
-    let m = &gradient::COLUMN;
-    let (resp, parts) = ui
-        .scope(|ui| {
-            ui.visuals_mut().override_text_color = Some(theme::MUTE);
-            gradient::column(ui, controls, m, bands, &mut selected, display, &unit)
-        })
-        .inner;
+    let histogram = stops::histogram(ui);
+    let legend = stops::legend(
+        ui,
+        controls,
+        bands,
+        &mut selected,
+        display,
+        &unit,
+        bins.as_deref().map(Vec::as_slice),
+    );
+    let marker = legend.scrub.map(|i| bands.stops()[i].value);
+    let dim = selected.filter(|_| legend.scrub.is_none());
+    let bins = bins.as_deref().map(Vec::as_slice);
+    stops::paint_histogram(ui, histogram, bins, bands, display, &unit, dim, marker);
     if selected != before {
         style.side = None;
     }
     // The card hides while a finger drags a stop, so that the globe shows.
     let count = bands.colors().len();
-    let area = parts.bar.union(parts.rows);
+    let area = histogram.union(legend.rows);
     style.anchor = selected
-        .filter(|i| !resp.dragged() && *i < count)
+        .filter(|i| legend.scrub.is_none() && *i < count)
         .and_then(|index| {
-            let at = parts.row(m, count, index).left_center();
+            let at = legend.row_of.get(index)?.left_center();
             let keep = area.intersect(ui.clip_rect());
             ui.clip_rect().contains(at).then_some((id, index, at, keep))
         });
@@ -768,9 +783,9 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
 /// The card of the selected band: its color, and the value and the line of
 /// its lower edge, with the button that removes that stop. The lowest band
 /// has only its color. The card is at the left of the panel and points at
-/// the row of the band. Above a sheet, the card is above the gradient. A
-/// touch outside the card and the gradient control closes the card. The
-/// card hides during a drag on the gradient control.
+/// the row of the band. Above a sheet, the card is above the list. A touch
+/// outside the card, the histogram, and the list closes the card. The card
+/// hides during a drag on the value of a stop.
 pub fn band_card(
     ctx: &egui::Context,
     state: &mut AppState,

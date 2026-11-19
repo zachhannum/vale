@@ -1027,7 +1027,7 @@ fn repeats(ui: &egui::Ui, resp: &egui::Response) -> bool {
 }
 
 /// The speed of a drag at a distance from the track, and its name.
-fn speed(away: f32) -> (f64, Option<&'static str>) {
+pub(crate) fn speed(away: f32) -> (f64, Option<&'static str>) {
     SPEEDS
         .iter()
         .rev()

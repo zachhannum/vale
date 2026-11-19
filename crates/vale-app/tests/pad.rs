@@ -17,12 +17,14 @@ use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::export_form::{self, EXPORT, ExportForm};
-use vale_app::ui::gradient::{COLUMN, ColumnParts, GRADIENT, band_row, widest_gap_value};
+use vale_app::ui::gradient::{band_row, widest_gap_value};
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
 use vale_app::ui::pad::number::TRACK_INSET;
 use vale_app::ui::pad::raster;
+use vale_app::ui::pad::stops::{ADD_STOP, HISTOGRAM, cell_name, stop_name};
+use vale_app::ui::pad::widgets::PANEL_ROW;
 use vale_app::ui::pad::{
     ADD_LAYER, CLEAR_PATH, DESELECT, EXPORT_GEOTIFF, GRATICULE, IMPORT_HEIGHTMAP, LAYER_NAME, LINE,
     LayerRef, MEASURE, ModeGroup, NEW_GEOJSON, NEW_HEIGHTMAP, NEW_IMAGE, NEW_RASTER, OPACITY,
@@ -498,6 +500,23 @@ fn check_controls(h: &Pad, what: &str) {
                 c.name.starts_with("Condition ") || c.name.starts_with("Group ")
             };
             let covered = covered || condition(a) || condition(b);
+            // The row of a band on the page of the color stops is under the
+            // values of the stops at its edges and under its button.
+            let numbered = |c: &vale_app::ui::pad::widgets::Control, prefix: &str| {
+                (c.name.strip_prefix(prefix)).is_some_and(|n| n.parse::<usize>().is_ok())
+            };
+            let over = |c: &vale_app::ui::pad::widgets::Control| {
+                numbered(c, "Stop ") || c.name == vale_app::ui::pad::stops::ADD_STOP
+            };
+            let band = |c: &vale_app::ui::pad::widgets::Control| numbered(c, "Band ");
+            // The color cell of a row is over the row.
+            let cell = |c: &vale_app::ui::pad::widgets::Control| {
+                (c.name.strip_suffix(" color")).is_some_and(|n| {
+                    (n.strip_prefix("Band ")).is_some_and(|n| n.parse::<usize>().is_ok())
+                })
+            };
+            let over = |c: &vale_app::ui::pad::widgets::Control| over(c) || cell(c);
+            let covered = covered || (band(a) && over(b)) || (over(a) && band(b));
             let free = !a.rect.shrink(0.5).intersects(b.rect.shrink(0.5));
             assert!(free || covered, "{what}: {name} and {} overlap", b.name);
         }
@@ -5651,7 +5670,8 @@ fn open_height(h: &mut Pad) -> RasterId {
 #[test]
 fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
     use vale_app::ui::pad::raster::{
-        COLOR, COLOR_RAMPS, COLOR_STOPS, LINE, REMOVE_STOP, RESET_STOPS, SHOW_AS, STOP_VALUE, UNIT,
+        COLOR, COLOR_RAMPS, COLOR_STOPS, LINE, REMOVE_STOP, RESET_STOPS, SAVE_AS_RAMP, SHOW_AS,
+        STOP_VALUE, UNIT,
     };
     for size in BOARDS {
         let what = format!("{size:?}");
@@ -5675,7 +5695,9 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         check_controls(&h, &format!("{what} on the page of the color stops"));
         let card = panel(&h, Panel::Layers).unwrap();
         assert!(screen.contains_rect(card), "{what}: {card:?}");
-        for name in [GRADIENT, RESET_STOPS, COLOR_RAMPS] {
+        let histogram = h.get_by_label(HISTOGRAM).rect();
+        assert!(card.contains_rect(histogram), "{what}: {histogram:?}");
+        for name in [RESET_STOPS, COLOR_RAMPS, SAVE_AS_RAMP] {
             if let Some(rect) = control(&h, name) {
                 assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
             }
@@ -5732,7 +5754,7 @@ fn the_style_section_has_a_strip_of_the_color_stops_and_no_rows_of_them() {
         // The one control of the name is the strip, with no drag area.
         assert_eq!(h.query_all_by_label(COLOR_STOPS).count(), 1, "{what}");
         let strip = control(&h, COLOR_STOPS).unwrap_or_else(|| panic!("{what}: no strip"));
-        assert!(strip.height() < 2.0 * COLUMN.row, "{what}: {strip:?}");
+        assert!(strip.height() < 2.0 * PANEL_ROW, "{what}: {strip:?}");
         assert!(h.query_by_label(&band_row(0)).is_none(), "{what}");
         for name in [RESET_STOPS, COLOR_RAMPS] {
             assert!(h.query_by_label(name).is_none(), "{what}: {name}");
@@ -5775,19 +5797,57 @@ fn a_tap_on_the_strip_opens_the_page_and_back_from_the_ramps_goes_to_it() {
 }
 
 #[test]
-fn twenty_bands_have_rows_of_touch_size_with_the_highest_at_the_top() {
+fn each_band_has_a_row_of_touch_size_highest_first_and_the_cells_touch() {
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
     add_stops(&mut h, 21);
     open_stops(&mut h);
     check_controls(&h, "on the page of 20 bands");
+    assert!(h.query_by_label(&band_row(20)).is_none());
+    assert!(
+        (h.query_by_label(vale_app::ui::gradient::GRADIENT)).is_none(),
+        "the page has no bar"
+    );
     let rows: Vec<Rect> = (0..20).map(|i| band_rect(&h, i)).collect();
     for (index, row) in rows.iter().enumerate() {
         assert!(row.height() >= 44.0, "{index}: {row:?}");
     }
-    for (index, pair) in rows.windows(2).enumerate() {
-        assert!(pair[1].bottom() <= pair[0].top() + 0.5, "{index}: {pair:?}");
+    // The highest band is at the top, and the rows touch.
+    for (index, pair) in rows.iter().zip(&rows[1..]).enumerate() {
+        assert!(
+            (pair.1.bottom() - pair.0.top()).abs() < 0.5,
+            "{index}: {pair:?}"
+        );
     }
+    // The color cell of each row fills the height of the row, so the cells
+    // touch.
+    let card = panel(&h, Panel::Layers).unwrap();
+    let bands = h.state().globe.map.bands.clone();
+    let shapes = painted_shapes(&h);
+    let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+    let mut seen = 0;
+    for (index, row) in rows.iter().enumerate() {
+        if !card.contains_rect(*row) {
+            continue;
+        }
+        seen += 1;
+        let color = color32(bands.colors()[index]);
+        let cell = shapes.iter().any(|shape| match shape {
+            egui::Shape::Rect(r) => {
+                r.fill == color
+                    && near(r.rect.left(), row.left())
+                    && near(r.rect.top(), row.top())
+                    && near(r.rect.bottom(), row.bottom())
+                    && r.rect.width() >= 24.0
+            }
+            _ => false,
+        });
+        assert!(cell, "{index}: no cell in {row:?}");
+    }
+    assert!(seen >= 5, "{seen}");
+    // No leader lines join the rows to a bar.
+    let leaders = painted_lines(&h).iter().filter(|l| l.len() == 4).count();
+    assert_eq!(leaders, 0);
 }
 
 /// The lines that the last frame painted, as lists of points.
@@ -5807,47 +5867,156 @@ fn painted_lines(h: &Pad) -> Vec<Vec<Pos2>> {
 }
 
 #[test]
-fn each_handle_is_at_its_value_and_its_line_goes_to_its_row_with_no_crossing() {
+fn each_stop_value_is_on_its_seam_with_its_line_weight_and_sea_level() {
+    use vale_terrain::StopLine;
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
-    add_stops(&mut h, 20);
+    let line = StopLine {
+        on: true,
+        weight: 3.0,
+        color: [250, 10, 10],
+        ..StopLine::default()
+    };
+    let bands = &mut h.state_mut().globe.map.bands;
+    let sea = bands.sea().unwrap();
+    let lined = sea + 2;
+    assert!(bands.set_line(lined, line));
     open_stops(&mut h);
-    show_stop(&mut h, 10);
-    let card = panel(&h, Panel::Layers).unwrap();
-    let parts = column_parts(&h);
+    show_stop(&mut h, sea + 1);
     let bands = h.state().globe.map.bands.clone();
-    let lines = painted_lines(&h);
-    let mut ends = Vec::new();
-    // Each band has the row of the stop at its lower edge.
-    for (index, stop) in bands.stops().iter().enumerate().take(bands.colors().len()) {
-        let (at, row) = (parts.handle(&bands, stop.value), band_rect(&h, index));
-        assert!(parts.bar.top() - 0.5 <= at.y && at.y <= parts.bar.bottom() + 0.5);
-        if !(card.contains(at) && card.contains(row.center())) {
+    let stops = bands.stops();
+    // The ends of the range have no value in the list.
+    assert!(h.query_by_label(&stop_name(0)).is_none());
+    assert!(h.query_by_label(&stop_name(stops.len() - 1)).is_none());
+    let card = panel(&h, Panel::Layers).unwrap();
+    let texts = painted_texts(&h);
+    let shapes = painted_shapes(&h);
+    let span = bands.max() - bands.min();
+    let on_line = |r: &Rect, y: f32| (r.center().y - y).abs() < 2.0;
+    let mut seen = 0;
+    for (index, stop) in stops.iter().enumerate().take(stops.len() - 1).skip(1) {
+        let y = band_rect(&h, index).bottom();
+        assert!((band_rect(&h, index - 1).top() - y).abs() < 0.5, "{index}");
+        let at = seam(&h, index);
+        assert!((at.y - y).abs() < 0.5, "{index}: {at:?} {y}");
+        if !(card.top() + 20.0 < y && y < card.bottom() - 20.0) {
             continue;
         }
-        // The leader line goes from the handle to the middle of the row.
-        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
-        let leader = lines.iter().find(|line| {
-            let (first, last) = (line[0], line[line.len() - 1]);
-            line.len() == 4
-                && near(first.y, at.y)
-                && near(last.y, row.center().y)
-                && first.x < row.left()
-                && last.x > row.left()
+        seen += 1;
+        let value = vale_app::world::value_text(stop.value, span, "m");
+        let shown = texts.iter().any(|(t, r)| *t == value && on_line(r, y));
+        assert!(shown, "{index}: no {value} at {y}");
+        let sea_text = texts.iter().any(|(t, r)| t == "Sea level" && on_line(r, y));
+        assert_eq!(sea_text, index == sea, "{index}");
+        let weight = texts.iter().any(|(t, r)| t == "3 pt" && on_line(r, y));
+        assert_eq!(weight, index == lined, "{index}");
+        // A stop with a line has a line across the color cells.
+        let across = shapes.iter().any(|shape| match shape {
+            egui::Shape::LineSegment { points, stroke } => {
+                stroke.color == color32(line.color)
+                    && stroke.width == 3.0
+                    && (points[0].y - y).abs() < 0.5
+                    && points[0].x <= band_rect(&h, index).left() + 0.5
+            }
+            _ => false,
         });
-        assert!(leader.is_some(), "{index}: no line from {at:?} to {row:?}");
-        ends.push((at.y, row.center().y));
+        assert_eq!(across, index == lined, "{index}");
     }
-    assert!(ends.len() >= 5, "{ends:?}");
-    // A higher band has a higher handle and a higher row.
-    for pair in ends.windows(2) {
-        assert!(pair[1].0 < pair[0].0 && pair[1].1 < pair[0].1, "{pair:?}");
+    assert!(seen >= 4, "{seen}");
+}
+
+/// Sets the northern half of the height layer to 2500 m and the southern
+/// half to -3000 m.
+fn halves(h: &mut Pad) {
+    let map = &mut h.state_mut().globe.map;
+    let n = map.face_size();
+    let (north, south) = (meters_to_level(2500.0), meters_to_level(-3000.0));
+    for face in 0..6 {
+        for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
+            let d = map.texel_dir(face, x, y);
+            map.set(face, x, y, if d[2] > 0.0 { north } else { south });
+        }
     }
-    // The lowest stop is at the bottom of the bar and the highest at the top.
-    let stops = bands.stops();
-    let (low, high) = (stops[0].value, stops[stops.len() - 1].value);
-    assert!((parts.stop_y(&bands, low) - parts.bar.bottom()).abs() < 0.5);
-    assert!((parts.stop_y(&bands, high) - parts.bar.top()).abs() < 0.5);
+    h.run_steps(2);
+}
+
+/// The band of a value.
+fn band_of(h: &Pad, value: f64) -> usize {
+    let stops = h.state().globe.map.bands.stops().to_vec();
+    stops.partition_point(|s| s.value <= value) - 1
+}
+
+#[test]
+fn a_row_shows_its_band_name_and_its_share_of_the_area() {
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    halves(&mut h);
+    let (high, low) = (band_of(&h, 2500.0), band_of(&h, -3000.0));
+    assert!(h.state_mut().globe.map.bands.set_name(high, "Alpine"));
+    open_stops(&mut h);
+    let count = h.state().globe.map.bands.colors().len();
+    for index in [high, low, high - 1] {
+        show_stop(&mut h, index);
+        let row = band_rect(&h, index);
+        let texts = painted_texts(&h);
+        let in_row =
+            |text: &str| (texts.iter()).any(|(t, r)| t == text && row.contains(r.center()));
+        let share = if index == high || index == low {
+            "50%"
+        } else {
+            "0%"
+        };
+        assert!(in_row(share), "{index}: no {share} in {texts:?}");
+        assert_eq!(in_row("Alpine"), index == high, "{index}");
+    }
+    assert!(count > 3);
+}
+
+#[test]
+fn the_histogram_shows_the_area_in_band_colors_and_dims_other_bands() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    halves(&mut h);
+    open_stops(&mut h);
+    let (high, low) = (band_of(&h, 2500.0), band_of(&h, -3000.0));
+    let colors = h.state().globe.map.bands.colors().to_vec();
+    let histogram = h.get_by_label(HISTOGRAM).rect();
+    let columns = |h: &Pad| -> Vec<egui::Color32> {
+        let shapes = painted_shapes(h);
+        (shapes.iter())
+            .filter_map(|shape| match shape {
+                egui::Shape::Rect(r) if histogram.contains_rect(r.rect.shrink(0.2)) => Some(r.fill),
+                _ => None,
+            })
+            .collect()
+    };
+    let shown = columns(&h);
+    for band in [high, low] {
+        assert!(shown.contains(&color32(colors[band])), "{band}: {shown:?}");
+    }
+    // The other bands have no area, so they have no columns.
+    let other = color32(colors[high - 1]);
+    assert!(colors[high - 1] == colors[high] || !shown.contains(&other));
+
+    // While a band is selected, the other bands are dim.
+    show_stop(&mut h, high);
+    tap_handle(&mut h, high);
+    assert_eq!(h.state().globe.preview.selected, Some((height, high)));
+    scroll_to_y(&mut h, |h| h.get_by_label(HISTOGRAM).rect().center().y);
+    let histogram = h.get_by_label(HISTOGRAM).rect();
+    let dim = color32(colors[low]).gamma_multiply(0.25);
+    let shown = columns(&h);
+    assert!(shown.contains(&color32(colors[high])), "{shown:?}");
+    assert!(shown.contains(&dim), "{shown:?}");
+    assert!(!shown.contains(&color32(colors[low])), "{shown:?}");
+
+    // A tap and a drag on the histogram do not change the layer.
+    let bands = h.state().globe.map.bands.clone();
+    finger_tap(&mut h, histogram.center());
+    let from = histogram.center();
+    drag(&mut h, from, from + vec2(60.0, 0.0), None);
+    assert_eq!(h.state().globe.map.bands, bands);
+    assert_eq!(h.state().globe.preview.selected, Some((height, high)));
 }
 
 /// A tap of a finger at a place.
@@ -5858,10 +6027,13 @@ fn finger_tap(h: &mut Pad, pos: Pos2) {
     h.run_steps(3);
 }
 
-/// Opens the page of the color stops of the open raster layer.
+/// Opens the page of the color stops of the open raster layer, and waits
+/// for the area at each level.
 fn open_stops(h: &mut Pad) {
     h.state_mut().pad.page = Some(Page::Stops);
-    h.run_steps(3);
+    h.run_steps(1);
+    h.state_mut().areas.poll(true);
+    h.run_steps(2);
 }
 
 /// Adds stops to the height layer until it has `count`.
@@ -5874,19 +6046,10 @@ fn add_stops(h: &mut Pad, count: usize) {
     h.run_steps(3);
 }
 
-/// A tap of a finger on the handle of a stop.
+/// A tap of a finger on the row of a band.
 fn tap_handle(h: &mut Pad, index: usize) {
     let pos = handle(h, index);
     finger_tap(h, pos);
-}
-
-/// The parts of the control of the page of the color stops. A part of them
-/// can be out of the card.
-fn column_parts(h: &Pad) -> ColumnParts {
-    let grab = h.get_by_label(GRADIENT).rect();
-    let right = band_rect(h, 0).right();
-    let area = Rect::from_min_max(grab.min, pos2(right, grab.bottom()));
-    ColumnParts::new(area, &COLUMN)
 }
 
 /// The row of a band on the page of the color stops.
@@ -5894,17 +6057,14 @@ fn band_rect(h: &Pad, index: usize) -> Rect {
     h.get_by_label(&band_row(index)).rect()
 }
 
-/// The place of a value on the bar of the page of the color stops.
-fn on_bar(h: &Pad, value: f64) -> Pos2 {
-    let parts = column_parts(h);
-    let y = parts.stop_y(&h.state().globe.map.bands, value);
-    pos2(parts.bar.center().x, y)
+/// The middle of the row of a band.
+fn handle(h: &Pad, index: usize) -> Pos2 {
+    band_rect(h, index).center()
 }
 
-/// The middle of the handle of a stop.
-fn handle(h: &Pad, index: usize) -> Pos2 {
-    let bands = &h.state().globe.map.bands;
-    column_parts(h).handle(bands, bands.stops()[index].value)
+/// The middle of the value of a stop on the seam between its two bands.
+fn seam(h: &Pad, index: usize) -> Pos2 {
+    h.get_by_label(&stop_name(index)).rect().center()
 }
 
 /// Scrolls the Layers panel until the height `y` is near the middle of the
@@ -5931,100 +6091,241 @@ fn scroll_to_row(h: &mut Pad, name: &str) {
     scroll_to_y(h, |h| h.get_by_label(name).rect().center().y);
 }
 
-/// Scrolls the page of the color stops until the handle of a stop is near
-/// the middle of the card.
+/// Scrolls the page of the color stops until the row of a band is near the
+/// middle of the card.
 fn show_stop(h: &mut Pad, index: usize) {
     scroll_to_y(h, |h| handle(h, index).y);
 }
 
 #[test]
-fn a_tap_on_the_bar_adds_a_stop_a_vertical_drag_moves_it_and_the_card_removes_it() {
+fn a_vertical_drag_on_a_stop_value_moves_it_between_its_neighbours() {
     use vale_app::ui::pad::raster::REMOVE_STOP;
+    use vale_terrain::MIN_BAND;
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     open_stops(&mut h);
     let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
     let before = stops(&h);
     let sea = h.state().globe.map.bands.sea().unwrap();
-    // The two stops with the widest gap on the bar.
-    let gap = |h: &Pad, i: &usize| handle(h, *i).y - handle(h, i + 1).y;
-    let low = (0..before.len() - 1)
-        .max_by(|a, b| gap(&h, a).total_cmp(&gap(&h, b)))
-        .unwrap();
-    show_stop(&mut h, low);
-    // A tap on the bar between two stops adds a stop there.
-    let (a, b) = (
-        on_bar(&h, before[low].value),
-        on_bar(&h, before[low + 1].value),
-    );
-    assert!(a.y - b.y > 40.0, "{a:?} {b:?}");
-    finger_tap(&mut h, a.lerp(b, 0.5));
-    let added = stops(&h);
-    let index = low + 1;
-    assert_eq!(added.len(), before.len() + 1);
-    assert!(added[index].value > before[low].value);
-    assert!(added[index].value < before[low + 1].value);
+    let index = sea + 2;
+    let (low, high) = (before[index - 1].value, before[index + 1].value);
+    show_stop(&mut h, index);
+    // The band above the stop is selected, and its card is open.
+    tap_handle(&mut h, index);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert!(h.state().pad.style.card.is_some());
 
-    // A drag up on the handle moves the stop up, and the page does not
-    // scroll.
+    // A drag up moves the stop up. The card hides during the drag, and the
+    // selection stays.
     let row = band_rect(&h, index);
-    let from = handle(&h, index);
-    let up = (from.y - on_bar(&h, added[index + 1].value).y) / 2.0;
-    drag(&mut h, from, from - vec2(0.0, up), None);
+    let from = seam(&h, index);
+    let to = from - vec2(0.0, 30.0);
+    touch(&mut h, egui::TouchPhase::Start, from, None);
+    h.step();
+    for i in 1..=6 {
+        touch(
+            &mut h,
+            egui::TouchPhase::Move,
+            from.lerp(to, i as f32 / 6.0),
+            None,
+        );
+        h.step();
+    }
     let moved = stops(&h)[index].value;
-    assert!(moved > added[index].value, "{moved} {:?}", added[index]);
-    assert!(moved < added[index + 1].value, "{moved}");
-    assert_eq!(stops(&h).len(), added.len());
+    assert!(moved > before[index].value, "{moved}");
+    assert!(moved < high, "{moved}");
+    assert_eq!(h.state().pad.style.card, None);
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    assert!(h.state().pad.style.card.is_some());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    // The page does not scroll, and the stop keeps its row.
     assert_eq!(band_rect(&h, index), row);
+
+    // A long drag stops next to the stop above, and a long drag down next
+    // to the stop below.
+    let from = seam(&h, index);
+    drag(&mut h, from, from - vec2(0.0, 300.0), None);
+    assert_eq!(stops(&h)[index].value, high - MIN_BAND);
+    let from = seam(&h, index);
+    drag(&mut h, from, from + vec2(0.0, 300.0), None);
+    assert_eq!(stops(&h)[index].value, low + MIN_BAND);
+    assert_eq!(stops(&h).len(), before.len());
 
     // The button of the card removes the stop.
     tap(&mut h, REMOVE_STOP);
-    assert_eq!(stops(&h), before);
+    assert_eq!(stops(&h).len(), before.len() - 1);
     assert_eq!(h.state().globe.preview.selected, None);
 
-    // A drag on a fixed stop does not move it.
-    let from = handle(&h, sea);
+    // The sea stop does not move.
+    let before = stops(&h);
+    show_stop(&mut h, sea);
+    let from = seam(&h, sea);
     drag(&mut h, from, from - vec2(0.0, 30.0), None);
     assert_eq!(stops(&h), before);
 }
 
-#[test]
-fn a_vertical_drag_on_the_bar_or_on_a_row_scrolls_the_page() {
-    // With 20 stops, the page is longer than its card.
-    for size in [BOARDS[2], BOARDS[3]] {
-        let mut h = painted_pad(size);
-        open_height(&mut h);
-        add_stops(&mut h, 20);
-        open_stops(&mut h);
-        let stops = h.state().globe.map.bands.stops().to_vec();
-        let card = panel(&h, Panel::Layers).unwrap();
-        let inside = |y: f32| card.top() + 80.0 < y && y < card.bottom() - 80.0;
-        // A place on the bar far from the handles.
-        let ys: Vec<f32> = (0..stops.len()).map(|i| handle(&h, i).y).collect();
-        let bar = column_parts(&h).bar.center().x;
-        let gap = ys
-            .windows(2)
-            .map(|w| (w[0] + w[1]) / 2.0)
-            .find(|y| inside(*y))
-            .unwrap();
-        let on_bar = pos2(bar, gap);
-        let row = (0..stops.len() - 1)
-            .map(|i| band_rect(&h, i).center())
-            .find(|p| inside(p.y))
-            .unwrap();
-        // A drag up on the bar scrolls up, and a drag down on a row scrolls
-        // back down.
-        for (what, from, dy) in [("bar", on_bar, -30.0), ("row", row, 30.0)] {
-            let top = band_rect(&h, 0).top();
-            drag(&mut h, from, from + vec2(0.0, dy), None);
-            let moved = band_rect(&h, 0).top() - top;
-            assert!(moved * dy > 100.0, "{size:?} {what}: {moved}");
-            assert_eq!(h.state().globe.map.bands.stops(), stops, "{size:?} {what}");
+/// The middle of the color cell of the row of a band.
+fn cell(h: &Pad, index: usize) -> Pos2 {
+    h.get_by_label(&cell_name(index)).rect().center()
+}
+
+/// A touch that moves through `path` in steps, and does not end.
+fn hold_through(h: &mut Pad, path: &[Pos2]) {
+    touch(h, egui::TouchPhase::Start, path[0], None);
+    h.step();
+    for pair in path.windows(2) {
+        for i in 1..=6 {
+            let pos = pair[0].lerp(pair[1], i as f32 / 6.0);
+            touch(h, egui::TouchPhase::Move, pos, None);
+            h.step();
         }
+    }
+}
+
+#[test]
+fn a_vertical_drag_on_a_color_cell_moves_the_stop_below_it() {
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    open_stops(&mut h);
+    let stops = |h: &Pad| h.state().globe.map.bands.stops().to_vec();
+    let before = stops(&h);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    let index = sea + 2;
+    show_stop(&mut h, index);
+    tap_handle(&mut h, index);
+    assert!(h.state().pad.style.card.is_some());
+    // A drag up on the cell of the band moves the stop at its lower edge
+    // up, and the card hides during the drag.
+    let row = band_rect(&h, index);
+    let from = cell(&h, index);
+    let to = from - vec2(0.0, 20.0);
+    hold_through(&mut h, &[from, to]);
+    let moved = stops(&h);
+    assert!(moved[index].value > before[index].value, "{moved:?}");
+    assert!(moved[index].value < before[index + 1].value, "{moved:?}");
+    for i in (0..before.len()).filter(|&i| i != index) {
+        assert_eq!(moved[i], before[i], "{i}");
+    }
+    assert_eq!(h.state().pad.style.card, None);
+    touch(&mut h, egui::TouchPhase::End, to, None);
+    h.run_steps(3);
+    assert!(h.state().pad.style.card.is_some());
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert_eq!(band_rect(&h, index), row);
+    // A tap on the cell clears the selection, and a second tap selects the
+    // band again.
+    let at = cell(&h, index);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.preview.selected, None);
+    finger_tap(&mut h, at);
+    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+}
+
+/// The height layer with 20 stops, so that the page is longer than its
+/// card, on the page of the color stops.
+fn long_stops(size: (f32, f32)) -> Pad {
+    let mut h = painted_pad(size);
+    open_height(&mut h);
+    add_stops(&mut h, 20);
+    open_stops(&mut h);
+    h
+}
+
+/// Drags from `from` by `dy` and checks that the page scrolls and that no
+/// stop moves.
+fn check_scrolls(h: &mut Pad, what: &str, from: Pos2, dy: f32) {
+    let stops = h.state().globe.map.bands.stops().to_vec();
+    let top = band_rect(h, 0).top();
+    drag(h, from, from + vec2(0.0, dy), None);
+    let moved = band_rect(h, 0).top() - top;
+    assert!(moved * dy > 100.0, "{what}: {moved}");
+    assert_eq!(h.state().globe.map.bands.stops(), stops, "{what}");
+}
+
+#[test]
+fn a_vertical_drag_on_a_name_a_share_or_sea_level_scrolls_the_page() {
+    for size in [BOARDS[2], BOARDS[3]] {
+        let mut h = long_stops(size);
+        let stops = h.state().globe.map.bands.stops().to_vec();
+        let sea = h.state().globe.map.bands.sea().unwrap();
+        show_stop(&mut h, sea);
+        let card = panel(&h, Panel::Layers).unwrap();
+        let inside = |p: &Pos2| card.top() + 80.0 < p.y && p.y < card.bottom() - 80.0;
+        let index = (0..stops.len() - 1)
+            .find(|&i| inside(&band_rect(&h, i).center()))
+            .unwrap();
+        let name = |h: &Pad| pos2(band_rect(h, index).left() + 90.0, handle(h, index).y);
+        let share = |h: &Pad| pos2(band_rect(h, index).right() - 16.0, handle(h, index).y);
+        let level = seam(&h, sea);
+        assert!(inside(&level), "{level:?}");
+        // A drag up scrolls up, and a drag down scrolls back down.
+        check_scrolls(&mut h, &format!("{size:?} sea level"), level, -30.0);
+        let from = name(&h);
+        check_scrolls(&mut h, &format!("{size:?} name"), from, 30.0);
+        let from = share(&h);
+        check_scrolls(&mut h, &format!("{size:?} share"), from, -30.0);
         assert_eq!(h.state().globe.preview.selected, None, "{size:?}");
     }
+}
+
+#[test]
+fn a_drag_on_the_cell_of_the_lowest_band_or_above_sea_level_scrolls_the_page() {
+    let mut h = long_stops(BOARDS[2]);
+    let sea = h.state().globe.map.bands.sea().unwrap();
+    show_stop(&mut h, 0);
+    let from = cell(&h, 0);
+    check_scrolls(&mut h, "the lowest band", from, -30.0);
+    show_stop(&mut h, sea);
+    let from = cell(&h, sea);
+    check_scrolls(&mut h, "the band above sea level", from, 30.0);
+}
+
+#[test]
+fn a_stop_drag_slows_when_the_finger_moves_sideways() {
+    use vale_app::ui::elevation::bar_fraction;
+    let mut h = painted_pad(BOARDS[1]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    let bands = h.state().globe.map.bands.clone();
+    let index = bands.sea().unwrap() + 2;
+    show_stop(&mut h, index);
+    let place = |h: &Pad| {
+        let bands = &h.state().globe.map.bands;
+        bar_fraction(bands, bands.stops()[index].value)
+    };
+    let start = place(&h);
+    // A drag of 12 points up at full speed.
+    let from = seam(&h, index);
+    hold_through(&mut h, &[from, from - vec2(0.0, 12.0)]);
+    let full = place(&h) - start;
+    touch(&mut h, egui::TouchPhase::End, from, None);
+    h.run_steps(3);
+    let high = bands.stops()[index + 1].value - vale_terrain::MIN_BAND;
+    assert!(h.state().globe.map.bands.stops()[index].value < high);
+    h.state_mut().globe.map.bands = bands.clone();
+    h.run_steps(2);
+    // The same drag with the finger 80 points to the side moves the stop
+    // half as far, and the range gives way to the name of the speed.
+    let side = from + vec2(80.0, 0.0);
+    hold_through(&mut h, &[from, side, side - vec2(0.0, 12.0)]);
+    let half = place(&h) - start;
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|(t, _)| t == "Half speed"), "{texts:?}");
+    let span = bands.max() - bands.min();
+    let text = |v: f64| vale_app::world::value_text(v, span, "m");
+    let stops = bands.stops();
+    let range = format!(
+        "{} to {}",
+        text(stops[index - 1].value),
+        text(stops[index + 1].value)
+    );
+    assert!(!texts.iter().any(|(t, _)| *t == range), "{texts:?}");
+    touch(&mut h, egui::TouchPhase::End, side, None);
+    h.run_steps(3);
+    assert!(full > 0.03, "{full}");
+    assert!((half - full / 2.0).abs() < 0.005, "{full} {half}");
 }
 
 #[test]
@@ -6040,6 +6341,8 @@ fn a_tap_on_a_row_opens_the_card_of_its_stop_and_a_second_tap_closes_it() {
     assert_eq!(h.state().globe.preview.selected, Some((height, index)));
     let stop = h.state().pad.style.card.unwrap();
     assert!(stop.top() < row.center().y && row.center().y < stop.bottom());
+    let panel = panel(&h, Panel::Layers).unwrap();
+    assert!(stop.right() <= panel.left(), "{stop:?} {panel:?}");
     finger_tap(&mut h, row.center());
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(h.state().pad.style.card, None);
@@ -6065,64 +6368,7 @@ fn color32(c: [u8; 3]) -> egui::Color32 {
 }
 
 #[test]
-fn one_row_per_band_highest_first() {
-    use vale_terrain::StopLine;
-    let mut h = painted_pad(BOARDS[1]);
-    open_height(&mut h);
-    let line = StopLine {
-        on: true,
-        weight: 3.0,
-        color: [250, 10, 10],
-        ..StopLine::default()
-    };
-    let bands = &mut h.state_mut().globe.map.bands;
-    let sea = bands.sea().unwrap();
-    assert!(bands.set_line(sea, line));
-    open_stops(&mut h);
-    show_stop(&mut h, sea);
-    let bands = h.state().globe.map.bands.clone();
-    let count = bands.colors().len();
-    assert!(h.query_by_label(&band_row(count)).is_none());
-    let rows: Vec<Rect> = (0..count).map(|i| band_rect(&h, i)).collect();
-    for pair in rows.windows(2) {
-        assert!(pair[1].bottom() <= pair[0].top() + 0.5, "{pair:?}");
-    }
-    // A row shows the color of its band, the value of its lower edge, and
-    // the line at that edge.
-    let card = panel(&h, Panel::Layers).unwrap();
-    let texts = painted_texts(&h);
-    let shapes = painted_shapes(&h);
-    let span = bands.max() - bands.min();
-    let mut seen = 0;
-    for (index, row) in rows.iter().enumerate() {
-        if !card.contains_rect(*row) {
-            continue;
-        }
-        seen += 1;
-        let value = vale_app::world::value_text(bands.stops()[index].value, span, "m");
-        let text = texts
-            .iter()
-            .any(|(t, r)| *t == value && row.contains(r.center()));
-        assert!(text, "{index}: no {value}");
-        let color = color32(bands.colors()[index]);
-        let swatch = shapes.iter().any(|shape| match shape {
-            egui::Shape::Rect(r) => r.fill == color && row.contains_rect(r.rect),
-            _ => false,
-        });
-        assert!(swatch, "{index}: no swatch");
-        let lined = shapes.iter().any(|shape| match shape {
-            egui::Shape::LineSegment { points, stroke } => {
-                stroke.color == color32(line.color) && row.contains(points[0])
-            }
-            _ => false,
-        });
-        assert_eq!(lined, index == sea, "{index}");
-    }
-    assert!(seen >= 5, "{seen}");
-}
-
-#[test]
-fn a_tap_on_a_row_or_lower_handle_opens_the_band_card() {
+fn a_tap_on_a_row_or_a_stop_value_opens_the_band_card() {
     let mut h = painted_pad(BOARDS[1]);
     let height = open_height(&mut h);
     open_stops(&mut h);
@@ -6136,35 +6382,18 @@ fn a_tap_on_a_row_or_lower_handle_opens_the_band_card() {
         assert!(card.top() < row.center().y && row.center().y < card.bottom());
         finger_tap(&mut h, row.center());
         assert_eq!(h.state().globe.preview.selected, None);
-        // The handle of the lower edge of the band opens the same card.
-        tap_handle(&mut h, index);
+        if index == 0 {
+            continue;
+        }
+        // The value of the stop at the lower edge of the band opens the
+        // same card, also for the sea stop.
+        let value = seam(&h, index);
+        finger_tap(&mut h, value);
         assert_eq!(h.state().globe.preview.selected, Some((height, index)));
         assert!(h.state().pad.style.card.is_some());
-        tap_handle(&mut h, index);
+        finger_tap(&mut h, value);
         assert_eq!(h.state().globe.preview.selected, None);
     }
-}
-
-#[test]
-fn a_tap_on_the_top_handle_does_nothing() {
-    let mut h = painted_pad(BOARDS[1]);
-    let height = open_height(&mut h);
-    open_stops(&mut h);
-    let before = h.state().globe.map.bands.clone();
-    let top = before.stops().len() - 1;
-    show_stop(&mut h, top);
-    tap_handle(&mut h, top);
-    assert_eq!(h.state().globe.preview.selected, None);
-    assert_eq!(h.state().pad.style.card, None);
-    assert_eq!(h.state().globe.map.bands, before);
-    // The card of a band stays open.
-    let below = top - 1;
-    tap_handle(&mut h, below);
-    assert_eq!(h.state().globe.preview.selected, Some((height, below)));
-    tap_handle(&mut h, top);
-    assert_eq!(h.state().globe.preview.selected, Some((height, below)));
-    assert!(h.state().pad.style.card.is_some());
-    assert_eq!(h.state().globe.map.bands, before);
 }
 
 #[test]
@@ -6229,16 +6458,16 @@ fn add_and_remove_keep_band_colors() {
     let before = bands.clone();
     open_stops(&mut h);
     let colors = |h: &Pad| h.state().globe.map.bands.colors().to_vec();
-    // A tap on the bar in the band from 1000 m to 2000 m splits it, and the
-    // two parts keep its color.
+    // The button of the band from 1000 m to 2000 m splits it, and the two
+    // parts keep its color.
     let low = before
         .stops()
         .iter()
         .position(|s| s.value == 1000.0)
         .unwrap();
     show_stop(&mut h, low);
-    let (a, b) = (on_bar(&h, 1000.0), on_bar(&h, 2000.0));
-    finger_tap(&mut h, a.lerp(b, 0.5));
+    tap_handle(&mut h, low);
+    tap(&mut h, ADD_STOP);
     assert_eq!(h.state().globe.preview.selected, Some((height, low + 1)));
     let mut want = before.colors().to_vec();
     want.insert(low + 1, want[low]);
@@ -6257,7 +6486,7 @@ fn add_and_remove_keep_band_colors() {
 }
 
 #[test]
-fn a_tap_on_the_bar_adds_a_stop_until_the_layer_has_the_most_bands() {
+fn the_add_button_splits_the_selected_band_in_the_middle_until_32_bands() {
     use vale_app::ui::pad::raster::{FULL, RESET_STOPS};
     use vale_terrain::MAX_BANDS;
     let mut h = painted_pad(BOARDS[1]);
@@ -6265,28 +6494,34 @@ fn a_tap_on_the_bar_adds_a_stop_until_the_layer_has_the_most_bands() {
     open_stops(&mut h);
     let has_note = |h: &Pad| painted_texts(h).iter().any(|(t, _)| t == FULL);
     assert!(!has_note(&h));
-    // A tap in the widest gap of the bar adds a stop there.
+    // Only the selected row has the button.
+    assert!(control(&h, ADD_STOP).is_none());
     let before = h.state().globe.map.bands.clone();
-    let value = widest_gap_value(&before);
-    scroll_to_y(&mut h, |h| on_bar(h, value).y);
-    let at = on_bar(&h, value);
-    finger_tap(&mut h, at);
+    let low = before.stops().iter().position(|s| s.value == 1000.0);
+    let low = low.unwrap();
+    show_stop(&mut h, low);
+    tap_handle(&mut h, low);
+    let button = control(&h, ADD_STOP).unwrap();
+    assert!(band_rect(&h, low).contains_rect(button), "{button:?}");
+    check_controls(&h, "with the button that adds a stop");
+    // The button adds a stop in the middle of the band and selects the new
+    // band above the stop.
+    tap(&mut h, ADD_STOP);
     let stops = h.state().globe.map.bands.stops().to_vec();
     assert_eq!(stops.len(), before.stops().len() + 1);
-    let index = stops.iter().position(|s| (s.value - value).abs() < 50.0);
-    let index = index.unwrap_or_else(|| panic!("no stop near {value}: {stops:?}"));
-    assert_eq!(h.state().globe.preview.selected, Some((height, index)));
+    assert_eq!(stops[low + 1].value, 1500.0);
+    assert_eq!(h.state().globe.preview.selected, Some((height, low + 1)));
     assert!(h.state().pad.style.card.is_some());
-    // With the most bands, the page shows a note, and a tap adds no stop.
-    tap_handle(&mut h, index);
+    // With the most bands, the selected row has no button, and the page
+    // shows a note.
     add_stops(&mut h, MAX_BANDS + 1);
+    show_stop(&mut h, low);
+    tap_handle(&mut h, low);
+    assert_eq!(h.state().globe.preview.selected, Some((height, low)));
+    assert!(control(&h, ADD_STOP).is_none());
     scroll_to_row(&mut h, RESET_STOPS);
     assert!(has_note(&h));
     check_controls(&h, "on the page of a full layer");
-    let value = widest_gap_value(&h.state().globe.map.bands);
-    scroll_to_y(&mut h, |h| on_bar(h, value).y);
-    let at = on_bar(&h, value);
-    finger_tap(&mut h, at);
     assert_eq!(h.state().globe.map.bands.stops().len(), MAX_BANDS + 1);
 }
 
@@ -6324,10 +6559,9 @@ fn a_tap_on_a_handle_opens_the_card_of_its_stop_and_a_tap_elsewhere_closes_it() 
     // A tap at another place on the panel also closes the card.
     tap_handle(&mut h, 1);
     assert!(card(&h).is_some());
-    // The margin at the left of the bar has no control.
-    let parts = column_parts(&h);
+    // The margin at the left of the rows has no control.
     let left = pos2(panel.left() + 6.0, band_rect(&h, 1).center().y);
-    assert!(left.x < parts.bar.left(), "{left:?}");
+    assert!(left.x < band_rect(&h, 1).left(), "{left:?}");
     finger_tap(&mut h, left);
     assert_eq!(h.state().globe.preview.selected, None);
     assert_eq!(card(&h), None);
@@ -6591,23 +6825,27 @@ fn painted_texts(h: &Pad) -> Vec<(String, Rect)> {
 }
 
 #[test]
-fn a_dragged_stop_shows_its_value_left_of_the_bar() {
+fn a_dragged_stop_shows_its_value_and_its_range_and_the_histogram_marks_it() {
     let mut h = painted_pad(BOARDS[1]);
     open_height(&mut h);
     open_stops(&mut h);
-    // The stop that can move the farthest up.
     let bands = h.state().globe.map.bands.clone();
-    let stops = bands.stops();
-    let gap = |h: &Pad, i: &usize| handle(h, *i).y - handle(h, i + 1).y;
-    let index = (1..stops.len() - 1)
-        .filter(|i| !bands.fixed(*i))
-        .max_by(|a, b| gap(&h, a).total_cmp(&gap(&h, b)))
-        .unwrap();
-    show_stop(&mut h, index);
-    let (from, next) = (handle(&h, index), handle(&h, index + 1).y);
-    let to = pos2(from.x, (next + 10.0).max(from.y - 150.0));
-    let bar = column_parts(&h).bar.left();
+    let sea = bands.sea().unwrap();
+    let index = sea + 2;
     let span = bands.max() - bands.min();
+    let text = |v: f64| vale_app::world::value_text(v, span, "m");
+    let range = format!(
+        "{} to {}",
+        text(bands.stops()[index - 1].value),
+        text(bands.stops()[index + 1].value)
+    );
+    // The page shows the histogram and the stop.
+    let histogram = h.get_by_label(HISTOGRAM).rect();
+    let card = panel(&h, Panel::Layers).unwrap();
+    assert!(card.contains_rect(histogram), "{histogram:?}");
+    let from = seam(&h, index);
+    assert!(card.contains(from), "{from:?}");
+    let to = from - vec2(0.0, 40.0);
     touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();
     let start = h.state().globe.map.bands.stops()[index].value;
@@ -6622,24 +6860,29 @@ fn a_dragged_stop_shows_its_value_left_of_the_bar() {
             continue;
         }
         seen += 1;
-        let text = vale_app::world::value_text(value, span, "m");
+        // The value stays on its seam, next to the range of the stop.
         let texts = painted_texts(&h);
-        let shown = texts.iter().find(|(t, r)| *t == text && r.right() < bar);
-        let (_, rect) = shown.unwrap_or_else(|| panic!("frame {i}: no {text} in {texts:?}"));
-        // The value is at the height of the finger, so the finger does not
-        // hide it.
-        assert!(
-            (rect.center().y - pos.y).abs() < 30.0,
-            "frame {i}: {rect:?} {pos:?}"
-        );
+        let on_seam =
+            |t: &str| (texts.iter()).any(|(s, r)| s == t && (r.center().y - from.y).abs() < 2.0);
+        assert!(on_seam(&text(value)), "frame {i}: no {value} in {texts:?}");
+        assert!(on_seam(&range), "frame {i}: no {range}");
+        // The histogram marks the value of the stop.
+        let (min, max) = (bands.min(), bands.max());
+        let x = histogram.left() + ((value - min) / (max - min)) as f32 * histogram.width();
+        let marked = painted_shapes(&h).iter().any(|shape| match shape {
+            egui::Shape::LineSegment { points, stroke } => {
+                stroke.color == vale_app::ui::pad::theme::ACCENT
+                    && (points[0].x - x).abs() < 0.5
+                    && histogram.contains(points[0])
+            }
+            _ => false,
+        });
+        assert!(marked, "frame {i}: no mark at {x}");
     }
     assert!(seen >= 3, "{seen}");
     touch(&mut h, egui::TouchPhase::End, to, None);
     h.run_steps(3);
-    let value = h.state().globe.map.bands.stops()[index].value;
-    let text = vale_app::world::value_text(value, span, "m");
-    let left = |(t, r): &(String, Rect)| *t == text && r.right() < bar;
-    assert!(!painted_texts(&h).iter().any(left));
+    assert!(!painted_texts(&h).iter().any(|(t, _)| *t == range));
 }
 
 #[test]
@@ -6655,14 +6898,9 @@ fn reset_colors_asks_first_and_puts_back_the_default_stops() {
     let count = bands.stops().len();
     open_stops(&mut h);
     let value = widest_gap_value(&bands);
-    scroll_to_y(&mut h, |h| on_bar(h, value).y);
-    let at = on_bar(&h, value);
-    finger_tap(&mut h, at);
+    assert!(h.state_mut().globe.map.bands.add(value).is_some());
+    h.run_steps(2);
     assert_eq!(h.state().globe.map.bands.stops().len(), count + 1);
-    // A second tap on its handle closes its card.
-    let (_, index) = h.state().globe.preview.selected.unwrap();
-    tap_handle(&mut h, index);
-    assert_eq!(h.state().globe.preview.selected, None);
     scroll_to_row(&mut h, RESET_STOPS);
     assert!(!disabled(&h));
     // A tap on the row opens the card, and a tap outside closes it with no
@@ -7317,8 +7555,9 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     assert!(to < meters);
     open_stops(&mut h);
     show_stop(&mut h, index);
-    let (from, to) = (handle(&h, index), on_bar(&h, to));
-    let to = pos2(from.x, to.y);
+    // A drag down far moves the stop below `to`.
+    let from = seam(&h, index);
+    let to = pos2(from.x, from.y + 200.0);
     let before = band_color(&h);
     touch(&mut h, egui::TouchPhase::Start, from, None);
     h.step();

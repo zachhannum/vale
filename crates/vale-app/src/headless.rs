@@ -482,10 +482,15 @@ pub fn ui_png_safe(
         )
     };
     // The heightmap goes to the GPU in parts. Each render sends one part.
-    // The pictures of the pages of the export form draw in later renders.
+    // The pictures of the pages of the export form and the histogram of the
+    // color stops draw in later renders.
     for _ in 0..UPLOAD_STEPS {
+        let areas = harness.state_mut().areas.poll(false);
         let globe = &harness.state().globe;
-        if !globe.busy() && !globe.loading() && !crate::ui::export_thumbs::pending(harness.state())
+        if !globe.busy()
+            && !globe.loading()
+            && !areas
+            && !crate::ui::export_thumbs::pending(harness.state())
         {
             break;
         }

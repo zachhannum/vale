@@ -74,7 +74,7 @@ pub use smooth::{
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
-pub use zonal::{Zonal, line_zonal, polygon_zonal, rects_meet};
+pub use zonal::{Zonal, level_areas, line_zonal, polygon_zonal, rects_meet};
 
 // A worker thread makes the pipelines, and the main thread uses them.
 #[cfg(feature = "gpu")]

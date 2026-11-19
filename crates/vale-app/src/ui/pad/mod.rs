@@ -63,6 +63,7 @@ pub mod raster;
 pub mod readout;
 pub mod rules;
 pub mod selectable;
+pub mod stops;
 pub mod table;
 pub mod text_style;
 pub mod theme;
