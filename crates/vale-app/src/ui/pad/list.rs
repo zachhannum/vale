@@ -166,7 +166,7 @@ pub struct Row<K> {
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
-    /// The rows of a list with [`Spec::reorder`] are `PANEL_ROW` tall.
+    /// The rows of a list with [`Spec::reorder`] all have one height.
     pub height: f32,
 }
 
@@ -328,8 +328,9 @@ where
         .collect();
     let size = vec2(ui.available_width(), rows.iter().map(|r| r.height).sum());
     let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let slot =
-        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
+    // The rows of a list that reorders have one height.
+    let pitch = rows.first().map_or(PANEL_ROW, |r| r.height);
+    let slot = |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), pitch));
     // Each row moves to its place on a spring, as after a reorder.
     let (list_id, ctx) = (ui.id(), ui.ctx().clone());
     let spring = |key: K, target: f32, height: f32| {
@@ -367,21 +368,21 @@ where
     set_lifted(ui.ctx());
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
     let y = pointer.map_or(area.top() + tops[from] + lift.grab, |p| p.y);
-    let top = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    let top = (y - lift.grab).clamp(area.top(), area.bottom() - pitch);
+    let to = ((top - area.top()) / pitch).round() as usize;
     if let (Some(lifted), Some(p)) = (state.lift.as_mut(), pointer) {
         lifted.last = Some(p);
     }
     let last = pointer.or(lift.last);
     let outside = last.is_some_and(|p| {
-        let near = area.expand2(vec2(8.0, PANEL_ROW / 2.0));
+        let near = area.expand2(vec2(8.0, pitch / 2.0));
         !near.contains(p)
     });
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (i, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
         let at = if k < to { k } else { k + 1 };
-        let rect = spring(row.key, at as f32 * PANEL_ROW, PANEL_ROW);
+        let rect = spring(row.key, at as f32 * pitch, pitch);
         let shape = Shape::of(spec, at, rows.len());
         paint_still(
             ui, controls, state, spec, row, rect, false, i, shape, &mut cell,

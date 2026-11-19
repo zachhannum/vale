@@ -9,7 +9,7 @@ use vale_store::{CollectionId, LayerId, Project};
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, PANEL_ROW};
-use super::{LayerRef, list, popover, theme};
+use super::{LayerRef, list, motion, popover, theme};
 use crate::ui::AppState;
 
 /// The name of the header button that opens the collection popover.
@@ -36,6 +36,9 @@ const CARD_INSET: f32 = 8.0;
 const CARD_RADIUS: f32 = 12.0;
 /// The gap between the header row of an open card and its rows.
 const HEADER_GAP: f32 = 2.0;
+/// The height of a row of the list of the header rows during a restack:
+/// a header row and the gap below it.
+const STACK_ROW: f32 = PANEL_ROW + CARD_GAP;
 
 /// The name of the popover row of a collection.
 pub fn collection_row(name: &str) -> String {
@@ -246,16 +249,34 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
         return;
     }
     state.pad.cards.lists.retain(|id, _| stack.contains(id));
-    if state.pad.cards.lift.is_some() {
+    // The rows of the cards close on a spring when a card lifts, and they
+    // open again after the drop.
+    let lifted = state.pad.cards.lift.is_some();
+    let target = if lifted { 0.0 } else { 1.0 };
+    let open = motion::value(
+        ui.ctx(),
+        egui::Id::new("pad-cards-open"),
+        target,
+        motion::SNAPPY,
+    );
+    if lifted && open < 0.01 {
         restack(ui, state, controls, &stack);
         return;
     }
+    // The space above the header rows of a restack closes after the drop.
+    let space = motion::points(ui.ctx(), offset_id(), 0.0, motion::SNAPPY);
+    ui.add_space(space.max(0.0));
     for (i, id) in stack.iter().rev().enumerate() {
         if i > 0 {
             ui.add_space(CARD_GAP);
         }
-        ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id));
+        ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id, open));
     }
+}
+
+/// The spring of the space above the header rows of a restack.
+fn offset_id() -> egui::Id {
+    egui::Id::new("pad-cards-offset")
 }
 
 /// The header rows of the cards in a list that reorders, while a card is
@@ -298,6 +319,7 @@ fn restack(
             Some(list::Row {
                 label: header_name(&c.name),
                 select: false,
+                height: STACK_ROW,
                 ..list::Row::new(c.id, c.name.clone())
             })
         })
@@ -310,17 +332,18 @@ fn restack(
     let width = ui.available_width();
     let top = ui.cursor().top();
     let offset = *lift.offset.get_or_insert_with(|| {
-        let slot = top + from as f32 * PANEL_ROW;
+        let slot = top + from as f32 * STACK_ROW;
         (lift.origin.y - lift.grab - slot).max(0.0)
     });
     state.pad.cards.lift = Some(lift);
+    motion::set(ui.ctx(), offset_id(), offset);
     ui.add_space(offset);
     let (area, _) = ui.allocate_exact_size(vec2(width, 0.0), Sense::hover());
     let inner = Rect::from_min_max(
         pos2(area.left() + 8.0, area.top()),
         pos2(
             area.right() - 8.0,
-            area.top() + rows.len() as f32 * PANEL_ROW,
+            area.top() + rows.len() as f32 * STACK_ROW,
         ),
     );
     let mut child = ui.new_child(
@@ -331,7 +354,12 @@ fn restack(
     let list = &mut state.pad.cards.stack;
     let font = theme::heading(ui.ctx());
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
-        let pill = cell.rect.expand2(vec2(8.0, -CARD_GAP / 2.0));
+        // The header of a card at its full height, with the gap between
+        // two cards below it.
+        let pill = Rect::from_min_size(
+            cell.rect.min - vec2(8.0, 0.0),
+            vec2(cell.rect.width() + 16.0, PANEL_ROW),
+        );
         let fill = match cell.lifted {
             true => theme::card(false).to_opaque(),
             false => theme::track(),
@@ -363,12 +391,14 @@ fn restack(
 }
 
 /// One card: the header row and, while the card is open, the rows of its
-/// layers. Returns the rect of the card.
+/// layers. `open` is the part of the rows that shows, from 0 to 1, while
+/// the rows close or open around a restack. Returns the rect of the card.
 fn card(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     id: CollectionId,
+    open: f32,
 ) -> Rect {
     let project = &state.doc.project;
     let Some(c) = project.collection(id) else {
@@ -382,14 +412,16 @@ fn card(
         (false, 0) => HEADER_GAP + PANEL_ROW,
         (false, n) => HEADER_GAP + n as f32 * PANEL_ROW,
     };
-    let size = vec2(ui.available_width(), PANEL_ROW + body);
+    let shown = body * open;
+    let size = vec2(ui.available_width(), PANEL_ROW + shown);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let closed = collapsed || shown <= HEADER_GAP;
     let painter = ui.painter().clone();
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
     // The header has no fill, so that only a selected row is light. A gap
     // divides it from the rows of an open card.
     let r = CARD_RADIUS as u8;
-    match collapsed {
+    match closed {
         true => {
             painter.rect_filled(rect, CARD_RADIUS, theme::track());
         }
@@ -412,18 +444,21 @@ fn card(
         }
     }
     header(ui, state, controls, id, head, &name, collapsed);
-    if collapsed {
+    if closed {
         return rect;
     }
     let inner = Rect::from_min_max(
         pos2(rect.left() + CARD_INSET, head.bottom() + HEADER_GAP),
-        pos2(rect.right() - CARD_INSET, rect.bottom()),
+        pos2(rect.right() - CARD_INSET, head.bottom() + body),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
+    // The rows fade, and the card cuts them, while they close or open.
+    child.set_clip_rect(child.clip_rect().intersect(rect));
+    child.multiply_opacity(open);
     if rows.is_empty() {
         let at = pos2(inner.left() + 8.0, inner.center().y);
         let font = theme::body();

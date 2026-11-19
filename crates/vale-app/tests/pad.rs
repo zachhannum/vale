@@ -20433,9 +20433,14 @@ fn manual_collection_screenshots() {
         swipe(&mut h, "Height", -120.0);
         screenshot::save(&mut h, &format!("pad-collection-last-swipe-{what}"));
         swipe(&mut h, "Height", 120.0);
-        // A card in the middle of a restack.
+        // A card in the middle of a restack, with the springs on.
+        h.state_mut().headless = false;
         let world = control(&h, &header_name("World")).unwrap().center();
         touch(&mut h, egui::TouchPhase::Start, world, None);
+        for _ in 0..2 {
+            h.step();
+        }
+        screenshot::save(&mut h, &format!("pad-collection-closing-{what}"));
         for _ in 0..4 {
             h.step();
         }
@@ -20446,7 +20451,11 @@ fn manual_collection_screenshots() {
         }
         screenshot::save(&mut h, &format!("pad-collection-restack-{what}"));
         touch(&mut h, egui::TouchPhase::End, world, None);
+        h.step();
+        h.step();
+        screenshot::save(&mut h, &format!("pad-collection-opening-{what}"));
         h.run_steps(30);
+        h.state_mut().headless = true;
         tap(&mut h, &chevron_name("Travel", false));
         screenshot::save(&mut h, &format!("pad-collection-collapsed-{what}"));
         open_collection_menu(&mut h);
