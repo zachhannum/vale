@@ -13129,3 +13129,29 @@ fn fit_stops_to_frame_is_one_undo_step() {
     tap(&mut h, "Undo");
     assert_eq!(inset_values(&h, layer), old);
 }
+
+#[test]
+fn the_bar_of_the_style_section_of_a_frame_shows_the_bands_of_the_frame() {
+    use vale_app::ui::pad::raster::COLOR_STOPS;
+    let (mut h, height, _) = frame_stops_pad(45.0);
+    h.state_mut().atlas.layer_page = None;
+    h.run_steps(2);
+    scroll_to(&mut h, COLOR_STOPS);
+    let w = stops_window(&h);
+    let bands = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let stops = bands.stops();
+    assert!(
+        w.bands.start > 0 && w.bands.end < bands.colors().len(),
+        "{w:?}"
+    );
+    let (lo, hi) = (stops[w.bands.start].value, stops[w.bands.end].value);
+    let texts = frame_texts(&h);
+    let has = |t: &str| texts.iter().any(|(s, _)| s == t);
+    let text = |v: f64, span: f64| vale_app::world::value_text(v, span, "m");
+    assert!(has(&text(lo, hi - lo)), "{texts:?}");
+    assert!(has(&text(hi, hi - lo)), "{texts:?}");
+    let span = bands.max() - bands.min();
+    assert!(!has(&text(bands.min(), span)), "{texts:?}");
+    assert!(!has(&text(bands.max(), span)), "{texts:?}");
+    assert!(!has("Sea level"), "{texts:?}");
+}

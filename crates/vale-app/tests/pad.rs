@@ -5763,6 +5763,22 @@ fn the_style_section_has_a_strip_of_the_color_stops_and_no_rows_of_them() {
 }
 
 #[test]
+fn the_strip_of_the_globe_shows_all_bands() {
+    use vale_app::ui::pad::raster::COLOR_STOPS;
+    let mut h = painted_pad(BOARDS[1]);
+    let height = open_height(&mut h);
+    scroll_to_row(&mut h, COLOR_STOPS);
+    let bands = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let unit = h.state().doc.project.raster(height).unwrap().unit.clone();
+    let span = bands.max() - bands.min();
+    let texts = painted_texts(&h);
+    for v in [bands.min(), bands.max()] {
+        let text = vale_app::world::value_text(v, span, &unit);
+        assert!(texts.iter().any(|(t, _)| *t == text), "{text}: {texts:?}");
+    }
+}
+
+#[test]
 fn a_tap_on_the_strip_opens_the_page_and_back_from_the_ramps_goes_to_it() {
     use vale_app::ui::pad::raster::{COLOR_RAMPS, COLOR_STOPS, RESET_STOPS};
     let mut h = painted_pad(BOARDS[1]);

@@ -2021,7 +2021,7 @@ fn raster_head(
                 {
                     state.set_raster_opacity(raster, v as f32);
                 }
-                super::raster::style(ui, state, controls, raster);
+                super::raster::style(ui, state, controls, raster, Some(id));
             }
         });
         if page.is_none() {

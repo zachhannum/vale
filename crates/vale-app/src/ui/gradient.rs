@@ -236,8 +236,8 @@ pub fn editor(
     }
     let lifted = lifted.filter(|_| resp.dragged());
 
-    paint_bar(ui, bar, m.radius, bands, display, false);
-    paint_ticks(ui, bar, bands, false);
+    paint_bar(ui, bar, m.radius, bands, display, false, View::ALL);
+    paint_ticks(ui, bar, bands, false, View::ALL);
     let painter = ui.painter();
     let visuals = ui.visuals();
     let (text, strong) = (visuals.text_color(), visuals.strong_text_color());
@@ -258,7 +258,7 @@ pub fn editor(
         paint_handle(painter, rect, stop_fill(bands, index), stroke, alpha);
     }
 
-    labels(ui, area, m, bands, unit);
+    labels(ui, area, m, bands, unit, View::ALL);
     if let Some(Gesture::Move { index, .. }) = gesture.filter(|_| resp.dragged()) {
         let value = bands.stops()[index].value;
         let x = stop_x(area, m, bands, value);
@@ -273,19 +273,58 @@ pub fn editor(
     resp
 }
 
-/// The row of the labels below the bar: the lowest value, the highest
-/// value, and sea level.
-fn labels(ui: &mut egui::Ui, area: Rect, m: &Metrics, bands: &Bands, unit: &str) {
+/// The part of the range of the bands that a bar shows, as the fractions
+/// of the whole bar at its two ends.
+#[derive(Clone, Copy)]
+struct View {
+    lo: f64,
+    hi: f64,
+}
+
+impl View {
+    const ALL: View = View { lo: 0.0, hi: 1.0 };
+
+    /// The view of the values from `lo` to `hi`.
+    fn of(bands: &Bands, lo: f64, hi: f64) -> View {
+        let (lo, hi) = (
+            elevation::bar_fraction(bands, lo),
+            elevation::bar_fraction(bands, hi),
+        );
+        if hi > lo { View { lo, hi } } else { View::ALL }
+    }
+
+    /// The place of `value` on the bar, from 0 to 1.
+    fn fraction(self, bands: &Bands, value: f64) -> f64 {
+        let f = elevation::bar_fraction(bands, value);
+        ((f - self.lo) / (self.hi - self.lo)).clamp(0.0, 1.0)
+    }
+
+    /// The value at the place `fraction` of the bar.
+    fn value(self, bands: &Bands, fraction: f64) -> f64 {
+        elevation::bar_value(bands, self.lo + fraction * (self.hi - self.lo))
+    }
+
+    /// The values at the two ends of the bar.
+    fn ends(self, bands: &Bands) -> (f64, f64) {
+        (self.value(bands, 0.0), self.value(bands, 1.0))
+    }
+}
+
+/// The row of the labels below the bar: the value at each end, and sea
+/// level.
+fn labels(ui: &mut egui::Ui, area: Rect, m: &Metrics, bands: &Bands, unit: &str, view: View) {
     let (labels, _) = ui.allocate_exact_size(vec2(area.width(), m.labels), Sense::hover());
     let text = ui.visuals().text_color();
-    let span = bands.max() - bands.min();
+    let (lo, hi) = view.ends(bands);
+    let span = hi - lo;
     let bar = bar_rect(area, m);
-    let sea = bands.sea();
+    let inside = |v: f64| lo < v && v < hi;
+    let sea = (bands.sea()).filter(|&i| inside(bands.stops()[i].value));
     let font = theme::font(12.0);
     let y = labels.center().y;
     let painter = ui.painter();
-    let min = world::value_text(bands.min(), span, unit);
-    let max = world::value_text(bands.max(), span, unit);
+    let min = world::value_text(lo, span, unit);
+    let max = world::value_text(hi, span, unit);
     painter.text(
         pos2(bar.left(), y),
         Align2::LEFT_CENTER,
@@ -301,14 +340,16 @@ fn labels(ui: &mut egui::Ui, area: Rect, m: &Metrics, bands: &Bands, unit: &str)
         text,
     );
     if let Some(index) = sea {
-        let x = stop_x(area, m, bands, bands.stops()[index].value);
+        let f = view.fraction(bands, bands.stops()[index].value) as f32;
+        let x = bar.left() + f * bar.width();
         painter.text(pos2(x, y), Align2::CENTER_CENTER, "Sea level", font, text);
     }
 }
 
 /// The bar of the Style section: the colors and a line at each stop, with
-/// the labels below it. A tap on it gives a click on the response, which
-/// has the name `name`.
+/// the labels below it. With `shown`, the bar shows only those bands. A tap
+/// on it gives a click on the response, which has the name `name`.
+#[allow(clippy::too_many_arguments)]
 pub fn strip(
     ui: &mut egui::Ui,
     controls: &mut Controls,
@@ -317,13 +358,20 @@ pub fn strip(
     bands: &Bands,
     display: RasterDisplay,
     unit: &str,
+    shown: Option<std::ops::Range<usize>>,
 ) -> Response {
     let top = ui.cursor().top();
     let (area, _) = ui.allocate_exact_size(vec2(ui.available_width(), m.bar), Sense::hover());
     let bar = bar_rect(area, m);
-    paint_bar(ui, bar, m.radius, bands, display, false);
-    paint_ticks(ui, bar, bands, false);
-    labels(ui, area, m, bands, unit);
+    let stops = bands.stops();
+    let view = shown
+        .filter(|r| r.start < r.end && r.end < stops.len())
+        .map_or(View::ALL, |r| {
+            View::of(bands, stops[r.start].value, stops[r.end].value)
+        });
+    paint_bar(ui, bar, m.radius, bands, display, false, view);
+    paint_ticks(ui, bar, bands, false, view);
+    labels(ui, area, m, bands, unit, view);
     let whole = Rect::from_min_max(
         pos2(area.left(), top),
         pos2(area.right(), ui.cursor().top()),
@@ -406,6 +454,7 @@ fn paint_bar(
     bands: &Bands,
     display: RasterDisplay,
     vertical: bool,
+    view: View,
 ) {
     let (len, across) = match vertical {
         true => (bar.height(), bar.width()),
@@ -423,7 +472,7 @@ fn paint_bar(
         let d = r - (r * r - off * off).max(0.0).sqrt();
         (d, across - d)
     };
-    let a_of = |value: f64| elevation::bar_fraction(bands, value) as f32 * len;
+    let a_of = |value: f64| view.fraction(bands, value) as f32 * len;
     let corners: Vec<f32> = (0..=6)
         .flat_map(|i| {
             let t = r * i as f32 / 6.0;
@@ -445,7 +494,7 @@ fn paint_bar(
         cuts.extend([low_a, a_of((band.min + band.max) / 2.0), high_a]);
         cuts.sort_by(f32::total_cmp);
         let color = |a: f32| {
-            let value = elevation::bar_value(bands, f64::from(a / len));
+            let value = view.value(bands, f64::from(a / len));
             elevation::band_color_at(bands, &band, display, value)
         };
         for pair in cuts.windows(2) {
@@ -466,16 +515,19 @@ fn paint_bar(
 }
 
 /// A line across the bar at each stop between the two ends.
-fn paint_ticks(ui: &egui::Ui, bar: Rect, bands: &Bands, vertical: bool) {
+fn paint_ticks(ui: &egui::Ui, bar: Rect, bands: &Bands, vertical: bool, view: View) {
     let count = bands.stops().len();
     for stop in bands.stops().iter().skip(1).take(count.saturating_sub(2)) {
+        let fraction = view.fraction(bands, stop.value) as f32;
+        if fraction <= 0.0 || fraction >= 1.0 {
+            continue;
+        }
         let dark = luminance(bands.color_at(stop.value)) > 140.0;
         let tick = if dark {
             Color32::from_black_alpha(170)
         } else {
             Color32::from_white_alpha(210)
         };
-        let fraction = elevation::bar_fraction(bands, stop.value) as f32;
         let line = match vertical {
             true => {
                 let y = bar.bottom() - fraction * bar.height();

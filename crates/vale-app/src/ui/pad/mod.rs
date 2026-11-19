@@ -3805,7 +3805,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         import_row(ui, state, controls, Some(id));
     }
     export_row(ui, state, controls, id);
-    raster::style(ui, state, controls, id);
+    raster::style(ui, state, controls, id, None);
 }
 
 /// The panel of an image layer: its name, its size, its opacity, its blend

@@ -215,8 +215,15 @@ pub fn unit_row(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls
 }
 
 /// The Style section: the display and the color stops, and then the
-/// hillshade and the rivers of a height layer.
-pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
+/// hillshade and the rivers of a height layer. In the panel of frame
+/// `frame`, the bar shows the bands that the frame shows.
+pub fn style(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: RasterId,
+    frame: Option<FrameId>,
+) {
     let Some(raster) = state.doc.project.raster(id) else {
         return;
     };
@@ -236,6 +243,8 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
     }
     smoothing(ui, state, controls, id);
 
+    let window = frame.and_then(|frame| frame_window(ui.ctx(), state, frame, id));
+    let shown = window.map(|(w, _)| w.bands);
     let Some(bands) = state.globe.bands_mut(id) else {
         return;
     };
@@ -244,7 +253,7 @@ pub fn style(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         .scope(|ui| {
             ui.visuals_mut().override_text_color = Some(theme::MUTE);
             let m = &gradient::PAD;
-            gradient::strip(ui, controls, COLOR_STOPS, m, bands, display, &unit)
+            gradient::strip(ui, controls, COLOR_STOPS, m, bands, display, &unit, shown)
         })
         .inner;
     if strip.clicked() {
