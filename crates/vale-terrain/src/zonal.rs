@@ -7,7 +7,7 @@
 use std::f64::consts::FRAC_PI_2;
 
 use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
-use crate::heightmap::{Heightmap, TexelRect};
+use crate::heightmap::{Heightmap, TILE_SIZE, TexelRect};
 use crate::math::{V3, add, angle, dot, lonlat_to_dir, normalize, scale};
 
 /// The values of a heightmap under a feature.
@@ -274,6 +274,60 @@ pub fn polygon_zonal(map: &Heightmap, rings: &[Vec<[f64; 2]>]) -> Option<Zonal> 
     sums.finish()
 }
 
+/// The area of the ground at each level: `bins` values that divide the
+/// levels from 0 to `u16::MAX` evenly. Each value is a solid angle in
+/// steradians, and the values sum to 4π. The map is read with
+/// `read_reduced` at the smallest factor that gives a face of `most_face`
+/// texels or less.
+pub fn level_areas(map: &Heightmap, bins: usize, most_face: usize) -> Vec<f64> {
+    assert!(bins > 0 && most_face > 0, "the sizes must not be zero");
+    let n = map.face_size();
+    let mut factor = 1;
+    while n.div_ceil(factor) > most_face {
+        factor *= 2;
+    }
+    let m = n.div_ceil(factor);
+    // The flat coordinate of each edge between reduced texels.
+    let edges: Vec<f64> = (0..=m)
+        .map(|e| unwarp((e * factor).min(n) as f64 / n as f64 * 2.0 - 1.0))
+        .collect();
+    let bin = |level: u16| (usize::from(level) * bins) >> 16;
+    let mut areas = vec![0.0; bins];
+    // A block of reduced texels covers about one tile.
+    let block = (TILE_SIZE / factor).max(1);
+    let mut levels = Vec::new();
+    for face in 0..FACES {
+        for y0 in (0..m).step_by(block) {
+            for x0 in (0..m).step_by(block) {
+                let (x1, y1) = ((x0 + block).min(m), (y0 + block).min(m));
+                let rect = TexelRect { x0, y0, x1, y1 };
+                if map.reduced_is_base(face, rect, factor) {
+                    areas[bin(map.base())] +=
+                        rect_solid_angle(edges[x0], edges[x1], edges[y0], edges[y1]);
+                    continue;
+                }
+                levels.clear();
+                map.read_reduced(face, rect, factor, &mut levels);
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let level = levels[(y - y0) * (x1 - x0) + x - x0];
+                        areas[bin(level)] +=
+                            rect_solid_angle(edges[x], edges[x + 1], edges[y], edges[y + 1]);
+                    }
+                }
+            }
+        }
+    }
+    areas
+}
+
+/// The solid angle of the rectangle from `u0` to `u1` and from `v0` to `v1`
+/// in flat coordinates on a cube face.
+fn rect_solid_angle(u0: f64, u1: f64, v0: f64, v1: f64) -> f64 {
+    let f = |u: f64, v: f64| (u * v / (1.0 + u * u + v * v).sqrt()).atan();
+    f(u1, v1) - f(u0, v1) - f(u1, v0) + f(u0, v0)
+}
+
 /// Adds the texels of one face whose centers are inside the edges, by rows.
 fn fill_face(
     map: &Heightmap,
@@ -391,4 +445,69 @@ pub fn line_zonal(map: &Heightmap, line: &[[f64; 2]]) -> Option<Zonal> {
         }
     }
     sums.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::f64::consts::PI;
+
+    use super::*;
+
+    /// The sum of the areas of the bins from `bin` on.
+    fn from(areas: &[f64], bin: usize) -> f64 {
+        areas[bin..].iter().sum()
+    }
+
+    #[test]
+    fn level_areas_weight_texels_by_solid_angle() {
+        // An empty map has all its area at the base level.
+        let map = Heightmap::with_tile_size(64, 16, 1234);
+        let areas = level_areas(&map, 4096, 64);
+        assert!((areas.iter().sum::<f64>() / (4.0 * PI) - 1.0).abs() < 1e-9);
+        assert!((areas[1234 >> 4] / (4.0 * PI) - 1.0).abs() < 1e-9);
+
+        // One face at a high level.
+        let mut map = Heightmap::with_tile_size(32, 8, 0);
+        for y in 0..32 {
+            for x in 0..32 {
+                map.set(0, x, y, 60000);
+            }
+        }
+        let areas = level_areas(&map, 2, 32);
+        assert!((areas.iter().sum::<f64>() / (4.0 * PI) - 1.0).abs() < 1e-9);
+        assert!((areas[1] / (4.0 * PI / 6.0) - 1.0).abs() < 1e-9);
+
+        // The hemisphere z > 0 at a high level.
+        let mut map = Heightmap::with_tile_size(64, 16, 0);
+        for face in 0..FACES {
+            for y in 0..64 {
+                for x in 0..64 {
+                    if map.texel_dir(face, x, y)[2] > 0.0 {
+                        map.set(face, x, y, 60000);
+                    }
+                }
+            }
+        }
+        let areas = level_areas(&map, 4096, 64);
+        assert!((areas.iter().sum::<f64>() / (4.0 * PI) - 1.0).abs() < 1e-9);
+        assert!((from(&areas, 2048) / (2.0 * PI) - 1.0).abs() < 0.005);
+
+        // The cap z > 0.5 has an area of π. A reduced read agrees with the
+        // texels.
+        let mut map = Heightmap::with_tile_size(128, 16, 0);
+        for face in 0..FACES {
+            for y in 0..128 {
+                for x in 0..128 {
+                    if map.texel_dir(face, x, y)[2] > 0.5 {
+                        map.set(face, x, y, 60000);
+                    }
+                }
+            }
+        }
+        let full = level_areas(&map, 4096, 128);
+        let reduced = level_areas(&map, 4096, 32);
+        assert!((reduced.iter().sum::<f64>() / (4.0 * PI) - 1.0).abs() < 1e-9);
+        assert!((from(&full, 2048) / PI - 1.0).abs() < 0.01);
+        assert!((from(&reduced, 2048) / from(&full, 2048) - 1.0).abs() < 0.03);
+    }
 }
