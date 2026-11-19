@@ -4540,8 +4540,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The dock is on the right edge, below the top row.
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(854.0, 92.0), 340.0));
-    // The header and the card of World.
-    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 10.0);
+    // The header and the card of World, with the gap below its header row.
+    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 2.0 + 10.0);
     // The action button is at the right end of the header.
     assert_eq!(control(&h, ADD_LAYER).unwrap().min, pos2(1146.0, 96.0));
     // The Brush panel is a pane below a bar.

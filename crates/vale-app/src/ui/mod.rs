@@ -4898,6 +4898,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     pad::geometry::set_regions(ui.ctx(), regions);
     pad::motion::set_instant(ui.ctx(), state.headless || state.reduce_motion);
     pad::theme::set_text_scale(state.text_size.scale());
+    pad::theme::add_fonts(ui.ctx());
     let queue = state.globe.pen.queue.as_ref();
     let switches = queue.map(|queue| queue.take_switches()).unwrap_or_default();
     // The pen does not paint while the eyedropper is on.

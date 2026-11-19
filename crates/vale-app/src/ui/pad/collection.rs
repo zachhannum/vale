@@ -34,6 +34,8 @@ const CARD_GAP: f32 = 10.0;
 /// highlight of a row reaches the edge of the card.
 const CARD_INSET: f32 = 8.0;
 const CARD_RADIUS: f32 = 12.0;
+/// The gap between the header row of an open card and its rows.
+const HEADER_GAP: f32 = 2.0;
 
 /// The name of the popover row of a collection.
 pub fn collection_row(name: &str) -> String {
@@ -327,12 +329,12 @@ fn restack(
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
     let list = &mut state.pad.cards.stack;
+    let font = theme::heading(ui.ctx());
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
         let pill = cell.rect.expand2(vec2(8.0, -CARD_GAP / 2.0));
-        let fill = if cell.lifted {
-            theme::menu()
-        } else {
-            theme::raise()
+        let fill = match cell.lifted {
+            true => theme::card(false).to_opaque(),
+            false => theme::track(),
         };
         cell.painter.rect_filled(pill, CARD_RADIUS, fill);
         let chevron = Rect::from_center_size(
@@ -340,7 +342,7 @@ fn restack(
             vec2(18.0, 18.0),
         );
         icons::paint(&cell.painter, chevron, Icon::Open, 18.0, theme::MUTE);
-        paint_name(&cell.painter, pill, &rows[i].name);
+        paint_name(&cell.painter, pill, &rows[i].name, font.clone());
         None
     });
     ui.allocate_exact_size(vec2(width, inner.height()), Sense::hover());
@@ -377,30 +379,44 @@ fn card(
     let rows = card_rows(project, id);
     let body = match (collapsed, rows.len()) {
         (true, _) => 0.0,
-        (false, 0) => PANEL_ROW,
-        (false, n) => n as f32 * PANEL_ROW,
+        (false, 0) => HEADER_GAP + PANEL_ROW,
+        (false, n) => HEADER_GAP + n as f32 * PANEL_ROW,
     };
     let size = vec2(ui.available_width(), PANEL_ROW + body);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter().clone();
-    painter.rect_filled(rect, CARD_RADIUS, theme::track());
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
-    let radius = match collapsed {
-        true => egui::CornerRadius::same(CARD_RADIUS as u8),
-        false => egui::CornerRadius {
-            nw: CARD_RADIUS as u8,
-            ne: CARD_RADIUS as u8,
-            sw: 0,
-            se: 0,
-        },
-    };
-    painter.rect_filled(head, radius, theme::raise());
+    // The header has no fill, so that only a selected row is light. A gap
+    // divides it from the rows of an open card.
+    let r = CARD_RADIUS as u8;
+    match collapsed {
+        true => {
+            painter.rect_filled(rect, CARD_RADIUS, theme::track());
+        }
+        false => {
+            let top = egui::CornerRadius {
+                nw: r,
+                ne: r,
+                sw: 0,
+                se: 0,
+            };
+            let bottom = egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: r,
+                se: r,
+            };
+            painter.rect_filled(head, top, theme::track());
+            let body = Rect::from_min_max(pos2(rect.left(), head.bottom() + HEADER_GAP), rect.max);
+            painter.rect_filled(body, bottom, theme::track());
+        }
+    }
     header(ui, state, controls, id, head, &name, collapsed);
     if collapsed {
         return rect;
     }
     let inner = Rect::from_min_max(
-        pos2(rect.left() + CARD_INSET, head.bottom()),
+        pos2(rect.left() + CARD_INSET, head.bottom() + HEADER_GAP),
         pos2(rect.right() - CARD_INSET, rect.bottom()),
     );
     let mut child = ui.new_child(
@@ -452,7 +468,7 @@ fn header(
         true,
         None,
     );
-    paint_name(ui.painter(), head, name);
+    paint_name(ui.painter(), head, name, theme::heading(ui.ctx()));
     if tap.clicked() || row.clicked() {
         state.set_collapsed(id, !collapsed);
     }
@@ -478,7 +494,7 @@ fn header(
 }
 
 /// Paints the name of a header row.
-fn paint_name(painter: &egui::Painter, head: Rect, name: &str) {
+fn paint_name(painter: &egui::Painter, head: Rect, name: &str, font: egui::FontId) {
     let left = head.left() + 4.0 + TOUCH + 6.0;
     let clip = Rect::from_min_max(
         pos2(left, head.top()),
@@ -490,7 +506,7 @@ fn paint_name(painter: &egui::Painter, head: Rect, name: &str) {
             clip.left_center(),
             Align2::LEFT_CENTER,
             name,
-            theme::title(),
+            font,
             theme::TEXT,
         );
 }
