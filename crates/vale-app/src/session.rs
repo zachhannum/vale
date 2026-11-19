@@ -331,14 +331,6 @@ impl Session {
         Ok(())
     }
 
-    /// Writes the collection that the Layers panel of `project` shows, with
-    /// no undo step.
-    pub fn save_shown_collection(&mut self, project: &Project) -> Result<(), StoreError> {
-        self.file.set_shown_collection(project)?;
-        self.mark_changed();
-        Ok(())
-    }
-
     /// The heightmap of each raster layer of the file, in the order of the
     /// project. A heightmap has the face size, the base level, the bands,
     /// and the tiles that the file holds.

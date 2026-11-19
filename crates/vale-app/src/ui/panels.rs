@@ -662,18 +662,25 @@ fn layer_rows(ui: &mut egui::Ui, state: &mut AppState) {
     }
 }
 
-/// The collection menu of the layer list, the name field of the shown
+/// The collection menu of the layer list, the name field of the checked
 /// collection, and the buttons that add and delete a collection.
 fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
-    use super::pad::collection::{ALL_LAYERS, COLLECTION_MENU, COLLECTION_NAME, NEW_COLLECTION};
+    use super::pad::collection::{
+        ALL_LAYERS, COLLECTION_MENU, COLLECTION_NAME, NEW_COLLECTION, checks_all, menu_value,
+    };
     let project = &state.doc.project;
-    let shown = project.shown_collection();
+    let checked = project.globe_collections();
+    // `None` is All layers, and `Some(None)` is a mix of collections.
+    let shown = match checked {
+        _ if checks_all(project) => None,
+        [one] => Some(Some(*one)),
+        _ => Some(None),
+    };
+    let world = project.world_collection();
     let names: Vec<(CollectionId, String)> = (project.collections().iter())
         .map(|c| (c.id, c.name.clone()))
         .collect();
-    let text = (names.iter())
-        .find(|(id, _)| Some(*id) == shown)
-        .map_or(ALL_LAYERS, |(_, name)| name.as_str());
+    let text = menu_value(project);
     let mut pick = shown;
     ui.horizontal(|ui| {
         let combo = egui::ComboBox::from_id_salt(COLLECTION_MENU)
@@ -681,7 +688,7 @@ fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut pick, None, ALL_LAYERS);
                 for (id, name) in &names {
-                    ui.selectable_value(&mut pick, Some(*id), name);
+                    ui.selectable_value(&mut pick, Some(Some(*id)), name);
                 }
             });
         named(
@@ -699,13 +706,17 @@ fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
         );
         if add.clicked() {
             let name = state.doc.project.free_collection_name();
-            pick = state.add_collection(&name).or(pick);
+            pick = state.add_collection(&name).map(Some).or(pick);
         }
     });
     if pick != shown {
-        state.show_collection(pick);
+        match pick {
+            None => state.show_collection(None),
+            Some(Some(id)) => state.show_collection(Some(id)),
+            Some(None) => {}
+        }
     }
-    let Some((id, name)) = (names.into_iter()).find(|(id, _)| Some(*id) == pick) else {
+    let Some((id, name)) = (names.into_iter()).find(|(id, _)| pick == Some(Some(*id))) else {
         return;
     };
     ui.horizontal(|ui| {
@@ -726,7 +737,7 @@ fn collection_rows(ui: &mut egui::Ui, state: &mut AppState) {
         } else if field.has_focus() {
             ui.data_mut(|d| d.insert_temp(key, text));
         }
-        let delete = ui.button(DELETE_COLLECTION);
+        let delete = ui.add_enabled(id != world, egui::Button::new(DELETE_COLLECTION));
         named(
             &delete,
             egui::WidgetType::Button,
@@ -764,14 +775,18 @@ fn selected_layer(ui: &mut egui::Ui, state: &mut AppState) {
     if field.changed() && state.doc.rename_layer(id, &text) {
         state.touch();
     }
-    let member: Vec<(CollectionId, String, bool)> = (state.doc.project.collections().iter())
-        .map(|c| (c.id, c.name.clone(), c.layers.contains(&id)))
+    let project = &state.doc.project;
+    let member: Vec<(CollectionId, String, bool, bool)> = (project.collections().iter())
+        .map(|c| {
+            let free = project.can_leave_collection(c.id, id);
+            (c.id, c.name.clone(), c.layers.contains(&id), free)
+        })
         .collect();
     if !member.is_empty() {
         ui.horizontal_wrapped(|ui| {
             ui.label(super::pad::collection::COLLECTIONS);
-            for (collection, name, mut on) in member {
-                let check = ui.checkbox(&mut on, &name);
+            for (collection, name, mut on, free) in member {
+                let check = ui.add_enabled(free, egui::Checkbox::new(&mut on, &name));
                 let switch = super::pad::collection::switch_name(&name);
                 named(&check, egui::WidgetType::Checkbox, on, switch);
                 if check.changed() {

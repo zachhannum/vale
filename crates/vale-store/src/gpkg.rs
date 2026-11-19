@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 41;
+pub const FORMAT_VERSION: u32 = 42;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -82,6 +82,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v39,
     v40,
     v41,
+    v42,
 ];
 
 /// `GPKG` in ASCII.
@@ -519,17 +520,6 @@ impl ProjectFile {
         Ok(())
     }
 
-    /// Writes the collection that the Layers panel shows. This is not an
-    /// edit, so it gets no undo step.
-    pub fn set_shown_collection(&mut self, project: &Project) -> Result<(), StoreError> {
-        let tx = self.conn.transaction()?;
-        write_shown_collection(&tx, project)?;
-        tx.commit()?;
-        self.project.shown_collection = project.shown_collection;
-        self.project.prune_collections();
-        Ok(())
-    }
-
     /// Writes the project as one edit. Each feature keeps its UUID, and each
     /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
@@ -608,9 +598,7 @@ impl ProjectFile {
         if project.snap_targets != self.project.snap_targets {
             write_snap_targets(&tx, &project)?;
         }
-        if project.collections != self.project.collections
-            || project.shown_collection != self.project.shown_collection
-        {
+        if !project.same_collections(&self.project) {
             write_collections(&tx, &project)?;
         }
         let tiles = undo::swap_tiles(&tx, step)?;
@@ -794,6 +782,122 @@ fn v41(tx: &Transaction) -> rusqlite::Result<()> {
            VALUES ('vale_collection_layer', NULL, 'vale_project', 'Records of the Vale app',
                    'read-write');",
     )
+}
+
+/// Orders the layers of each collection, and adds World, the checked
+/// collections of the globe, and the stack of each map. World holds each
+/// layer in the order of the layer records, and each collection keeps its
+/// layers in that order. The globe checks World and, above it, the
+/// collection that the Layers panel showed. Each map has World alone. A
+/// file that already has World is left as it is.
+fn v42(tx: &Transaction) -> rusqlite::Result<()> {
+    use rusqlite::OptionalExtension;
+    let sql = "SELECT count(*) FROM vale_meta WHERE key = 'world_collection'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? > 0 {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "ALTER TABLE vale_collection_layer ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+         CREATE TABLE vale_globe_collection (
+           position INTEGER PRIMARY KEY,
+           collection_id INTEGER NOT NULL);
+         CREATE TABLE vale_map_collection (
+           map_id INTEGER NOT NULL,
+           position INTEGER NOT NULL,
+           collection_id INTEGER NOT NULL,
+           PRIMARY KEY (map_id, position));
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('vale_globe_collection', 'vale', 'vale_globe_collection'),
+                  ('vale_map_collection', 'vale', 'vale_map_collection');
+         INSERT INTO gpkg_extensions
+           VALUES ('vale_globe_collection', NULL, 'vale_project', 'Records of the Vale app',
+                   'read-write'),
+                  ('vale_map_collection', NULL, 'vale_project', 'Records of the Vale app',
+                   'read-write');",
+    )?;
+    let meta = |key: &str| -> rusqlite::Result<Option<u32>> {
+        let sql = "SELECT value FROM vale_meta WHERE key = ?1";
+        let text: Option<String> = tx.query_row(sql, [key], |r| r.get(0)).optional()?;
+        Ok(text.and_then(|t| t.parse().ok()))
+    };
+    let ids = |sql: &str| -> rusqlite::Result<Vec<u32>> {
+        tx.prepare(sql)?.query_map([], |r| r.get(0))?.collect()
+    };
+    let collections = ids("SELECT id FROM vale_collection ORDER BY position")?;
+    let next = meta("next_collection_id")?.unwrap_or(0);
+    let world = CollectionId(next.max(collections.iter().max().map_or(0, |m| m + 1)));
+    let names: Vec<String> = (tx.prepare("SELECT name FROM vale_collection")?)
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<_, _>>()?;
+    let world_name = std::iter::once(crate::WORLD_COLLECTION.to_owned())
+        .chain((2..).map(|n| format!("{} {n}", crate::WORLD_COLLECTION)))
+        .find(|name| !names.contains(name))
+        .expect("a free name");
+    let order: Vec<LayerId> = (ids("SELECT id FROM vale_layer ORDER BY position")?)
+        .into_iter()
+        .map(LayerId)
+        .collect();
+    let members: Vec<(u32, u32)> = (tx
+        .prepare("SELECT collection_id, layer_id FROM vale_collection_layer")?)
+    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+    .collect::<Result<_, _>>()?;
+    tx.execute_batch(
+        "DELETE FROM vale_collection_layer;
+         UPDATE vale_collection SET position = position + 1;",
+    )?;
+    tx.execute(
+        "INSERT INTO vale_collection (id, position, name) VALUES (?1, 0, ?2)",
+        params![world.0, world_name],
+    )?;
+    let mut member = tx.prepare(
+        "INSERT INTO vale_collection_layer (collection_id, layer_id, position)
+         VALUES (?1, ?2, ?3)",
+    )?;
+    for (position, layer) in order.iter().enumerate() {
+        member.execute(params![world.0, layer.0, position])?;
+    }
+    for id in &collections {
+        let held = |layer: &&LayerId| members.contains(&(*id, layer.0));
+        for (position, layer) in order.iter().filter(held).enumerate() {
+            member.execute(params![id, layer.0, position])?;
+        }
+    }
+    let shown = meta("shown_collection")?.filter(|id| collections.contains(id));
+    let globe: Vec<CollectionId> = std::iter::once(world)
+        .chain(shown.map(CollectionId))
+        .collect();
+    for (position, id) in globe.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO vale_globe_collection (position, collection_id) VALUES (?1, ?2)",
+            params![position, id.0],
+        )?;
+    }
+    let mut maps = BTreeMap::new();
+    for map in ids("SELECT id FROM vale_map ORDER BY position")? {
+        tx.execute(
+            "INSERT INTO vale_map_collection (map_id, position, collection_id) VALUES (?1, 0, ?2)",
+            params![map, world.0],
+        )?;
+        maps.insert(MapId(map), vec![world]);
+    }
+    tx.execute("DELETE FROM vale_meta WHERE key = 'shown_collection';", [])?;
+    for (key, value) in [
+        ("next_collection_id", world.0 + 1),
+        ("world_collection", world.0),
+    ] {
+        tx.execute(
+            "INSERT OR REPLACE INTO vale_meta (key, value) VALUES (?1, ?2)",
+            params![key, value.to_string()],
+        )?;
+    }
+    let file = undo::V41Collections {
+        world,
+        world_name: &world_name,
+        order: &order,
+        globe: &globe,
+        maps: &maps,
+    };
+    undo::v42(tx, &file)
 }
 
 /// Adds the seed of the world.
@@ -1922,9 +2026,7 @@ fn write_edit(
         write_snap_targets(tx, project)?;
     }
     if old.is_none_or(|old| {
-        old.collections != project.collections
-            || old.next_collection_id != project.next_collection_id
-            || old.shown_collection != project.shown_collection
+        !old.same_collections(project) || old.next_collection_id != project.next_collection_id
     }) {
         write_collections(tx, project)?;
     }
@@ -2196,36 +2298,49 @@ fn write_snap_targets(tx: &Transaction, project: &Project) -> Result<(), StoreEr
     Ok(())
 }
 
-/// Writes the collections in their order, the next collection ID, and the
-/// shown collection.
+/// Writes the collections with their layers in order, the next collection
+/// ID, World, the checked collections of the globe, and the map stacks.
 fn write_collections(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
-    tx.execute_batch("DELETE FROM vale_collection; DELETE FROM vale_collection_layer;")?;
+    tx.execute_batch(
+        "DELETE FROM vale_collection;
+         DELETE FROM vale_collection_layer;
+         DELETE FROM vale_globe_collection;
+         DELETE FROM vale_map_collection;",
+    )?;
     let mut insert =
         tx.prepare("INSERT INTO vale_collection (id, position, name) VALUES (?1, ?2, ?3)")?;
-    let mut member =
-        tx.prepare("INSERT INTO vale_collection_layer (collection_id, layer_id) VALUES (?1, ?2)")?;
+    let mut member = tx.prepare(
+        "INSERT INTO vale_collection_layer (collection_id, layer_id, position)
+         VALUES (?1, ?2, ?3)",
+    )?;
     for (position, c) in project.collections.iter().enumerate() {
         insert.execute(params![c.id.0, position, c.name])?;
-        for layer in &c.layers {
-            member.execute(params![c.id.0, layer.0])?;
+        for (position, layer) in c.layers.iter().enumerate() {
+            member.execute(params![c.id.0, layer.0, position])?;
         }
     }
-    tx.execute(
-        "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('next_collection_id', ?1)",
-        [project.next_collection_id.to_string()],
+    let mut globe =
+        tx.prepare("INSERT INTO vale_globe_collection (position, collection_id) VALUES (?1, ?2)")?;
+    for (position, id) in project.globe_collections.iter().enumerate() {
+        globe.execute(params![position, id.0])?;
+    }
+    let mut map = tx.prepare(
+        "INSERT INTO vale_map_collection (map_id, position, collection_id) VALUES (?1, ?2, ?3)",
     )?;
-    write_shown_collection(tx, project)
-}
-
-/// Writes the shown collection. No record means all layers.
-fn write_shown_collection(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
-    match project.shown_collection {
-        Some(id) => tx.execute(
-            "INSERT OR REPLACE INTO vale_meta (key, value) VALUES ('shown_collection', ?1)",
-            [id.0.to_string()],
-        )?,
-        None => tx.execute("DELETE FROM vale_meta WHERE key = 'shown_collection'", [])?,
-    };
+    for (id, stack) in &project.map_stacks {
+        for (position, c) in stack.iter().enumerate() {
+            map.execute(params![id.0, position, c.0])?;
+        }
+    }
+    for (key, value) in [
+        ("next_collection_id", project.next_collection_id),
+        ("world_collection", project.world_collection.0),
+    ] {
+        tx.execute(
+            "INSERT OR REPLACE INTO vale_meta (key, value) VALUES (?1, ?2)",
+            params![key, value.to_string()],
+        )?;
+    }
     Ok(())
 }
 
@@ -3086,27 +3201,41 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
             Ok(Collection {
                 id: CollectionId(r.get(0)?),
                 name: r.get(1)?,
-                layers: BTreeSet::new(),
+                layers: Vec::new(),
             })
         })?
         .collect::<Result<_, _>>()?;
     let members = conn
-        .prepare("SELECT collection_id, layer_id FROM vale_collection_layer")?
+        .prepare(
+            "SELECT collection_id, layer_id FROM vale_collection_layer
+             ORDER BY collection_id, position",
+        )?
         .query_map([], |r| Ok((CollectionId(r.get(0)?), LayerId(r.get(1)?))))?
         .collect::<Result<Vec<_>, _>>()?;
     for (id, layer) in members {
         if let Some(c) = collections.iter_mut().find(|c| c.id == id) {
-            c.layers.insert(layer);
+            c.layers.push(layer);
         }
     }
-    let shown_collection = match optional_meta(conn, "shown_collection")? {
-        Some(text) => {
-            Some(CollectionId(text.parse().map_err(|_| {
-                corrupt(format!("shown_collection {text:?}"))
-            })?))
-        }
-        None => None,
-    };
+    let world_collection = CollectionId(counter(conn, "world_collection")?);
+    if !collections.iter().any(|c| c.id == world_collection) {
+        return Err(corrupt(format!(
+            "no World collection {}",
+            world_collection.0
+        )));
+    }
+    let globe_collections = conn
+        .prepare("SELECT collection_id FROM vale_globe_collection ORDER BY position")?
+        .query_map([], |r| Ok(CollectionId(r.get(0)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut map_stacks: BTreeMap<MapId, Vec<CollectionId>> = BTreeMap::new();
+    let rows = conn
+        .prepare("SELECT map_id, collection_id FROM vale_map_collection ORDER BY map_id, position")?
+        .query_map([], |r| Ok((MapId(r.get(0)?), CollectionId(r.get(1)?))))?
+        .collect::<Result<Vec<_>, _>>()?;
+    for (map, id) in rows {
+        map_stacks.entry(map).or_default().push(id);
+    }
     let mut project = Project {
         atlas: load_atlas(conn, units)?,
         world,
@@ -3120,7 +3249,9 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         snap_targets,
         collections,
         next_collection_id: counter(conn, "next_collection_id")?,
-        shown_collection,
+        world_collection,
+        globe_collections,
+        map_stacks,
     };
     // A row of a removed layer stays in the file until the next write.
     project.prune_snap_targets();
@@ -3792,10 +3923,12 @@ mod tests {
                 "vale_field",
                 "vale_frame",
                 "vale_furniture",
+                "vale_globe_collection",
                 "vale_image",
                 "vale_image_tile",
                 "vale_layer",
                 "vale_map",
+                "vale_map_collection",
                 "vale_map_hidden",
                 "vale_map_label",
                 "vale_map_layer_style",
@@ -5578,7 +5711,7 @@ mod tests {
         assert_eq!(tiles_of(&file, project.raster(id).unwrap()), []);
         drop(file);
         let bytes = std::fs::metadata(path(&dir)).unwrap().len();
-        assert!(bytes < 288 * 1024, "{bytes} bytes");
+        assert!(bytes < 296 * 1024, "{bytes} bytes");
 
         // A tile of flat ground adds little.
         let (mut file, project) = ProjectFile::open(&path(&dir)).unwrap();
@@ -6025,9 +6158,10 @@ mod tests {
         project.move_layer(rain_layer, 2);
         project.set_layer_visible(rain_layer, false);
         file.save(&project).unwrap();
-        // The layer above the place of the raster layer has a new place.
+        // The layer above the place of the raster layer has a new place, and
+        // World has the new layer.
         let step = format!(
-            "layer {}, layer {}, raster {}",
+            "collections 0, layer {}, layer {}, raster {}",
             roads.0, rain_layer.0, rain.0
         );
         assert_eq!(images(&file), [step.as_str()]);
@@ -7461,7 +7595,7 @@ mod tests {
             strings(&file.conn, &sql).remove(0)
         };
         assert_eq!(rows(&file, "vale_undo_tile"), "3 0 3");
-        assert_eq!(rows(&file, "vale_undo_record"), "0 6 4");
+        assert_eq!(rows(&file, "vale_undo_record"), "0 7 4");
 
         // An undo names the tiles that it changed.
         let restored = file.undo().unwrap().unwrap();
@@ -8150,135 +8284,315 @@ mod tests {
         assert_eq!(file.project().snap_targets(roads), [(roads, VECTOR)]);
     }
 
+    /// A project with the layers Roads, Towns, and Lakes, in that order of
+    /// the layer records from the bottom, and a second map.
+    fn collection_sample() -> (Project, [LayerId; 3]) {
+        let mut project = Project::new(World::default());
+        let lakes = project.add_layer("Lakes".into(), GeometryKind::Polygon, None, vec![]);
+        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
+        project.move_layer(lakes, 2);
+        project.atlas.add_map();
+        (project, [roads, towns, lakes])
+    }
+
+    fn members(project: &Project, id: CollectionId) -> Vec<LayerId> {
+        project.collection(id).unwrap().layers.clone()
+    }
+
     #[test]
     fn collections_survive_a_save_and_a_load() {
         let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
-        let towns = project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
-        let lakes = project.add_layer("Lakes".into(), GeometryKind::Polygon, None, vec![]);
+        let (mut project, [roads, towns, lakes]) = collection_sample();
+        let world = project.world_collection();
         let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
         let a = project.add_collection("Travel").unwrap();
         let b = project.add_collection("Places").unwrap();
-        project.set_in_collection(a, roads, true);
         project.set_in_collection(a, towns, true);
+        project.set_in_collection(a, roads, true);
         project.set_in_collection(b, towns, true);
-        project.set_shown_collection(Some(b));
+        project.move_in_collection(world, lakes, 2);
+        project.set_globe_collections(vec![b, world, a]);
+        let map = project.atlas.maps[1].id;
+        project.set_map_stack(map, vec![a, world]);
         file.save(&project).unwrap();
         drop(file);
 
         let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(loaded, project);
-        assert_eq!(loaded.shown_collection(), Some(b));
-        let names: Vec<&str> = loaded
-            .collections()
-            .iter()
+        let names: Vec<&str> = (loaded.collections().iter())
             .map(|c| c.name.as_str())
             .collect();
-        assert_eq!(names, ["Travel", "Places"]);
-        assert_eq!(loaded.collections_of(towns).len(), 2);
-        assert!(loaded.collections_of(lakes).is_empty());
-        let shown: Vec<LayerId> = loaded.shown_layers().iter().map(|l| l.id).collect();
-        assert_eq!(shown, [towns]);
+        assert_eq!(names, ["World", "Travel", "Places"]);
+        assert_eq!(members(&loaded, world), [roads, towns, lakes]);
+        assert_eq!(members(&loaded, a), [towns, roads]);
+        assert_eq!(loaded.globe_collections(), [b, world, a]);
+        assert_eq!(loaded.map_stack(map), [a, world]);
+        assert_eq!(loaded.map_stack(loaded.atlas.maps[0].id), [world]);
+    }
+
+    /// Saves each state, then undoes and redoes each step one at a time.
+    fn assert_one_step_each(states: Vec<Project>) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = ProjectFile::create(&path(&dir), &states[0]).unwrap();
+        for state in &states[1..] {
+            file.save(state).unwrap();
+        }
+        for state in states.iter().rev().skip(1) {
+            assert!(file.undo().unwrap().is_some());
+            assert!(file.project().same_collections(state));
+            assert_eq!(file.project().layers(), state.layers());
+        }
+        assert!(!file.can_undo());
+        for state in &states[1..] {
+            assert!(file.redo().unwrap().is_some());
+            assert_eq!(file.project(), state);
+        }
+        drop(file);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(&loaded, states.last().unwrap());
     }
 
     #[test]
     fn each_change_of_a_collection_is_one_undo_step() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
-        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let (mut project, [roads, towns, _]) = collection_sample();
+        let world = project.world_collection();
         let mut states = vec![project.clone()];
-        let c = project.add_collection("Travel").unwrap();
-        file.save(&project).unwrap();
-        states.push(project.clone());
-        project.rename_collection(c, "Trade");
-        file.save(&project).unwrap();
-        states.push(project.clone());
-        project.set_in_collection(c, roads, true);
-        file.save(&project).unwrap();
-        states.push(project.clone());
-        project.remove_collection(c);
-        file.save(&project).unwrap();
-        states.push(project.clone());
-
-        // An undo does not put back the next collection ID.
-        for state in states.iter().rev().skip(1) {
-            assert!(file.undo().unwrap().is_some());
-            assert_eq!(file.project().collections(), state.collections());
-        }
-        assert!(!file.can_undo());
-        for state in states.iter().skip(1) {
-            assert!(file.redo().unwrap().is_some());
-            assert_eq!(file.project(), state);
-        }
-        // A delete keeps the layers.
-        assert_eq!(file.project().layers().len(), 1);
-        drop(file);
-        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
-        assert_eq!(loaded, project);
+        let mut step = |project: &mut Project, edit: &dyn Fn(&mut Project) -> bool| {
+            assert!(edit(project));
+            states.push(project.clone());
+        };
+        let c = CollectionId(1);
+        step(&mut project, &|p| p.add_collection("Travel") == Some(c));
+        step(&mut project, &|p| p.rename_collection(c, "Trade"));
+        step(&mut project, &|p| p.set_in_collection(c, roads, true));
+        step(&mut project, &|p| p.set_in_collection(c, towns, true));
+        step(&mut project, &|p| p.move_in_collection(c, towns, 0));
+        step(&mut project, &|p| p.move_in_collection(world, roads, 2));
+        step(&mut project, &|p| p.check_collection(c, true));
+        step(&mut project, &|p| p.set_globe_collections(vec![c, world]));
+        step(&mut project, &|p| p.check_collection(world, false));
+        step(&mut project, &|p| {
+            let map = p.atlas.maps[0].id;
+            p.set_map_stack(map, vec![c, world])
+        });
+        step(&mut project, &|p| p.rename_collection(world, "Earth"));
+        step(&mut project, &|p| p.remove_collection(c));
+        assert_one_step_each(states);
     }
 
     #[test]
-    fn removing_a_layer_takes_it_out_of_each_collection_and_undo_puts_it_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        let roads = project.add_layer("Roads".into(), GeometryKind::Line, None, vec![]);
+    fn a_layer_that_leaves_its_last_collection_goes_into_world_in_the_same_step() {
+        let (mut project, [roads, towns, lakes]) = collection_sample();
+        let world = project.world_collection();
         let c = project.add_collection("Travel").unwrap();
         project.set_in_collection(c, roads, true);
-        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        project.set_in_collection(world, roads, false);
+        let before = project.clone();
+        assert!(project.set_in_collection(c, roads, false));
+        assert_eq!(members(&project, world), [lakes, towns, roads]);
+        assert_one_step_each(vec![before, project]);
+    }
+
+    #[test]
+    fn a_deleted_collection_puts_its_lone_layers_into_world_in_the_same_step() {
+        let (mut project, [roads, towns, lakes]) = collection_sample();
+        let world = project.world_collection();
+        let c = project.add_collection("Travel").unwrap();
+        project.set_in_collection(c, lakes, true);
+        project.set_in_collection(c, roads, true);
+        project.set_in_collection(world, roads, false);
+        project.set_in_collection(world, lakes, false);
+        project.check_collection(c, true);
+        let before = project.clone();
+        assert!(project.remove_collection(c));
+        assert_eq!(members(&project, world), [towns, lakes, roads]);
+        assert_eq!(project.globe_collections(), [world]);
+        assert_one_step_each(vec![before, project]);
+    }
+
+    #[test]
+    fn a_removed_layer_comes_back_to_its_places_on_undo() {
+        let (mut project, [roads, towns, lakes]) = collection_sample();
+        let world = project.world_collection();
+        let c = project.add_collection("Travel").unwrap();
+        for id in [lakes, roads, towns] {
+            project.set_in_collection(c, id, true);
+        }
+        let before = project.clone();
         project.remove_layer(roads);
-        file.save(&project).unwrap();
-        assert!(file.project().collection(c).unwrap().layers.is_empty());
-
-        assert!(file.undo().unwrap().is_some());
-        assert!(
-            file.project()
-                .collection(c)
-                .unwrap()
-                .layers
-                .contains(&roads)
-        );
-        drop(file);
-        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
-        assert!(loaded.collection(c).unwrap().layers.contains(&roads));
+        assert_eq!(members(&project, world), [lakes, towns]);
+        assert_eq!(members(&project, c), [lakes, towns]);
+        assert_one_step_each(vec![before.clone(), project]);
+        assert_eq!(members(&before, world), [lakes, roads, towns]);
+        assert_eq!(members(&before, c), [lakes, roads, towns]);
     }
 
     #[test]
-    fn the_shown_collection_is_not_an_edit() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+    fn a_new_layer_in_the_file_joins_the_top_checked_collection() {
+        let (mut project, _) = collection_sample();
         let c = project.add_collection("Travel").unwrap();
-        file.save(&project).unwrap();
-        project.set_shown_collection(Some(c));
-        file.set_shown_collection(&project).unwrap();
-        file.save(&project).unwrap();
-        assert_eq!(file.project().shown_collection(), Some(c));
-        drop(file);
+        project.check_collection(c, true);
+        let before = project.clone();
+        let rivers = project.add_layer("Rivers".into(), GeometryKind::Line, None, vec![]);
+        assert_eq!(members(&project, c), [rivers]);
+        assert_one_step_each(vec![before, project]);
+    }
+
+    /// Makes a file of version 41 from a file of the current version with
+    /// no collections other than World and no undo steps: Travel holds
+    /// `travel`, Places holds `places`, and the Layers panel shows Places.
+    fn make_v41(dir: &tempfile::TempDir, travel: &[LayerId], places: &[LayerId]) {
+        let conn = Connection::open(path(dir)).unwrap();
+        conn.execute_batch(
+            "DROP TABLE vale_globe_collection;
+             DROP TABLE vale_map_collection;
+             DELETE FROM gpkg_contents
+               WHERE table_name IN ('vale_globe_collection', 'vale_map_collection');
+             DELETE FROM gpkg_extensions
+               WHERE table_name IN ('vale_globe_collection', 'vale_map_collection');
+             DELETE FROM vale_collection;
+             DELETE FROM vale_collection_layer;
+             ALTER TABLE vale_collection_layer DROP COLUMN position;
+             DELETE FROM vale_meta WHERE key = 'world_collection';
+             INSERT INTO vale_collection (id, position, name)
+               VALUES (3, 0, 'Travel'), (4, 1, 'Places');
+             UPDATE vale_meta SET value = '5' WHERE key = 'next_collection_id';
+             INSERT INTO vale_meta (key, value) VALUES ('shown_collection', '4');",
+        )
+        .unwrap();
+        for (id, layers) in [(3, travel), (4, places)] {
+            for layer in layers {
+                conn.execute(
+                    "INSERT INTO vale_collection_layer (collection_id, layer_id) VALUES (?1, ?2)",
+                    params![id, layer.0],
+                )
+                .unwrap();
+            }
+        }
+        drop(conn);
+        set_format_version(dir, 41);
+    }
+
+    /// The image of the collections of version 41.
+    fn v41_image(collections: &[(u32, &str, &[LayerId])], next_id: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&next_id.to_le_bytes());
+        out.extend_from_slice(&(collections.len() as u32).to_le_bytes());
+        for (id, name, layers) in collections {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(&(layers.len() as u32).to_le_bytes());
+            for layer in *layers {
+                out.extend_from_slice(&layer.0.to_le_bytes());
+            }
+        }
+        undo::pack(&out)
+    }
+
+    #[test]
+    fn a_file_of_version_41_gets_world_and_ordered_collections() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, [roads, towns, lakes]) = collection_sample();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        // The sets are in ID order, which is not the order of the records.
+        make_v41(&dir, &[roads, lakes], &[lakes, towns]);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let world = loaded.world_collection();
+        assert_eq!(world, CollectionId(5));
+        let names: Vec<&str> = (loaded.collections().iter())
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(names, ["World", "Travel", "Places"]);
+        assert_eq!(members(&loaded, world), [roads, towns, lakes]);
+        assert_eq!(members(&loaded, CollectionId(3)), [roads, lakes]);
+        assert_eq!(members(&loaded, CollectionId(4)), [towns, lakes]);
+        assert_eq!(loaded.globe_collections(), [world, CollectionId(4)]);
+        for map in &loaded.atlas.maps {
+            assert_eq!(loaded.map_stack(map.id), [world]);
+        }
+        assert_eq!(loaded.layers(), project.layers());
+        let conn = Connection::open(path(&dir)).unwrap();
+        assert_eq!(
+            strings(
+                &conn,
+                "SELECT key FROM vale_meta WHERE key = 'shown_collection'"
+            ),
+            [] as [&str; 0]
+        );
+        let stacks = "SELECT count(*) FROM vale_map_collection";
+        let rows: usize = conn.query_row(stacks, [], |r| r.get(0)).unwrap();
+        assert_eq!(rows, loaded.atlas.maps.len());
+        // A new collection gets a new ID.
+        let mut next = loaded.clone();
+        assert_eq!(next.add_collection("New"), Some(CollectionId(6)));
+    }
+
+    #[test]
+    fn world_of_a_file_of_version_41_gets_a_free_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, [roads, ..]) = collection_sample();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        make_v41(&dir, &[roads], &[]);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute("UPDATE vale_collection SET name = 'World' WHERE id = 3", [])
+            .unwrap();
+        drop(conn);
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        let world = loaded.world_collection();
+        assert_eq!(loaded.collection(world).unwrap().name, "World 2");
+    }
+
+    #[test]
+    fn undo_steps_of_version_41_are_converted() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, [roads, towns, lakes]) = collection_sample();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        make_v41(&dir, &[roads], &[lakes, towns]);
+        // The step put Lakes and Towns in Places. Its image is from before.
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute("INSERT INTO vale_undo_step (redo, bytes) VALUES (0, 0)", [])
+            .unwrap();
+        let step = conn.last_insert_rowid();
+        let image = v41_image(&[(3, "Travel", &[roads]), (4, "Places", &[])], 5);
+        conn.execute(
+            "INSERT INTO vale_undo_record (step_id, kind, id, data)
+             VALUES (?1, 'collections', 0, ?2)",
+            params![step, image],
+        )
+        .unwrap();
+        drop(conn);
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
-        assert_eq!(loaded.shown_collection(), Some(c));
-        // The one step is the new collection. Its undo shows all layers.
+        let world = loaded.world_collection();
+        let places = CollectionId(4);
         assert!(file.undo().unwrap().is_some());
-        assert!(!file.can_undo());
-        assert_eq!(file.project().shown_collection(), None);
+        let undone = file.project();
+        assert_eq!(members(undone, places), []);
+        assert_eq!(members(undone, CollectionId(3)), [roads]);
+        assert_eq!(members(undone, world), [roads, towns, lakes]);
+        assert_eq!(undone.globe_collections(), [world, places]);
         assert!(file.redo().unwrap().is_some());
-        assert_eq!(file.project().shown_collection(), None);
-        assert!(file.project().collection(c).is_some());
+        assert_eq!(file.project(), &loaded);
+        drop(file);
+        let (_, reopened) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(reopened, loaded);
     }
 
     #[test]
-    fn a_file_of_version_40_has_no_collections() {
+    fn a_file_of_version_40_gets_world_with_each_layer() {
         let dir = tempfile::tempdir().unwrap();
-        let mut project = Project::new(World::default());
-        let file = ProjectFile::create(&path(&dir), &project).unwrap();
-        drop(file);
+        let (project, [roads, towns, lakes]) = collection_sample();
+        drop(ProjectFile::create(&path(&dir), &project).unwrap());
+        make_v41(&dir, &[], &[]);
         let conn = Connection::open(path(&dir)).unwrap();
         conn.execute_batch(
             "DROP TABLE vale_collection;
              DROP TABLE vale_collection_layer;
-             DELETE FROM vale_meta WHERE key = 'next_collection_id';
+             DELETE FROM vale_meta
+               WHERE key IN ('next_collection_id', 'shown_collection');
              DELETE FROM gpkg_extensions WHERE table_name LIKE 'vale_collection%';
              DELETE FROM gpkg_contents WHERE table_name LIKE 'vale_collection%';",
         )
@@ -8288,12 +8602,19 @@ mod tests {
 
         let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
         assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
-        assert_eq!(loaded.collections(), []);
-        assert_eq!(loaded.shown_collection(), None);
-        project.add_collection("Travel").unwrap();
-        file.save(&project).unwrap();
+        let world = loaded.world_collection();
+        assert_eq!(loaded.collections().len(), 1);
+        assert_eq!(loaded.collection(world).unwrap().name, "World");
+        assert_eq!(members(&loaded, world), [roads, towns, lakes]);
+        assert_eq!(loaded.globe_collections(), [world]);
+        for map in &loaded.atlas.maps {
+            assert_eq!(loaded.map_stack(map.id), [world]);
+        }
+        let mut next = loaded.clone();
+        next.add_collection("Travel").unwrap();
+        file.save(&next).unwrap();
         drop(file);
-        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
-        assert_eq!(loaded, project);
+        let (_, reopened) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(reopened, next);
     }
 }

@@ -4,12 +4,13 @@
 //! that the edit changed, from before the edit. An undo swaps each image with
 //! the record or the tile in the file, so the step then holds the images from
 //! after the edit, and a redo swaps them back. A record is the world, one
-//! raster, one image, one layer with its features, or the atlas. The step of a new raster layer or
-//! of a removed one holds the image of the layer and the image of the raster.
-//! The same is true of an image layer. A step does not hold the tiles of an
+//! raster, one image, one layer with its features, the atlas, or the
+//! collections. The step of a new raster layer or of a removed one holds
+//! the image of the layer and the image of the raster. The same is true of an image layer. A step does not hold the tiles of an
 //! image, because they do not change. They stay in the file while a step
 //! holds the record of the image.
 
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 
 use flate2::Compression;
@@ -230,7 +231,7 @@ pub(crate) fn keep_records(
     if old.atlas != new.atlas {
         changed.push((ATLAS, 0));
     }
-    if old.collections != new.collections {
+    if !old.same_collections(new) {
         changed.push((COLLECTIONS, 0));
     }
     let ids = |a: &Project, b: &Project| -> Vec<u32> {
@@ -374,9 +375,11 @@ pub(crate) fn swap_records(
             }
             COLLECTIONS => {
                 let image = payload.is_some().then(|| collections(&mut r)).flatten();
-                let (list, next_id) = image.ok_or_else(bad)?;
-                next.collections = list;
-                next.next_collection_id = next.next_collection_id.max(next_id);
+                let image = image.ok_or_else(bad)?;
+                next.collections = image.list;
+                next.globe_collections = image.globe;
+                next.map_stacks = image.maps;
+                next.next_collection_id = next.next_collection_id.max(image.next_id);
             }
             _ => return Err(bad()),
         }
@@ -547,7 +550,7 @@ fn image(project: &Project, kind: &str, id: u32) -> Option<Vec<u8>> {
     Some(pack(&out))
 }
 
-fn pack(payload: &[u8]) -> Vec<u8> {
+pub(crate) fn pack(payload: &[u8]) -> Vec<u8> {
     let mut encoder = DeflateEncoder::new(vec![DEFLATE], Compression::fast());
     encoder
         .write_all(payload)
@@ -593,33 +596,170 @@ fn count(r: &mut Reader) -> Option<usize> {
     r.u32().map(|n| n as usize)
 }
 
-fn put_collections(out: &mut Vec<u8>, project: &Project) {
-    put_u32(out, project.next_collection_id as usize);
-    put_u32(out, project.collections.len());
-    for c in &project.collections {
-        put_u32(out, c.id.0 as usize);
-        put_bytes(out, c.name.as_bytes());
-        put_u32(out, c.layers.len());
-        for layer in &c.layers {
-            put_u32(out, layer.0 as usize);
-        }
+/// The version byte of an image of the collections.
+const COLLECTIONS_VERSION: u8 = 2;
+
+/// The image of the collections of a project: the collections with their
+/// layers in order, the checked collections of the globe, and the stack of
+/// each map that has its own.
+struct CollectionsImage {
+    next_id: u32,
+    list: Vec<Collection>,
+    globe: Vec<CollectionId>,
+    maps: BTreeMap<MapId, Vec<CollectionId>>,
+}
+
+fn put_ids(out: &mut Vec<u8>, ids: impl ExactSizeIterator<Item = u32>) {
+    put_u32(out, ids.len());
+    for id in ids {
+        put_u32(out, id as usize);
     }
 }
 
-/// The collections and the next collection ID.
-fn collections(r: &mut Reader) -> Option<(Vec<Collection>, u32)> {
+fn read_ids(r: &mut Reader) -> Option<Vec<u32>> {
+    (0..count(r)?).map(|_| r.u32()).collect()
+}
+
+fn put_collections(out: &mut Vec<u8>, project: &Project) {
+    put_collections_image(
+        out,
+        project.next_collection_id,
+        &project.collections,
+        &project.globe_collections,
+        &project.map_stacks,
+    );
+}
+
+fn put_collections_image(
+    out: &mut Vec<u8>,
+    next_id: u32,
+    list: &[Collection],
+    globe: &[CollectionId],
+    maps: &BTreeMap<MapId, Vec<CollectionId>>,
+) {
+    out.push(COLLECTIONS_VERSION);
+    put_u32(out, next_id as usize);
+    put_u32(out, list.len());
+    for c in list {
+        put_u32(out, c.id.0 as usize);
+        put_bytes(out, c.name.as_bytes());
+        put_ids(out, c.layers.iter().map(|l| l.0));
+    }
+    put_ids(out, globe.iter().map(|c| c.0));
+    put_u32(out, maps.len());
+    for (map, stack) in maps {
+        put_u32(out, map.0 as usize);
+        put_ids(out, stack.iter().map(|c| c.0));
+    }
+}
+
+fn collections(r: &mut Reader) -> Option<CollectionsImage> {
+    (r.take::<1>()? == [COLLECTIONS_VERSION]).then_some(())?;
     let next_id = r.u32()?;
-    let n = count(r)?;
     let mut list = Vec::new();
-    for _ in 0..n {
+    for _ in 0..count(r)? {
         let id = CollectionId(r.u32()?);
         let name = string(r)?;
-        let layers = (0..count(r)?)
-            .map(|_| r.u32().map(LayerId))
-            .collect::<Option<_>>()?;
+        let layers = read_ids(r)?.into_iter().map(LayerId).collect();
         list.push(Collection { id, name, layers });
     }
+    let globe = read_ids(r)?.into_iter().map(CollectionId).collect();
+    let mut maps = BTreeMap::new();
+    for _ in 0..count(r)? {
+        let map = MapId(r.u32()?);
+        maps.insert(map, read_ids(r)?.into_iter().map(CollectionId).collect());
+    }
+    r.0.is_empty().then_some(CollectionsImage {
+        next_id,
+        list,
+        globe,
+        maps,
+    })
+}
+
+/// A collection of an image of version 41: its ID, its name, and its
+/// layers in ID order.
+type V41Collection = (CollectionId, String, Vec<LayerId>);
+
+/// The collections and the next collection ID of an image of version 41.
+fn collections_v41(r: &mut Reader) -> Option<(Vec<V41Collection>, u32)> {
+    let next_id = r.u32()?;
+    let mut list = Vec::new();
+    for _ in 0..count(r)? {
+        let id = CollectionId(r.u32()?);
+        let name = string(r)?;
+        let layers = read_ids(r)?.into_iter().map(LayerId).collect();
+        list.push((id, name, layers));
+    }
     Some((list, next_id))
+}
+
+/// What the conversion of an image of version 41 needs from the file.
+pub(crate) struct V41Collections<'a> {
+    pub world: CollectionId,
+    pub world_name: &'a str,
+    /// The layers of the file in the order of the layer records.
+    pub order: &'a [LayerId],
+    /// The checked collections that the conversion gives the file.
+    pub globe: &'a [CollectionId],
+    pub maps: &'a BTreeMap<MapId, Vec<CollectionId>>,
+}
+
+/// Converts each image of the collections of version 41 to the current
+/// encoding. World holds each layer of the file in the order of the layer
+/// records, and then each other layer of the image. Each collection keeps
+/// its layers in that order. The globe and the maps have the stacks that
+/// the conversion gives the file.
+pub(crate) fn v42(tx: &Transaction, file: &V41Collections) -> rusqlite::Result<()> {
+    let rows: Vec<(i64, u32, Vec<u8>)> = tx
+        .prepare(
+            "SELECT step_id, id, data FROM vale_undo_record WHERE kind = ?1 AND data IS NOT NULL",
+        )?
+        .query_map([COLLECTIONS], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    for (step, id, blob) in rows {
+        let old = unpack(&blob).and_then(|payload| collections_v41(&mut Reader(&payload)));
+        let Some((old, next_id)) = old else {
+            // A damaged image goes. The rest of its step stays.
+            tx.execute(
+                "DELETE FROM vale_undo_record WHERE step_id = ?1 AND kind = ?2 AND id = ?3",
+                params![step, COLLECTIONS, id],
+            )?;
+            continue;
+        };
+        let place = |l: &LayerId| file.order.iter().position(|o| o == l).unwrap_or(usize::MAX);
+        let mut world = file.order.to_vec();
+        let mut list = Vec::new();
+        for (id, name, mut layers) in old {
+            // A stable sort keeps the layers that the file lacks in ID order.
+            layers.sort_by_key(place);
+            for layer in &layers {
+                if !world.contains(layer) {
+                    world.push(*layer);
+                }
+            }
+            list.push(Collection { id, name, layers });
+        }
+        list.insert(
+            0,
+            Collection {
+                id: file.world,
+                name: file.world_name.to_owned(),
+                layers: world,
+            },
+        );
+        let globe: Vec<CollectionId> = (file.globe.iter().copied())
+            .filter(|g| list.iter().any(|c| c.id == *g))
+            .collect();
+        let mut out = Vec::new();
+        let next_id = next_id.max(file.world.0 + 1);
+        put_collections_image(&mut out, next_id, &list, &globe, file.maps);
+        tx.execute(
+            "UPDATE vale_undo_record SET data = ?4 WHERE step_id = ?1 AND kind = ?2 AND id = ?3",
+            params![step, COLLECTIONS, id, pack(&out)],
+        )?;
+    }
+    Ok(())
 }
 
 fn put_world(out: &mut Vec<u8>, world: &World) {

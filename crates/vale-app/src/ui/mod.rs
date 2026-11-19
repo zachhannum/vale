@@ -3350,18 +3350,22 @@ impl AppState {
         }
     }
 
-    /// Shows a collection in the Layers panel, or all layers for `None`.
-    /// The project file gets the change with no undo step.
+    /// Checks one collection on the globe, or each collection for `None`,
+    /// as one undo step.
     pub fn show_collection(&mut self, id: Option<CollectionId>) {
-        if self.doc.project.shown_collection() == id || !self.doc.project.set_shown_collection(id) {
+        let project = &self.doc.project;
+        let checks = match id {
+            Some(id) => vec![id],
+            None => project.collections().iter().map(|c| c.id).collect(),
+        };
+        if project.globe_collections() == checks.as_slice() {
             return;
         }
-        self.pad.layer_list = Default::default();
-        if let Some(session) = &mut self.session
-            && let Err(e) = session.save_shown_collection(&self.doc.project)
-        {
-            self.status = format!("Could not save project: {e}");
+        self.save_edit();
+        if self.doc.project.set_globe_collections(checks) {
+            self.pad.layer_list = Default::default();
         }
+        self.save_edit();
     }
 
     /// Adds an empty collection as one undo step. `None` if the name is
@@ -3386,13 +3390,19 @@ impl AppState {
         renamed
     }
 
-    /// Removes a collection as one undo step. Its layers stay.
+    /// Removes a collection as one undo step. Each of its layers that is in
+    /// no other collection goes into World. If the globe then checks no
+    /// collection, it checks World, so that the Layers panel lists layers.
     pub fn delete_collection(&mut self, id: CollectionId) -> bool {
         self.save_edit();
-        let shown = self.doc.project.shown_collection() == Some(id);
+        let shown = self.doc.project.globe_collections().contains(&id);
         let removed = self.doc.project.remove_collection(id);
         if removed && shown {
             self.pad.layer_list = Default::default();
+            let project = &mut self.doc.project;
+            if project.globe_collections().is_empty() {
+                project.check_collection(project.world_collection(), true);
+            }
         }
         self.save_edit();
         removed

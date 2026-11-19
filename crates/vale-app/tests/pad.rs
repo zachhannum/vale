@@ -19543,7 +19543,8 @@ fn swipe_collection(h: &mut Pad, name: &str) {
     drag(h, from, from - vec2(120.0, 0.0), None);
 }
 
-/// Shows a collection, or all layers for `None`, with the collection menu.
+/// Checks one collection on the globe, or each collection for `None`, with
+/// the collection menu.
 fn show_collection(h: &mut Pad, name: Option<&str>) {
     use vale_app::ui::pad::collection::ALL_LAYERS;
     open_collection_menu(h);
@@ -19579,15 +19580,16 @@ fn a_collection_lists_only_its_layers_in_the_draw_order() {
         new_collection(&mut h, "Water");
         check_controls(&h, &format!("{what} with the collection menu"));
         let menu = h.state().pad.collections_rect.unwrap();
-        for name in [collection_row("Travel"), collection_row("Water")] {
+        for name in ["World", "Travel", "Water"].map(collection_row) {
             let row = control(&h, &name).unwrap_or_else(|| panic!("{what}: {name}"));
             assert!(row.height() >= 44.0 && menu.contains_rect(row), "{what}");
         }
-        // A new collection does not change the shown collection.
-        assert_eq!(h.state().doc.project.shown_collection(), None, "{what}");
+        // A new collection does not change the checks of the globe.
+        let world = h.state().doc.project.world_collection();
+        assert_eq!(h.state().doc.project.globe_collections(), [world], "{what}");
         show_collection(&mut h, None);
 
-        // Rivers is in both collections, and Land is in none.
+        // Rivers is in both collections, and Land is only in World.
         switch_collections(&mut h, "Rivers", &["Travel", "Water"]);
         switch_collections(&mut h, "Places", &["Travel"]);
         switch_collections(&mut h, "Height", &["Water"]);
@@ -19613,23 +19615,35 @@ fn a_collection_lists_only_its_layers_in_the_draw_order() {
         );
         h.run_steps(2);
         assert_eq!(listed_layers(&h), ["Rivers", "Height"], "{what}");
+        show_collection(&mut h, Some("World"));
+        assert_eq!(listed_layers(&h).len(), 4, "{what}");
         show_collection(&mut h, None);
         assert_eq!(listed_layers(&h).len(), 4, "{what}");
     }
 }
 
 #[test]
-fn the_collections_page_has_a_switch_for_each_collection() {
+fn the_collections_page_keeps_each_layer_in_a_collection() {
     use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
         let mut h = pad(size);
         open_panel(&mut h, "Layers");
+        let rivers = vector(&h, "Rivers");
+        let world = h.state().doc.project.world_collection();
+        let names = |h: &Pad| -> Vec<String> {
+            let project = &h.state().doc.project;
+            let of = project.collections_of(rivers);
+            of.iter().map(|c| c.name.clone()).collect()
+        };
+        // A layer that is only in World cannot leave World.
         tap(&mut h, "Open Rivers");
         tap(&mut h, COLLECTIONS);
-        assert!(control(&h, &switch_name("Travel")).is_none(), "{what}");
+        check_controls(&h, &format!("{what} on the Collections page of World"));
+        assert!(disabled(&h, &switch_name("World")), "{what}");
         tap(&mut h, "Back to Rivers");
         tap(&mut h, "Back to Layers");
+
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
         show_collection(&mut h, None);
@@ -19638,24 +19652,24 @@ fn the_collections_page_has_a_switch_for_each_collection() {
         check_controls(&h, &format!("{what} on the Collections page"));
         tap(&mut h, &switch_name("Travel"));
         tap(&mut h, &switch_name("Water"));
-        let rivers = vector(&h, "Rivers");
-        assert_eq!(
-            h.state().doc.project.collections_of(rivers).len(),
-            2,
-            "{what}"
-        );
+        assert_eq!(names(&h), ["World", "Travel", "Water"], "{what}");
         tap(&mut h, &switch_name("Water"));
-        assert_eq!(
-            h.state().doc.project.collections_of(rivers).len(),
-            1,
-            "{what}"
-        );
+        tap(&mut h, &switch_name("World"));
+        assert_eq!(names(&h), ["Travel"], "{what}");
+        // Out of its last collection, the layer goes on top of World.
+        tap(&mut h, &switch_name("Travel"));
+        assert_eq!(names(&h), ["World"], "{what}");
+        let project = &h.state().doc.project;
+        let top = project.collection(world).unwrap().layers.last();
+        assert_eq!(top, Some(&rivers), "{what}");
+        assert!(disabled(&h, &switch_name("World")), "{what}");
+        assert!(!disabled(&h, &switch_name("Travel")), "{what}");
     }
 }
 
 #[test]
 fn each_change_of_a_collection_is_one_undo_step() {
-    use vale_app::ui::pad::collection::COLLECTIONS;
+    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
     use vale_app::ui::pad::widgets::RENAME;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
@@ -19675,14 +19689,14 @@ fn each_change_of_a_collection_is_one_undo_step() {
     };
     // The new collection is one step, and its name is one more.
     new_collection(&mut h, "Travel");
-    assert_eq!(names(&h), ["Travel"]);
+    assert_eq!(names(&h), ["World", "Travel"]);
     undo(&mut h);
-    assert_eq!(names(&h), ["Collection 1"]);
+    assert_eq!(names(&h), ["World", "Collection 1"]);
     undo(&mut h);
-    assert!(names(&h).is_empty());
+    assert_eq!(names(&h), ["World"]);
     redo(&mut h);
     redo(&mut h);
-    assert_eq!(names(&h), ["Travel"]);
+    assert_eq!(names(&h), ["World", "Travel"]);
 
     // A rename by a swipe.
     open_collection_menu(&mut h);
@@ -19694,45 +19708,81 @@ fn each_change_of_a_collection_is_one_undo_step() {
     h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    assert_eq!(names(&h), ["Trade"]);
+    assert_eq!(names(&h), ["World", "Trade"]);
     undo(&mut h);
-    assert_eq!(names(&h), ["Travel"]);
+    assert_eq!(names(&h), ["World", "Travel"]);
+    redo(&mut h);
+
+    // A tap in the collection menu checks collections.
+    let world = h.state().doc.project.world_collection();
+    let checks = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
+    show_collection(&mut h, None);
+    let trade = h.state().doc.project.collections()[1].id;
+    assert_eq!(checks(&h), [world, trade]);
+    undo(&mut h);
+    assert_eq!(checks(&h), [world]);
     redo(&mut h);
 
     // A change of the layers of a collection.
-    show_collection(&mut h, None);
     tap(&mut h, "Open Rivers");
     tap(&mut h, COLLECTIONS);
-    tap(&mut h, &vale_app::ui::pad::collection::switch_name("Trade"));
+    tap(&mut h, &switch_name("Trade"));
     let rivers = vector(&h, "Rivers");
     let members = |h: &Pad| h.state().doc.project.collections_of(rivers).len();
-    assert_eq!(members(&h), 1);
+    assert_eq!(members(&h), 2);
     undo(&mut h);
-    assert_eq!(members(&h), 0);
-    redo(&mut h);
     assert_eq!(members(&h), 1);
+    redo(&mut h);
+    assert_eq!(members(&h), 2);
+    // Out of World and then out of Trade, Rivers goes back into World.
+    tap(&mut h, &switch_name("World"));
+    tap(&mut h, &switch_name("Trade"));
+    let only_world = |h: &Pad| {
+        let project = &h.state().doc.project;
+        project
+            .collections_of(rivers)
+            .iter()
+            .map(|c| c.id)
+            .collect::<Vec<_>>()
+            == [world]
+    };
+    assert!(only_world(&h));
+    undo(&mut h);
+    let project = &h.state().doc.project;
+    assert_eq!(project.collections_of(rivers)[0].id, trade);
+    assert_eq!(members(&h), 1);
+    redo(&mut h);
+    assert!(only_world(&h));
+    tap(&mut h, &switch_name("Trade"));
     tap(&mut h, "Back to Rivers");
     tap(&mut h, "Back to Layers");
 
-    // A delete by a swipe keeps the layers, and the panel shows all layers.
+    // World has no delete action.
+    open_collection_menu(&mut h);
+    swipe_collection(&mut h, "World");
+    assert!(control(&h, "Delete World").is_none());
+    tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
+
+    // A delete by a swipe keeps the layers, and the globe checks World.
     show_collection(&mut h, Some("Trade"));
     assert_eq!(listed_layers(&h), ["Rivers"]);
     open_collection_menu(&mut h);
     swipe_collection(&mut h, "Trade");
     check_controls(&h, "an open collection row");
     tap(&mut h, "Delete Trade");
-    assert!(names(&h).is_empty());
+    assert_eq!(names(&h), ["World"]);
     assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
-    assert_eq!(h.state().doc.project.shown_collection(), None);
+    assert_eq!(checks(&h), [world]);
     tap(&mut h, vale_app::ui::pad::collection::COLLECTION_MENU);
     assert_eq!(listed_layers(&h).len(), 4);
     undo(&mut h);
-    assert_eq!(names(&h), ["Trade"]);
-    assert_eq!(members(&h), 1);
+    assert_eq!(names(&h), ["World", "Trade"]);
+    assert_eq!(members(&h), 2);
+    assert_eq!(checks(&h), [trade]);
 }
 
 #[test]
-fn a_reopened_project_shows_the_same_collection() {
+fn a_reopened_project_has_the_same_checks() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[1], dir.path());
     open_panel(&mut h, "Layers");
@@ -19758,7 +19808,7 @@ fn a_reopened_project_shows_the_same_collection() {
     h.run_steps(3);
     let project = &h.state().doc.project;
     let water = project.collections().iter().find(|c| c.name == "Water");
-    assert_eq!(project.shown_collection(), water.map(|c| c.id));
+    assert_eq!(project.globe_collections(), [water.unwrap().id]);
     open_panel(&mut h, "Layers");
     assert_eq!(listed_layers(&h), ["Rivers"]);
 }
