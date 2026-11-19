@@ -1,0 +1,186 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+@font-face{font-family:App;src:local("Ubuntu Light"),local("Ubuntu-Light")}
+:root{--text:#e7e9ec;--mute:#aeb5be;--warn:#f2b85c;--accent:#45c4a8;--raise:rgba(255,255,255,.13);--track:rgba(0,0,0,.4);--line:rgba(255,255,255,.16)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1194px;height:834px;overflow:hidden}
+body{background:#0f1113 url(assets/now.png) 0 0/1194px 834px no-repeat;font:15px App,sans-serif;color:var(--text);position:relative}
+svg.i{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;flex:none}
+/* The dock of the app is at 854,92 and 340 by 712 points. */
+.dock{position:absolute;left:854px;top:92px;width:340px;height:712px;border-radius:14px 0 0 14px;background:rgb(27,30,34);overflow:hidden}
+.hdr{height:52px;display:flex;align-items:center;gap:10px;padding:0 16px;font-size:16px}
+.hdr .g{flex:1}
+.back{height:48px;display:flex;align-items:center;gap:14px;padding:0 18px;font-size:16px}
+.body{position:absolute;left:0;right:0;top:100px;bottom:0;overflow:hidden;padding:0 16px}
+.grab{position:absolute;left:150px;bottom:8px;width:36px;height:4px;border-radius:2px;background:rgba(255,255,255,.3);z-index:6}
+.fade{position:absolute;left:0;right:0;bottom:0;height:48px;background:linear-gradient(rgba(27,30,34,0),rgb(27,30,34));z-index:5}
+.strip svg{display:block;overflow:visible}
+.hint{color:var(--mute);font-size:13px;line-height:1.35;margin:6px 0 10px}
+/* the legend */
+.band{height:48px;display:flex;align-items:center;position:relative;border-radius:10px}
+.band .cell{width:40px;height:100%;flex:none;position:relative}
+.band .nm{margin-left:16px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:14px;color:var(--mute)}
+.band .area{display:flex;align-items:center;gap:8px;margin-right:6px}
+.band .area .track{width:96px;height:8px;border-radius:4px;background:rgba(255,255,255,.06);display:flex;justify-content:flex-end;overflow:hidden}
+.band .area .fill{height:100%;border-radius:4px}
+.band .area span{width:34px;text-align:right;color:var(--mute);font-size:13px}
+.band.sel{background:var(--raise)}
+.band .add{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--accent)}
+.seam{position:relative;height:0;z-index:3}
+.seam .in{position:absolute;left:48px;top:-12px;height:24px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--mute)}
+.seam .v{height:24px;line-height:24px;padding:0 8px;border-radius:7px;background:#30353c;color:var(--text);font-size:14px}
+.seam .v.on{background:var(--accent);color:#0f1113}
+.seam .ln{display:inline-block;width:16px;height:2px;background:#9a8a78}
+.seam .cut{position:absolute;left:0;width:40px;top:-1px;height:2px;background:rgba(30,25,20,.75)}
+.top{border-radius:8px 8px 0 0}.bot{border-radius:0 0 8px 8px}
+.row{height:48px;display:flex;align-items:center;justify-content:space-between;font-size:15px}
+/* the card of a band, at the left of the dock */
+.card{position:absolute;width:300px;border-radius:14px;background:rgba(26,29,33,.93);box-shadow:0 4px 20px rgba(0,0,0,.35);padding:12px;z-index:8}
+.card .pt{position:absolute;right:-10px;width:0;height:0;border:10px solid transparent;border-left-color:rgba(26,29,33,.93);border-right:0}
+.crow{height:48px;display:flex;align-items:center;justify-content:space-between}
+.field{height:36px;border-radius:9px;background:var(--track);display:flex;align-items:center;padding:0 10px;min-width:120px;justify-content:flex-end}
+.field.l{justify-content:flex-start;color:var(--mute);width:100%}
+.sw{width:50px;height:30px;border-radius:15px;background:var(--accent);position:relative}
+.sw:after{content:"";position:absolute;top:3px;left:23px;width:24px;height:24px;border-radius:12px;background:#fff}
+.seg{display:flex;background:var(--track);border-radius:9px;padding:2px;font-size:14px}
+.seg span{padding:7px 12px;border-radius:7px;color:var(--mute)}.seg .on{background:var(--raise);color:var(--text)}
+.step{display:flex;align-items:center;gap:6px}.step b{width:36px;height:36px;border-radius:9px;background:var(--raise);display:flex;align-items:center;justify-content:center;font-weight:400}
+.slider{flex:1;max-width:150px;height:36px;border-radius:9px;background:var(--track);position:relative;overflow:hidden;margin-left:12px}
+.slider i{position:absolute;left:0;top:0;bottom:0;width:40%;background:var(--raise)}.slider b{position:absolute;left:40%;top:4px;bottom:4px;width:4px;border-radius:2px;background:#fff}
+.sq{height:180px;border-radius:8px;position:relative;margin-top:4px}
+.hue{height:44px;display:flex;align-items:center;gap:8px;margin-top:8px}
+.hue .h{flex:1;height:28px;border-radius:8px;background:linear-gradient(90deg,red,#ff0,lime,cyan,blue,#f0f,red);position:relative}
+.knob{position:absolute;width:20px;height:20px;border-radius:10px;border:3px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.4)}
+.drop{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center}
+.bubble{position:absolute;transform:translateX(-50%);background:var(--accent);color:#0f1113;font-size:14px;padding:3px 8px;border-radius:7px;z-index:4}
+</style></head><body><script>
+const P = {
+  layers: '<path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 13l9 5 9-5"/><path d="M3 17l9 5 9-5"/>',
+  chevD: '<path d="M6 9l6 6 6-6"/>', chevR: '<path d="M9 6l6 6-6 6"/>', chevL: '<path d="M15 6l-6 6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', updown: '<path d="M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4"/>', drop: '<path d="M14 4l6 6-2 2-6-6zM12 8l-7 7v4h4l7-7"/>', lock: '<rect x="6" y="11" width="12" height="9" rx="2"/><path d="M9 11V8a3 3 0 016 0v3"/>',
+};
+const ic = (n, s = '') => `<svg class="i" viewBox="0 0 24 24" style="${s}">${P[n]}</svg>`;
+
+// The default stops of a height layer, from the highest band to the lowest.
+// lo is the stop at the lower edge of the band.
+const MIN = -6000, MAX = 6000;
+const FEW = [
+  { lo: 4000, c: '#cbb8a8' }, { lo: 3000, c: '#a67e5f' }, { lo: 2000, c: '#ae8a63', line: 1 },
+  { lo: 1000, c: '#c7ab7d' }, { lo: 500, c: '#d2ca95' }, { lo: 200, c: '#a0b97a' },
+  { lo: 0, c: '#68a05d', sea: 1 }, { lo: -200, c: '#bedbee' }, { lo: -1000, c: '#9ebcd4' },
+  { lo: -2000, c: '#7f9dbb' }, { lo: -4000, c: '#58759b' }, { lo: MIN, c: '#3f5c86' },
+];
+// The most bands that a layer can have, 32, with the stops close together
+// near sea level, as a detailed hypsometric style has them.
+const ANCHORS = [[-6000, [38, 70, 120]], [-1000, [110, 160, 210]], [-1, [200, 228, 245]], [0, [80, 140, 80]],
+  [300, [160, 190, 110]], [900, [225, 215, 150]], [2000, [190, 140, 90]], [3500, [140, 100, 80]], [6000, [245, 245, 245]]];
+function ramp(v) {
+  for (let k = 1; k < ANCHORS.length; k++) {
+    const [v0, c0] = ANCHORS[k - 1], [v1, c1] = ANCHORS[k];
+    if (v <= v1) { const t = (v - v0) / (v1 - v0); return '#' + c0.map((c, j) => Math.round(c + (c1[j] - c) * t).toString(16).padStart(2, '0')).join(''); }
+  }
+}
+const LOS = [5000, 4500, 4000, 3500, 3000, 2600, 2200, 1800, 1500, 1200, 900, 700, 500, 400, 300, 200, 150, 100, 50, 25, 0,
+  -50, -100, -200, -500, -1000, -1500, -2000, -3000, -4000, -5000, MIN];
+const MANY = LOS.map((lo, i) => {
+  const hi = i ? LOS[i - 1] : MAX, mid = lo === 0 ? 10 : lo === -50 ? -25 : (lo + hi) / 2;
+  const n = { 4500: 'Snow', 3000: 'Alpine', 1500: 'Highland', 200: 'Upland', 0: 'Coastal plain', '-200': 'Shelf', [MIN]: 'Abyss' }[lo];
+  return { lo, n, c: ramp(mid), sea: lo === 0 ? 1 : undefined, line: lo === 1500 || lo === 3000 ? 1 : undefined };
+});
+const ID = (location.hash || '#rest').slice(1);
+const BANDS = ID.startsWith('many') ? MANY : FEW;
+const hiOf = i => i === 0 ? MAX : BANDS[i - 1].lo;
+const fmt = v => `${v} m`;
+// The area of the world at each value.
+function density(v) {
+  const g = (m, s, a) => a * Math.exp(-((v - m) ** 2) / (2 * s * s));
+  return g(-3800, 1000, .5) + g(-120, 150, .5) + g(300, 350, 1) + g(1200, 700, .4) + g(3200, 900, .12);
+}
+function part(i) {
+  let a = 0, t = 0;
+  for (let v = MIN; v < MAX; v += 10) { const d = density(v); t += d; if (v >= BANDS[i].lo && v < hiOf(i)) a += d; }
+  return a / t;
+}
+function share(i) {
+  let a = 0, t = 0;
+  for (let v = MIN; v < MAX; v += 10) { const d = density(v); t += d; if (v >= BANDS[i].lo && v < hiOf(i)) a += d; }
+  const p = 100 * a / t; return p < 1 ? '<1%' : `${Math.round(p)}%`;
+}
+
+// The strip: the area at each value, in the color of the band of the
+// value. It only shows. The other bands dim while a band is selected, and
+// a scrubbed stop is green.
+function strip({ sel = -1, drag = -1 }) {
+  const lo = MIN, hi = MAX, w = 308, hh = 64, x = v => (v - lo) / (hi - lo) * w, N = 154, bw = w / N;
+  let maxd = 0; for (let k = 0; k < N; k++) maxd = Math.max(maxd, density(lo + (k + .5) / N * (hi - lo)));
+  const band = v => BANDS.findIndex(b => v >= b.lo);
+  let s = '';
+  for (let k = 0; k < N; k++) {
+    const v = lo + (k + .5) / N * (hi - lo), i = band(v), h = Math.max(2, Math.sqrt(density(v) / maxd) * (hh - 4));
+    s += `<rect x="${k * bw}" y="${hh - h}" width="${bw + .3}" height="${h}" fill="${BANDS[i].c}" opacity="${sel < 0 || sel === i ? 1 : .25}"/>`;
+  }
+  if (drag >= 0) {
+    const X = x(BANDS[drag].lo);
+    s += `<line x1="${X}" x2="${X}" y1="0" y2="${hh + 3}" stroke="#45c4a8" stroke-width="2"/>`;
+  }
+  const t = (v, a, X) => `<text x="${X}" y="${hh + 16}" fill="#aeb5be" font-size="11" font-family="App" text-anchor="${a}">${v}</text>`;
+  return `<div class="strip"><svg width="${w}" height="${hh + 20}">${s}${t(fmt(lo), 'start', 0)}${t('0', 'middle', x(0))}${t(fmt(hi), 'end', w)}</svg></div>
+    <div style="height:1px;background:var(--line);margin:8px 0 6px"></div>`;
+}
+
+// The share of the area of a band.
+function area(i) {
+  return `<span class="area"><span>${share(i)}</span></span>`;
+}
+function legend({ first = 0, sel = -1, drag = -1 }) {
+  let out = '';
+  BANDS.slice(first).forEach((b, j) => {
+    const i = first + j, cls = (j === 0 ? 'top ' : '') + (i === BANDS.length - 1 ? 'bot' : '');
+    out += `<div class="band ${i === sel ? 'sel' : ''}"><div class="cell ${cls}" style="background:${b.c}"></div>
+      <span class="nm">${b.n || ''}</span>${i === sel ? `<span class="add">${ic('plus')}</span>` : ''}${area(i)}</div>`;
+    if (b.lo > MIN) {
+      const extra = b.sea ? `<span style="display:flex;align-items:center;gap:4px">${ic('lock', 'width:14px;height:14px')}Sea level</span>` : b.line ? `<span class="ln"></span>1 pt` : '';
+      out += `<div class="seam">${i === drag ? '<div class="cut" style="background:#45c4a8;height:3px"></div>' : b.line ? '<div class="cut"></div>' : ''}<div class="in"><span class="v ${i === drag ? 'on' : ''}">${i === drag ? ic('updown', 'width:14px;height:14px;margin:0 4px -2px -2px') : ''}${fmt(b.lo)}</span>${i === drag ? `<span>${fmt(BANDS[i + 1].lo)} to ${fmt(hiOf(i))}</span>` : extra}</div></div>`;
+    }
+  });
+  return out;
+}
+
+const below = `<div style="margin-top:6px"><div class="row">Reset colors</div><div class="row">Color ramps<span style="color:var(--mute)">${ic('chevR')}</span></div><div class="row">Save as ramp…</div></div>`;
+
+function dock(inner) {
+  return `<div class="dock"><div class="hdr">${ic('layers')}<span>Layers</span><span class="g"></span>${ic('chevD')}</div>
+    <div class="back">${ic('chevL', 'color:var(--mute)')}<span>Color stops</span></div>
+    <div class="body">${inner}</div><div class="fade"></div><div class="grab"></div></div>`;
+}
+
+// The card of the band at the left of the dock. y: the middle of the row
+// of the band, where the point of the card is.
+function card(y) {
+  const h = 6 * 48 + 184 + 52 + 2 * 48 + 24, top = Math.max(20, Math.min(834 - 20 - h, y - h / 2));
+  return `<div class="card" style="left:540px;top:${top}px"><div class="pt" style="top:${y - top - 10}px"></div>
+    <div class="crow"><div class="field l">Name</div></div>
+    <div class="crow"><span>Value</span><span class="field">${fmt(BANDS[14].lo)}</span></div>
+    <div class="crow"><span>Line</span><span class="sw"></span></div>
+    <div class="crow"><span>Weight</span><span class="step"><b>−</b><span style="width:52px;text-align:center">1 pt</span><b>+</b></span></div>
+    <div class="crow"><span>Line color</span><span class="seg"><span class="on">Darker</span><span>Custom</span></span></div>
+    <div class="crow"><span>Darken</span><span class="slider"><i></i><b></b></span><span style="width:48px;text-align:right;color:var(--mute)">40%</span></div>
+    <div class="sq" style="background:linear-gradient(transparent,#000),linear-gradient(90deg,#fff,hsl(68,100%,50%))"><div class="knob" style="left:${0.44 * 276 - 10}px;top:${(1 - 0.68) * 180 - 10}px"></div></div>
+    <div class="hue"><div class="h"><div class="knob" style="left:${68 / 360 * 220 - 10}px;top:4px"></div></div><div class="drop">${ic('drop')}</div></div>
+    <div class="crow"><span>Hex</span><span class="field">${BANDS[14].c.toUpperCase()}</span></div>
+    <div class="crow" style="color:var(--warn)">Remove stop</div></div>`;
+}
+
+const SCREENS = {
+  now: () => '',
+  rest: () => dock(`${strip({})}${legend({})}${below}`),
+  many: () => dock(`${strip({})}${legend({})}${below}`),
+  'many-selected': () => dock(`${strip({ sel: 14 })}${legend({ first: 10, sel: 14 })}${below}`) + '<div id="card"></div>',
+  'many-scrub': () => dock(`${strip({ drag: 15 })}${legend({ first: 10, drag: 15 })}${below}`),
+};
+document.body.insertAdjacentHTML('beforeend', SCREENS[ID]());
+const slot = document.getElementById('card');
+if (slot) {
+  const r = document.querySelector('.band.sel').getBoundingClientRect();
+  slot.outerHTML = card(r.top + r.height / 2);
+}
+</script></body></html>
