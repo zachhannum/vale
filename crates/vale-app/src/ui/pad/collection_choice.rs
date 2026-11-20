@@ -4,6 +4,7 @@ use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{CollectionId, Project};
 
 use super::collection::SEARCH_COLLECTIONS;
+use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::theme;
 use super::widgets::{self, Controls, PANEL_ROW};
@@ -27,6 +28,14 @@ pub struct Picker {
     pub search: String,
     /// The name of the new collection.
     pub name: String,
+}
+
+/// The height of the picker with the rows of each collection.
+pub fn picker_height(project: &Project) -> f32 {
+    let rows = 1 + project.collections().len();
+    // The search field has a space above it and below it, and the rows
+    // have a space above them.
+    8.0 + TOUCH + 4.0 + 4.0 + rows as f32 * PANEL_ROW
 }
 
 /// The name of the row of a collection in the picker.

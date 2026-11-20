@@ -651,8 +651,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         body = last;
     }
     if form.picking {
-        let rows = 1 + state.doc.project.collections().len();
-        body = 8.0 + TOUCH + 4.0 + rows as f32 * PANEL_ROW + BOTTOM;
+        body = collection_choice::picker_height(&state.doc.project) + BOTTOM;
     }
     let screen = rects.screen;
     // On a partially folded device, the form is in one part of the canvas.

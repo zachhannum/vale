@@ -3499,8 +3499,8 @@ fn add_menu(
     // A world with no height layer gets one from an import.
     let import = !state.doc.project.rasters().iter().any(is_height);
     let mut size = if state.pad.add_picking {
-        let rows = 1 + state.doc.project.collections().len();
-        let height = 10.0 + ROW + 8.0 + TOUCH + 4.0 + rows as f32 * PANEL_ROW + 10.0;
+        let picker = collection_choice::picker_height(&state.doc.project);
+        let height = 10.0 + ROW + picker + 10.0;
         let room = (rects.panel_bottom - rects.screen.top() - rects.bands.top).max(ROW * 3.0);
         vec2(PICK_WIDTH, height.min(room))
     } else {
@@ -3558,6 +3558,11 @@ fn add_menu(
         radius,
         button.center().clamp(rect.min, rect.max),
         |ui| {
+            // A sheet below the menu does not show through it.
+            if rects.sheet.is_some() {
+                let fill = theme::card(false).to_opaque();
+                ui.painter().rect_filled(rect, radius, fill);
+            }
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
