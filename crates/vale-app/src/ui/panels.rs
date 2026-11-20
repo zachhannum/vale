@@ -257,22 +257,37 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
                 let menu = egui::containers::menu::MenuButton::new(LAYERS_MENU).config(stay);
                 menu.ui(ui, |ui| {
+                    let mut choice = state.pad.add_collection.take();
+                    pad::collection_choice::desktop(ui, state, "layers-menu", &mut choice);
+                    let valid = state.collection_choice_is_valid(choice.as_ref());
+                    ui.separator();
                     ui.label(egui::RichText::new(pad::NEW_SECTION).weak().small());
-                    if ui.button(ADD_RASTER).clicked() {
-                        state.raster_form = Some(RasterForm::open(state));
+                    if ui
+                        .add_enabled(valid, egui::Button::new(ADD_RASTER))
+                        .clicked()
+                    {
+                        let mut form = RasterForm::open(state);
+                        form.collection = choice.take();
+                        state.raster_form = Some(form);
                         ui.close();
                     }
                     ui.separator();
                     ui.label(egui::RichText::new(pad::IMPORT_SECTION).weak().small());
-                    let free = state.image_import.is_none();
+                    let free = state.image_import.is_none() && valid;
                     if ui.add_enabled(free, egui::Button::new(ADD_IMAGE)).clicked() {
+                        state.import_collection = choice.take();
                         state.actions.push(Action::ImageLayerDialog);
                         ui.close();
                     }
-                    if ui.button(ADD_GEOJSON).clicked() {
+                    if ui
+                        .add_enabled(valid, egui::Button::new(ADD_GEOJSON))
+                        .clicked()
+                    {
+                        state.import_collection = choice.take();
                         state.actions.push(Action::GeoJsonDialog);
                         ui.close();
                     }
+                    state.pad.add_collection = choice;
                     ui.separator();
                     layer_rows(ui, state);
                     selected_layer(ui, state);
@@ -2011,6 +2026,9 @@ fn polygonize_form(ui: &mut egui::Ui, state: &mut AppState) {
             }
             return;
         }
+        let mut choice = state.polygonize.collection.take();
+        pad::collection_choice::desktop(ui, state, "polygonize", &mut choice);
+        state.polygonize.collection = choice;
         let run = egui::Button::new(RUN);
         if ui.add_enabled(state.can_polygonize(), run).clicked() {
             state.run_polygonize();
@@ -2036,18 +2054,21 @@ fn world_section(ui: &mut egui::Ui, state: &mut AppState) {
 fn layers_section(ui: &mut egui::Ui, state: &mut AppState) {
     ui.heading("Layers");
     ui.menu_button("Add layer", |ui| {
+        let mut choice = state.pad.add_collection.take();
+        pad::collection_choice::desktop(ui, state, "add-layer", &mut choice);
+        let valid = state.collection_choice_is_valid(choice.as_ref());
         for (name, kind) in [
             ("Lines", GeometryKind::Line),
             ("Points", GeometryKind::Point),
             ("Polygons", GeometryKind::Polygon),
         ] {
-            if ui.button(name).clicked() {
-                let id = state.doc.add_layer(kind);
-                state.select(Some(LayerRef::Vector(id)));
-                state.touch();
+            if ui.add_enabled(valid, egui::Button::new(name)).clicked() {
+                state.add_vector_layer(kind, choice.as_ref());
+                choice = None;
                 ui.close();
             }
         }
+        state.pad.add_collection = choice;
     });
     if state.doc.frame.entries.is_empty() {
         ui.label("No layers. Open a GeoJSON file.");

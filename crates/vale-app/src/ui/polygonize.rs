@@ -12,6 +12,7 @@ use vale_store::{Feature, Geometry, GeometryKind, LayerId, LonLat, RasterId, Val
 use vale_style::{Color, LayerStyle};
 use vale_terrain::{Bands, Contours, Heightmap, Rgb, Trace, polygonize};
 
+use super::collection_choice::CollectionChoice;
 use super::{AppState, is_height};
 use crate::classify::{self, Class, Step};
 use crate::globe::polygon::sphere_polygons;
@@ -163,6 +164,8 @@ pub struct PolygonizeState {
     pub last: Option<Run>,
     /// The run that the worker does.
     pub job: Option<Job>,
+    /// The collection of the output layers.
+    pub collection: Option<CollectionChoice>,
 }
 
 impl Default for PolygonizeState {
@@ -177,6 +180,7 @@ impl Default for PolygonizeState {
             below: BATHYMETRY.to_owned(),
             last: None,
             job: None,
+            collection: None,
         }
     }
 }
@@ -549,7 +553,8 @@ impl AppState {
     /// True if "Polygonize" can run on its input.
     pub fn can_polygonize(&mut self) -> bool {
         let idle = self.polygonize.job.is_none() && !self.globe.busy();
-        idle && self.polygonize_bands().is_some()
+        let named = self.collection_choice_is_valid(self.polygonize.collection.as_ref());
+        idle && named && self.polygonize_bands().is_some()
     }
 
     /// Runs "Polygonize" from the toolbox, and keeps the result for the
@@ -728,6 +733,10 @@ impl AppState {
         for id in &replaced {
             self.drop_layer(*id);
         }
+        let choice = self.polygonize.collection.take();
+        let into = self.begin_new_layer(choice.as_ref());
+        // A new collection is the choice of the next run.
+        self.polygonize.collection = choice.map(|_| CollectionChoice::Existing(into));
         let mut ids = Vec::new();
         for (i, layer) in layers.into_iter().enumerate() {
             let imported = vale_import::Imported {
@@ -749,6 +758,7 @@ impl AppState {
             }
             ids.push(id);
         }
+        self.end_new_layer();
         self.sync_globe();
         self.touch();
         self.save_edit();

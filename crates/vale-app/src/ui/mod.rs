@@ -44,6 +44,7 @@ use browser::Dialog;
 pub mod atlas;
 pub mod browser;
 pub mod budget;
+pub mod collection_choice;
 pub mod dock;
 pub mod elevation;
 pub mod export_form;
@@ -72,6 +73,8 @@ pub mod table;
 pub mod token_field;
 pub mod vertex;
 pub mod world_form;
+
+use collection_choice::CollectionChoice;
 
 /// The colors of a new ramp in the editor.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -646,6 +649,13 @@ pub struct AppState {
     pub import_layer: Option<RasterId>,
     /// The import of a new image layer that runs.
     pub image_import: Option<ImageImport>,
+    /// The collection of the layers of the next import.
+    pub import_collection: Option<collection_choice::CollectionChoice>,
+    /// The collection of the image layer of `image_import`.
+    image_collection: Option<collection_choice::CollectionChoice>,
+    /// The map that the globe shows, or `None` for the checked collections
+    /// of the globe.
+    pub globe_map: Option<MapId>,
     /// The text of the last import of an image layer, and its layer.
     /// `None` for the layer: the import failed. A GeoJSON import that
     /// fails also puts its text here.
@@ -861,6 +871,9 @@ impl AppState {
             symbol_note: None,
             import_layer: None,
             image_import: None,
+            import_collection: None,
+            image_collection: None,
+            globe_map: None,
             image_note: None,
             toolbox_note: None,
             orient: orient::OrientInputs::default(),
@@ -1408,22 +1421,57 @@ impl AppState {
     /// selects it. Returns `None` if the range of the values is empty or
     /// not finite, or if the face size is zero.
     pub fn add_raster(&mut self, spec: RasterSpec) -> Option<RasterId> {
+        self.add_raster_in(spec, None)
+    }
+
+    /// `add_raster`, with the layer in the collection of `choice`.
+    pub fn add_raster_in(
+        &mut self,
+        spec: RasterSpec,
+        choice: Option<&CollectionChoice>,
+    ) -> Option<RasterId> {
         self.save_edit();
-        let id = self.new_raster(spec)?;
+        let id = self.new_raster_in(spec, choice)?;
         self.save_edit();
         Some(id)
+    }
+
+    /// `new_raster`, with the layer in the collection of `choice`.
+    fn new_raster_in(
+        &mut self,
+        spec: RasterSpec,
+        choice: Option<&CollectionChoice>,
+    ) -> Option<RasterId> {
+        spec.bands()?;
+        if spec.face_size.min(self.globe.max_face_size()) == 0 {
+            return None;
+        }
+        self.begin_new_layer(choice);
+        let id = self.new_raster(spec);
+        self.end_new_layer();
+        id
     }
 
     /// Adds a raster layer with the levels of an image, and selects it. The
     /// new layer and its levels are one undo step. Returns `None` while
     /// another import runs, or for a spec that `add_raster` refuses.
     pub fn add_raster_from(&mut self, spec: RasterSpec, source: Source) -> Option<RasterId> {
+        self.add_raster_from_in(spec, source, None)
+    }
+
+    /// `add_raster_from`, with the layer in the collection of `choice`.
+    pub fn add_raster_from_in(
+        &mut self,
+        spec: RasterSpec,
+        source: Source,
+        choice: Option<&CollectionChoice>,
+    ) -> Option<RasterId> {
         if self.globe.importing() {
             return None;
         }
         self.import_note = None;
         self.save_edit();
-        let id = self.new_raster(spec)?;
+        let id = self.new_raster_in(spec, choice)?;
         self.import_layer = Some(id);
         self.pad.layer = Some(LayerRef::Raster(id));
         if self.headless {
@@ -2380,6 +2428,11 @@ impl AppState {
     /// A world with no height layer gets one. The new layer and the next
     /// edit of it are one undo step.
     pub fn select_height(&mut self) -> RasterId {
+        self.select_height_in(None)
+    }
+
+    /// `select_height`, with a new layer in the collection of `choice`.
+    pub fn select_height_in(&mut self, choice: Option<&CollectionChoice>) -> RasterId {
         let project = &self.doc.project;
         let height = |raster: &&Raster| is_height(raster) && self.globe.holds(raster.id);
         let visible = |raster: &&Raster| {
@@ -2399,7 +2452,7 @@ impl AppState {
                 self.save_edit();
                 let name = self.raster_name(HEIGHT_NAME);
                 let spec = RasterSpec::height(&name, self.globe.new_face_size());
-                self.new_raster(spec).expect("the range of a height")
+                (self.new_raster_in(spec, choice)).expect("the range of a height")
             }
         }
     }
@@ -3945,6 +3998,7 @@ impl AppState {
         self.image_note = None;
         let id = self.doc.project.next_image_id();
         self.image_import = Some(ImageImport::start(path, id));
+        self.image_collection = self.import_collection.take();
     }
 
     /// The text that tells how far the import of an image layer is.
@@ -4007,8 +4061,12 @@ impl AppState {
             self.note_image(Note::new(text, true, None), None);
             return;
         }
+        let choice = self.image_collection.take();
+        self.begin_new_layer(choice.as_ref());
         let project = &mut self.doc.project;
         let id = project.add_image(info.stem.clone(), info.width, info.height);
+        self.end_new_layer();
+        let project = &mut self.doc.project;
         if let Some(layer) = project.image_layer(id).map(|layer| layer.id) {
             let style = vale_style::LayerStyle::image().to_json();
             project.set_layer_style(layer, Some(style));
@@ -4653,9 +4711,10 @@ impl AppState {
                 self.import_note = None;
                 // A second import gets its refusal from the globe, and the
                 // first import keeps its layer.
+                let choice = self.import_collection.take();
                 if !self.globe.importing() {
                     let new = !self.doc.project.rasters().iter().any(is_height);
-                    let id = self.select_height();
+                    let id = self.select_height_in(choice.as_ref());
                     self.import_layer = Some(id);
                     if new {
                         // The panel of the new layer shows the result.
@@ -4682,7 +4741,19 @@ impl AppState {
             Action::ImportGeoJson(path) => {
                 let name = file_name(&path);
                 self.image_note = None;
-                match self.doc.open_geojson(&path) {
+                let choice = self.import_collection.take();
+                let read = vale_import::geojson::read_file(&path).map(|imported| {
+                    if imported.layers.is_empty() {
+                        return Vec::new();
+                    }
+                    self.save_edit();
+                    self.begin_new_layer(choice.as_ref());
+                    let ids = self.doc.add_imported(imported, Some(&path));
+                    self.end_new_layer();
+                    self.save_edit();
+                    ids
+                });
+                match read {
                     Ok(ids) if !ids.is_empty() => {
                         // The panel of the top new layer shows the result.
                         let id = ids[ids.len() - 1];

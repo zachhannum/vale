@@ -7,6 +7,8 @@ use eframe::egui::{self, Rect, pos2, vec2};
 use vale_store::World;
 use vale_terrain::{Bands, face_size_values};
 
+use super::collection_choice::CollectionChoice;
+use super::pad::collection_choice;
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
@@ -18,6 +20,8 @@ use crate::world;
 pub const TITLE: &str = "New raster layer";
 /// The control that adds the layer of the form.
 pub const ADD: &str = "Add";
+/// The hint of a new collection with a name that is blank or taken.
+pub const COLLECTION_NAME_TAKEN: &str = "Give the new collection a name that no collection has.";
 pub const NAME: &str = "Raster name";
 pub const UNIT: &str = "Unit";
 pub const MINIMUM: &str = "Minimum";
@@ -226,6 +230,10 @@ pub struct RasterForm {
     /// True until the first frame of the form in the iPad layout. A new
     /// form opens at the top, with no height from an earlier form.
     fresh: bool,
+    /// The choice of the Collection row.
+    pub collection: Option<CollectionChoice>,
+    /// The card shows the picker of the Collection row.
+    pub picking: bool,
 }
 
 /// The read of the image of the form.
@@ -267,6 +275,8 @@ impl RasterForm {
             brightest: String::new(),
             given_values: (String::new(), String::new()),
             fresh: true,
+            collection: None,
+            picking: false,
         };
         form.set_preset(CUSTOM, state);
         form
@@ -441,10 +451,10 @@ fn finish(state: &mut AppState, mut form: RasterForm, did: Did) -> Option<LayerR
             let added = match form.spec() {
                 // Another import keeps the image in the form.
                 Some(_) if form.from_file && state.globe.importing() => None,
-                Some(spec) if form.from_file => form
-                    .source()
-                    .and_then(|source| state.add_raster_from(spec, source)),
-                Some(spec) => state.add_raster(spec),
+                Some(spec) if form.from_file => form.source().and_then(|source| {
+                    state.add_raster_from_in(spec, source, form.collection.as_ref())
+                }),
+                Some(spec) => state.add_raster_in(spec, form.collection.as_ref()),
                 None => None,
             };
             match added {
@@ -465,8 +475,10 @@ fn finish(state: &mut AppState, mut form: RasterForm, did: Did) -> Option<LayerR
 /// The note of the form, with the import that runs.
 fn form_note(form: &RasterForm, state: &AppState) -> Option<String> {
     let busy = form.from_file && state.globe.importing();
+    let taken = !state.collection_choice_is_valid(form.collection.as_ref());
     form.note()
         .or_else(|| busy.then(|| "Wait for the import to end.".to_string()))
+        .or_else(|| taken.then(|| COLLECTION_NAME_TAKEN.to_string()))
 }
 
 /// The form in the desktop layout.
@@ -581,6 +593,7 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 });
                 ui.end_row();
             });
+        collection_choice::desktop(ui, state, "raster-form", &mut form.collection);
         let note = form_note(&form, state);
         if let Some(note) = &note {
             ui.colored_label(ui.visuals().warn_fg_color, note);
@@ -625,7 +638,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         (true, false) => 1.0,
         (true, true) => 5.0,
     };
-    let rows = 1.0 + kind_rows + 1.0 + file_rows + form.sizes.len() as f32 + 1.0;
+    let rows = 1.0 + kind_rows + 1.0 + file_rows + form.sizes.len() as f32 + 2.0;
     let mut body = 2.0 * TOUCH + rows * PANEL_ROW + 3.0 * GROUP_GAP + LABEL + BUTTON_GAP + BOTTOM;
     if note.is_some() {
         body += NOTE;
@@ -636,6 +649,10 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         && !fresh
     {
         body = last;
+    }
+    if form.picking {
+        let rows = 1 + state.doc.project.collections().len();
+        body = 8.0 + TOUCH + 4.0 + rows as f32 * PANEL_ROW + BOTTOM;
     }
     let screen = rects.screen;
     // On a partially folded device, the form is in one part of the canvas.
@@ -659,6 +676,35 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         ui.painter()
             .rect_filled(rect, radius, theme::card(false).to_opaque());
         ui.spacing_mut().item_spacing.y = 0.0;
+        if form.picking {
+            let title = collection_choice::COLLECTION;
+            let row = widgets::title_row(ui, controls, title, Some(TITLE), false);
+            if row.close {
+                did = Did::Close;
+            }
+            let default = state.default_layer_collection();
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt((CARD, title))
+                .max_height(height - ROW)
+                .auto_shrink([false, false]);
+            scroll.show(ui, |ui| {
+                let margin = egui::Margin::symmetric(BODY_PAD as i8, 0);
+                egui::Frame::NONE.inner_margin(margin).show(ui, |ui| {
+                    let picked = collection_choice::picker(
+                        ui,
+                        &state.doc.project,
+                        default,
+                        controls,
+                        &mut state.pad.collection_picker,
+                        &mut form.collection,
+                    );
+                    if picked || row.back {
+                        form.picking = false;
+                    }
+                });
+            });
+            return;
+        }
         if widgets::title_row(ui, controls, TITLE, None, false).close {
             did = Did::Close;
         }
@@ -738,6 +784,8 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                         form.face_size = size;
                     }
                 }
+                let choice = form.collection.clone();
+                form.picking = collection_choice::row(ui, state, controls, choice.as_ref());
                 if let Some(note) = &note {
                     widgets::form_note(ui, note, NOTE);
                 }

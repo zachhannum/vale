@@ -3,6 +3,7 @@
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 
+use super::collection_choice;
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
 use super::number::Number;
@@ -15,6 +16,7 @@ use crate::ui::polygonize::{
     self, ABOVE, BASE, BELOW, CANCEL, COLOR_STOPS, INPUT, INTERVAL, LEVELS, Levels, NEEDS_RASTER,
     POLYGONIZE, POLYGONIZE_ABOUT, SIMPLIFY, SIMPLIFY_RANGE, SMOOTH, SPLIT, TOO_MANY_BANDS,
 };
+use crate::ui::raster_form::COLLECTION_NAME_TAKEN;
 
 /// The hint of the search field of the grid.
 pub const SEARCH: &str = "Search operations";
@@ -73,6 +75,8 @@ pub enum ToolPage {
     PolygonizeInput,
     /// The limits of the bands of "Polygonize".
     PolygonizeLevels,
+    /// The collection of the output layers of "Polygonize".
+    PolygonizeCollection,
 }
 
 /// The state of the Toolbox panel.
@@ -94,6 +98,11 @@ pub(super) fn head(page: Option<ToolPage>) -> (&'static str, &'static str, Optio
         Some(ToolPage::Polygonize) => ("pad-polygonize", POLYGONIZE, Some(TOOLBOX)),
         Some(ToolPage::PolygonizeInput) => ("pad-polygonize-input", INPUT, Some(POLYGONIZE)),
         Some(ToolPage::PolygonizeLevels) => ("pad-polygonize-levels", LEVELS, Some(POLYGONIZE)),
+        Some(ToolPage::PolygonizeCollection) => (
+            "pad-polygonize-collection",
+            collection_choice::COLLECTION,
+            Some(POLYGONIZE),
+        ),
     }
 }
 
@@ -102,7 +111,9 @@ pub(super) fn back(state: &mut AppState) {
     let page = &mut state.pad.toolbox.page;
     *page = match page {
         Some(ToolPage::OrientLines | ToolPage::OrientHeight) => Some(ToolPage::Orient),
-        Some(ToolPage::PolygonizeInput | ToolPage::PolygonizeLevels) => Some(ToolPage::Polygonize),
+        Some(
+            ToolPage::PolygonizeInput | ToolPage::PolygonizeLevels | ToolPage::PolygonizeCollection,
+        ) => Some(ToolPage::Polygonize),
         _ => None,
     };
 }
@@ -117,6 +128,7 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         Some(ToolPage::Polygonize) => polygonize_body(ui, state, controls),
         Some(ToolPage::PolygonizeInput) => input_body(ui, state, controls),
         Some(ToolPage::PolygonizeLevels) => levels_body(ui, state, controls),
+        Some(ToolPage::PolygonizeCollection) => collection_body(ui, state, controls),
     }
 }
 
@@ -361,6 +373,10 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         ui.add_space(8.0);
         ui.label(egui::RichText::new(text).color(theme::MUTE));
     }
+    let choice = state.polygonize.collection.clone();
+    if collection_choice::row(ui, state, controls, choice.as_ref()) {
+        state.pad.toolbox.page = Some(ToolPage::PolygonizeCollection);
+    }
     ui.add_space(12.0);
     if let Some((share, text)) = state.polygonize_progress() {
         progress_bar(ui, share);
@@ -376,12 +392,30 @@ fn polygonize_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
         state.run_polygonize();
     }
     ui.add_space(8.0);
+    let taken = !state.collection_choice_is_valid(choice.as_ref());
     let note = match input {
         None => Some(NEEDS_RASTER),
+        Some(_) if taken => Some(COLLECTION_NAME_TAKEN),
         Some(_) => state.toolbox_note.as_deref().filter(|_| stale.is_none()),
     };
     if let Some(note) = note {
         ui.label(egui::RichText::new(note).color(theme::MUTE));
+    }
+}
+
+/// The picker of the collection of the output layers of "Polygonize".
+fn collection_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let default = state.default_layer_collection();
+    let picked = collection_choice::picker(
+        ui,
+        &state.doc.project,
+        default,
+        controls,
+        &mut state.pad.collection_picker,
+        &mut state.polygonize.collection,
+    );
+    if picked {
+        state.pad.toolbox.page = Some(ToolPage::Polygonize);
     }
 }
 
