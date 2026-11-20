@@ -300,13 +300,20 @@ impl Project {
             .collect()
     }
 
-    /// The collection that a new layer joins: the top checked collection
-    /// of the globe, or World if the globe checks no collection.
+    /// The collection that a new layer joins: the target of
+    /// `set_layer_target` if it exists, else the top checked collection of
+    /// the globe, or World if the globe checks no collection.
     pub fn new_layer_collection(&self) -> CollectionId {
-        self.globe_collections
-            .last()
-            .copied()
+        (self.layer_target)
+            .filter(|id| self.collection(*id).is_some())
+            .or(self.globe_collections.last().copied())
             .unwrap_or(self.world_collection)
+    }
+
+    /// Sends new layers to a collection in place of the default, or back
+    /// to the default with `None`. This is not an edit.
+    pub fn set_layer_target(&mut self, id: Option<CollectionId>) {
+        self.layer_target = id;
     }
 
     /// A new layer ID. The layer goes on top of `new_layer_collection`.
@@ -409,6 +416,19 @@ mod tests {
         assert_eq!(p.collection(world).unwrap().name, "World");
         assert_eq!(p.globe_collections(), [world]);
         assert_eq!(layers(&p, world), ids);
+    }
+
+    #[test]
+    fn a_layer_target_replaces_the_default_collection() {
+        let (mut p, _) = project();
+        let world = p.world_collection();
+        let a = p.add_collection("Rivers").unwrap();
+        p.set_layer_target(Some(a));
+        let line = p.add_layer("d".into(), GeometryKind::Line, None, vec![]);
+        assert_eq!(layers(&p, a), [line]);
+        assert!(!layers(&p, world).contains(&line));
+        p.set_layer_target(None);
+        assert_eq!(p.new_layer_collection(), world);
     }
 
     #[test]
