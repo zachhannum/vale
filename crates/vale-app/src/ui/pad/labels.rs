@@ -7,8 +7,8 @@ use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
 use vale_style::{
-    AmbiguousLabels, LabelClass, LabelFallback, LabelPlacement, LabelPosition, LineAnchor,
-    LineOrientation,
+    AmbiguousLabels, FORBIDDEN_WEIGHT, LabelClass, LabelFallback, LabelPlacement, LabelPosition,
+    LineAnchor, LineOrientation, Weights,
 };
 
 use super::atlas::{FRAME_TABS, named_tabs};
@@ -139,10 +139,15 @@ pub const OUTSIDE_ZONES: [&str; 8] = [
 pub const MAX_ZONE_RANK: u8 = 3;
 pub const BUFFER: &str = "Buffer";
 pub const HARD_BUFFER: &str = "Hard buffer";
-pub const SYMBOL_WEIGHT: &str = "Symbol weight";
-pub const LINE_WEIGHT: &str = "Line weight";
-pub const FILL_WEIGHT: &str = "Fill weight";
-pub const OUTLINE_WEIGHT: &str = "Outline weight";
+/// The row at the top of the Labels tab, and the title of its page.
+pub const WEIGHTS: &str = "Weights";
+/// The hint of the Weights page of a map with no vector layers.
+pub const NO_VECTOR_LAYERS: &str = "No vector layers.";
+/// The weight sliders of the Weights page.
+pub const SYMBOL_WEIGHT: &str = "Symbol";
+pub const LINE_WEIGHT: &str = "Line";
+pub const FILL_WEIGHT: &str = "Fill";
+pub const OUTLINE_WEIGHT: &str = "Outline";
 pub const BACKGROUND: &str = "Background";
 pub const NEVER_REMOVE: &str = "Never remove";
 /// The value of a weight of 0.
@@ -300,6 +305,7 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
 fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label = Some((frame, layer, i));
     state.atlas.label_page = None;
+    state.atlas.label_weights = None;
     // The panels of all classes have one key.
     state.pad.scroll_top = Some(CLASS_KEY);
     state.atlas.label_segment = ClassSegment::Text;
@@ -316,6 +322,11 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
+    if widgets::open_row(ui, controls, WEIGHTS, weights_value(state, map)).clicked() {
+        state.atlas.label_weights = Some(id);
+        state.atlas.label = None;
+    }
+    ui.add_space(6.0);
     if state.label_layers().is_empty() {
         state.atlas.label_list = ListState::default();
         hint(ui, NO_LABEL_LAYERS);
@@ -1350,34 +1361,91 @@ fn curve_limit(
     }
 }
 
-/// The text of weight `w` of a class.
+/// The text of weight `w`.
 pub fn weight_text(w: f64) -> String {
     if w <= 0.0 {
         WEIGHT_FREE.to_owned()
-    } else if w >= vale_style::FORBIDDEN_WEIGHT {
+    } else if w >= FORBIDDEN_WEIGHT {
         WEIGHT_FORBIDDEN.to_owned()
     } else {
         format!("{w:.0}")
     }
 }
 
-/// A weight row: its name, and the field of the class that it edits.
-pub type WeightRow = (&'static str, fn(&mut LabelClass) -> &mut f64);
+/// A weight slider: its label, and the weight of the layer that it edits.
+pub type WeightRow = (&'static str, fn(&mut Weights) -> &mut f64);
 
-/// The weight rows of a class of `kind`.
+/// The weight sliders of a layer of `kind`.
 pub fn weight_rows(kind: GeometryKind) -> &'static [WeightRow] {
     match kind {
-        GeometryKind::Point => &[(SYMBOL_WEIGHT, |c| &mut c.point_weight)],
-        GeometryKind::Line => &[(LINE_WEIGHT, |c| &mut c.line_weight)],
+        GeometryKind::Point => &[(SYMBOL_WEIGHT, |w| &mut w.point)],
+        GeometryKind::Line => &[(LINE_WEIGHT, |w| &mut w.line)],
         GeometryKind::Polygon => &[
-            (FILL_WEIGHT, |c| &mut c.inside_weight),
-            (OUTLINE_WEIGHT, |c| &mut c.outline_weight),
+            (FILL_WEIGHT, |w| &mut w.fill),
+            (OUTLINE_WEIGHT, |w| &mut w.outline),
         ],
     }
 }
 
-/// The Conflicts segment of the panel of a class: the buffer, the weights,
-/// the distance between labels with the same text, and the fallbacks.
+/// The name of the weight slider `label` of layer `layer`, for example
+/// "Rivers Line".
+pub fn weight_name(layer: &str, label: &str) -> String {
+    format!("{layer} {label}")
+}
+
+/// The value of the Weights row of the Labels tab: "Edited" if the map links
+/// to a map style and its weights differ, or else empty.
+pub fn weights_value(state: &AppState, map: MapId) -> &'static str {
+    if state.doc.weights_edited(map) {
+        super::atlas::EDITED
+    } else {
+        ""
+    }
+}
+
+/// The Weights page of frame `id`: each vector layer of its map, top first,
+/// with a slider for each weight of the layer.
+pub(super) fn weights_head(state: &mut AppState, id: FrameId) -> Option<Head> {
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let back_to = |state: &mut AppState| state.atlas.label_weights = None;
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        weights_body(ui, state, controls, map);
+    };
+    let parts = PageParts::new("pad-atlas-weights", WEIGHTS, Some(FRAME_TABS[3]));
+    Some(parts.head(Panel::Labels, back_to, |_, _, _| {}, body))
+}
+
+fn weights_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
+    let layers = state.label_layers();
+    if layers.is_empty() {
+        hint(ui, NO_VECTOR_LAYERS);
+        return;
+    }
+    // The top layer comes first.
+    for (layer, kind) in layers.into_iter().rev() {
+        let name = layer_name(state, layer);
+        super::raster::heading(ui, &name);
+        let weights = state.doc.weights(map, layer);
+        for &(label, field) in weight_rows(kind) {
+            let control = weight_name(&name, label);
+            let mut value = weights;
+            let weight = Number::new(&control, *field(&mut value), 0.0..=FORBIDDEN_WEIGHT)
+                .label(label)
+                .step(1.0)
+                .text(weight_text)
+                .slider(ui, controls);
+            if let Some(weight) = weight {
+                state.edit_weights(map, layer, |w| *field(w) = weight);
+            }
+        }
+    }
+    ui.add_space(6.0);
+}
+
+/// The Conflicts segment of the panel of a class: the buffer, the switches
+/// of the class, the distance between labels with the same text, and the
+/// fallbacks.
 fn conflicts_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1396,16 +1464,6 @@ fn conflicts_segment(
     let mut hard = class.buffer_hard;
     if widgets::switch_row(ui, controls, HARD_BUFFER, HARD_BUFFER, &mut hard) {
         state.label_class_step(map, layer, i, |c| c.buffer_hard = hard);
-    }
-    for &(name, field) in weight_rows(kind) {
-        let value = *field(&mut class.clone());
-        let weight = Number::new(name, value, 0.0..=vale_style::FORBIDDEN_WEIGHT)
-            .step(1.0)
-            .text(weight_text)
-            .slider(ui, controls);
-        if let Some(weight) = weight {
-            state.edit_label_class(map, layer, i, |c| *field(c) = weight);
-        }
     }
     let mut background = class.background;
     if widgets::switch_row(ui, controls, BACKGROUND, BACKGROUND, &mut background) {

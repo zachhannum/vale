@@ -14,7 +14,7 @@ use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
     LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
-    LeaderEnd, LeaderStyle, Paint, StackAlign, TextCase,
+    LeaderEnd, LeaderStyle, Paint, StackAlign, TextCase, Weights,
 };
 
 use crate::atlas::FrameTarget;
@@ -23,6 +23,9 @@ use crate::pipeline::{
 };
 
 const MAX_FEATURES: usize = 3000;
+
+/// The most obstacles from the features of the layers with no label class.
+const MAX_OBSTACLES: usize = 3000;
 
 /// The most scatter symbols that labels avoid.
 const MAX_SOFT: usize = 20_000;
@@ -129,6 +132,8 @@ pub fn place(
     let mut features: Vec<Feature> = Vec::new();
     let mut layer_names: Vec<&str> = Vec::new();
     let mut next_id: u64 = 0;
+    // True for each layer of `layers` with a label class.
+    let mut has_class: Vec<bool> = Vec::with_capacity(layers.len());
 
     for (pl, layer_classes) in layers.iter().zip(classes) {
         // The class of each feature of `pl.features` that gets no text: the first class whose
@@ -148,7 +153,7 @@ pub fn place(
                 style: text_style(c, fonts),
                 priority: c.priority,
                 margin: c.buffer,
-                placement: placement(c, pl.kind),
+                placement: placement(c, pl.kind, &pl.entry.style.weights),
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
                 margin_hard: c.buffer_hard,
                 background: c.background,
@@ -200,7 +205,8 @@ pub fn place(
                 }
             }
         }
-        // A feature with no text is an obstacle with the weights of its class.
+        has_class.push(!styles.is_empty());
+        // A feature with no text is an obstacle with the weights of its layer.
         let Some(&first) = styles.first() else {
             continue;
         };
@@ -224,6 +230,16 @@ pub fn place(
                 next_id += 1;
             }
         }
+    }
+
+    // A layer with no label class is an obstacle with its weights. The top layers come first.
+    let mut layer_obstacles: Vec<Obstacle> = Vec::new();
+    let mut symbol_weights: HashMap<vale_store::LayerId, Weight> = HashMap::new();
+    for (pl, _) in (layers.iter().zip(&has_class)).rev().filter(|(_, c)| !**c) {
+        if pl.kind == GeometryKind::Point {
+            symbol_weights.insert(pl.layer.id, weight(pl.entry.style.weights.point));
+        }
+        obstacles_of(pl, page, &mut labeled, &mut layer_obstacles);
     }
 
     // Keep the most important features when there are too many. IDs stay as they are.
@@ -266,7 +282,11 @@ pub fn place(
         bounds: page,
         classes: label_classes,
         features,
-        obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
+        obstacles: {
+            let mut all = symbol_obstacles(obstacles, symbols, &labeled, &symbol_weights, page);
+            all.extend(layer_obstacles);
+            all
+        },
         parallels,
         options: Options {
             seed: 24301,
@@ -413,10 +433,10 @@ pub fn leader_items(
     items
 }
 
-/// The labeler placement of a class. A placement that does not fit `kind`
-/// gives the default placement of `kind`. A point class tries the positions
-/// that are on, in their rank.
-pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
+/// The labeler placement of a class of a layer with `weights`. A placement
+/// that does not fit `kind` gives the default placement of `kind`. A point
+/// class tries the positions that are on, in their rank.
+pub fn placement(c: &StyleClass, kind: GeometryKind, weights: &Weights) -> Placement {
     let p = if c.placement.fits(kind) {
         c.placement
     } else {
@@ -452,7 +472,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             max_spread: c.line_spread,
             spread_fill: c.spread_fill,
             min_length: c.min_length,
-            weight: weight(c.line_weight),
+            weight: weight(weights.line),
         })
     };
     match p {
@@ -475,7 +495,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 vale_style::AmbiguousLabels::AllClasses => AmbiguousLabels::AllClasses,
                 vale_style::AmbiguousLabels::OwnClass => AmbiguousLabels::OwnClass,
             },
-            weight: weight(c.point_weight),
+            weight: weight(weights.point),
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
@@ -510,8 +530,8 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             repeat_distance: c.polygon_repeat.then_some(c.polygon_repeat_distance),
             overrun: c.overrun,
             min_area: c.min_area,
-            inside_weight: weight(c.inside_weight),
-            outline_weight: weight(c.outline_weight),
+            inside_weight: weight(weights.fill),
+            outline_weight: weight(weights.outline),
         }),
     }
 }
@@ -607,7 +627,67 @@ fn geometries(pl: &PageLayer<'_>, f: &PageFeature, c: &StyleClass, page: Rect) -
     }
 }
 
-/// The labeler weight of a weight of a class, from 0, free, to `FORBIDDEN_WEIGHT`.
+/// Adds to `out` the obstacles of the features of `pl`, a layer with no label
+/// class, with the weights of the layer, up to `MAX_OBSTACLES`. A point with a
+/// marker is a disc and goes in `labeled`, so its symbol is not an obstacle again.
+fn obstacles_of(
+    pl: &PageLayer<'_>,
+    page: Rect,
+    labeled: &mut HashSet<(vale_store::LayerId, usize)>,
+    out: &mut Vec<Obstacle>,
+) {
+    let w = pl.entry.style.weights;
+    if w.free(pl.kind) {
+        return;
+    }
+    for f in &pl.features {
+        if out.len() >= MAX_OBSTACLES {
+            return;
+        }
+        let extent = pl.extent(f.index);
+        match pl.kind {
+            GeometryKind::Point => {
+                if extent.marker_radius <= 0.0 {
+                    continue;
+                }
+                let radius = extent.marker_radius + extent.stroke_width;
+                labeled.insert((pl.layer.id, f.index));
+                out.extend(f.points.iter().filter(|p| page.contains(**p)).map(|p| {
+                    Obstacle::Point {
+                        position: *p,
+                        radius,
+                        weight: weight(w.point),
+                    }
+                }));
+            }
+            GeometryKind::Line => {
+                out.extend(
+                    f.lines
+                        .iter()
+                        .filter(|l| l.len() >= 2)
+                        .map(|l| Obstacle::Line {
+                            path: l.clone(),
+                            width: extent.stroke_width,
+                            weight: weight(w.line),
+                        }),
+                );
+            }
+            GeometryKind::Polygon => {
+                let rings: Vec<_> = (f.rings.iter()).filter(|r| r.len() >= 3).cloned().collect();
+                if !rings.is_empty() {
+                    out.push(Obstacle::Polygon {
+                        rings,
+                        inside: weight(w.fill),
+                        outline: weight(w.outline),
+                    });
+                }
+            }
+        }
+    }
+    out.truncate(MAX_OBSTACLES);
+}
+
+/// The labeler weight of a weight of a layer, from 0, free, to `FORBIDDEN_WEIGHT`.
 pub fn weight(w: f64) -> Weight {
     if w >= vale_style::FORBIDDEN_WEIGHT {
         Weight::Forbidden
@@ -633,10 +713,13 @@ pub fn point_position(p: LabelPosition) -> PointPosition {
 /// The obstacles: each rectangle of `hard`, each point symbol, and the
 /// scatter symbols. A feature that goes to the labeler, with text or with
 /// none, has its symbol as its geometry, so its symbol is not an obstacle.
+/// The symbol of a layer in `weights` has that weight, and the symbol of
+/// another layer is forbidden.
 fn symbol_obstacles(
     hard: &[Rect],
     symbols: &[PlacedSymbol],
     labeled: &HashSet<(vale_store::LayerId, usize)>,
+    weights: &HashMap<vale_store::LayerId, Weight>,
     page: Rect,
 ) -> Vec<Obstacle> {
     let mut out: Vec<Obstacle> = hard
@@ -650,7 +733,14 @@ fn symbol_obstacles(
         points
             .into_iter()
             .filter(|s| !labeled.contains(&(s.layer, s.feature)))
-            .map(|s| Obstacle::rect(s.bounds, Weight::Forbidden)),
+            .map(|s| {
+                (
+                    s,
+                    weights.get(&s.layer).copied().unwrap_or(Weight::Forbidden),
+                )
+            })
+            .filter(|(_, w)| *w != Weight::FREE)
+            .map(|(s, w)| Obstacle::rect(s.bounds, w)),
     );
     out.extend(
         scatter

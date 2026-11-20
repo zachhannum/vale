@@ -1145,8 +1145,24 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         OUTSIDE, OVER_HOLES, OVERRUN, OVERRUNS, POLYGON_REPEAT_DISTANCES, REPEAT_DISTANCE,
         REPEAT_LABEL, ZONES,
     };
+    use super::pad::labels::{WEIGHTS, weights_value};
     use vale_store::GeometryKind;
     let map = frame.map;
+    if state.atlas.open_weights() == Some(frame.id) {
+        weights_page(ui, state, map);
+        return;
+    }
+    let row = ui.horizontal(|ui| {
+        let open = ui.selectable_label(false, format!("{WEIGHTS} ›")).clicked();
+        ui.weak(weights_value(state, map));
+        open
+    });
+    if row.inner {
+        state.atlas.label_weights = Some(frame.id);
+        state.atlas.label = None;
+        return;
+    }
+    ui.separator();
     if state.label_layers().is_empty() {
         ui.weak(NO_LABEL_LAYERS);
         return;
@@ -1167,6 +1183,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         if ui.selectable_label(on, text).clicked() {
             state.atlas.label = (!on).then_some((frame.id, *layer, *i));
             state.atlas.label_segment = Default::default();
+            state.atlas.label_weights = None;
         }
     }
     if ui.button(ADD_CLASS).clicked()
@@ -1377,14 +1394,8 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .suffix(" pt")
         .show(ui);
     {
-        use super::pad::labels::{BACKGROUND, HARD_BUFFER, NEVER_REMOVE, weight_rows, weight_text};
+        use super::pad::labels::{BACKGROUND, HARD_BUFFER, NEVER_REMOVE};
         ui.checkbox(&mut class.buffer_hard, HARD_BUFFER);
-        for &(name, field) in weight_rows(kind) {
-            number::slider(name, field(&mut class), 0.0..=vale_style::FORBIDDEN_WEIGHT)
-                .step(1.0)
-                .format(weight_text)
-                .show(ui);
-        }
         ui.checkbox(&mut class.background, BACKGROUND);
         ui.checkbox(&mut class.never_remove, NEVER_REMOVE);
     }
@@ -1433,6 +1444,45 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     if ui.button(DELETE_CLASS).clicked() {
         state.delete_label_class(map, layer, i);
         state.atlas.label = None;
+    }
+}
+
+/// The Weights page of the Labels tab: each vector layer of `map`, top
+/// first, with a slider for each weight of the layer.
+fn weights_page(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
+    use super::pad::labels::{NO_VECTOR_LAYERS, WEIGHTS, weight_name, weight_rows, weight_text};
+    if ui.button(format!("‹ {}", FRAME_TABS[3])).clicked() {
+        state.atlas.label_weights = None;
+        return;
+    }
+    ui.strong(WEIGHTS);
+    let layers = state.label_layers();
+    if layers.is_empty() {
+        ui.weak(NO_VECTOR_LAYERS);
+        return;
+    }
+    // The top layer comes first.
+    for (layer, kind) in layers.into_iter().rev() {
+        let name = state
+            .doc
+            .layer(layer)
+            .map_or_else(String::new, |l| l.name.clone());
+        ui.separator();
+        ui.label(&name);
+        let mut weights = state.doc.weights(map, layer);
+        for &(label, field) in weight_rows(kind) {
+            ui.push_id(weight_name(&name, label), |ui| {
+                number::slider(
+                    label,
+                    field(&mut weights),
+                    0.0..=vale_style::FORBIDDEN_WEIGHT,
+                )
+                .step(1.0)
+                .format(weight_text)
+                .show(ui);
+            });
+        }
+        state.edit_weights(map, layer, |w| *w = weights);
     }
 }
 

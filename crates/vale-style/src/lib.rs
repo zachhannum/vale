@@ -9,13 +9,12 @@ mod rule;
 pub use json::{STYLE_VERSION, StyleError, style_version};
 pub use label::{
     ABBREVIATIONS, AmbiguousLabels, BUFFER, CLASSES_VERSION, CURVE_LIMIT, DUPLICATE_DISTANCE,
-    FORBIDDEN_WEIGHT, FallbackRank, LEADER_DISTANCE, LabelClass, LabelFallback, LabelPlacement,
-    LabelPosition, LeaderAnchor, LeaderEnd, LeaderStyle, LineAnchor, LineOrientation,
-    MAX_LINE_CHARS, MAX_LINES, MIN_LINE_CHARS, MIN_SIZE, MIN_WIDTH, POLYGON_CURVE_LIMIT,
-    POLYGON_REPEAT_DISTANCE, PositionRank, REPEAT_DISTANCE, SIZE_STEP, SMOOTHING, SPREAD,
-    STACK_SEPARATORS, StackAlign, TRUNCATION_MARKER, TextCase, WIDTH_STEP, ZONES_INSIDE,
-    ZONES_OUTSIDE, classes_from_json, classes_to_json, curve_limit_for, default_abbreviations,
-    offset_for,
+    FallbackRank, LEADER_DISTANCE, LabelClass, LabelFallback, LabelPlacement, LabelPosition,
+    LeaderAnchor, LeaderEnd, LeaderStyle, LineAnchor, LineOrientation, MAX_LINE_CHARS, MAX_LINES,
+    MIN_LINE_CHARS, MIN_SIZE, MIN_WIDTH, POLYGON_CURVE_LIMIT, POLYGON_REPEAT_DISTANCE,
+    PositionRank, REPEAT_DISTANCE, SIZE_STEP, SMOOTHING, SPREAD, STACK_SEPARATORS, StackAlign,
+    TRUNCATION_MARKER, TextCase, WIDTH_STEP, ZONES_INSIDE, ZONES_OUTSIDE, classes_from_json,
+    classes_to_json, curve_limit_for, default_abbreviations, offset_for,
 };
 pub use overrides::Overrides;
 pub use rule::{
@@ -131,6 +130,47 @@ pub struct LayerStyle {
     pub label: LabelStyle,
     /// The name of the height layer that the Flow strokes read. `None`, or a name that no height layer has, reads the first height layer.
     pub flow_height: Option<String>,
+    /// How much the labels of the map avoid the features of the layer.
+    pub weights: Weights,
+}
+
+/// The weight that forbids labels over a feature. A weight is from 0, free, to this.
+pub const FORBIDDEN_WEIGHT: f64 = 100.0;
+
+/// How much labels avoid the features of a layer in a map. Each weight is from 0, free, to
+/// `FORBIDDEN_WEIGHT`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weights {
+    /// The point symbols.
+    pub point: f64,
+    /// The lines.
+    pub line: f64,
+    /// The inside of the polygons.
+    pub fill: f64,
+    /// The outlines of the polygons.
+    pub outline: f64,
+}
+
+impl Default for Weights {
+    fn default() -> Self {
+        Weights {
+            point: FORBIDDEN_WEIGHT,
+            line: 30.0,
+            fill: 0.0,
+            outline: 0.0,
+        }
+    }
+}
+
+impl Weights {
+    /// True if labels cross the features of a layer of `kind` at no cost.
+    pub fn free(&self, kind: GeometryKind) -> bool {
+        match kind {
+            GeometryKind::Point => self.point <= 0.0,
+            GeometryKind::Line => self.line <= 0.0,
+            GeometryKind::Polygon => self.fill <= 0.0 && self.outline <= 0.0,
+        }
+    }
 }
 
 const POLYGON_FILLS: [&str; 6] = [
@@ -244,6 +284,7 @@ impl LayerStyle {
             },
             label,
             flow_height: None,
+            weights: Weights::default(),
         }
     }
 
@@ -269,6 +310,7 @@ impl LayerStyle {
                 font: None,
             },
             flow_height: None,
+            weights: Weights::default(),
         }
     }
 
@@ -589,6 +631,7 @@ mod tests {
             style: Style::default(),
             label: l.label.clone(),
             flow_height: None,
+            weights: Weights::default(),
         };
         empty.add_rule(GeometryKind::Polygon);
         assert!(empty.fill().is_some());

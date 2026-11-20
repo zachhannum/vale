@@ -1225,7 +1225,8 @@ fn a_polygon_half_outside_a_page_mask_places_its_label_inside_the_mask() {
 
 /// A frame of the first map of the sample document, with a layer of points
 /// that has the style `style` and the class that `edit` changes. Only the
-/// points have labels. Each feature has its name and its attributes.
+/// points have labels, and the other layers are no obstacles. Each feature
+/// has its name and its attributes.
 fn points_frame(
     features: &[(&str, [f64; 2], &str)],
     style: Style,
@@ -1244,8 +1245,15 @@ fn points_frame(
     let cities = add_layer(&mut doc, "Cities", &features);
     doc.entry_mut(cities).unwrap().style.style = style;
     let ids: Vec<LayerId> = doc.frame.entries.iter().map(|e| e.layer).collect();
+    let free = vale_style::Weights {
+        point: 0.0,
+        line: 0.0,
+        fill: 0.0,
+        outline: 0.0,
+    };
     for id in ids.into_iter().filter(|id| *id != cities) {
         doc.set_label_classes(map, id, &[]);
+        doc.set_weights(map, id, free);
     }
     let mut class = vale_style::LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
     class.fallbacks.clear();
@@ -1366,67 +1374,109 @@ fn page_layer<'a>(
     }
 }
 
-#[test]
-fn a_feature_with_no_text_is_an_obstacle_with_the_weight_of_its_class() {
-    use vale_style::LabelClass;
-    let page = Rect::new(0.0, 0.0, 600.0, 600.0);
-    let at = Point::new(300.0, 300.0);
+/// The halo boxes of the labels of `layers`, and the summary.
+fn place_halos(
+    layers: &[PageLayer<'_>],
+    classes: &[Vec<vale_style::LabelClass>],
+    page: Rect,
+) -> (Vec<Rect>, vale_app::pipeline::LabelSummary) {
+    let mut f = fonts().unwrap();
+    let (items, summary) = vale_app::labels::place(
+        layers,
+        classes,
+        page,
+        &mut f,
+        Quality::Final,
+        &[],
+        &[],
+        Vec::new(),
+    );
+    let halos: Vec<Rect> = (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke { path, .. } => Some(path.bounding_box()),
+            _ => None,
+        })
+        .collect();
+    (halos, summary)
+}
+
+/// A city with a label in the middle of `page`, a road layer across the
+/// label, and the middle of the label.
+#[allow(clippy::type_complexity)]
+fn city_and_road(
+    page: Rect,
+) -> (
+    (vale_store::Layer, LayerEntry),
+    (vale_store::Layer, LayerEntry),
+    vale_style::LabelClass,
+    Point,
+    f64,
+) {
+    let at = Point::new(page.center().x, page.center().y);
     let city = named_layer(
         GeometryKind::Point,
         Geometry::Points(vec![[0.0, 0.0]]),
         Some("Oakton"),
     );
-    let city_class = LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
-    let place = |layers: &[PageLayer<'_>], classes: &[Vec<LabelClass>]| {
-        let mut f = fonts().unwrap();
-        let (items, summary) = vale_app::labels::place(
-            layers,
-            classes,
-            page,
-            &mut f,
-            Quality::Final,
-            &[],
-            &[],
-            Vec::new(),
-        );
-        let halos: Vec<Rect> = (items.iter())
-            .filter_map(|i| match i {
-                Item::Stroke { path, .. } => Some(path.bounding_box()),
-                _ => None,
-            })
-            .collect();
-        (halos, summary)
-    };
-    let cities = || page_layer(&city, GeometryKind::Point, pf(0, vec![at], vec![], vec![]));
-    let (alone, _) = place(&[cities()], &[vec![city_class.clone()]]);
+    let city_class = vale_style::LabelClass::new("Cities", GeometryKind::Point, 0).unwrap();
+    let cities = page_layer(&city, GeometryKind::Point, pf(0, vec![at], vec![], vec![]));
+    let (alone, _) = place_halos(&[cities], &[vec![city_class.clone()]], page);
     assert_eq!(alone.len(), 1);
-    let label = alone[0];
-
-    // A road with no name, across the label.
-    let y = label.center().y;
+    let y = alone[0].center().y;
     let road = named_layer(
         GeometryKind::Line,
         Geometry::Lines(vec![vec![[-10.0, 0.0], [10.0, 0.0]]]),
         None,
     );
+    (city, road, city_class, at, y)
+}
+
+#[test]
+fn a_feature_with_no_text_is_an_obstacle_with_the_weight_of_its_layer() {
+    use vale_style::LabelClass;
+    let page = Rect::new(0.0, 0.0, 600.0, 600.0);
+    let (city, mut road, city_class, at, y) = city_and_road(page);
     let line = vec![Point::new(0.0, y), Point::new(600.0, y)];
-    let roads = || {
-        page_layer(
-            &road,
-            GeometryKind::Line,
-            pf(0, vec![], vec![line.clone()], vec![]),
-        )
-    };
     let mut road_class = LabelClass::new("Roads", GeometryKind::Line, 0).unwrap();
     road_class.filter = "name = 'none'".into();
     for (weight, avoids) in [(0.0, false), (100.0, true)] {
-        road_class.line_weight = weight;
-        let (placed, summary) = place(
-            &[roads(), cities()],
+        road.1.style.weights.line = weight;
+        let roads = page_layer(
+            &road,
+            GeometryKind::Line,
+            pf(0, vec![], vec![line.clone()], vec![]),
+        );
+        let cities = page_layer(&city, GeometryKind::Point, pf(0, vec![at], vec![], vec![]));
+        let (placed, summary) = place_halos(
+            &[roads, cities],
             &[vec![road_class.clone()], vec![city_class.clone()]],
+            page,
         );
         assert_eq!(placed.len(), 1, "{weight}");
         // The road has no label, and it is not in the list of unplaced labels.
+        assert!(summary.unplaced.is_empty(), "{weight}");
+        let crosses = placed[0].y0 < y && placed[0].y1 > y;
+        assert_eq!(crosses, !avoids, "{weight}: {:?} {y}", placed[0]);
+    }
+}
+
+#[test]
+fn a_label_avoids_a_layer_with_no_label_class_by_the_weight_of_the_layer() {
+    let page = Rect::new(0.0, 0.0, 600.0, 600.0);
+    let (city, mut road, city_class, at, y) = city_and_road(page);
+    let line = vec![Point::new(0.0, y), Point::new(600.0, y)];
+    for (weight, avoids) in [(0.0, false), (100.0, true)] {
+        road.1.style.weights.line = weight;
+        let roads = page_layer(
+            &road,
+            GeometryKind::Line,
+            pf(0, vec![], vec![line.clone()], vec![]),
+        );
+        let cities = page_layer(&city, GeometryKind::Point, pf(0, vec![at], vec![], vec![]));
+        // The road layer has no label class.
+        let (placed, summary) =
+            place_halos(&[roads, cities], &[vec![], vec![city_class.clone()]], page);
+        assert_eq!(placed.len(), 1, "{weight}");
         assert!(summary.unplaced.is_empty(), "{weight}");
         let crosses = placed[0].y0 < y && placed[0].y1 > y;
         assert_eq!(crosses, !avoids, "{weight}: {:?} {y}", placed[0]);

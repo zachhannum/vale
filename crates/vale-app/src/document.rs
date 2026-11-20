@@ -14,7 +14,7 @@ use vale_store::{
     Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, MapStyleId, MapStyleRecord,
     Project, ProjectionPreset, Units, World,
 };
-use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Stroke};
+use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Stroke, Weights};
 
 use crate::view::View;
 use crate::world;
@@ -814,6 +814,42 @@ impl Document {
         put_own(styles, layer, text, same)
     }
 
+    /// The label weights of a layer in a target. They are part of the style of
+    /// the layer in the target.
+    pub fn weights(&self, target: impl Into<Target>, layer: LayerId) -> Weights {
+        (self.map_style(target, layer)).map_or_else(Weights::default, |s| s.weights)
+    }
+
+    /// Sets the label weights of a layer in a target. Returns false if nothing
+    /// changed.
+    pub fn set_weights(
+        &mut self,
+        target: impl Into<Target>,
+        layer: LayerId,
+        weights: Weights,
+    ) -> bool {
+        let target = target.into();
+        let Some(mut style) = self.map_style(target, layer) else {
+            return false;
+        };
+        if style.weights == weights {
+            return false;
+        }
+        style.weights = weights;
+        self.set_map_style(target, layer, &style)
+    }
+
+    /// True if `map` links to a map style, and the label weights of a vector
+    /// layer differ from the weights in the map style.
+    pub fn weights_edited(&self, map: MapId) -> bool {
+        let Some(shared) = self.linked_style(Target::Map(map)) else {
+            return false;
+        };
+        (self.project.layers().iter())
+            .filter(|l| l.geometry().is_some())
+            .any(|l| self.weights(map, l.id) != self.weights(shared, l.id))
+    }
+
     /// Removes the own style, switch, and label classes of a layer in a map
     /// that links to a map style, so that the layer looks as in the map
     /// style. Returns false if nothing changed.
@@ -1233,5 +1269,55 @@ mod tests {
         let classes = doc.label_classes(Some(a), l0);
         assert!(!doc.set_label_classes(a, l0, &classes));
         assert!(doc.local_changes(a).is_empty());
+    }
+
+    #[test]
+    fn the_label_weights_of_a_layer_follow_the_map_style() {
+        let (mut doc, a, b, style, layers) = two_linked();
+        let l0 = layers[0];
+        let defaults = Weights::default();
+        assert_eq!(doc.weights(a, l0), defaults);
+        assert!(!doc.weights_edited(a));
+        let w = Weights {
+            point: 40.0,
+            line: 100.0,
+            fill: 15.0,
+            outline: 60.0,
+        };
+        assert!(doc.set_weights(a, l0, w));
+        assert!(!doc.set_weights(a, l0, w));
+        assert!(doc.weights_edited(a) && !doc.weights_edited(b));
+        assert_eq!(doc.local_changes(a), BTreeSet::from([l0]));
+        assert_eq!(doc.weights(b, l0), defaults);
+
+        // The weights of the map style are no local change.
+        assert!(doc.set_weights(a, l0, defaults));
+        assert!(doc.local_changes(a).is_empty());
+
+        assert!(doc.set_weights(a, l0, w));
+        assert!(doc.reset_to_map_style(a));
+        assert_eq!(doc.weights(a, l0), defaults);
+        assert!(!doc.weights_edited(a));
+
+        assert!(doc.set_weights(a, l0, w));
+        assert!(doc.update_map_style(a));
+        assert!(!doc.weights_edited(a));
+        assert_eq!(doc.weights(b, l0), w);
+        assert_eq!(doc.weights(Target::Style(style), l0), w);
+
+        // "Save as map style" takes the weights that the map draws.
+        let w2 = Weights { line: 0.0, ..w };
+        assert!(doc.set_weights(b, l0, w2));
+        let other = doc.save_as_map_style(b).unwrap();
+        assert_eq!(doc.weights(Target::Style(other), l0), w2);
+        assert_eq!(doc.weights(b, l0), w2);
+        assert!(!doc.weights_edited(b));
+
+        // The None link and a deleted map style keep the weights of the map.
+        assert!(doc.link_map_style(a, None));
+        assert_eq!(doc.weights(a, l0), w);
+        assert!(!doc.weights_edited(a));
+        assert!(doc.delete_map_style(other));
+        assert_eq!(doc.weights(b, l0), w2);
     }
 }
