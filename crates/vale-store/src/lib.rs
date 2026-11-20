@@ -832,6 +832,8 @@ pub struct Project {
     /// to the top. A removed map keeps its entry, so that an undo of the
     /// removal gives the map its stack again.
     map_stacks: BTreeMap<MapId, Vec<CollectionId>>,
+    /// The collections that the Layers panel shows as a header row alone.
+    collapsed_collections: BTreeSet<CollectionId>,
 }
 
 /// What a layer snaps to in one target layer. A vector target reads
@@ -895,6 +897,7 @@ impl Project {
             world_collection: CollectionId(0),
             globe_collections: vec![CollectionId(0)],
             map_stacks: BTreeMap::new(),
+            collapsed_collections: BTreeSet::new(),
         }
     }
 
@@ -943,7 +946,9 @@ impl Project {
             features: Vec::new(),
             style: None,
         };
+        let layer_id = layer.id;
         self.layers.insert(top.map_or(0, |i| i + 1), layer);
+        self.place_raster_in_collection(layer_id);
         id
     }
 

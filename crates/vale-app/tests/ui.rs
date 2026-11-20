@@ -479,6 +479,59 @@ fn the_side_list_shows_a_raster_layer_per_map() {
 }
 
 #[test]
+fn the_desktop_list_has_a_group_for_each_checked_collection() {
+    use vale_app::ui::pad::collection::{
+        COLLECTION_MENU, NEW_COLLECTION, chevron_name, collection_row, dim_row,
+    };
+    let mut h = globe_harness();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(2);
+    };
+    let world = h.state().doc.project.world_collection();
+    let stack = |h: &Harness<'static, AppState>| h.state().doc.project.globe_collections().to_vec();
+
+    // "New collection…" adds a collection and checks it on top.
+    click(&mut h, COLLECTION_MENU);
+    click(&mut h, NEW_COLLECTION);
+    let project = &h.state().doc.project;
+    let added = project.collections()[1].id;
+    assert_eq!(project.collection(added).unwrap().name, "Collection 1");
+    assert_eq!(stack(&h), [world, added]);
+
+    // A layer that the higher group draws has a gray row in World.
+    let rivers = (h.state().doc.project.layers().iter())
+        .find(|l| l.name == "Rivers")
+        .unwrap()
+        .id;
+    h.state_mut().set_in_collection(added, rivers, true);
+    h.run_steps(2);
+    assert!(h.query_by_label(&dim_row("Rivers", "World")).is_some());
+
+    // The arrows restack the groups.
+    click(&mut h, "Move Collection 1 down");
+    assert_eq!(stack(&h), [added, world]);
+    assert!(
+        h.query_by_label(&dim_row("Rivers", "Collection 1"))
+            .is_some()
+    );
+
+    // The button collapses a group.
+    click(&mut h, &chevron_name("World", false));
+    assert!(h.state().doc.project.is_collapsed(world));
+    assert!(h.query_by_label("Select Land").is_none());
+    click(&mut h, &chevron_name("World", true));
+    assert!(h.query_by_label("Select Land").is_some());
+
+    // A check box of the menu clears a check.
+    click(&mut h, COLLECTION_MENU);
+    click(&mut h, &collection_row("World"));
+    assert_eq!(stack(&h), [added]);
+}
+
+#[test]
 fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     let mut h = globe_harness();
     let height = RasterSpec::height("Height", 64);

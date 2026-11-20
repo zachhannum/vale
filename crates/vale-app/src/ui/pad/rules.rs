@@ -240,6 +240,7 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         reorder: true,
         field: RULE_NAME,
         valid: &valid,
+        ..list::Spec::default()
     };
     let before = state.pad.rules.list.picked.clone();
     let rules = &mut state.pad.rules.list;

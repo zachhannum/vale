@@ -331,6 +331,13 @@ impl Session {
         Ok(())
     }
 
+    /// Writes the collapsed state of each collection with no undo step.
+    pub fn save_collapsed_collections(&mut self, project: &Project) -> Result<(), StoreError> {
+        self.file.set_collapsed_collections(project)?;
+        self.mark_changed();
+        Ok(())
+    }
+
     /// The heightmap of each raster layer of the file, in the order of the
     /// project. A heightmap has the face size, the base level, the bands,
     /// and the tiles that the file holds.

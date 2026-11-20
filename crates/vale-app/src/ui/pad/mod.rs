@@ -482,14 +482,20 @@ pub struct PadState {
     pub add_rect: Option<Rect>,
     /// The button of this frame that opens the menu of the new layers.
     add_button: Option<Rect>,
-    /// The gestures and the selected rows of the layer list.
-    pub layer_list: list::ListState<LayerId>,
-    /// The collection menu of the Layers panel is open.
+    /// The cards of the checked collections in the Layers panel.
+    pub cards: collection::Cards,
+    /// The collection popover of the Layers panel is open.
     pub collections_menu: bool,
+    /// The button of this frame that opens the collection popover.
+    pub collections_button: Option<Rect>,
     /// The card of the collection menu in the last frame.
     pub collections_rect: Option<Rect>,
     /// The gestures of the list of the collections in the collection menu.
     pub collection_list: list::ListState<CollectionId>,
+    /// The gestures of the list of the Collections page of a layer.
+    pub layer_collections: list::ListState<CollectionId>,
+    /// The text of the search field of the Collections page of a layer.
+    pub collection_search: String,
     /// The list of the fields of a vector layer. A key is a layer and the
     /// index of a field.
     pub field_list: list::ListState<(LayerId, usize)>,
@@ -605,7 +611,9 @@ impl PadState {
             self.sheet_offset = 0.0;
         }
         self.dock_mut().open(panel);
-        self.layer_list.open = None;
+        for list in self.cards.lists.values_mut() {
+            list.open = None;
+        }
     }
 
     pub fn close(&mut self, panel: Panel) {
@@ -766,6 +774,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_selection_form(state.pad.shows(Panel::Attributes));
     select::drop_focus(&ctx, state);
     state.pad.collections_rect = None;
+    state.pad.collections_button = None;
     dock_ui::show(&ctx, state, &mut controls, &rects);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
@@ -2235,14 +2244,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (_, _) => (panel.key(), panel_name(state, panel), None),
     };
     let list = panel == Panel::Layers && layer.is_none();
-    if list && state.pad.layer_list.lift.is_none() {
+    if list && !state.pad.cards.lifted() {
         state.pad.name = None;
     }
     // The head of each pane comes here, so another pane must not end a
     // gesture in the layer list.
     let list_shown = state.pad.shows(Panel::Layers) && state.pad.layer.is_none();
     if !list_shown {
-        state.pad.layer_list.shut();
+        state.pad.cards.shut();
+        state.pad.cards.lift = None;
         state.pad.collections_menu = false;
     }
     let scroll = egui::scroll_area::ScrollSource::default();
@@ -2291,8 +2301,12 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             })
         }
         (None, None) if list => {
-            let picked = state.pad.layer_list.picked.len();
-            let count = state.doc.project.shown_layers().len();
+            let picked = state.pad.cards.picked().len();
+            let live = collection::live_rows(&state.doc.project);
+            let mut count: Vec<LayerId> = live.into_iter().flat_map(|(_, rows)| rows).collect();
+            count.sort();
+            count.dedup();
+            let count = count.len();
             let buttons = list::group_buttons(picked, count, &[], Some(DELETE_LAYERS));
             buttons.map(|buttons| PageButtons {
                 buttons,
@@ -2384,8 +2398,10 @@ pub(super) fn panel_top(
         ui.allocate_ui(size, |ui| table::page(ui, state, controls));
     }
     if head.panel == Panel::Layers && head.layer.is_none() && state.workspace == Workspace::Globe {
-        ui.spacing_mut().item_spacing.y = 0.0;
-        collection::menu_row(ui, state, controls);
+        match (state.pad.collections_menu, state.pad.collections_button) {
+            (true, Some(button)) => collection::popover(ui, state, controls, button),
+            _ => state.pad.collections_menu = false,
+        }
     }
 }
 
@@ -3391,101 +3407,36 @@ fn layer_id(state: &AppState, layer: LayerRef) -> Option<LayerId> {
 
 fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let layers = state.doc.project.shown_layers();
-    if layers.is_empty() {
-        let empty = match state.doc.project.layers().is_empty() {
-            true => NO_LAYERS,
-            false => collection::EMPTY_COLLECTION,
-        };
-        state.pad.layer_list = list::ListState::default();
+    if state.doc.project.layers().is_empty() {
+        state.pad.cards = collection::Cards::default();
         ui.add_space(4.0);
-        ui.label(egui::RichText::new(empty).color(theme::MUTE));
+        ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    let shown: Vec<LayerId> = layers.iter().map(|l| l.id).collect();
-    let selected = state.selected_layer;
-    let looks: Vec<(LayerRef, Icon, bool)> = layers
-        .iter()
-        .map(|l| (LayerRef::of(l), layer_icon(l), l.visible))
-        .collect();
-    let large: Vec<bool> = (layers.iter())
-        .map(|l| crate::ui::budget::too_large(ui.ctx(), l.id))
-        .collect();
-    let rows: Vec<list::Row<LayerId>> = layers
-        .iter()
-        .map(|l| list::Row {
-            label: format!("Layer {}", l.name),
-            on: selected == Some(LayerRef::of(l)),
-            rename: true,
-            delete: true,
-            trailing: 2.0 * geometry::TOUCH,
-            ..list::Row::new(l.id, l.name.clone())
-        })
-        .collect();
-    let spec = list::Spec {
-        select: true,
-        reorder: true,
-        field: LAYER_NAME,
-        ..list::Spec::default()
-    };
-    let list = &mut state.pad.layer_list;
-    let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
-        let look = list::Look {
-            icon: Some(looks[i].1),
-            text: &rows[i].name,
-            note: large[i].then_some(crate::ui::budget::TOO_LARGE),
-            warn: large[i],
-            eye: Some(looks[i].2),
-            open: true,
-            ..list::Look::default()
-        };
-        list::draw(ui, controls, cell, &look)
-    });
-    let of = |id: LayerId| {
-        let i = rows.iter().position(|r| r.key == id)?;
-        Some((looks[i].0, looks[i].2))
-    };
-    for event in events {
-        match event {
-            list::Event::Tap(id) | list::Event::Lift(id) => {
-                state.select(of(id).map(|(layer, _)| layer));
-            }
-            list::Event::Open(id) => {
-                if let Some((layer, _)) = of(id) {
-                    state.select(Some(layer));
-                    state.pad.layer = Some(layer);
-                }
-            }
-            list::Event::Control(id, list::EYE) => {
-                if let Some((_, visible)) = of(id) {
-                    state.set_layer_visible(id, !visible);
-                }
-            }
-            list::Event::Control(..) | list::Event::Action(..) => {}
-            list::Event::Rename(id, name) => {
-                state.doc.rename_layer(id, &name);
-            }
-            list::Event::Delete(id) => {
-                state.remove_layer(id);
-            }
-            list::Event::Move { key, to, .. } => {
-                state.move_layer_in(key, &shown, to);
-            }
-        }
-    }
+    collection::cards(ui, state, controls);
 }
 
 /// The name of the header button that deletes the selected layers.
 pub const DELETE_LAYERS: &str = "Delete layers";
 
-/// Does the action of a header button of the selected layers.
+/// Does the action of a header button of the selected layers. "Select
+/// all" selects each row that takes touch, in each card.
 fn layer_group(state: &mut AppState, name: &'static str) {
-    let keys = state.shown_layer_ids();
-    let list = &mut state.pad.layer_list;
-    if let Some(list::Group::Delete(ids)) =
-        list::group_action(list, &keys, name, Some(DELETE_LAYERS))
-    {
-        state.remove_layers(&ids);
+    let picked = state.pad.cards.picked();
+    let live = collection::live_rows(&state.doc.project);
+    let cards = &mut state.pad.cards;
+    match name {
+        list::SELECT_ALL => {
+            for (id, rows) in live {
+                cards.lists.entry(id).or_default().picked = rows;
+            }
+        }
+        list::DESELECT_ALL => cards.lists.values_mut().for_each(|l| l.picked.clear()),
+        DELETE_LAYERS => {
+            cards.lists.clear();
+            state.remove_layers(&picked);
+        }
+        _ => {}
     }
 }
 

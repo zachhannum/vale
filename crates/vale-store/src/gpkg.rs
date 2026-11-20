@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 42;
+pub const FORMAT_VERSION: u32 = 43;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -83,6 +83,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v40,
     v41,
     v42,
+    v43,
 ];
 
 /// `GPKG` in ASCII.
@@ -520,6 +521,21 @@ impl ProjectFile {
         Ok(())
     }
 
+    /// Writes the collapsed state of each collection. This is not an edit,
+    /// so it gets no undo step.
+    pub fn set_collapsed_collections(&mut self, project: &Project) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("UPDATE vale_collection SET collapsed = 0", [])?;
+        let mut update = tx.prepare("UPDATE vale_collection SET collapsed = 1 WHERE id = ?1")?;
+        for id in &project.collapsed_collections {
+            update.execute([id.0])?;
+        }
+        drop(update);
+        tx.commit()?;
+        self.project.collapsed_collections = project.collapsed_collections.clone();
+        Ok(())
+    }
+
     /// Writes the project as one edit. Each feature keeps its UUID, and each
     /// raster keeps its tiles.
     pub fn save(&mut self, project: &Project) -> Result<(), StoreError> {
@@ -898,6 +914,15 @@ fn v42(tx: &Transaction) -> rusqlite::Result<()> {
         maps: &maps,
     };
     undo::v42(tx, &file)
+}
+
+/// The collapsed state of each collection in the Layers panel.
+fn v43(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql = "SELECT count(*) FROM pragma_table_info('vale_collection') WHERE name = 'collapsed'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? > 0 {
+        return Ok(());
+    }
+    tx.execute_batch("ALTER TABLE vale_collection ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
 }
 
 /// Adds the seed of the world.
@@ -2307,14 +2332,16 @@ fn write_collections(tx: &Transaction, project: &Project) -> Result<(), StoreErr
          DELETE FROM vale_globe_collection;
          DELETE FROM vale_map_collection;",
     )?;
-    let mut insert =
-        tx.prepare("INSERT INTO vale_collection (id, position, name) VALUES (?1, ?2, ?3)")?;
+    let mut insert = tx.prepare(
+        "INSERT INTO vale_collection (id, position, name, collapsed) VALUES (?1, ?2, ?3, ?4)",
+    )?;
     let mut member = tx.prepare(
         "INSERT INTO vale_collection_layer (collection_id, layer_id, position)
          VALUES (?1, ?2, ?3)",
     )?;
     for (position, c) in project.collections.iter().enumerate() {
-        insert.execute(params![c.id.0, position, c.name])?;
+        let collapsed = project.collapsed_collections.contains(&c.id);
+        insert.execute(params![c.id.0, position, c.name, collapsed])?;
         for (position, layer) in c.layers.iter().enumerate() {
             member.execute(params![c.id.0, layer.0, position])?;
         }
@@ -3195,16 +3222,22 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
     for (layer, target, types) in rows {
         snap_targets.entry(layer).or_default().insert(target, types);
     }
-    let mut collections: Vec<Collection> = conn
-        .prepare("SELECT id, name FROM vale_collection ORDER BY position")?
+    let rows: Vec<(Collection, bool)> = conn
+        .prepare("SELECT id, name, collapsed FROM vale_collection ORDER BY position")?
         .query_map([], |r| {
-            Ok(Collection {
+            let c = Collection {
                 id: CollectionId(r.get(0)?),
                 name: r.get(1)?,
                 layers: Vec::new(),
-            })
+            };
+            Ok((c, r.get(2)?))
         })?
         .collect::<Result<_, _>>()?;
+    let collapsed_collections = (rows.iter())
+        .filter(|(_, collapsed)| *collapsed)
+        .map(|(c, _)| c.id)
+        .collect();
+    let mut collections: Vec<Collection> = rows.into_iter().map(|(c, _)| c).collect();
     let members = conn
         .prepare(
             "SELECT collection_id, layer_id FROM vale_collection_layer
@@ -3252,6 +3285,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         world_collection,
         globe_collections,
         map_stacks,
+        collapsed_collections,
     };
     // A row of a removed layer stays in the file until the next write.
     project.prune_snap_targets();
@@ -8331,6 +8365,36 @@ mod tests {
         assert_eq!(loaded.map_stack(loaded.atlas.maps[0].id), [world]);
     }
 
+    #[test]
+    fn the_file_keeps_the_collapsed_collections_with_no_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, _) = collection_sample();
+        let world = project.world_collection();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let a = project.add_collection("Travel").unwrap();
+        file.save(&project).unwrap();
+        project.set_collapsed(a, true);
+        file.set_collapsed_collections(&project).unwrap();
+        assert!(file.project().is_collapsed(a));
+        // An undo takes away Travel, and a redo gives it back collapsed.
+        file.undo().unwrap();
+        assert!(file.project().collection(a).is_none());
+        file.redo().unwrap();
+        assert!(!file.can_redo());
+        assert!(file.project().is_collapsed(a));
+        project.set_collapsed(world, true);
+        project.set_collapsed(a, false);
+        file.set_collapsed_collections(&project).unwrap();
+        file.undo().unwrap();
+        assert!(file.project().is_collapsed(world));
+        drop(file);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(loaded.is_collapsed(world));
+        assert!(!loaded.is_collapsed(a));
+        assert!(file.can_redo());
+    }
+
     /// Saves each state, then undoes and redoes each step one at a time.
     fn assert_one_step_each(states: Vec<Project>) {
         let dir = tempfile::tempdir().unwrap();
@@ -8376,7 +8440,6 @@ mod tests {
             let map = p.atlas.maps[0].id;
             p.set_map_stack(map, vec![c, world])
         });
-        step(&mut project, &|p| p.rename_collection(world, "Earth"));
         step(&mut project, &|p| p.remove_collection(c));
         assert_one_step_each(states);
     }

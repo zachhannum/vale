@@ -93,6 +93,33 @@ pub fn title() -> FontId {
     font(16.0)
 }
 
+/// The family of the medium weight of the font of the UI.
+const MEDIUM: &str = "Ubuntu-Medium";
+
+/// Adds the medium weight to the fonts of `ctx`. The weight is ready from
+/// the next pass.
+pub fn add_fonts(ctx: &egui::Context) {
+    let data = include_bytes!("../../../../../assets/fonts/Ubuntu-Medium.ttf");
+    ctx.add_font(egui::epaint::text::FontInsert {
+        name: MEDIUM.to_owned(),
+        data: egui::FontData::from_static(data),
+        families: vec![egui::epaint::text::InsertFontFamily {
+            family: egui::FontFamily::Name(MEDIUM.into()),
+            priority: egui::epaint::text::FontPriority::Highest,
+        }],
+    });
+}
+
+/// The font of a heading in a panel: the title size in the medium weight,
+/// or in the light weight before the medium weight is ready.
+pub fn heading(ctx: &egui::Context) -> FontId {
+    let family = egui::FontFamily::Name(MEDIUM.into());
+    match ctx.fonts(|f| f.families().contains(&family)) {
+        true => FontId::new(text(16.0), family),
+        false => title(),
+    }
+}
+
 /// The font of a hint next to a name.
 pub fn hint() -> FontId {
     font(13.0)

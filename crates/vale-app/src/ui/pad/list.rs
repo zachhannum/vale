@@ -55,7 +55,9 @@ pub struct Lift<K> {
     /// The place of the row in the list when it lifted.
     pub from: usize,
     /// The distance from the top of the row to the finger.
-    grab: f32,
+    pub grab: f32,
+    /// The last place of the finger.
+    pub last: Option<egui::Pos2>,
 }
 
 /// The state of a list. `K` identifies a row.
@@ -105,6 +107,15 @@ pub struct Spec<'a> {
     pub select: bool,
     /// A hold lifts a row.
     pub reorder: bool,
+    /// A drop with the finger outside the list puts the lifted row back,
+    /// with no move.
+    pub confine: bool,
+    /// The rows fill the width of a card with this corner radius. A
+    /// highlight then reaches the edges of the card, and the bottom
+    /// corners of the last row follow the card.
+    pub grouped: Option<f32>,
+    /// The list paints no highlight, and the caller paints each row.
+    pub plain: bool,
     /// The name of the name field of a row that the user renames.
     pub field: &'a str,
     /// True for a name that a rename applies.
@@ -121,6 +132,9 @@ impl Default for Spec<'_> {
         Spec {
             select: false,
             reorder: false,
+            confine: false,
+            grouped: None,
+            plain: false,
             field: "Name",
             valid: &not_blank,
         }
@@ -145,10 +159,14 @@ pub struct Row<K> {
     /// A swipe to the right selects the row, in a list with
     /// [`Spec::select`].
     pub select: bool,
+    /// A hold lifts the row, in a list with [`Spec::reorder`].
+    pub lift: bool,
+    /// The row takes a tap.
+    pub enabled: bool,
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
-    /// The rows of a list with [`Spec::reorder`] are `PANEL_ROW` tall.
+    /// The rows of a list with [`Spec::reorder`] all have one height.
     pub height: f32,
 }
 
@@ -165,6 +183,8 @@ impl<K> Row<K> {
             delete: false,
             actions: &[],
             select: true,
+            lift: true,
+            enabled: true,
             trailing: 0.0,
             height: PANEL_ROW,
         }
@@ -240,7 +260,7 @@ pub fn lifted(ctx: &egui::Context) -> bool {
     at.is_some_and(|at| at + 1 >= now)
 }
 
-fn set_lifted(ctx: &egui::Context) {
+pub(super) fn set_lifted(ctx: &egui::Context) {
     let now = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| d.insert_temp(lift_id(), now));
 }
@@ -308,8 +328,9 @@ where
         .collect();
     let size = vec2(ui.available_width(), rows.iter().map(|r| r.height).sum());
     let (area, _) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let slot =
-        |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), PANEL_ROW));
+    // The rows of a list that reorders have one height.
+    let pitch = rows.first().map_or(PANEL_ROW, |r| r.height);
+    let slot = |top: f32| Rect::from_min_size(pos2(area.left(), top), vec2(area.width(), pitch));
     // Each row moves to its place on a spring, as after a reorder.
     let (list_id, ctx) = (ui.id(), ui.ctx().clone());
     let spring = |key: K, target: f32, height: f32| {
@@ -347,29 +368,42 @@ where
     set_lifted(ui.ctx());
     let (pointer, down) = ui.input(|i| (i.pointer.interact_pos(), i.pointer.any_down()));
     let y = pointer.map_or(area.top() + tops[from] + lift.grab, |p| p.y);
-    let top = (y - lift.grab).clamp(area.top(), area.bottom() - PANEL_ROW);
-    let to = ((top - area.top()) / PANEL_ROW).round() as usize;
+    let top = (y - lift.grab).clamp(area.top(), area.bottom() - pitch);
+    let to = ((top - area.top()) / pitch).round() as usize;
+    if let (Some(lifted), Some(p)) = (state.lift.as_mut(), pointer) {
+        lifted.last = Some(p);
+    }
+    let last = pointer.or(lift.last);
+    let outside = last.is_some_and(|p| {
+        let near = area.expand2(vec2(8.0, pitch / 2.0));
+        !near.contains(p)
+    });
     let others = rows.iter().enumerate().filter(|(i, _)| *i != from);
     for (k, (i, row)) in others.enumerate() {
         // The rows make room at the place where the lifted row goes.
         let at = if k < to { k } else { k + 1 };
-        let rect = spring(row.key, at as f32 * PANEL_ROW, PANEL_ROW);
-        paint_still(ui, controls, state, row, rect, false, i, &mut cell);
+        let rect = spring(row.key, at as f32 * pitch, pitch);
+        let shape = Shape::of(spec, at, rows.len());
+        paint_still(
+            ui, controls, state, spec, row, rect, false, i, shape, &mut cell,
+        );
     }
     motion::set(ui.ctx(), place_spring(list_id, lift.key), top - area.top());
     paint_still(
         ui,
         controls,
         state,
+        spec,
         &rows[from],
         slot(top),
         true,
         from,
+        Shape::of(spec, to, rows.len()),
         &mut cell,
     );
     if !down {
         state.clear_for_change();
-        if to != from {
+        if to != from && !(spec.confine && outside) {
             events.push(Event::Move {
                 key: lift.key,
                 from,
@@ -405,19 +439,24 @@ fn paint_still<K: Copy + PartialEq>(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     state: &ListState<K>,
+    spec: Spec,
     row: &Row<K>,
     rect: Rect,
     lifted: bool,
     i: usize,
+    shape: Shape,
     cell: &mut impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
 ) {
-    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let highlight = shape.highlight(rect);
     let painter = ui.painter().clone();
-    if lifted {
-        painter.rect_filled(highlight, 5.0, theme::card(false).to_opaque());
-    }
     let picked = state.is_picked(row.key);
-    paint_back(&painter, highlight, picked, row.on || lifted);
+    if !spec.plain {
+        let corners = shape.corners(false);
+        if lifted {
+            painter.rect_filled(highlight, corners, theme::card(false).to_opaque());
+        }
+        paint_back(&painter, highlight, corners, picked, row.on || lifted);
+    }
     let at = Cell {
         rect,
         painter,
@@ -430,13 +469,78 @@ fn paint_still<K: Copy + PartialEq>(
     cell(ui, controls, &at, i);
 }
 
+/// The highlight of a row and the place of the buttons behind it.
+#[derive(Copy, Clone)]
+struct Shape {
+    /// The space above and below the highlight.
+    inset: f32,
+    /// The radius of the corners at the left of the highlight.
+    radius: f32,
+    /// The radius of the bottom corners of the last row of a grouped list.
+    bottom: f32,
+    /// The space at the right of the buttons behind the row.
+    margin: f32,
+}
+
+impl Shape {
+    /// The shape of row `i` of `count` rows.
+    fn of(spec: Spec, i: usize, count: usize) -> Shape {
+        match spec.grouped {
+            Some(radius) => Shape {
+                inset: 0.0,
+                radius: 0.0,
+                bottom: if i + 1 == count { radius } else { 0.0 },
+                margin: BUTTON_GAP,
+            },
+            None => Shape::FREE,
+        }
+    }
+
+    /// The shape of a row of a list that is not grouped.
+    const FREE: Shape = Shape {
+        inset: HIGHLIGHT_INSET,
+        radius: 5.0,
+        bottom: 5.0,
+        margin: 0.0,
+    };
+
+    fn highlight(self, rect: Rect) -> Rect {
+        rect.expand2(vec2(8.0, -self.inset))
+    }
+
+    /// The corners of a highlight. `open`: the buttons behind the row
+    /// show, and the right corners have the radius of a button.
+    fn corners(self, open: bool) -> egui::CornerRadius {
+        let r = |v: f32| v.round() as u8;
+        let (ne, se) = match open {
+            true => (BUTTON_RADIUS, BUTTON_RADIUS),
+            false => (self.radius, self.bottom),
+        };
+        egui::CornerRadius {
+            nw: r(self.radius),
+            ne: r(ne),
+            sw: r(self.bottom),
+            se: r(se),
+        }
+    }
+}
+
+/// The radius of the corners of a button behind a row.
+const BUTTON_RADIUS: f32 = 5.0;
+
 /// The tint of a selected row, or the highlight of a row that is chosen
 /// or pressed.
-fn paint_back(painter: &egui::Painter, highlight: Rect, picked: bool, raised: bool) {
+fn paint_back(
+    painter: &egui::Painter,
+    highlight: Rect,
+    corners: egui::CornerRadius,
+    picked: bool,
+    raised: bool,
+) {
     if picked {
-        painter.rect_filled(highlight, 5.0, theme::ACCENT.gamma_multiply(0.25));
+        painter.rect_filled(highlight, corners, theme::ACCENT.gamma_multiply(0.25));
     } else if raised {
-        painter.rect_filled(highlight, 5.0, theme::raise());
+        painter.rect_filled(highlight, corners, theme::raise());
     }
 }
 
@@ -485,7 +589,11 @@ fn rows_live<K>(
             }
             continue;
         }
-        let width = row.behind();
+        let shape = Shape::of(spec, i, rows.len());
+        let width = match row.behind() {
+            w if w > 0.0 => w + shape.margin,
+            _ => 0.0,
+        };
         let opened = state.open.filter(|o| o.row == key);
         let target = match (opened, state.mark) {
             (Some(o), _) => (o.offset, o.moving),
@@ -509,6 +617,7 @@ fn rows_live<K>(
                     shift,
                     state.is_picked(key),
                     i,
+                    shape,
                     cell,
                 )
             })
@@ -546,7 +655,7 @@ fn rows_live<K>(
                 events.push(Event::Tap(key));
             }
         }
-        if spec.reorder && hold(ui, state, body) {
+        if spec.reorder && row.lift && hold(ui, state, body) {
             ui.ctx().set_dragged_id(body.id);
             state.lift = Some(Lift {
                 key,
@@ -554,6 +663,7 @@ fn rows_live<K>(
                 grab: ui
                     .input(|i| i.pointer.interact_pos())
                     .map_or(0.0, |p| p.y - rect.top()),
+                last: None,
             });
             state.open = None;
             state.picked.clear();
@@ -740,6 +850,7 @@ fn paint_row<K>(
     shift: f32,
     picked: bool,
     i: usize,
+    shape: Shape,
     cell: &mut impl FnMut(&mut egui::Ui, &mut Controls, &Cell, usize) -> Option<Trail>,
 ) -> RowOut {
     let edge = rect.right() + 8.0;
@@ -758,7 +869,7 @@ fn paint_row<K>(
         body_rect,
         &row.label,
         egui::Sense::click(),
-        true,
+        row.enabled,
         Some(row.on || picked),
     );
     let (mut delete, mut rename, mut action) = (false, false, None);
@@ -769,31 +880,47 @@ fn paint_row<K>(
         if row.delete {
             let name = widgets::delete_name(&row.name);
             let last = slot + 1 == count;
-            delete = behind(ui, controls, rect, shift, slot, last, "Delete", &name);
+            delete = behind(
+                ui, controls, rect, shift, slot, last, shape, "Delete", &name,
+            );
             slot += 1;
         }
         if row.rename {
             let name = format!("{RENAME} {}", row.name);
             let last = slot + 1 == count;
-            rename = behind(ui, controls, rect, shift, slot, last, RENAME, &name);
+            rename = behind(ui, controls, rect, shift, slot, last, shape, RENAME, &name);
             slot += 1;
         }
         for &text in row.actions {
             let name = format!("{text} {}", row.name);
             let last = slot + 1 == count;
-            if behind(ui, controls, rect, shift, slot, last, text, &name) {
+            if behind(ui, controls, rect, shift, slot, last, shape, text, &name) {
                 action = Some(text);
             }
             slot += 1;
         }
     }
-    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let highlight = shape.highlight(rect);
     let left = rect.left() - 8.0;
     let clip = Rect::from_x_y_ranges(left..=edge + shift.min(0.0), rect.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(clip));
     let pressed = body.is_pointer_button_down_on();
-    let highlight = highlight.translate(vec2(shift, 0.0));
-    paint_back(&painter, highlight, picked, row.on || pressed);
+    // A swipe to the left moves the right edge of the highlight, so that
+    // its corners stay round.
+    let highlight = match shift < 0.0 {
+        true => Rect::from_min_max(
+            highlight.min,
+            pos2(highlight.right() + shift, highlight.bottom()),
+        ),
+        false => highlight.translate(vec2(shift, 0.0)),
+    };
+    paint_back(
+        &painter,
+        highlight,
+        shape.corners(shift < 0.0),
+        picked,
+        row.on || pressed,
+    );
     let at = Cell {
         rect,
         painter,
@@ -828,11 +955,12 @@ fn behind(
     shift: f32,
     slot: usize,
     last: bool,
+    shape: Shape,
     text: &str,
     name: &str,
 ) -> bool {
     let edge = rect.right() + 8.0;
-    let right = edge - slot as f32 * DELETE_WIDTH;
+    let right = edge - shape.margin - slot as f32 * DELETE_WIDTH;
     let reveal = edge + shift;
     if reveal >= right {
         return false;
@@ -842,7 +970,7 @@ fn behind(
     } else {
         reveal.max(right - DELETE_WIDTH)
     };
-    let highlight = rect.expand2(vec2(8.0, -HIGHLIGHT_INSET));
+    let highlight = Shape::FREE.highlight(rect);
     // The buttons have a gap between them and at the left of the first one.
     let back = Rect::from_x_y_ranges(left + BUTTON_GAP..=right, highlight.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
@@ -851,7 +979,7 @@ fn behind(
         RENAME => theme::MUTE,
         _ => theme::ACCENT,
     };
-    painter.rect_filled(back, 5.0, color);
+    painter.rect_filled(back, BUTTON_RADIUS, color);
     let at = pos2(right - (DELETE_WIDTH - BUTTON_GAP) / 2.0, rect.center().y);
     painter.text(
         at,
@@ -886,6 +1014,8 @@ pub struct Look<'a> {
     pub eye: Option<bool>,
     /// The arrow that opens the row, at the far right.
     pub open: bool,
+    /// The icon and the text are dim.
+    pub dim: bool,
 }
 
 impl Look<'_> {
@@ -906,19 +1036,31 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
     if let Some(on) = look.check {
         let mark = Rect::from_center_size(pos2(x + 18.0, rect.center().y), vec2(18.0, 18.0));
         if on {
-            icons::paint(painter, mark, Icon::Tick, 18.0, theme::ACCENT);
+            icons::paint(
+                painter,
+                mark,
+                Icon::Tick,
+                18.0,
+                widgets::fade(theme::ACCENT, !look.dim),
+            );
         }
         x += 38.0;
     }
     if let Some(icon) = look.icon {
         let kind = Rect::from_center_size(pos2(x + 10.0, rect.center().y), vec2(18.0, 18.0));
-        icons::paint(painter, kind, icon, 18.0, theme::MUTE);
+        icons::paint(
+            painter,
+            kind,
+            icon,
+            18.0,
+            widgets::fade(theme::MUTE, !look.dim),
+        );
         x += 28.0;
     }
     let shown = look.eye != Some(false);
     let color = match look.check {
-        Some(false) => theme::MUTE,
-        _ => widgets::fade(theme::TEXT, shown),
+        Some(false) => widgets::fade(theme::MUTE, !look.dim),
+        _ => widgets::fade(theme::TEXT, shown && !look.dim),
     };
     let trailing = cell.trailing.translate(moved);
     let mut name_right = if look.trailing() > 0.0 {

@@ -126,6 +126,8 @@ pub enum Icon {
     Orient,
     /// A smooth wave, for the Smooth operation of lines.
     SmoothLine,
+    /// Three stacked bars, for the collections of the Layers panel.
+    Collections,
     /// A zigzag with a dot at each vertex.
     Simplify,
     /// A square with dashes where its parts met.
@@ -213,6 +215,7 @@ impl Icon {
             }
             Icon::Orient => "M4 4c4 2 3 7 7 9s5 5 9 7M15 20h5v-5",
             Icon::SmoothLine => "M3 17c3-8 6-8 9-4s6 4 9-4",
+            Icon::Collections => "M4 4h16v2.5H4zM4 10.75h16v2.5H4zM4 17.5h16v2.5H4z",
             Icon::Simplify => "M3 17l5-7 4 4 4-8 5 9",
             Icon::Dissolve => "M4 5h16v14H4zM11 7v2M11 11v2M11 15v2M6 12h2",
             Icon::Clip => {
@@ -635,6 +638,7 @@ mod tests {
             Icon::Contours,
             Icon::Orient,
             Icon::SmoothLine,
+            Icon::Collections,
             Icon::Simplify,
             Icon::Dissolve,
             Icon::Clip,

@@ -76,10 +76,10 @@ impl Project {
         Some(id)
     }
 
-    /// False if the collection is missing, or if the name is blank or
-    /// another collection has it.
+    /// False for World, if the collection is missing, or if the name is
+    /// blank or another collection has it.
     pub fn rename_collection(&mut self, id: CollectionId, name: &str) -> bool {
-        if !self.collection_name_is_free(name, Some(id)) {
+        if id == self.world_collection || !self.collection_name_is_free(name, Some(id)) {
             return false;
         }
         match self.collection_mut(id) {
@@ -203,6 +203,54 @@ impl Project {
         true
     }
 
+    /// True if the Layers panel shows the collection as its header row
+    /// alone.
+    pub fn is_collapsed(&self, id: CollectionId) -> bool {
+        self.collapsed_collections.contains(&id)
+    }
+
+    /// Collapses a collection in the Layers panel, or expands it. This is
+    /// not an edit, so it gets no undo step. False if the collection is
+    /// missing or nothing changes.
+    pub fn set_collapsed(&mut self, id: CollectionId, collapsed: bool) -> bool {
+        if self.collection(id).is_none() {
+            return false;
+        }
+        match collapsed {
+            true => self.collapsed_collections.insert(id),
+            false => self.collapsed_collections.remove(&id),
+        }
+    }
+
+    /// Moves a checked collection of the globe to index `to` of the stack.
+    /// Index 0 is the bottom. False if the globe does not check the
+    /// collection or nothing changes.
+    pub fn move_globe_collection(&mut self, id: CollectionId, to: usize) -> bool {
+        let stack = &mut self.globe_collections;
+        let Some(from) = stack.iter().position(|c| *c == id) else {
+            return false;
+        };
+        let to = to.min(stack.len() - 1);
+        if from == to {
+            return false;
+        }
+        stack.remove(from);
+        stack.insert(to, id);
+        true
+    }
+
+    /// True if a checked collection of the globe above `id` holds the
+    /// layer, so that the layer draws at its place there.
+    pub fn drawn_above(&self, id: CollectionId, layer: LayerId) -> bool {
+        let stack = &self.globe_collections;
+        let Some(at) = stack.iter().position(|c| *c == id) else {
+            return false;
+        };
+        (stack[at + 1..].iter())
+            .filter_map(|c| self.collection(*c))
+            .any(|c| c.layers.contains(&layer))
+    }
+
     /// The collections of a map, from the bottom to the top. A map with no
     /// stack of its own has World alone.
     pub fn map_stack(&self, map: MapId) -> Vec<CollectionId> {
@@ -260,6 +308,22 @@ impl Project {
             c.layers.push(id);
         }
         id
+    }
+
+    /// Moves a new raster layer from the top of `new_layer_collection` to
+    /// the place above the top raster layer of the collection.
+    pub(crate) fn place_raster_in_collection(&mut self, layer: LayerId) {
+        let into = self.new_layer_collection();
+        let rasters: BTreeSet<LayerId> = (self.layers.iter())
+            .filter(|l| l.raster().is_some() && l.id != layer)
+            .map(|l| l.id)
+            .collect();
+        let Some(c) = self.collection_mut(into) else {
+            return;
+        };
+        c.layers.retain(|l| *l != layer);
+        let top = c.layers.iter().rposition(|l| rasters.contains(l));
+        c.layers.insert(top.map_or(0, |i| i + 1), layer);
     }
 
     /// Takes each removed layer out of each collection.
@@ -353,11 +417,11 @@ mod tests {
     }
 
     #[test]
-    fn world_can_be_renamed_and_cannot_be_removed() {
+    fn world_cannot_be_renamed_or_removed() {
         let (mut p, ids) = project();
         let world = p.world_collection();
-        assert!(p.rename_collection(world, "Earth"));
-        assert_eq!(p.collection(world).unwrap().name, "Earth");
+        assert!(!p.rename_collection(world, "Earth"));
+        assert_eq!(p.collection(world).unwrap().name, "World");
         assert!(!p.remove_collection(world));
         assert_eq!(layers(&p, world), ids);
     }
@@ -446,6 +510,18 @@ mod tests {
     }
 
     #[test]
+    fn a_new_raster_layer_goes_above_the_top_raster_layer_of_its_collection() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let first = p.add_raster("h".into(), 64, "m".into(), 0.0, 1.0);
+        let first = p.raster_layer(first).unwrap().id;
+        assert_eq!(layers(&p, world), [first, a, b, c]);
+        let second = p.add_raster("g".into(), 64, "m".into(), 0.0, 1.0);
+        let second = p.raster_layer(second).unwrap().id;
+        assert_eq!(layers(&p, world), [first, second, a, b, c]);
+    }
+
+    #[test]
     fn layers_move_inside_a_collection() {
         let (mut p, [a, b, c]) = project();
         let world = p.world_collection();
@@ -475,6 +551,50 @@ mod tests {
         assert!(!p.set_globe_collections(vec![CollectionId(99)]));
         assert!(p.set_globe_collections(vec![x, world]));
         assert_eq!(p.shown_layers().len(), 3);
+    }
+
+    #[test]
+    fn checked_collections_restack() {
+        let (mut p, _) = project();
+        let world = p.world_collection();
+        let x = p.add_collection("X").unwrap();
+        let y = p.add_collection("Y").unwrap();
+        p.set_globe_collections(vec![world, x]);
+        assert!(p.move_globe_collection(world, 1));
+        assert_eq!(p.globe_collections(), [x, world]);
+        assert!(!p.move_globe_collection(world, 5));
+        assert!(!p.move_globe_collection(y, 0));
+    }
+
+    #[test]
+    fn a_layer_is_drawn_above_when_a_higher_checked_collection_holds_it() {
+        let (mut p, [a, b, _]) = project();
+        let world = p.world_collection();
+        let x = p.add_collection("X").unwrap();
+        let y = p.add_collection("Y").unwrap();
+        p.set_in_collection(x, a, true);
+        p.set_in_collection(y, b, true);
+        p.set_globe_collections(vec![world, x]);
+        assert!(p.drawn_above(world, a));
+        assert!(!p.drawn_above(world, b));
+        assert!(!p.drawn_above(x, a));
+        p.set_globe_collections(vec![x, world]);
+        assert!(!p.drawn_above(world, a));
+        assert!(p.drawn_above(x, a));
+        assert!(!p.drawn_above(y, b));
+    }
+
+    #[test]
+    fn collections_collapse() {
+        let (mut p, _) = project();
+        let world = p.world_collection();
+        assert!(!p.is_collapsed(world));
+        assert!(p.set_collapsed(world, true));
+        assert!(!p.set_collapsed(world, true));
+        assert!(p.is_collapsed(world));
+        assert!(!p.set_collapsed(CollectionId(99), true));
+        assert!(p.set_collapsed(world, false));
+        assert!(!p.is_collapsed(world));
     }
 
     #[test]

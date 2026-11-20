@@ -1112,6 +1112,19 @@ fn header_row(
         let resp = widgets::icon_button_at(ui, controls, at, action, icon, active, true);
         panel_title(state, head, false, Some(&resp));
     }
+    let list = head.panel == Panel::Layers && head.layer.is_none() && head.page.is_none();
+    if list && state.workspace == crate::ui::Workspace::Globe {
+        let at = button(left_of - TOUCH);
+        left_of = at.left();
+        let open = state.pad.collections_menu;
+        let name = super::collection::COLLECTION_MENU;
+        let icon = Icon::Collections;
+        if widgets::icon_button_at(ui, controls, at, name, icon, open, true).clicked() {
+            state.pad.collections_menu = !open;
+            state.pad.collection_list = super::list::ListState::default();
+        }
+        state.pad.collections_button = Some(at);
+    }
     // The chevron of a dock pane points right while the pane is folded, and
     // down while it is open.
     let mut fold = false;
