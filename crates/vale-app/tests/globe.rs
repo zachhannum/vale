@@ -5654,8 +5654,10 @@ fn a_large_vector_layer_draws_from_tiles_as_it_draws_from_shapes() {
                 .count()
         };
         let (a, b) = (filled(&shapes), filled(&tiles));
+        // The whole view draws at one level, so the tiles at the rim of the
+        // globe have more texels than pixels, and their edges blend less.
         assert!(
-            a > 10_000 && b.abs_diff(a) * 20 < a,
+            a > 10_000 && b.abs_diff(a) * 10 < a,
             "{world_view:?}: {a} and {b}"
         );
         // The two pictures differ only along the edges of the shapes.

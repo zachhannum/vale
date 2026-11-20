@@ -4,9 +4,11 @@
 //!
 //! A tile is a picture of a part of a cube face at a level. Level `l` cuts
 //! each face into `2^l` by `2^l` tiles of `TILE` texels, in the coordinates
-//! of `place` in `field.wgsl`. The view wants the tiles under it at the level
-//! with one texel or more in each pixel, and the 6 tiles of level 0. Until a
-//! tile is there, the shader draws the nearest coarser tile that is. A change
+//! of `place` in `field.wgsl`. The whole view draws at one level: the level
+//! with one texel or more in each pixel, or a coarser one if the tiles do
+//! not fit in the atlas. The view wants the tiles under it at that level,
+//! and the 6 tiles of level 0. Until a tile is there, the shader draws the
+//! nearest coarser tile that is. A change
 //! of the layer or of its style renders each tile again, and the old tile
 //! stays on screen until its new one arrives.
 
@@ -36,6 +38,9 @@ pub const ATLAS: [u32; 2] = [SLOT_COLS * TILE_PX as u32, SLOT_ROWS * TILE_PX as 
 /// The size of the page table of a layer: an entry for each tile of each
 /// level.
 pub const PAGE_SIZE: [u32; 2] = [1024, 512];
+/// The entry of the page table that holds the level of the view. No tile
+/// uses it.
+pub const LEVEL_INDEX: u32 = PAGE_SIZE[0] * PAGE_SIZE[1] - 1;
 /// A layer with more points draws from tiles. The shapes of egui slow the
 /// frame well before a layer has this many points on the screen.
 pub const MIN_POINTS: usize = 100_000;
@@ -250,6 +255,8 @@ struct Tiled {
     /// A new number for each new snapshot and each new style.
     generation: u64,
     tiles: HashMap<TileKey, Resident>,
+    /// The level of the view in the page table on the GPU.
+    level: Option<u8>,
 }
 
 /// The tiles of the vector layers that draw from tiles.
@@ -334,6 +341,7 @@ impl VectorTiles {
             paints: Vec::new(),
             generation: 0,
             tiles: HashMap::new(),
+            level: None,
         });
         let key = StyleKey {
             style: style.clone(),
@@ -463,7 +471,22 @@ impl VectorTiles {
             self.pending.clear();
             return;
         }
-        let wanted = wanted_tiles(grid);
+        // The layers share the atlas, and a quarter of it stays free for
+        // the tiles of the last views.
+        let budget = SLOTS as usize * 3 / 4 / self.shown.len();
+        let (level, wanted) = wanted_tiles(grid, budget);
+        if let Some(link) = link {
+            for (&id, tiled) in &mut self.layers {
+                if tiled.level != Some(level) {
+                    tiled.level = Some(level);
+                    link.push_vpage(VTilePage {
+                        layer: id,
+                        index: LEVEL_INDEX,
+                        value: u32::from(level),
+                    });
+                }
+            }
+        }
         let frame = self.frame;
         for tiled in self.layers.values() {
             for key in &wanted {
@@ -705,18 +728,32 @@ fn touches(key: TileKey, caps: &[(V3, f64)]) -> bool {
     (caps.iter()).any(|&(c, r)| angle(c, center) <= r + radius + margin)
 }
 
-/// The tiles under the view of `grid`, each at the level of the pixels
-/// over it, and the 6 tiles of level 0, coarse levels first and then by
-/// the distance to the middle of the view.
-fn wanted_tiles(grid: &Grid) -> Vec<TileKey> {
-    let mut out: Vec<TileKey> = roots().collect();
+/// The level of the view of `grid`, and the tiles under the view at that
+/// level and the 6 tiles of level 0, coarse levels first and then by the
+/// distance to the middle of the view. The level has one texel or more in
+/// each pixel of the view. If the tiles at that level do not fit in
+/// `budget`, the view takes a coarser level.
+fn wanted_tiles(grid: &Grid, budget: usize) -> (u8, Vec<TileKey>) {
+    let mut finest: Option<f64> = None;
     grid.sample(
-        |d, px| out.push(tile_at(d, level_for(px))),
-        |px| {
-            // The angle of a tile at the level of `px`.
-            std::f64::consts::FRAC_PI_2 / f64::from(1u32 << level_for(px))
-        },
+        |_, px| finest = Some(finest.map_or(px, |f| f.min(px))),
+        |_| f64::INFINITY,
     );
+    let mut level = finest.map_or(0, level_for);
+    let span = std::f64::consts::FRAC_PI_2 / f64::from(1u32 << level);
+    let mut out: Vec<TileKey> = Vec::new();
+    grid.sample(|d, _| out.push(tile_at(d, level)), |_| span);
+    out.sort_unstable();
+    out.dedup();
+    while out.len() + 6 > budget && level > 0 {
+        level -= 1;
+        for key in &mut out {
+            *key = ancestor(*key, level);
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
+    out.extend(roots());
     out.sort_unstable();
     out.dedup();
     let middle = grid.middle();
@@ -726,10 +763,18 @@ fn wanted_tiles(grid: &Grid) -> Vec<TileKey> {
             .partial_cmp(&(b.level, far(b)))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    // The finest tiles go first when the view needs more than the atlas
-    // holds.
-    out.truncate(SLOTS as usize * 3 / 4);
-    out
+    (level, out)
+}
+
+/// The tile of `key`, or the tile of level `level` that holds it.
+fn ancestor(key: TileKey, level: u8) -> TileKey {
+    let up = key.level.saturating_sub(level);
+    TileKey {
+        level: key.level - up,
+        col: key.col >> up,
+        row: key.row >> up,
+        ..key
+    }
 }
 
 #[cfg(test)]
@@ -879,6 +924,64 @@ mod tests {
                 .tiles
                 .values()
                 .all(|r| r.generation == tiled.generation)
+        );
+    }
+
+    /// The grid of a view of 512 pixels that looks at the horizon from
+    /// near the ground, with the ground at the bottom.
+    fn slanted() -> Grid {
+        let ground = lonlat_to_dir(0.0, 0.0);
+        let east = lonlat_to_dir(90.0, 0.0);
+        let north = lonlat_to_dir(0.0, 90.0);
+        // The eye is 0.02 radii above the ground, and it looks north and
+        // down.
+        let eye: V3 = std::array::from_fn(|i| ground[i] * 1.02);
+        let (down, ahead) = (0.3f64.sin(), 0.3f64.cos());
+        Grid::from_fn([512, 512], |x, y| {
+            let (u, v) = ((x - 256.0) / 256.0, (256.0 - y) / 256.0);
+            let ray: V3 = std::array::from_fn(|i| {
+                north[i] * ahead - ground[i] * down
+                    + east[i] * u
+                    + (north[i] * down + ground[i] * ahead) * v
+            });
+            // The first hit of the ray on the sphere of radius 1.
+            let b: f64 = (0..3).map(|i| eye[i] * ray[i]).sum();
+            let rr: f64 = ray.iter().map(|r| r * r).sum();
+            let c: f64 = eye.iter().map(|e| e * e).sum::<f64>() - 1.0;
+            let disc = b * b - rr * c;
+            (disc >= 0.0 && b < 0.0).then(|| {
+                let t = (-b - disc.sqrt()) / rr;
+                let p: V3 = std::array::from_fn(|i| eye[i] + ray[i] * t);
+                crate::globe::math::normalize(p)
+            })
+        })
+    }
+
+    #[test]
+    fn the_whole_view_draws_at_one_level() {
+        let grid = slanted();
+        let (level, got) = wanted_tiles(&grid, usize::MAX);
+        assert!(level >= 3, "{level}");
+        assert!(got.iter().all(|k| k.level == level || k.level == 0));
+        // Each place of the view has its tile at the level.
+        grid.sample(
+            |d, _| assert!(got.contains(&tile_at(d, level)), "{d:?}"),
+            |_| 0.01,
+        );
+    }
+
+    #[test]
+    fn a_view_with_more_tiles_than_the_budget_takes_a_coarser_level() {
+        let grid = slanted();
+        let (fine, all) = wanted_tiles(&grid, usize::MAX);
+        let budget = all.len() / 2;
+        let (level, got) = wanted_tiles(&grid, budget);
+        assert!(level < fine, "{level} of {fine}");
+        assert!(got.len() <= budget, "{} of {budget}", got.len());
+        assert!(got.iter().all(|k| k.level == level || k.level == 0));
+        grid.sample(
+            |d, _| assert!(got.contains(&tile_at(d, level)), "{d:?}"),
+            |_| 0.01,
         );
     }
 

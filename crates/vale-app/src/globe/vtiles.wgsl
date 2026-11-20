@@ -1,8 +1,9 @@
 // Draws a vector layer from its tiles: premultiplied RGBA pictures of parts
 // of the cube faces, in one atlas that `image` and `image_sampler` bind. The
 // page table of the layer gives the slot of each tile in the atlas, plus 1,
-// or 0 for a tile that is not there. A pixel reads the tile of the level with
-// one texel or more in the pixel, or the nearest coarser tile that is there.
+// or 0 for a tile that is not there. Its last entry holds the level of the
+// view. A pixel reads the tile of that level, or the nearest coarser tile
+// that is there.
 // The constants match `globe/vtiles.rs`. This file comes after `image.wgsl`.
 
 @group(1) @binding(12) var vtile_pages: texture_2d<u32>;
@@ -13,6 +14,7 @@ const VTILE_COLS: u32 = 20u;
 const VTILE_ATLAS: vec2<f32> = vec2<f32>(5160.0, 4644.0);
 const VTILE_MAX_LEVEL: i32 = 8;
 const VTILE_PAGE_WIDTH: u32 = 1024u;
+const VTILE_PAGE_HEIGHT: u32 = 512u;
 
 // The entry of the page table for a tile.
 fn vtile_page(level: u32, face: u32, col: u32, row: u32) -> u32 {
@@ -23,13 +25,11 @@ fn vtile_page(level: u32, face: u32, col: u32, row: u32) -> u32 {
     return textureLoad(vtile_pages, at, 0).r;
 }
 
-// The color of the layer at a world direction, where one pixel covers the
-// angle `px`.
-fn vtile_color(d: vec3<f32>, px: f32) -> vec4<f32> {
+// The color of the layer at a world direction.
+fn vtile_color(d: vec3<f32>) -> vec4<f32> {
     let p = place(d);
-    // A texel of level 0 covers a quarter turn over 256 texels.
-    let texels = 2.0 * FIELD_QUARTER_PI / (VTILE * max(px, 1e-9));
-    let want = clamp(i32(ceil(log2(max(texels, 1.0)))), 0, VTILE_MAX_LEVEL);
+    let last = vec2<i32>(i32(VTILE_PAGE_WIDTH) - 1, i32(VTILE_PAGE_HEIGHT) - 1);
+    let want = min(i32(textureLoad(vtile_pages, last, 0).r), VTILE_MAX_LEVEL);
     for (var level = want; level >= 0; level -= 1) {
         let side = f32(1u << u32(level));
         let t = clamp(p.at * side, vec2<f32>(0.0), vec2<f32>(side - 1e-4));
@@ -51,14 +51,10 @@ fn fs_vtiles(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if at.cover <= 0.0 {
         discard;
     }
-    return vtile_color(at.d, at.px);
+    return vtile_color(at.d);
 }
 
 @fragment
 fn fs_flat_vtiles(in: FlatVertex) -> @location(0) vec4<f32> {
-    let d = normalize(in.dir);
-    // The flat map stretches the world along one axis near the poles, and
-    // the tile has the texels for the finer one.
-    let px = min(length(dpdx(d)), length(dpdy(d)));
-    return vtile_color(d, px);
+    return vtile_color(normalize(in.dir));
 }
