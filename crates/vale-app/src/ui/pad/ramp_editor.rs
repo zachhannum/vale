@@ -1,7 +1,7 @@
 //! The page of the editor of a ramp: its name, the qualitative switch, the
 //! sea level switch, and a row for each color with its label.
 
-use eframe::egui::{self, Rect, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 
 use super::geometry::TOUCH;
 use super::icons::Icon;
@@ -171,7 +171,7 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         if widgets::text_row(ui, controls, MOVE_DOWN, 0.0, false, last).clicked() {
             change = Some(Change::Down(i));
         }
-        if widgets::warn_row(ui, controls, REMOVE_COLOR, draft.can_remove()).clicked() {
+        if warn_row(ui, controls, REMOVE_COLOR, draft.can_remove()).clicked() {
             change = Some(Change::Remove(i));
         }
     }
@@ -238,4 +238,25 @@ fn sea_line(ui: &mut egui::Ui, controls: &mut Controls, up: bool, down: bool) ->
         down,
     );
     (up.clicked(), down.clicked())
+}
+
+/// A row with a text in the warning color, for a button that removes.
+fn warn_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    enabled: bool,
+) -> egui::Response {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = widgets::tap_area(ui, controls, row, name, enabled);
+    if resp.is_pointer_button_down_on() {
+        let back = row.shrink(widgets::HIGHLIGHT_INSET);
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let at = pos2(row.left(), row.center().y);
+    let color = widgets::fade(theme::WARN, enabled);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, name, theme::body(), color);
+    resp
 }

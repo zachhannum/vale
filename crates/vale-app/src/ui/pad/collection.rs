@@ -225,7 +225,7 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
     }
 
-    if widgets::add_row(ui, controls, NEW_COLLECTION).clicked() {
+    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
         if let Some(id) = state.add_collection(&name) {
@@ -234,16 +234,7 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             list.rename = Some((id, name));
         }
     }
-    if widgets::text_row(
-        ui,
-        controls,
-        super::manage::MANAGE_COLLECTIONS,
-        0.0,
-        false,
-        true,
-    )
-    .clicked()
-    {
+    if widgets::open_row(ui, controls, super::manage::MANAGE_COLLECTIONS, "").clicked() {
         state.pad.collections_menu = false;
         state.pad.collection_list = list::ListState::default();
         state.pad.manage.layers_segment = false;
@@ -819,7 +810,7 @@ pub(super) fn page_body(
         }
     }
 
-    if widgets::add_row(ui, controls, NEW_COLLECTION).clicked() {
+    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         state.pad.collection_search.clear();
         let name = state.doc.project.free_collection_name();

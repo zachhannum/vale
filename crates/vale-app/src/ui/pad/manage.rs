@@ -14,7 +14,7 @@ use super::{LayerRef, list, theme};
 use crate::ui::AppState;
 
 /// The row of the collection popover that opens the management page.
-pub const MANAGE_COLLECTIONS: &str = "Manage collections…";
+pub const MANAGE_COLLECTIONS: &str = "Manage collections";
 /// The segments of the management page.
 pub const SEGMENTS: [&str; 2] = [COLLECTIONS, "Layers"];
 pub const ADD_LAYERS: &str = "Add layers…";
@@ -298,7 +298,7 @@ fn manage_collections(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Co
             _ => {}
         }
     }
-    if widgets::add_row(ui, controls, NEW_COLLECTION).clicked() {
+    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
         if let Some(id) = state.add_collection(&name) {
@@ -440,11 +440,11 @@ fn collection_body(
         }
     }
 
-    if widgets::add_row(ui, controls, ADD_LAYERS).clicked() {
+    if widgets::button_row(ui, controls, ADD_LAYERS, true).clicked() {
         state.pad.manage.open(ManagePage::AddLayers(id));
     }
     if !world
-        && widgets::warn_row(ui, controls, DELETE_COLLECTION, true).clicked()
+        && widgets::button_row_in(ui, controls, DELETE_COLLECTION, true, theme::WARN).clicked()
         && state.delete_collection(id)
     {
         state.pad.manage.page = Some(ManagePage::Manage);
