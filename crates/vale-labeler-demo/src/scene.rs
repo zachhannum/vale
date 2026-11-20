@@ -6,7 +6,7 @@ use anyhow::{Context, bail};
 use kurbo::{BezPath, Point, Rect};
 use vale_labeler::{
     Feature, Fonts, Geometry, LabelClass, LabelInput, LinePlacement, Options, Placement,
-    PointPlacement, PolygonMode, PolygonPlacement, TextStyle,
+    PointPlacement, PolygonMode, PolygonPlacement, TextStyle, Weight,
 };
 
 use crate::data::{Area, join_rivers, load_areas, load_places, load_polygons, load_rivers};
@@ -18,6 +18,8 @@ pub enum Preset {
     Europe,
     /// Europe in a conic projection. The country names follow the parallels.
     Conic,
+    /// Europe in a conic projection. Other labels do not cross the rivers and the borders.
+    Avoid,
 }
 
 impl Preset {
@@ -26,6 +28,7 @@ impl Preset {
             Preset::World => "world",
             Preset::Europe => "europe",
             Preset::Conic => "conic",
+            Preset::Avoid => "avoid",
         }
     }
 }
@@ -89,7 +92,7 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             1200u16,
             0.0,
         ),
-        Preset::Conic => (
+        Preset::Conic | Preset::Avoid => (
             "110m",
             "110m",
             Projection::Lcc {
@@ -253,6 +256,14 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
         });
         parallels = parallel_lines(&map, page, projection);
         graticule = graticule_lines(&map, projection);
+    }
+    if preset == Preset::Avoid {
+        if let Placement::Line(lp) = &mut classes[1].placement {
+            lp.weight = Weight::Forbidden;
+        }
+        if let Placement::Polygon(pp) = &mut classes[3].placement {
+            pp.outline_weight = Weight::Forbidden;
+        }
     }
 
     let mut features = Vec::new();
