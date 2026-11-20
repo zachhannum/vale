@@ -808,7 +808,8 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         assert_eq!(shown(&h), Some(second));
         assert!(!h.state().globe.paintable, "{what}");
         let height = h.state().doc.project.raster_layer(first).unwrap().id;
-        assert!(h.state_mut().move_layer(height, 4));
+        let world = h.state().doc.project.world_collection();
+        assert!(h.state_mut().move_in_collection(world, height, 4));
         h.run_steps(2);
         assert_eq!((drawn(&h), shown(&h)), (vec![second, first], Some(first)));
 
@@ -3820,8 +3821,9 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     state.sync_globe();
 
     // A raster layer above the polygon hides it.
+    let world = h.state().doc.project.world_collection();
     let top = h.state().doc.project.layers().len() - 1;
-    assert!(h.state_mut().move_layer(raster, top));
+    assert!(h.state_mut().move_in_collection(world, raster, top));
     let (red, plain) = (reds(&mut h, true), reds(&mut h, false));
     assert!(difference(&red, &plain) <= width);
 }
@@ -8516,6 +8518,55 @@ fn snap_types(h: &Pad, layer: vale_store::LayerId, target: vale_store::LayerId) 
         .find(|(id, _)| *id == target)
         .map(|(_, t)| *t);
     types.map_or([false; 3], |t| [t.vertices, t.edges, t.stops])
+}
+
+#[test]
+fn the_snap_panel_lists_its_rows_in_the_drawn_order() {
+    use vale_app::ui::pad::{SNAP_VERTICES, snap_target_name};
+    let size = BOARDS[0];
+    let (mut h, lines) = line_pad(size);
+    let world = h.state().doc.project.world_collection();
+    let rivers = vector(&h, "Rivers");
+    let places = vector(&h, "Places");
+    let ids: Vec<_> = (h.state().doc.project.layers().iter())
+        .map(|l| l.id)
+        .collect();
+    for id in ids {
+        let shown = [lines, rivers, places].contains(&id);
+        h.state_mut().doc.project.set_layer_visible(id, shown);
+    }
+    // Rivers goes into a collection on top of World, below Places there.
+    let x = h.state_mut().add_collection_with("Top", places).unwrap();
+    assert!(h.state_mut().set_in_collection(x, rivers, true));
+    assert!(h.state_mut().move_in_collection(x, rivers, 0));
+    // Places goes below Rivers in World, so the records disagree.
+    assert!(h.state_mut().move_in_collection(world, places, 0));
+    h.state_mut().pad.close(Panel::Layers);
+    h.state_mut().pad.layer = None;
+    h.state_mut().select(Some(LayerRef::Vector(lines)));
+    h.run_steps(2);
+    if !h.state().globe.lining() {
+        quick_tap(&mut h, VECTOR);
+    }
+    open_snap(&mut h);
+    raise_sheet(&mut h);
+    let name = |h: &Pad, id| h.state().doc.project.layer(id).unwrap().name.clone();
+    let top = |h: &Pad, id| {
+        let row = snap_target_name(SNAP_VERTICES, &name(h, id));
+        control(h, &row).map(|r| r.top())
+    };
+    let (active, below, above) = (top(&h, lines), top(&h, rivers), top(&h, places));
+    assert!(
+        active < below && below < above,
+        "{active:?} {below:?} {above:?}"
+    );
+
+    // A layer only in a collection that is not checked has no row.
+    assert!(h.state_mut().set_in_collection(world, places, false));
+    assert!(h.state_mut().check_collection(x, false));
+    h.run_steps(2);
+    assert!(top(&h, places).is_none());
+    assert!(top(&h, rivers).is_some());
 }
 
 #[test]

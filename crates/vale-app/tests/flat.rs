@@ -850,7 +850,8 @@ fn flat_with_image(level: u16) -> (App, vale_store::ImageId, Pos2, Pos2) {
     // The image goes right above the height layer, below the vector layers,
     // so a blend mixes it with the height layer.
     let layer = h.state().doc.project.image_layer(id).unwrap().id;
-    h.state_mut().move_layer(layer, 1);
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().move_in_collection(world, layer, 1);
     h.run_steps(3);
     let c = h.state().globe.rect.center();
     (h, id, c - Vec2::new(60.0, 0.0), c + Vec2::new(60.0, 0.0))

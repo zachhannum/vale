@@ -43,6 +43,7 @@ fn polygons_stay_under_points() {
     let g = d.add_imported(imported("poly", POLY), None)[0];
     assert_eq!(d.frame.entries[0].layer, g);
     assert_eq!(d.frame.entries[1].layer, p);
+    assert_eq!(d.project.drawn_layer_ids(), [g, p]);
 }
 
 #[test]

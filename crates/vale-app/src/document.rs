@@ -178,7 +178,8 @@ impl Document {
     }
 
     /// Adds each layer above the layers of its kind and of the kinds that
-    /// draw below it. Polygons draw below lines, and lines draw below points.
+    /// draw below it, in the layer records and in the collection that it
+    /// joins. Polygons draw below lines, and lines draw below points.
     pub fn add_imported(&mut self, imported: Imported, source: Option<&Path>) -> Vec<LayerId> {
         let mut ids = Vec::new();
         for l in imported.layers {
@@ -194,6 +195,19 @@ impl Document {
                 .map_or(0, |i| i + 1);
             let id = self.project.add_layer(l.name, l.kind, file, l.features);
             self.project.move_layer(id, to);
+            let into = self.project.new_layer_collection();
+            let mut members = self
+                .project
+                .collection(into)
+                .map_or(vec![], |c| c.layers.clone());
+            members.retain(|m| *m != id);
+            let below = |m: &LayerId| {
+                self.project
+                    .layer(*m)
+                    .is_some_and(|x| layer_rank(x) <= new_rank)
+            };
+            let at = members.iter().rposition(below).map_or(0, |i| i + 1);
+            self.project.move_in_collection(into, id, at);
             self.sync_entries();
             ids.push(id);
         }
@@ -406,9 +420,9 @@ impl Document {
         self.move_layer(id, if up { i + 1 } else { i - 1 })
     }
 
-    /// Moves a layer to index `to` of the list `shown`, a part of the draw
-    /// order that holds the layer. Index 0 is the bottom. Each layer that
-    /// is not in `shown` keeps its place.
+    /// Moves a layer to index `to` of the list `shown`, a part of the order
+    /// of the layer records that holds the layer. Index 0 is the bottom.
+    /// Each layer that is not in `shown` keeps its place.
     pub fn move_in(&mut self, id: LayerId, shown: &[LayerId], to: usize) -> bool {
         let rest: Vec<LayerId> = shown.iter().copied().filter(|l| *l != id).collect();
         let order: Vec<LayerId> = self.project.layers().iter().map(|l| l.id).collect();
@@ -424,7 +438,8 @@ impl Document {
         }
     }
 
-    /// Moves a layer to this index of the draw order. Index 0 is the bottom.
+    /// Moves a layer to this index of the order of the layer records. Index
+    /// 0 is the bottom.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.project.move_layer(id, to);
         self.sync_entries();

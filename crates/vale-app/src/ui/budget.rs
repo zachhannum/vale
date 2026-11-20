@@ -85,6 +85,13 @@ pub fn too_large(ctx: &Context, layer: LayerId) -> bool {
     })
 }
 
+/// The vertices and the indices that the last pass with a draw spent, for
+/// the tests.
+pub fn last_used(ctx: &Context) -> Cost {
+    let budget = ctx.data(|d| d.get_temp::<Budget>(Id::new("vale-mesh-budget")));
+    budget.map_or((0, 0), |b| b.used)
+}
+
 /// Sets the most vertices and indices of a frame, for the tests.
 pub fn set_limit(ctx: &Context, limit: Cost) {
     with(ctx, |b| b.limit = limit);

@@ -5583,8 +5583,8 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
 
     // The raster layer is below the vector layer.
     let order = |h: &Harness<'static, AppState>| {
-        let layers = h.state().doc.project.layers();
-        let at = |id| layers.iter().position(|l| l.id == id).unwrap();
+        let layers = h.state().doc.project.drawn_layer_ids();
+        let at = |id| layers.iter().position(|l| *l == id).unwrap();
         at(layer) < at(land)
     };
     assert!(order(&h));
@@ -5598,7 +5598,8 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
     assert!(sea[0] == sea[1] && sea[1] == sea[2], "{sea:?}");
 
     // The raster layer is above the vector layer, and it hides it.
-    assert!(h.state_mut().move_layer(layer, 3));
+    let world = h.state().doc.project.world_collection();
+    assert!(h.state_mut().move_in_collection(world, layer, 3));
     assert!(!order(&h));
     let below = middle(&mut h);
     assert!(is_grey(below, LOW), "{below:?}");
@@ -5609,7 +5610,7 @@ fn a_raster_layer_and_a_vector_layer_draw_in_the_layer_order() {
     assert!(close(half, mean), "{half:?} and {mean:?}");
 
     // The vector layer is above the raster layer again.
-    assert!(h.state_mut().move_layer(layer, 0));
+    assert!(h.state_mut().move_in_collection(world, layer, 0));
     let above = middle(&mut h);
     assert!(close(above, fill), "{above:?} and {fill:?}");
 }
@@ -9123,4 +9124,170 @@ fn the_coast_of_a_thin_channel_has_no_corner_at_a_texel_edge() {
         near < far / 4.0,
         "a corner: {near} over {short} rows, {far} over {long} rows"
     );
+}
+
+/// A harness with two red and blue polygon layers that cover the middle of
+/// the view, in World, red below blue.
+fn two_squares(
+    world_view: vale_app::globe::WorldView,
+) -> (Harness<'static, AppState>, [vale_store::LayerId; 2]) {
+    use vale_store::{Feature, Geometry, GeometryKind};
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.globe.preview.graticule = false;
+    state.globe.world_view = world_view;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    let square = vec![
+        [-15.0, -15.0],
+        [15.0, -15.0],
+        [15.0, 15.0],
+        [-15.0, 15.0],
+        [-15.0, -15.0],
+    ];
+    let ids = [RED, BLUE].map(|color| {
+        let layer = state.doc.add_layer(GeometryKind::Polygon);
+        let feature = Feature::new(
+            Geometry::Polygons(vec![vec![square.clone()]]),
+            Default::default(),
+        );
+        assert!(state.doc.project.add_feature(layer, feature));
+        let style = &mut state.doc.entry_mut(layer).unwrap().style;
+        style.set_fill(Some(Color::rgb(color[0], color[1], color[2])));
+        style.set_stroke(None);
+        layer
+    });
+    state.sync_globe();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    (h, ids)
+}
+
+const RED: [u8; 3] = [200, 30, 30];
+const BLUE: [u8; 3] = [30, 30, 200];
+
+#[test]
+#[ignore = "gpu"]
+fn a_restack_of_the_collections_changes_the_order_on_the_globe() {
+    use vale_app::globe::WorldView;
+    let _gpu = one_gpu_test();
+    for world_view in [WorldView::Globe, WorldView::Flat] {
+        let (mut h, [_, blue]) = two_squares(world_view);
+        let world = h.state().doc.project.world_collection();
+        assert!(close(middle(&mut h), BLUE), "{world_view:?}");
+
+        // Blue goes into a collection on top of World, and red stays in World.
+        let x = h.state_mut().add_collection_with("Top", blue).unwrap();
+        assert!(h.state_mut().set_in_collection(world, blue, false));
+        assert_eq!(h.state().doc.project.globe_collections(), [world, x]);
+        assert!(close(middle(&mut h), BLUE), "{world_view:?}");
+
+        // World goes on top, so red draws above blue.
+        assert!(h.state_mut().move_globe_collection(x, 0));
+        let top = middle(&mut h);
+        assert!(close(top, RED), "{world_view:?}: {top:?}");
+
+        // A collection that is not checked does not draw.
+        assert!(h.state_mut().check_collection(world, false));
+        let top = middle(&mut h);
+        assert!(close(top, BLUE), "{world_view:?}: {top:?}");
+        assert!(h.state_mut().check_collection(x, false));
+        let top = middle(&mut h);
+        assert!(
+            !close(top, BLUE) && !close(top, RED),
+            "{world_view:?}: {top:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_layer_in_two_checked_collections_draws_at_its_place_in_the_top_one() {
+    use vale_app::globe::{StackItem, WorldView};
+    let _gpu = one_gpu_test();
+    for world_view in [WorldView::Globe, WorldView::Flat] {
+        let (mut h, [red, blue]) = two_squares(world_view);
+        let world = h.state().doc.project.world_collection();
+        // World holds red below blue, and Top holds blue below red.
+        let x = h.state_mut().add_collection_with("Top", blue).unwrap();
+        assert!(h.state_mut().set_in_collection(x, red, true));
+        let vectors = |h: &Harness<'static, AppState>| {
+            let stack = h.state().globe.stack().unwrap_or_default();
+            let ids = stack.iter().filter_map(|item| match item {
+                StackItem::Vector(id) => Some(*id),
+                _ => None,
+            });
+            ids.collect::<Vec<_>>()
+        };
+        assert_eq!(vectors(&h), [blue, red], "{world_view:?}");
+        let top = middle(&mut h);
+        assert!(close(top, RED), "{world_view:?}: {top:?}");
+
+        // With World on top, blue draws above red.
+        assert!(h.state_mut().move_globe_collection(world, 1));
+        assert_eq!(vectors(&h), [red, blue], "{world_view:?}");
+        let top = middle(&mut h);
+        assert!(close(top, BLUE), "{world_view:?}: {top:?}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_raster_layers_blend_in_the_order_of_the_collections() {
+    use vale_store::BlendMode;
+    let _gpu = one_gpu_test();
+    let (mut h, ids) = layers_harness(&[LOW, HIGH]);
+    let (low, high) = (grey_of(LOW), grey_of(HIGH));
+    let layer =
+        |h: &Harness<'static, AppState>, id| h.state().doc.project.raster_layer(id).unwrap().id;
+    assert!(is_grey(middle(&mut h), HIGH));
+
+    // The low layer goes into a collection on top of World.
+    let low_layer = layer(&h, ids[0]);
+    let x = h.state_mut().add_collection_with("Top", low_layer).unwrap();
+    assert!(is_grey(middle(&mut h), LOW));
+    h.state_mut().set_raster_opacity(ids[0], 0.5);
+    let half = middle(&mut h);
+    let mean = ((u16::from(low) + u16::from(high)) / 2) as u8;
+    assert!(close(half, [mean; 3]), "{half:?} and {mean}");
+    h.state_mut().set_raster_opacity(ids[0], 1.0);
+    assert!(h.state_mut().set_raster_blend(ids[0], BlendMode::Lighten));
+    assert!(is_grey(middle(&mut h), HIGH));
+
+    // With World on top, the high layer covers the low layer.
+    assert!(h.state_mut().move_globe_collection(x, 0));
+    assert!(is_grey(middle(&mut h), HIGH));
+    h.state_mut().set_raster_opacity(ids[1], 0.5);
+    let half = middle(&mut h);
+    assert!(close(half, [mean; 3]), "{half:?} and {mean}");
+    h.state_mut().set_raster_opacity(ids[1], 1.0);
+    assert!(h.state_mut().set_raster_blend(ids[1], BlendMode::Darken));
+    assert!(is_grey(middle(&mut h), LOW));
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_layer_budget_counts_each_drawn_layer_once() {
+    use vale_app::globe::WorldView;
+    use vale_app::ui::budget;
+    let _gpu = one_gpu_test();
+    let (mut h, [red, blue]) = two_squares(WorldView::Globe);
+    h.run_steps(2);
+    let both = budget::last_used(&h.ctx);
+    assert!(both.0 > 0);
+
+    // Blue is in two checked collections and still spends once.
+    let x = h.state_mut().add_collection_with("Top", blue).unwrap();
+    h.run_steps(2);
+    assert_eq!(budget::last_used(&h.ctx), both);
+
+    // Blue is only in a collection that is not checked, so it spends nothing.
+    let world = h.state().doc.project.world_collection();
+    assert!(h.state_mut().set_in_collection(world, blue, false));
+    assert!(h.state_mut().check_collection(x, false));
+    h.run_steps(2);
+    let one = budget::last_used(&h.ctx);
+    assert!(one.0 > 0 && one.0 < both.0, "{one:?} and {both:?}");
+    assert!(!budget::too_large(&h.ctx, red) && !budget::too_large(&h.ctx, blue));
 }
