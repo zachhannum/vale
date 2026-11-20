@@ -28,22 +28,18 @@ pub const NO_CHECKED: &str = "No collection is checked.";
 
 /// The width of the collection popover.
 const MENU_WIDTH: f32 = 300.0;
-/// The space between two collections.
-pub const COLLECTION_GAP: f32 = 14.0;
 /// The space between the left edge of a header row and the name. The
 /// chevron fills the touch square at the left.
 const NAME_X: f32 = TOUCH;
-/// The space between the left edge of the list and the layer rows of a
-/// collection. The icon of a layer is then below the name of the header.
+/// The space between the left edge of the list and the content of the
+/// layer rows of a collection. The icon of a layer is then below the name
+/// of the header.
 pub const ROW_INDENT: f32 = NAME_X - 2.0;
-/// The space at the right of the layer rows. The highlight of a row
-/// reaches the right edge of the list.
-const ROW_RIGHT: f32 = 8.0;
+/// The space between each edge of the list and the content of a row. The
+/// highlight of a row reaches the edges of the list.
+const ROW_EDGE: f32 = 8.0;
 /// The radius of the fill of a lifted header row, as of a highlight.
 const LIFT_RADIUS: f32 = 5.0;
-/// The height of a row of the list of the header rows during a restack:
-/// a header row and the gap below it.
-const STACK_ROW: f32 = PANEL_ROW + COLLECTION_GAP;
 
 /// The name of the popover row of a collection.
 pub fn collection_row(name: &str) -> String {
@@ -279,7 +275,7 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
             let project = &state.doc.project;
             let above: f32 = (stack.iter().rev())
                 .take_while(|id| **id != lift.id)
-                .map(|id| PANEL_ROW + body_height(project, *id) * open + COLLECTION_GAP)
+                .map(|id| PANEL_ROW + body_height(project, *id) * open)
                 .sum();
             let space = (finger(ui, lift) - lift.grab - top - above).max(0.0);
             motion::set(ui.ctx(), offset_id(), space);
@@ -288,10 +284,7 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
         None => motion::points(ui.ctx(), offset_id(), 0.0, motion::SNAPPY),
     };
     ui.add_space(space.max(0.0));
-    for (i, id) in stack.iter().rev().enumerate() {
-        if i > 0 {
-            ui.add_space(COLLECTION_GAP);
-        }
+    for id in stack.iter().rev() {
         ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id, open));
     }
 }
@@ -357,7 +350,7 @@ fn restack(
             Some(list::Row {
                 label: header_name(&c.name),
                 select: false,
-                height: STACK_ROW,
+                height: PANEL_ROW,
                 ..list::Row::new(c.id, c.name.clone())
             })
         })
@@ -371,7 +364,7 @@ fn restack(
     let top = ui.cursor().top();
     let finger = finger(ui, lift);
     let offset = *lift.offset.get_or_insert_with(|| {
-        let slot = top + from as f32 * STACK_ROW;
+        let slot = top + from as f32 * PANEL_ROW;
         (finger - lift.grab - slot).max(0.0)
     });
     state.pad.cards.lift = Some(lift);
@@ -382,7 +375,7 @@ fn restack(
         pos2(area.left() + 8.0, area.top()),
         pos2(
             area.right() - 8.0,
-            area.top() + rows.len() as f32 * STACK_ROW,
+            area.top() + rows.len() as f32 * PANEL_ROW,
         ),
     );
     let mut child = ui.new_child(
@@ -395,9 +388,8 @@ fn restack(
     let project = &state.doc.project;
     let collapsed: Vec<bool> = rows.iter().map(|r| project.is_collapsed(r.key)).collect();
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
-        // A header row at its full height, with the gap between two
-        // collections below it. Only the lifted row has a fill, as a lifted
-        // layer row does.
+        // A header row at its full height. Only the lifted row has a fill,
+        // as a lifted layer row does.
         let pill = Rect::from_min_size(
             cell.rect.min - vec2(8.0, 0.0),
             vec2(cell.rect.width() + 16.0, PANEL_ROW),
@@ -459,7 +451,7 @@ fn card(
     }
     let inner = Rect::from_min_max(
         pos2(rect.left() + ROW_INDENT, head.bottom()),
-        pos2(rect.right() - ROW_RIGHT, head.bottom() + body),
+        pos2(rect.right() - ROW_EDGE, head.bottom() + body),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
@@ -630,6 +622,7 @@ fn layer_rows(
         select: true,
         reorder: true,
         confine: true,
+        indent: ROW_INDENT - ROW_EDGE,
         field: super::LAYER_NAME,
         ..list::Spec::default()
     };

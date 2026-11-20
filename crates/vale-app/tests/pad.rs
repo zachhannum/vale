@@ -20135,9 +20135,7 @@ fn the_cards_of_the_checked_collections_are_in_the_stacking_order() {
 
 #[test]
 fn a_collection_has_no_card_and_its_rows_are_indented() {
-    use vale_app::ui::pad::collection::{
-        COLLECTION_GAP, ROW_INDENT, chevron_name, header_name, layer_row,
-    };
+    use vale_app::ui::pad::collection::{ROW_INDENT, chevron_name, header_name, layer_row};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
@@ -20173,10 +20171,27 @@ fn a_collection_has_no_card_and_its_rows_are_indented() {
             (rivers.left() - left - ROW_INDENT).abs() < 8.5,
             "{what}: {rivers:?} {left}"
         );
-        // A gap divides the last row of Water from the header of Travel.
+        // No space divides the last row of Water from the header of
+        // Travel.
         let travel = chevron(&h, "Travel");
         let pitch = travel.center().y - water.center().y;
-        assert_eq!(pitch, 3.0 * PANEL_ROW + COLLECTION_GAP, "{what}");
+        assert_eq!(pitch, 3.0 * PANEL_ROW, "{what}");
+        // The highlight of a selected row reaches both edges of the list.
+        let right = control(&h, &header_name("Water")).unwrap().right();
+        tap(&mut h, &layer_row("Rivers"));
+        let rivers = control(&h, &layer_row("Rivers")).unwrap();
+        let highlight = (h.output().shapes.iter()).find_map(|c| match &c.shape {
+            egui::Shape::Rect(r) if r.fill.a() > 0 && r.rect.contains(rivers.center()) => {
+                (r.rect.left() >= left - 6.0).then_some(r.rect)
+            }
+            _ => None,
+        });
+        let highlight = highlight.unwrap_or_else(|| panic!("{what}"));
+        assert!(
+            (highlight.left() - left).abs() < 1.0,
+            "{what}: {highlight:?}"
+        );
+        assert!(highlight.right() >= right - 1.0, "{what}: {highlight:?}");
     }
 }
 
