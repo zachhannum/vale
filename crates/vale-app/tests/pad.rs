@@ -20104,6 +20104,56 @@ fn hold_card(h: &mut Pad, name: &str, to: Pos2) {
 }
 
 #[test]
+fn a_lifted_card_stays_under_the_finger_while_the_cards_close() {
+    use vale_app::ui::pad::collection::{chevron_name, header_name};
+    let size = BOARDS[0];
+    let mut h = Harness::builder()
+        .with_size(vec2(size.0, size.1))
+        .with_pixels_per_point(1.0)
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state());
+    h.run_steps(3);
+    h.state_mut().add_height();
+    h.run_steps(2);
+    three_cards(&mut h);
+    // The springs move, as on a device.
+    h.state_mut().headless = false;
+    h.run_steps(5);
+    let header = control(&h, &header_name("World")).unwrap();
+    let start = control(&h, &chevron_name("World", false)).unwrap().top();
+    let finger = header.center();
+    touch(&mut h, egui::TouchPhase::Start, finger, None);
+    for _ in 0..60 {
+        h.step();
+        if h.state().pad.cards.lift.is_some() {
+            break;
+        }
+    }
+    assert!(h.state().pad.cards.lift.is_some());
+    // Each frame of the close keeps the header where it was, until the
+    // cards are a list of header rows.
+    let mut closing = 0;
+    for _ in 0..60 {
+        h.step();
+        if h.state().pad.cards.stack.lift.is_some() {
+            screenshot::save(&mut h, "pad-collection-restack-first");
+            break;
+        }
+        screenshot::save(&mut h, "pad-collection-closing-last");
+        let top = control(&h, &chevron_name("World", false)).unwrap().top();
+        assert!(
+            (top - start).abs() < 1.0,
+            "frame {closing}: {top} and {start}"
+        );
+        closing += 1;
+    }
+    assert!(closing > 2, "the cards closed in {closing} frames");
+    assert!(h.state().pad.cards.stack.lift.is_some());
+    touch(&mut h, egui::TouchPhase::End, finger, None);
+    h.run_steps(60);
+}
+
+#[test]
 fn a_drag_of_a_card_restacks_the_collections_in_one_step() {
     use vale_app::ui::pad::collection::{chevron_name, header_name};
     for size in [BOARDS[0], BOARDS[3]] {

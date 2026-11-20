@@ -259,12 +259,29 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
         target,
         motion::SNAPPY,
     );
-    if lifted && open < 0.01 {
+    // The cards become a list of header rows when no rows show.
+    let project = &state.doc.project;
+    let tallest = (stack.iter()).fold(0.0_f32, |m, id| m.max(body_height(project, *id)));
+    if lifted && tallest * open < 0.5 {
         restack(ui, state, controls, &stack);
         return;
     }
-    // The space above the header rows of a restack closes after the drop.
-    let space = motion::points(ui.ctx(), offset_id(), 0.0, motion::SNAPPY);
+    // While the rows close, the space above the cards keeps the header of
+    // the lifted card under the finger. After the drop, the space closes.
+    let top = ui.cursor().top();
+    let space = match state.pad.cards.lift {
+        Some(lift) => {
+            let project = &state.doc.project;
+            let above: f32 = (stack.iter().rev())
+                .take_while(|id| **id != lift.id)
+                .map(|id| PANEL_ROW + body_height(project, *id) * open + CARD_GAP)
+                .sum();
+            let space = (finger(ui, lift) - lift.grab - top - above).max(0.0);
+            motion::set(ui.ctx(), offset_id(), space);
+            space
+        }
+        None => motion::points(ui.ctx(), offset_id(), 0.0, motion::SNAPPY),
+    };
     ui.add_space(space.max(0.0));
     for (i, id) in stack.iter().rev().enumerate() {
         if i > 0 {
@@ -272,6 +289,23 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
         }
         ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id, open));
     }
+}
+
+/// The height of the rows of an open card and the gap above them. A
+/// collapsed card has none.
+fn body_height(project: &Project, id: CollectionId) -> f32 {
+    let rows = project.collection(id).map_or(0, |c| c.layers.len());
+    match (project.is_collapsed(id), rows) {
+        (true, _) => 0.0,
+        (false, 0) => HEADER_GAP + PANEL_ROW,
+        (false, n) => HEADER_GAP + n as f32 * PANEL_ROW,
+    }
+}
+
+/// The height of the finger, or of the place where the card lifted.
+fn finger(ui: &egui::Ui, lift: CardLift) -> f32 {
+    ui.input(|i| i.pointer.interact_pos())
+        .map_or(lift.origin.y, |p| p.y)
 }
 
 /// The spring of the space above the header rows of a restack.
@@ -331,9 +365,10 @@ fn restack(
     };
     let width = ui.available_width();
     let top = ui.cursor().top();
+    let finger = finger(ui, lift);
     let offset = *lift.offset.get_or_insert_with(|| {
         let slot = top + from as f32 * STACK_ROW;
-        (lift.origin.y - lift.grab - slot).max(0.0)
+        (finger - lift.grab - slot).max(0.0)
     });
     state.pad.cards.lift = Some(lift);
     motion::set(ui.ctx(), offset_id(), offset);
@@ -353,6 +388,8 @@ fn restack(
     );
     let list = &mut state.pad.cards.stack;
     let font = theme::heading(ui.ctx());
+    let project = &state.doc.project;
+    let collapsed: Vec<bool> = rows.iter().map(|r| project.is_collapsed(r.key)).collect();
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
         // The header of a card at its full height, with the gap between
         // two cards below it.
@@ -369,7 +406,8 @@ fn restack(
             pos2(pill.left() + 4.0 + TOUCH / 2.0, pill.center().y),
             vec2(18.0, 18.0),
         );
-        icons::paint(&cell.painter, chevron, Icon::Open, 18.0, theme::MUTE);
+        let icon = if collapsed[i] { Icon::Open } else { Icon::Down };
+        icons::paint(&cell.painter, chevron, icon, 18.0, theme::MUTE);
         paint_name(&cell.painter, pill, &rows[i].name, font.clone());
         None
     });
@@ -407,11 +445,7 @@ fn card(
     let name = c.name.clone();
     let collapsed = project.is_collapsed(id);
     let rows = card_rows(project, id);
-    let body = match (collapsed, rows.len()) {
-        (true, _) => 0.0,
-        (false, 0) => HEADER_GAP + PANEL_ROW,
-        (false, n) => HEADER_GAP + n as f32 * PANEL_ROW,
-    };
+    let body = body_height(project, id);
     let shown = body * open;
     let size = vec2(ui.available_width(), PANEL_ROW + shown);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
