@@ -532,6 +532,65 @@ fn the_desktop_list_has_a_group_for_each_checked_collection() {
 }
 
 #[test]
+fn the_desktop_window_manages_the_collections() {
+    use vale_app::ui::pad::collection::{COLLECTION_MENU, NEW_COLLECTION};
+    use vale_app::ui::pad::manage::{
+        ADD_LAYERS, MANAGE_COLLECTIONS, ManagePage, add_row, collection_entry,
+    };
+    use vale_app::ui::panels::DELETE_COLLECTION;
+    let mut h = globe_harness();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(2);
+    };
+    let names = |h: &Harness<'static, AppState>, layer: &str| -> Vec<String> {
+        let project = &h.state().doc.project;
+        let id = project
+            .layers()
+            .iter()
+            .find(|l| l.name == layer)
+            .unwrap()
+            .id;
+        let of = project.collections_of(id);
+        of.iter().map(|c| c.name.clone()).collect()
+    };
+    click(&mut h, COLLECTION_MENU);
+    click(&mut h, MANAGE_COLLECTIONS);
+    assert_eq!(h.state().pad.manage.page, Some(ManagePage::Manage));
+    h.run_steps(3);
+
+    // "New collection…" opens the page of the new collection.
+    click(&mut h, NEW_COLLECTION);
+    let added = h.state().doc.project.collections()[1].id;
+    assert_eq!(
+        h.state().pad.manage.page,
+        Some(ManagePage::Collection(added))
+    );
+
+    // "Add layers…" puts a layer in the collection and keeps World.
+    click(&mut h, ADD_LAYERS);
+    click(&mut h, &add_row("Rivers"));
+    assert_eq!(names(&h, "Rivers"), ["World", "Collection 1"]);
+    click(&mut h, "Back to Collection 1");
+
+    // A layer that is only in World has no Remove in World.
+    click(&mut h, "Back to Collections");
+    click(&mut h, &collection_entry("World"));
+    assert!(h.get_by_label("Remove Land").accesskit_node().is_disabled());
+    assert!(h.query_by_label(DELETE_COLLECTION).is_none());
+    click(&mut h, "Remove Rivers");
+    assert_eq!(names(&h, "Rivers"), ["Collection 1"]);
+    click(&mut h, "Back to Collections");
+
+    // World has no Delete, and Delete puts the layers back in World.
+    assert!(h.query_by_label("Delete World").is_none());
+    click(&mut h, "Delete Collection 1");
+    assert_eq!(names(&h, "Rivers"), ["World"]);
+}
+
+#[test]
 fn the_desktop_list_moves_hides_renames_and_deletes_a_raster_layer() {
     let mut h = globe_harness();
     let height = RasterSpec::height("Height", 64);

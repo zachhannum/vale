@@ -539,7 +539,15 @@ fn in_collection_menu(h: &Pad, name: &str) -> bool {
             ]
         })
         .collect();
-    [COLLECTIONS_SIDE, MAPS_SIDE, NEW_COLLECTION, COLLECTION_NAME].contains(&name)
+    let manage = vale_app::ui::pad::manage::MANAGE_COLLECTIONS;
+    [
+        COLLECTIONS_SIDE,
+        MAPS_SIDE,
+        NEW_COLLECTION,
+        COLLECTION_NAME,
+        manage,
+    ]
+    .contains(&name)
         || names.iter().any(|n| n == name)
 }
 
@@ -20730,5 +20738,351 @@ fn manual_collection_screenshots() {
         tap(&mut h, "Open Rivers");
         tap(&mut h, COLLECTIONS);
         screenshot::save(&mut h, &format!("pad-collections-page-{what}"));
+    }
+}
+
+/// A swipe to the left on the row with this name.
+fn swipe_row(h: &mut Pad, row: &str) {
+    let rect = control(h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+    let from = rect.right_center() - vec2(10.0, 0.0);
+    drag(h, from, from - vec2(120.0, 0.0), None);
+}
+
+/// Opens the management page from the collection popover.
+fn open_manage(h: &mut Pad) {
+    use vale_app::ui::pad::manage::{MANAGE_COLLECTIONS, ManagePage};
+    open_collection_menu(h);
+    tap(h, MANAGE_COLLECTIONS);
+    assert_eq!(h.state().pad.manage.page, Some(ManagePage::Manage));
+    assert!(!h.state().pad.collections_menu);
+}
+
+/// The names of the collections of a layer.
+fn collections_of(h: &Pad, layer: vale_store::LayerId) -> Vec<String> {
+    let of = h.state().doc.project.collections_of(layer);
+    of.iter().map(|c| c.name.clone()).collect()
+}
+
+fn undo_step(h: &mut Pad) {
+    step_and_save(h, false);
+    h.state_mut().undo();
+    h.run_steps(2);
+}
+
+fn redo_step(h: &mut Pad) {
+    h.state_mut().redo();
+    h.run_steps(2);
+}
+
+#[test]
+fn the_page_of_a_collection_adds_and_removes_its_layers() {
+    use vale_app::ui::pad::collection::layer_row;
+    use vale_app::ui::pad::list::TWO_LINE_ROW;
+    use vale_app::ui::pad::manage::{
+        ADD_LAYERS, ManagePage, SEARCH, add_row, add_rows, collection_entry, collections_line,
+    };
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_panel(&mut h, "Layers");
+        new_collection(&mut h, "Travel");
+        new_collection(&mut h, "Water");
+        close_collection_menu(&mut h);
+        let (travel, water) = (collection_id(&h, "Travel"), collection_id(&h, "Water"));
+        let world = h.state().doc.project.world_collection();
+        let [rivers, places] = ["Rivers", "Places"].map(|n| vector(&h, n));
+        assert!(h.state_mut().set_in_collection(water, rivers, true));
+        h.run_steps(2);
+
+        open_manage(&mut h);
+        tap(&mut h, &collection_entry("Travel"));
+        assert_eq!(
+            h.state().pad.manage.page,
+            Some(ManagePage::Collection(travel)),
+            "{what}"
+        );
+        check_controls(&h, &format!("{what} on the page of a collection"));
+
+        // "Add layers…" lists each layer by name, with its collections.
+        tap(&mut h, ADD_LAYERS);
+        check_controls(&h, &format!("{what} on Add layers"));
+        let project = &h.state().doc.project;
+        let names: Vec<String> = (add_rows(project, travel, "").iter())
+            .map(|(l, _, _)| project.layer(*l).unwrap().name.clone())
+            .collect();
+        assert_eq!(names, ["Height", "Land", "Places", "Rivers"], "{what}");
+        assert_eq!(collections_line(project, rivers), "World, Water", "{what}");
+        for name in &names {
+            let rect = control(&h, &add_row(name)).unwrap();
+            assert!(rect.height() >= TWO_LINE_ROW - 1.0, "{what} {name}");
+        }
+        // A check adds the layer and keeps its other collections.
+        tap(&mut h, &add_row("Rivers"));
+        tap(&mut h, &add_row("Places"));
+        assert_eq!(members_of(&h, "Travel"), ["Rivers", "Places"], "{what}");
+        assert_eq!(
+            collections_of(&h, rivers),
+            ["World", "Travel", "Water"],
+            "{what}"
+        );
+        let project = &h.state().doc.project;
+        let checks: Vec<bool> = (add_rows(project, travel, "").iter())
+            .map(|r| r.1)
+            .collect();
+        assert_eq!(checks, [false, false, true, true], "{what}");
+        // The search field keeps the layers whose names hold its text.
+        tap(&mut h, SEARCH);
+        h.event(egui::Event::Text("pla".to_owned()));
+        h.run_steps(2);
+        assert!(control(&h, &add_row("Places")).is_some(), "{what}");
+        assert!(control(&h, &add_row("Rivers")).is_none(), "{what}");
+        tap(&mut h, "Back to Travel");
+
+        // The page lists the layers of the collection from the top, and a
+        // swipe shows Remove.
+        let top = |h: &Pad, name: &str| control(h, &layer_row(name)).unwrap().top();
+        assert!(top(&h, "Places") < top(&h, "Rivers"), "{what}");
+        swipe_row(&mut h, &layer_row("Places"));
+        check_controls(&h, &format!("{what} with an open row"));
+        tap(&mut h, "Remove Places");
+        assert_eq!(members_of(&h, "Travel"), ["Rivers"], "{what}");
+        undo_step(&mut h);
+        assert_eq!(members_of(&h, "Travel"), ["Rivers", "Places"], "{what}");
+        redo_step(&mut h);
+        assert_eq!(members_of(&h, "Travel"), ["Rivers"], "{what}");
+
+        // A layer that is only in World has no Remove in World, and its row
+        // in "Add layers…" cannot be cleared.
+        tap(&mut h, "Back to Collections");
+        tap(&mut h, &collection_entry("World"));
+        swipe_row(&mut h, &layer_row("Places"));
+        assert!(control(&h, "Remove Places").is_none(), "{what}");
+        tap(&mut h, ADD_LAYERS);
+        assert!(disabled(&h, &add_row("Places")), "{what}");
+        assert!(!disabled(&h, &add_row("Rivers")), "{what}");
+        tap(&mut h, "Back to World");
+
+        // Out of its last collection, a layer goes on top of World.
+        swipe_row(&mut h, &layer_row("Rivers"));
+        tap(&mut h, "Remove Rivers");
+        assert_eq!(collections_of(&h, rivers), ["Travel", "Water"], "{what}");
+        tap(&mut h, "Back to Collections");
+        tap(&mut h, &collection_entry("Travel"));
+        swipe_row(&mut h, &layer_row("Rivers"));
+        tap(&mut h, "Remove Rivers");
+        tap(&mut h, "Back to Collections");
+        tap(&mut h, &collection_entry("Water"));
+        swipe_row(&mut h, &layer_row("Rivers"));
+        tap(&mut h, "Remove Rivers");
+        assert_eq!(collections_of(&h, rivers), ["World"], "{what}");
+        let project = &h.state().doc.project;
+        let top = project.collection(world).unwrap().layers.last();
+        assert_eq!(top, Some(&rivers), "{what}");
+        let _ = places;
+    }
+}
+
+#[test]
+fn delete_collection_puts_its_layers_in_world_in_one_step() {
+    use vale_app::ui::pad::collection::{COLLECTION_NAME, layer_row};
+    use vale_app::ui::pad::manage::{DELETE_COLLECTION, ManagePage, collection_entry};
+    use vale_app::ui::pad::widgets::RENAME;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    open_panel(&mut h, "Layers");
+    new_collection(&mut h, "Travel");
+    close_collection_menu(&mut h);
+    let travel = collection_id(&h, "Travel");
+    let world = h.state().doc.project.world_collection();
+    let rivers = vector(&h, "Rivers");
+    let state = h.state_mut();
+    assert!(state.set_in_collection(travel, rivers, true));
+    assert!(state.set_in_collection(world, rivers, false));
+    h.run_steps(2);
+    assert_eq!(collections_of(&h, rivers), ["Travel"]);
+
+    // World has no Delete collection.
+    open_manage(&mut h);
+    tap(&mut h, &collection_entry("World"));
+    assert!(control(&h, DELETE_COLLECTION).is_none());
+    tap(&mut h, "Back to Collections");
+
+    // A rename on the management page shows on the page of the collection.
+    swipe_row(&mut h, &collection_entry("Travel"));
+    tap(&mut h, &format!("{RENAME} Travel"));
+    assert!(control(&h, COLLECTION_NAME).is_some());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Trade".to_owned()));
+    h.run_steps(1);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().doc.project.collection(travel).unwrap().name,
+        "Trade"
+    );
+    tap(&mut h, &collection_entry("Trade"));
+    assert_eq!(
+        h.state().pad.manage.page,
+        Some(ManagePage::Collection(travel))
+    );
+    assert!(control(&h, &layer_row("Rivers")).is_some());
+
+    tap(&mut h, DELETE_COLLECTION);
+    assert!(h.state().doc.project.collection(travel).is_none());
+    assert_eq!(collections_of(&h, rivers), ["World"]);
+    assert_eq!(h.state().pad.manage.page, Some(ManagePage::Manage));
+    undo_step(&mut h);
+    assert_eq!(collections_of(&h, rivers), ["Trade"]);
+}
+
+#[test]
+fn the_management_page_lists_the_collections() {
+    use vale_app::ui::pad::collection::{COLLECTION_NAME, NEW_COLLECTION};
+    use vale_app::ui::pad::manage::{ManagePage, SEARCH, collection_entry, collection_rows};
+    use vale_app::ui::pad::widgets::RENAME;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_panel(&mut h, "Layers");
+        new_collection(&mut h, "Travel");
+        new_collection(&mut h, "Water");
+        close_collection_menu(&mut h);
+        let rivers = vector(&h, "Rivers");
+        let water = collection_id(&h, "Water");
+        assert!(h.state_mut().set_in_collection(water, rivers, true));
+        h.run_steps(2);
+        open_manage(&mut h);
+        check_controls(&h, &format!("{what} on the management page"));
+
+        // The segment Collections lists each collection with its count.
+        let names = |h: &Pad, search: &str| -> Vec<String> {
+            let project = &h.state().doc.project;
+            (collection_rows(project, search).iter())
+                .map(|id| project.collection(*id).unwrap().name.clone())
+                .collect()
+        };
+        assert_eq!(names(&h, ""), ["Water", "Travel", "World"], "{what}");
+        for name in ["Water", "Travel", "World"] {
+            assert!(control(&h, &collection_entry(name)).is_some(), "{what}");
+        }
+        tap(&mut h, SEARCH);
+        h.event(egui::Event::Text("wa".to_owned()));
+        h.run_steps(2);
+        assert!(control(&h, &collection_entry("Water")).is_some(), "{what}");
+        assert!(control(&h, &collection_entry("Travel")).is_none(), "{what}");
+        type_text(&mut h, SEARCH, "");
+        h.key_press(egui::Key::Backspace);
+        h.run_steps(2);
+        assert!(control(&h, &collection_entry("Travel")).is_some(), "{what}");
+
+        // World has no Rename and no Delete on its swipe.
+        swipe_row(&mut h, &collection_entry("World"));
+        assert!(control(&h, "Delete World").is_none(), "{what}");
+        assert!(control(&h, &format!("{RENAME} World")).is_none(), "{what}");
+
+        // Rename and Delete on a swipe.
+        swipe_row(&mut h, &collection_entry("Travel"));
+        tap(&mut h, &format!("{RENAME} Travel"));
+        h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+        h.run_steps(1);
+        h.event(egui::Event::Text("Trade".to_owned()));
+        h.run_steps(1);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(names(&h, ""), ["Water", "Trade", "World"], "{what}");
+        swipe_row(&mut h, &collection_entry("Water"));
+        tap(&mut h, "Delete Water");
+        assert_eq!(names(&h, ""), ["Trade", "World"], "{what}");
+        assert_eq!(collections_of(&h, rivers), ["World"], "{what}");
+
+        // "New collection…" makes a collection, and its row is a name field.
+        tap(&mut h, NEW_COLLECTION);
+        assert!(control(&h, COLLECTION_NAME).is_some(), "{what}");
+        h.key_press(egui::Key::Enter);
+        h.run_steps(2);
+        assert_eq!(names(&h, "").len(), 3, "{what}");
+
+        // A tap on a collection opens its page.
+        tap(&mut h, &collection_entry("Trade"));
+        let trade = collection_id(&h, "Trade");
+        assert_eq!(
+            h.state().pad.manage.page,
+            Some(ManagePage::Collection(trade)),
+            "{what}"
+        );
+        tap(&mut h, "Back to Collections");
+
+        // The arrow of a layer on the page of a collection opens the panel
+        // of the layer, and back goes to the page.
+        tap(&mut h, &collection_entry("World"));
+        tap(&mut h, "Open Rivers");
+        assert_eq!(
+            h.state().pad.layer,
+            Some(LayerRef::Vector(rivers)),
+            "{what}"
+        );
+        tap(&mut h, "Back to World");
+        assert_eq!(h.state().pad.layer, None, "{what}");
+        assert_eq!(
+            h.state().pad.manage.page,
+            Some(ManagePage::Collection(
+                h.state().doc.project.world_collection()
+            )),
+            "{what}"
+        );
+        tap(&mut h, "Back to Collections");
+        assert_eq!(h.state().pad.layer, None, "{what}");
+        assert_eq!(
+            h.state().pad.manage.page,
+            Some(ManagePage::Manage),
+            "{what}"
+        );
+        tap(&mut h, "Back to Layers");
+        assert_eq!(h.state().pad.manage.page, None, "{what}");
+    }
+}
+
+#[test]
+fn a_check_on_the_collections_page_of_a_layer_is_one_step() {
+    use vale_app::ui::pad::collection::{COLLECTIONS, switch_name};
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    open_panel(&mut h, "Layers");
+    new_collection(&mut h, "Travel");
+    close_collection_menu(&mut h);
+    let rivers = vector(&h, "Rivers");
+    tap(&mut h, "Open Rivers");
+    tap(&mut h, COLLECTIONS);
+    tap(&mut h, &switch_name("Travel"));
+    assert_eq!(collections_of(&h, rivers), ["World", "Travel"]);
+    tap(&mut h, &switch_name("World"));
+    assert_eq!(collections_of(&h, rivers), ["Travel"]);
+    undo_step(&mut h);
+    assert_eq!(collections_of(&h, rivers), ["World", "Travel"]);
+    undo_step(&mut h);
+    assert_eq!(collections_of(&h, rivers), ["World"]);
+}
+
+#[test]
+fn manual_collection_page_screenshots() {
+    use vale_app::ui::pad::collection::layer_row;
+    use vale_app::ui::pad::manage::{ADD_LAYERS, collection_entry};
+    for (size, what) in [(BOARDS[0], "landscape"), (BOARDS[3], "narrow")] {
+        let mut h = pad(size);
+        three_cards(&mut h);
+        open_manage(&mut h);
+        screenshot::save(&mut h, &format!("pad-manage-collections-{what}"));
+        swipe_row(&mut h, &collection_entry("Travel"));
+        screenshot::save(&mut h, &format!("pad-manage-swipe-{what}"));
+        // The first tap shuts the open row, and the second opens the page.
+        tap(&mut h, &collection_entry("Travel"));
+        tap(&mut h, &collection_entry("Travel"));
+        swipe_row(&mut h, &layer_row("Rivers"));
+        screenshot::save(&mut h, &format!("pad-collection-page-{what}"));
+        tap(&mut h, ADD_LAYERS);
+        screenshot::save(&mut h, &format!("pad-add-layers-{what}"));
     }
 }

@@ -122,7 +122,7 @@ impl Cards {
 
 /// The checked collections from the top of the stack, then the others in
 /// the order of creation.
-fn popover_order(project: &Project) -> Vec<(CollectionId, bool)> {
+pub(super) fn popover_order(project: &Project) -> Vec<(CollectionId, bool)> {
     let checked = project.globe_collections();
     let top_first = checked.iter().rev().map(|id| (*id, true));
     let others = (project.collections().iter())
@@ -225,10 +225,7 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         }
     }
 
-    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
-    let line = Rect::from_center_size(line.center(), vec2(line.width(), 1.0));
-    ui.painter().rect_filled(line, 0.0, theme::divider());
-    if widgets::text_row(ui, controls, NEW_COLLECTION, 0.0, false, true).clicked() {
+    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
         if let Some(id) = state.add_collection(&name) {
@@ -236,6 +233,11 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             list.shut();
             list.rename = Some((id, name));
         }
+    }
+    if widgets::open_row(ui, controls, super::manage::MANAGE_COLLECTIONS, "").clicked() {
+        state.pad.collections_menu = false;
+        state.pad.collection_list = list::ListState::default();
+        state.pad.manage.open(super::manage::ManagePage::Manage);
     }
 }
 
@@ -807,10 +809,7 @@ pub(super) fn page_body(
         }
     }
 
-    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
-    let line = Rect::from_center_size(line.center(), vec2(line.width(), 1.0));
-    ui.painter().rect_filled(line, 0.0, theme::divider());
-    if widgets::text_row(ui, controls, NEW_COLLECTION, 0.0, false, true).clicked() {
+    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         state.pad.collection_search.clear();
         let name = state.doc.project.free_collection_name();

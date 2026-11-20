@@ -52,6 +52,7 @@ pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod list;
+pub mod manage;
 pub mod motion;
 pub mod number;
 pub mod panels_menu;
@@ -496,6 +497,8 @@ pub struct PadState {
     pub layer_collections: list::ListState<CollectionId>,
     /// The text of the search field of the Collections page of a layer.
     pub collection_search: String,
+    /// The pages of the collections.
+    pub manage: manage::ManageState,
     /// The list of the fields of a vector layer. A key is a layer and the
     /// index of a field.
     pub field_list: list::ListState<(LayerId, usize)>,
@@ -2099,6 +2102,11 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         state.pad.layer = None;
     }
     let layer = state.pad.layer.filter(|_| panel == Panel::Layers);
+    let manage_head = match (panel, layer) {
+        (Panel::Layers, None) => manage::head(state),
+        _ => None,
+    };
+    let layer_back = manage::layer_back(state);
     let fits = match (layer, state.pad.page) {
         (Some(_), Some(Page::Collections)) => true,
         (
@@ -2181,11 +2189,19 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Blend) => {
             ("pad-blend", raster::BLEND, Some(name))
         }
-        (Panel::Layers, Some(LayerRef::Raster(_))) => ("pad-layer", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Raster(_))) => (
+            "pad-layer",
+            name,
+            Some(layer_back.as_deref().unwrap_or("Layers")),
+        ),
         (Panel::Layers, Some(LayerRef::Image(_))) if page == Some(Page::Blend) => {
             ("pad-blend", raster::BLEND, Some(name))
         }
-        (Panel::Layers, Some(LayerRef::Image(_))) => ("pad-image", name, Some("Layers")),
+        (Panel::Layers, Some(LayerRef::Image(_))) => (
+            "pad-image",
+            name,
+            Some(layer_back.as_deref().unwrap_or("Layers")),
+        ),
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::Table) => {
             ("pad-table", table::TITLE, Some(name))
         }
@@ -2237,19 +2253,28 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             rule_name.as_deref().unwrap_or_default(),
             Some(name),
         ),
-        (Panel::Layers, Some(LayerRef::Vector(_))) => ("pad-vector", name, Some("Layers")),
-        (Panel::Layers, None) => (panel.key(), "Layers", None),
+        (Panel::Layers, Some(LayerRef::Vector(_))) => (
+            "pad-vector",
+            name,
+            Some(layer_back.as_deref().unwrap_or("Layers")),
+        ),
+        (Panel::Layers, None) => match &manage_head {
+            Some((key, title, back)) => (*key, title.as_str(), Some(back.as_str())),
+            None => (panel.key(), "Layers", None),
+        },
         (Panel::Toolbox, _) => toolbox::head(state.pad.toolbox.page),
         (Panel::Attributes, _) => (panel.key(), select::ATTRIBUTES, None),
         (_, _) => (panel.key(), panel_name(state, panel), None),
     };
-    let list = panel == Panel::Layers && layer.is_none();
+    let list = panel == Panel::Layers && layer.is_none() && manage_head.is_none();
     if list && !state.pad.cards.lifted() {
         state.pad.name = None;
     }
     // The head of each pane comes here, so another pane must not end a
     // gesture in the layer list.
-    let list_shown = state.pad.shows(Panel::Layers) && state.pad.layer.is_none();
+    let list_shown = state.pad.shows(Panel::Layers)
+        && state.pad.layer.is_none()
+        && state.pad.manage.page.is_none();
     if !list_shown {
         state.pad.cards.shut();
         state.pad.cards.lift = None;
@@ -2380,6 +2405,8 @@ pub(super) fn panel_title(
     } else if back && page.is_some() {
         state.pad.page = None;
         state.globe.preview.selected = None;
+    } else if back && panel == Panel::Layers && layer.is_none() {
+        manage::back(state);
     } else if back {
         state.pad.layer = None;
     }
@@ -2397,7 +2424,11 @@ pub(super) fn panel_top(
         let size = ui.available_size();
         ui.allocate_ui(size, |ui| table::page(ui, state, controls));
     }
-    if head.panel == Panel::Layers && head.layer.is_none() && state.workspace == Workspace::Globe {
+    if head.panel == Panel::Layers
+        && head.layer.is_none()
+        && state.pad.manage.page.is_none()
+        && state.workspace == Workspace::Globe
+    {
         match (state.pad.collections_menu, state.pad.collections_button) {
             (true, Some(button)) => collection::popover(ui, state, controls, button),
             _ => state.pad.collections_menu = false,
@@ -2464,6 +2495,9 @@ pub(super) fn panel_body(
             Some(Page::Table) => {}
             _ => vector_body(ui, state, controls, id),
         },
+        (Panel::Layers, None) if state.pad.manage.page.is_some() => {
+            manage::body(ui, state, controls)
+        }
         (Panel::Layers, None) => layers_body(ui, state, controls),
         (Panel::Toolbox, _) => toolbox::body(ui, state, controls),
         (Panel::Attributes, _) => select::body(ui, state, controls),

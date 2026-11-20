@@ -11,6 +11,7 @@ use super::pad::atlas::{
     EXIT_FRAME, LAYOUT_GRID, MAPS, MOVE, NEXT_PAGE, NO_FRAMES, PREVIOUS_PAGE, SNAP_TO_LAYOUT,
     page_title,
 };
+use super::pad::manage::{self, MANAGE_COLLECTIONS, ManagePage};
 use super::raster_form::RasterForm;
 use super::world_form::{self, WorldForm};
 use super::{
@@ -276,6 +277,7 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     layer_rows(ui, state);
                     selected_layer(ui, state);
                 });
+                manage_window(ui.ctx(), state);
                 ui.separator();
                 let mut flat = state.globe.world_view == WorldView::Flat;
                 if ui.toggle_value(&mut flat, "Flat").changed() {
@@ -821,6 +823,17 @@ fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
             let name = state.doc.project.free_collection_name();
             state.add_collection(&name);
         }
+        let manage = ui.button(MANAGE_COLLECTIONS);
+        named(
+            &manage,
+            egui::WidgetType::Button,
+            false,
+            MANAGE_COLLECTIONS.to_string(),
+        );
+        if manage.clicked() {
+            state.pad.manage.open(ManagePage::Manage);
+            ui.close();
+        }
     });
     named(
         &menu.response,
@@ -832,6 +845,203 @@ fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
 
 /// The name of the button that deletes the shown collection.
 pub const DELETE_COLLECTION: &str = "Delete collection";
+
+/// The window of the pages of the collections: the management page, the
+/// page of a collection, and "Add layers…".
+fn manage_window(ctx: &egui::Context, state: &mut AppState) {
+    let Some(page) = state.pad.manage.page else {
+        return;
+    };
+    let project = &state.doc.project;
+    let page = match page {
+        ManagePage::Collection(id) | ManagePage::AddLayers(id)
+            if project.collection(id).is_none() =>
+        {
+            ManagePage::Manage
+        }
+        page => page,
+    };
+    state.pad.manage.page = Some(page);
+    let mut open = true;
+    egui::Window::new(super::pad::collection::COLLECTIONS)
+        .open(&mut open)
+        .resizable(true)
+        .default_width(320.0)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| match page {
+                ManagePage::Manage => manage_page(ui, state),
+                ManagePage::Collection(id) => collection_page(ui, state, id),
+                ManagePage::AddLayers(id) => add_layers_page(ui, state, id),
+            });
+        });
+    if !open {
+        state.pad.manage.page = None;
+    }
+}
+
+/// A button with a name for a screen reader and for a test.
+fn named_button(ui: &mut egui::Ui, text: &str, name: String, enabled: bool) -> bool {
+    let button = ui.add_enabled(enabled, egui::Button::new(text));
+    named(&button, egui::WidgetType::Button, false, name);
+    button.clicked()
+}
+
+fn search_box(ui: &mut egui::Ui, text: &mut String) {
+    let field = egui::TextEdit::singleline(text).hint_text(manage::SEARCH);
+    let field = ui.add(field);
+    named(
+        &field,
+        egui::WidgetType::TextEdit,
+        false,
+        manage::SEARCH.to_string(),
+    );
+}
+
+/// The management page of the desktop.
+fn manage_page(ui: &mut egui::Ui, state: &mut AppState) {
+    search_box(ui, &mut state.pad.manage.search);
+    ui.separator();
+    let project = &state.doc.project;
+    let world = project.world_collection();
+    let rows: Vec<(CollectionId, String, usize)> =
+        (manage::collection_rows(project, &state.pad.manage.search).into_iter())
+            .filter_map(|id| {
+                let c = project.collection(id)?;
+                Some((id, c.name.clone(), c.layers.len()))
+            })
+            .collect();
+    for (id, name, count) in rows {
+        ui.horizontal(|ui| {
+            if named_button(ui, &name, manage::collection_entry(&name), true) {
+                state.pad.manage.open(ManagePage::Collection(id));
+            }
+            ui.weak(count.to_string());
+            if id != world && named_button(ui, "Delete", format!("Delete {name}"), true) {
+                state.delete_collection(id);
+            }
+        });
+    }
+    ui.separator();
+    let new = super::pad::collection::NEW_COLLECTION;
+    if named_button(ui, new, new.to_string(), true) {
+        let name = state.doc.project.free_collection_name();
+        if let Some(id) = state.add_collection(&name) {
+            state.pad.manage.open(ManagePage::Collection(id));
+        }
+    }
+}
+
+/// The page of a collection on the desktop: the name field, the layers
+/// with their Remove buttons, "Add layers…", and "Delete collection".
+fn collection_page(ui: &mut egui::Ui, state: &mut AppState, id: CollectionId) {
+    use super::pad::collection::{COLLECTION_NAME, COLLECTIONS, EMPTY_COLLECTION};
+    if named_button(
+        ui,
+        &format!("‹ {COLLECTIONS}"),
+        format!("Back to {COLLECTIONS}"),
+        true,
+    ) {
+        state.pad.manage.page = Some(ManagePage::Manage);
+        return;
+    }
+    let project = &state.doc.project;
+    let Some(c) = project.collection(id) else {
+        return;
+    };
+    let name = c.name.clone();
+    let world = id == project.world_collection();
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        // The field keeps its text while it has the focus, and the name
+        // changes when it loses the focus.
+        let key = ui.id().with(("collection-name", id.0));
+        let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or_else(|| name.clone());
+        let field = ui.add_enabled(!world, egui::TextEdit::singleline(&mut text));
+        named(
+            &field,
+            egui::WidgetType::TextEdit,
+            false,
+            COLLECTION_NAME.to_string(),
+        );
+        if field.lost_focus() {
+            state.rename_collection(id, &text);
+            ui.data_mut(|d| d.remove::<String>(key));
+        } else if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, text));
+        }
+    });
+    ui.separator();
+    let project = &state.doc.project;
+    let rows: Vec<(LayerId, String, bool)> = (project.collection(id).into_iter())
+        .flat_map(|c| c.layers.iter().rev())
+        .filter_map(|l| {
+            let layer = project.layer(*l)?;
+            Some((*l, layer.name.clone(), project.can_leave_collection(id, *l)))
+        })
+        .collect();
+    if rows.is_empty() {
+        ui.weak(EMPTY_COLLECTION);
+    }
+    for (layer, layer_name, free) in rows {
+        ui.horizontal(|ui| {
+            ui.label(&layer_name);
+            let remove = super::pad::list::REMOVE;
+            if named_button(ui, remove, format!("{remove} {layer_name}"), free) {
+                state.set_in_collection(id, layer, false);
+            }
+        });
+    }
+    if named_button(ui, manage::ADD_LAYERS, manage::ADD_LAYERS.to_string(), true) {
+        state.pad.manage.open(ManagePage::AddLayers(id));
+    }
+    if !world {
+        ui.separator();
+        if named_button(ui, DELETE_COLLECTION, DELETE_COLLECTION.to_string(), true)
+            && state.delete_collection(id)
+        {
+            state.pad.manage.page = Some(ManagePage::Manage);
+        }
+    }
+}
+
+/// The page of "Add layers…" on the desktop: the search field, and a check
+/// box for each layer with its collections.
+fn add_layers_page(ui: &mut egui::Ui, state: &mut AppState, id: CollectionId) {
+    let project = &state.doc.project;
+    let Some(name) = project.collection(id).map(|c| c.name.clone()) else {
+        return;
+    };
+    if named_button(ui, &format!("‹ {name}"), format!("Back to {name}"), true) {
+        state.pad.manage.page = Some(ManagePage::Collection(id));
+        return;
+    }
+    search_box(ui, &mut state.pad.manage.add_search);
+    ui.separator();
+    let project = &state.doc.project;
+    let rows: Vec<(LayerId, String, String, bool, bool)> =
+        (manage::add_rows(project, id, &state.pad.manage.add_search).into_iter())
+            .filter_map(|(l, on, free)| {
+                let layer = project.layer(l)?;
+                let line = manage::collections_line(project, l);
+                Some((l, layer.name.clone(), line, on, free))
+            })
+            .collect();
+    for (layer, layer_name, line, mut on, free) in rows {
+        ui.horizontal(|ui| {
+            let check = ui.add_enabled(!on || free, egui::Checkbox::new(&mut on, &layer_name));
+            named(
+                &check,
+                egui::WidgetType::Checkbox,
+                on,
+                manage::add_row(&layer_name),
+            );
+            if check.changed() {
+                state.set_in_collection(id, layer, on);
+            }
+            ui.weak(line);
+        });
+    }
+}
 
 /// The controls of the selected layer: its name, the opacity of a raster
 /// layer, and the button that deletes the layer.

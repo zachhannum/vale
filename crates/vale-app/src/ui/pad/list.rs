@@ -35,6 +35,11 @@ const EDGE: f32 = 40.0;
 const EDGE_SPEED: f32 = 12.0;
 /// The name of the eye of [`draw`] in [`Trail::Control`].
 pub const EYE: &str = "eye";
+/// The button behind a row that takes the row out of a group, such as a
+/// layer out of a collection.
+pub const REMOVE: &str = "Remove";
+/// The height of a row with a second line.
+pub const TWO_LINE_ROW: f32 = 58.0;
 
 /// A row that a swipe to the left opened or opens.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -989,7 +994,7 @@ fn behind(
     let back = Rect::from_x_y_ranges(left + BUTTON_GAP..=right, highlight.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(back));
     let color = match text {
-        "Delete" => theme::WARN,
+        "Delete" | REMOVE => theme::WARN,
         RENAME => theme::MUTE,
         _ => theme::ACCENT,
     };
@@ -1018,6 +1023,8 @@ pub struct Look<'a> {
     /// The icon at the left, such as the kind of a layer.
     pub icon: Option<Icon>,
     pub text: &'a str,
+    /// A second line below the text, in gray.
+    pub detail: Option<&'a str>,
     /// A gray text at the right of the text.
     pub note: Option<&'a str>,
     /// The note is a warning, in the warning color.
@@ -1100,15 +1107,26 @@ pub fn draw(ui: &mut egui::Ui, controls: &mut Controls, cell: &Cell, look: &Look
         child.add(egui::Label::new(text).selectable(false));
     }
     let clip = Rect::from_min_max(pos2(x, rect.top()), pos2(name_right, rect.bottom()));
-    painter
-        .with_clip_rect(painter.clip_rect().intersect(clip))
-        .text(
-            clip.left_center(),
-            Align2::LEFT_CENTER,
-            look.text,
-            theme::body(),
-            color,
-        );
+    let text_painter = painter.with_clip_rect(painter.clip_rect().intersect(clip));
+    match look.detail {
+        Some(detail) => {
+            let mid = rect.center().y;
+            let at = pos2(clip.left(), mid + 1.0);
+            text_painter.text(at, Align2::LEFT_BOTTOM, look.text, theme::body(), color);
+            let at = pos2(clip.left(), mid + 2.0);
+            let gray = widgets::fade(theme::MUTE, !look.dim);
+            text_painter.text(at, Align2::LEFT_TOP, detail, theme::hint(), gray);
+        }
+        None => {
+            text_painter.text(
+                clip.left_center(),
+                Align2::LEFT_CENTER,
+                look.text,
+                theme::body(),
+                color,
+            );
+        }
+    }
     if cell.shift < 0.0 {
         return None;
     }
