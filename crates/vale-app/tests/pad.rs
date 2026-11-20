@@ -1756,10 +1756,9 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         swipe(&mut h, "Height", -0.9 * width);
         assert_eq!(layer_names(&h), ["Height", "Land", "Rivers", "Places"]);
         let open = layer_list(&h).open.unwrap();
-        // The buttons of a row in a card have a space at their right.
         assert_eq!(
             open.offset,
-            -vale_app::ui::pad::widgets::RENAME_WIDTH - 6.0,
+            -vale_app::ui::pad::widgets::RENAME_WIDTH,
             "{what}"
         );
         tap(&mut h, "Delete Height");
@@ -4542,8 +4541,8 @@ fn the_top_row_and_the_panels_match_the_landscape_board() {
     // The dock is on the right edge, below the top row.
     let layers = panel(&h, Panel::Layers).unwrap();
     assert_eq!((layers.min, layers.width()), (pos2(854.0, 92.0), 340.0));
-    // The header and the card of World, with the gap below its header row.
-    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 2.0 + 10.0);
+    // The header, and the header row and the layer rows of World.
+    assert_eq!(layers.height(), 52.0 + 5.0 * 48.0 + 10.0);
     // The action button is at the right end of the header.
     assert_eq!(control(&h, ADD_LAYER).unwrap().min, pos2(1146.0, 96.0));
     // The Brush panel is a pane below a bar.
@@ -20131,6 +20130,53 @@ fn the_cards_of_the_checked_collections_are_in_the_stacking_order() {
             "{what}"
         );
         assert!(control(&h, &dim_row("Rivers", "Water")).is_some(), "{what}");
+    }
+}
+
+#[test]
+fn a_collection_has_no_card_and_its_rows_are_indented() {
+    use vale_app::ui::pad::collection::{
+        COLLECTION_GAP, ROW_INDENT, chevron_name, header_name, layer_row,
+    };
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        three_cards(&mut h);
+        h.state_mut().select(None);
+        h.run_steps(2);
+        let chevron = |h: &Pad, name: &str| control(h, &chevron_name(name, false)).unwrap();
+        // A fill that starts near the left edge of the list or to its right
+        // is the fill of a card or of a band. The panel starts further to
+        // the left.
+        let fills = |h: &Pad, rect: Rect, left: f32| {
+            (h.output().shapes.iter())
+                .filter(|c| match &c.shape {
+                    egui::Shape::Rect(r) => {
+                        r.fill.a() > 0 && r.rect.left() >= left - 6.0 && r.rect.intersects(rect)
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        let water = chevron(&h, "Water");
+        let left = water.left();
+        for name in ["Water", "Travel"] {
+            let head = control(&h, &header_name(name))
+                .unwrap()
+                .union(chevron(&h, name));
+            assert_eq!(fills(&h, head, left), 0, "{what}: header of {name}");
+        }
+        let rivers = control(&h, &layer_row("Rivers")).unwrap();
+        assert_eq!(fills(&h, rivers.shrink(2.0), left), 0, "{what}: Rivers");
+        // The icon of a layer row is below the name of the header row.
+        assert!(
+            (rivers.left() - left - ROW_INDENT).abs() < 8.5,
+            "{what}: {rivers:?} {left}"
+        );
+        // A gap divides the last row of Water from the header of Travel.
+        let travel = chevron(&h, "Travel");
+        let pitch = travel.center().y - water.center().y;
+        assert_eq!(pitch, 3.0 * PANEL_ROW + COLLECTION_GAP, "{what}");
     }
 }
 

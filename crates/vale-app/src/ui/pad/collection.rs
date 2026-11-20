@@ -1,4 +1,4 @@
-//! The cards of the checked collections in the Layers panel, the
+//! The checked collections in the Layers panel, the
 //! collection popover, and the Collections page of a layer.
 
 use std::collections::HashMap;
@@ -28,17 +28,22 @@ pub const NO_CHECKED: &str = "No collection is checked.";
 
 /// The width of the collection popover.
 const MENU_WIDTH: f32 = 300.0;
-/// The space between two cards.
-const CARD_GAP: f32 = 10.0;
-/// The space between the edge of a card and the content of its rows. The
-/// highlight of a row reaches the edge of the card.
-const CARD_INSET: f32 = 8.0;
-const CARD_RADIUS: f32 = 12.0;
-/// The gap between the header row of an open card and its rows.
-const HEADER_GAP: f32 = 2.0;
+/// The space between two collections.
+pub const COLLECTION_GAP: f32 = 14.0;
+/// The space between the left edge of a header row and the name. The
+/// chevron fills the touch square at the left.
+const NAME_X: f32 = TOUCH;
+/// The space between the left edge of the list and the layer rows of a
+/// collection. The icon of a layer is then below the name of the header.
+pub const ROW_INDENT: f32 = NAME_X - 2.0;
+/// The space at the right of the layer rows. The highlight of a row
+/// reaches the right edge of the list.
+const ROW_RIGHT: f32 = 8.0;
+/// The radius of the fill of a lifted header row, as of a highlight.
+const LIFT_RADIUS: f32 = 5.0;
 /// The height of a row of the list of the header rows during a restack:
 /// a header row and the gap below it.
-const STACK_ROW: f32 = PANEL_ROW + CARD_GAP;
+const STACK_ROW: f32 = PANEL_ROW + COLLECTION_GAP;
 
 /// The name of the popover row of a collection.
 pub fn collection_row(name: &str) -> String {
@@ -274,7 +279,7 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
             let project = &state.doc.project;
             let above: f32 = (stack.iter().rev())
                 .take_while(|id| **id != lift.id)
-                .map(|id| PANEL_ROW + body_height(project, *id) * open + CARD_GAP)
+                .map(|id| PANEL_ROW + body_height(project, *id) * open + COLLECTION_GAP)
                 .sum();
             let space = (finger(ui, lift) - lift.grab - top - above).max(0.0);
             motion::set(ui.ctx(), offset_id(), space);
@@ -285,20 +290,19 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
     ui.add_space(space.max(0.0));
     for (i, id) in stack.iter().rev().enumerate() {
         if i > 0 {
-            ui.add_space(CARD_GAP);
+            ui.add_space(COLLECTION_GAP);
         }
         ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id, open));
     }
 }
 
-/// The height of the rows of an open card and the gap above them. A
-/// collapsed card has none.
+/// The height of the rows of an open collection. A collapsed collection
+/// has none.
 fn body_height(project: &Project, id: CollectionId) -> f32 {
     let rows = project.collection(id).map_or(0, |c| c.layers.len());
     match (project.is_collapsed(id), rows) {
         (true, _) => 0.0,
-        (false, 0) => HEADER_GAP + PANEL_ROW,
-        (false, n) => HEADER_GAP + n as f32 * PANEL_ROW,
+        (false, n) => n.max(1) as f32 * PANEL_ROW,
     }
 }
 
@@ -391,21 +395,19 @@ fn restack(
     let project = &state.doc.project;
     let collapsed: Vec<bool> = rows.iter().map(|r| project.is_collapsed(r.key)).collect();
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
-        // The header of a card at its full height, with the gap between
-        // two cards below it.
+        // A header row at its full height, with the gap between two
+        // collections below it. Only the lifted row has a fill, as a lifted
+        // layer row does.
         let pill = Rect::from_min_size(
             cell.rect.min - vec2(8.0, 0.0),
             vec2(cell.rect.width() + 16.0, PANEL_ROW),
         );
-        let fill = match cell.lifted {
-            true => theme::card(false).to_opaque(),
-            false => theme::track(),
-        };
-        cell.painter.rect_filled(pill, CARD_RADIUS, fill);
-        let chevron = Rect::from_center_size(
-            pos2(pill.left() + 4.0 + TOUCH / 2.0, pill.center().y),
-            vec2(18.0, 18.0),
-        );
+        if cell.lifted {
+            let fill = theme::card(false).to_opaque();
+            cell.painter.rect_filled(pill, LIFT_RADIUS, fill);
+            cell.painter.rect_filled(pill, LIFT_RADIUS, theme::raise());
+        }
+        let chevron = Rect::from_center_size(chevron_center(pill), vec2(18.0, 18.0));
         let icon = if collapsed[i] { Icon::Open } else { Icon::Down };
         icons::paint(&cell.painter, chevron, icon, 18.0, theme::MUTE);
         paint_name(&cell.painter, pill, &rows[i].name, font.clone());
@@ -449,52 +451,27 @@ fn card(
     let shown = body * open;
     let size = vec2(ui.available_width(), PANEL_ROW + shown);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let closed = collapsed || shown <= HEADER_GAP;
-    let painter = ui.painter().clone();
+    let closed = collapsed || shown < 0.5;
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
-    // The header has no fill, so that only a selected row is light. A gap
-    // divides it from the rows of an open card.
-    let r = CARD_RADIUS as u8;
-    match closed {
-        true => {
-            painter.rect_filled(rect, CARD_RADIUS, theme::track());
-        }
-        false => {
-            let top = egui::CornerRadius {
-                nw: r,
-                ne: r,
-                sw: 0,
-                se: 0,
-            };
-            let bottom = egui::CornerRadius {
-                nw: 0,
-                ne: 0,
-                sw: r,
-                se: r,
-            };
-            painter.rect_filled(head, top, theme::track());
-            let body = Rect::from_min_max(pos2(rect.left(), head.bottom() + HEADER_GAP), rect.max);
-            painter.rect_filled(body, bottom, theme::track());
-        }
-    }
     header(ui, state, controls, id, head, &name, collapsed);
     if closed {
         return rect;
     }
     let inner = Rect::from_min_max(
-        pos2(rect.left() + CARD_INSET, head.bottom() + HEADER_GAP),
-        pos2(rect.right() - CARD_INSET, head.bottom() + body),
+        pos2(rect.left() + ROW_INDENT, head.bottom()),
+        pos2(rect.right() - ROW_RIGHT, head.bottom() + body),
     );
     let mut child = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    // The rows fade, and the card cuts them, while they close or open.
+    // The rows fade, and the collection cuts them, while they close or
+    // open.
     child.set_clip_rect(child.clip_rect().intersect(rect));
     child.multiply_opacity(open);
     if rows.is_empty() {
-        let at = pos2(inner.left() + 8.0, inner.center().y);
+        let at = pos2(inner.left(), inner.center().y);
         let font = theme::body();
         child
             .painter()
@@ -516,10 +493,7 @@ fn header(
     name: &str,
     collapsed: bool,
 ) {
-    let chevron = Rect::from_center_size(
-        pos2(head.left() + 4.0 + TOUCH / 2.0, head.center().y),
-        vec2(TOUCH, TOUCH),
-    );
+    let chevron = Rect::from_center_size(chevron_center(head), vec2(TOUCH, TOUCH));
     let icon = if collapsed { Icon::Open } else { Icon::Down };
     let chevron_text = chevron_name(name, collapsed);
     let tap = widgets::icon_button_at(ui, controls, chevron, &chevron_text, icon, false, true);
@@ -562,9 +536,14 @@ fn header(
     }
 }
 
+/// The center of the chevron of a header row.
+fn chevron_center(head: Rect) -> egui::Pos2 {
+    pos2(head.left() + TOUCH / 2.0, head.center().y)
+}
+
 /// Paints the name of a header row.
 fn paint_name(painter: &egui::Painter, head: Rect, name: &str, font: egui::FontId) {
-    let left = head.left() + 4.0 + TOUCH + 6.0;
+    let left = head.left() + NAME_X;
     let clip = Rect::from_min_max(
         pos2(left, head.top()),
         pos2(head.right() - 12.0, head.bottom()),
@@ -651,7 +630,6 @@ fn layer_rows(
         select: true,
         reorder: true,
         confine: true,
-        grouped: Some(CARD_RADIUS),
         field: super::LAYER_NAME,
         ..list::Spec::default()
     };
