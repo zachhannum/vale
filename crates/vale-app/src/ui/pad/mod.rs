@@ -2635,11 +2635,11 @@ impl SnapType {
     }
 }
 
-/// The visible vector and raster layers: the active layer first, then the
-/// others in the order of the layer list.
+/// The visible vector and raster layers that the globe draws: the active
+/// layer first, then the others in the drawn order, from the bottom.
 pub(crate) fn snap_layers(state: &AppState) -> Vec<SnapLayer> {
     let project = &state.doc.project;
-    let mut layers: Vec<SnapLayer> = (project.layers().iter())
+    let mut layers: Vec<SnapLayer> = (project.drawn_layers().into_iter())
         .filter(|l| l.visible)
         .filter_map(|l| {
             let kind = match l.raster() {

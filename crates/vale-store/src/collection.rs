@@ -1,6 +1,6 @@
 //! Collections: named, ordered stacks of layers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{Layer, LayerId, MapId, Project};
 
@@ -277,16 +277,26 @@ impl Project {
             .all(|id| self.collection(*id).is_some() && seen.insert(*id))
     }
 
-    /// The layers of the checked collections of the globe, in the order of
-    /// the layer records.
-    pub fn shown_layers(&self) -> Vec<&Layer> {
-        let shown: BTreeSet<LayerId> = (self.globe_collections.iter())
-            .filter_map(|id| self.collection(*id))
-            .flat_map(|c| c.layers.iter().copied())
-            .collect();
-        self.layers
-            .iter()
-            .filter(|l| shown.contains(&l.id))
+    /// The layers that the globe draws, from the bottom to the top: the
+    /// layers of each checked collection, from the bottom collection to the
+    /// top one, each in the order of its collection. A layer in two checked
+    /// collections draws once, at its place in the top one. The visible
+    /// flag of a layer does not count.
+    pub fn drawn_layer_ids(&self) -> Vec<LayerId> {
+        let mut seen = BTreeSet::new();
+        let mut top_first = Vec::new();
+        for c in (self.globe_collections.iter().rev()).filter_map(|id| self.collection(*id)) {
+            top_first.extend(c.layers.iter().rev().filter(|l| seen.insert(**l)));
+        }
+        top_first.reverse();
+        top_first
+    }
+
+    /// The records of `drawn_layer_ids`, in that order.
+    pub fn drawn_layers(&self) -> Vec<&Layer> {
+        let records: BTreeMap<LayerId, &Layer> = self.layers.iter().map(|l| (l.id, l)).collect();
+        (self.drawn_layer_ids().iter())
+            .filter_map(|id| records.get(id).copied())
             .collect()
     }
 
@@ -545,12 +555,54 @@ mod tests {
         assert!(!p.check_collection(x, true));
         assert_eq!(p.globe_collections(), [world, x]);
         assert!(p.check_collection(world, false));
-        let shown: Vec<_> = p.shown_layers().iter().map(|l| l.id).collect();
-        assert_eq!(shown, [a, c]);
+        assert_eq!(p.drawn_layer_ids(), [c, a]);
         assert!(!p.set_globe_collections(vec![x, x]));
         assert!(!p.set_globe_collections(vec![CollectionId(99)]));
         assert!(p.set_globe_collections(vec![x, world]));
-        assert_eq!(p.shown_layers().len(), 3);
+        assert_eq!(p.drawn_layers().len(), 3);
+    }
+
+    #[test]
+    fn the_globe_draws_the_checked_collections_from_the_bottom_each_in_its_own_order() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let x = p.add_collection("X").unwrap();
+        p.set_in_collection(x, c, true);
+        p.set_in_collection(world, c, false);
+        p.check_collection(x, true);
+        p.move_in_collection(world, b, 0);
+        assert_eq!(p.drawn_layer_ids(), [b, a, c]);
+        let records: Vec<_> = p.drawn_layers().iter().map(|l| l.id).collect();
+        assert_eq!(records, [b, a, c]);
+        assert!(p.move_globe_collection(x, 0));
+        assert_eq!(p.drawn_layer_ids(), [c, b, a]);
+    }
+
+    #[test]
+    fn a_collection_that_is_not_checked_does_not_draw() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let x = p.add_collection("X").unwrap();
+        p.set_in_collection(x, c, true);
+        p.set_in_collection(world, c, false);
+        assert_eq!(p.drawn_layer_ids(), [a, b]);
+        p.check_collection(world, false);
+        assert!(p.drawn_layer_ids().is_empty());
+    }
+
+    #[test]
+    fn a_layer_in_two_checked_collections_draws_once_at_its_place_in_the_top_one() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let x = p.add_collection("X").unwrap();
+        p.set_in_collection(x, c, true);
+        p.set_in_collection(x, a, true);
+        p.check_collection(x, true);
+        assert_eq!(p.drawn_layer_ids(), [b, c, a]);
+        assert!(p.drawn_above(world, a) && p.drawn_above(world, c));
+        assert!(p.move_globe_collection(world, 1));
+        assert_eq!(p.drawn_layer_ids(), [a, b, c]);
+        assert!(p.drawn_above(x, a) && p.drawn_above(x, c));
     }
 
     #[test]

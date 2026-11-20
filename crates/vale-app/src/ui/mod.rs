@@ -1064,7 +1064,8 @@ impl AppState {
             }
             LayerKind::Vector(_) => Some(StackItem::Vector(layer.id)),
         };
-        let visible = project.layers().iter().filter(|layer| layer.visible);
+        let drawn = project.drawn_layers();
+        let visible = drawn.into_iter().filter(|layer| layer.visible);
         let stack: Vec<StackItem> = visible.filter_map(item).collect();
         let selected = match self.selected_layer {
             Some(LayerRef::Raster(id)) => Some(id).filter(|id| globe.holds(*id)),
@@ -1642,7 +1643,8 @@ impl AppState {
         project.set_raster_unit(id, unit)
     }
 
-    /// Moves a layer to this index of the draw order. Index 0 is the bottom.
+    /// Moves a layer to this index of the order of the layer records. Index
+    /// 0 is the bottom. The map frames draw in that order.
     pub fn move_layer(&mut self, id: LayerId, to: usize) -> bool {
         let moved = self.doc.move_layer(id, to);
         self.sync_globe();
@@ -1650,8 +1652,8 @@ impl AppState {
         moved
     }
 
-    /// Moves a layer to index `to` of the list `shown`, a part of the draw
-    /// order. Each other layer keeps its place.
+    /// Moves a layer to index `to` of the list `shown`, a part of the order
+    /// of the layer records. Each other layer keeps its place.
     pub fn move_layer_in(&mut self, id: LayerId, shown: &[LayerId], to: usize) -> bool {
         let moved = self.doc.move_in(id, shown, to);
         self.sync_globe();
@@ -1659,8 +1661,8 @@ impl AppState {
         moved
     }
 
-    /// Moves a layer one place in the draw order. `up` moves toward the top.
-    /// Returns `false` at the end of the order.
+    /// Moves a layer one place in the order of the layer records. `up` moves
+    /// toward the top. Returns `false` at the end of the order.
     pub fn move_layer_by_one(&mut self, id: LayerId, up: bool) -> bool {
         let moved = self.doc.move_by_one(id, up);
         self.sync_globe();
@@ -1767,7 +1769,7 @@ impl AppState {
             visible && self.globe.holds(*id)
         };
         let selected = self.selected_raster().filter(shows);
-        let layers = project.layers().iter().rev();
+        let layers = project.drawn_layers().into_iter().rev();
         let top = || layers.filter_map(Layer::raster).find(shows);
         project.raster(selected.or_else(top)?)
     }
@@ -3372,6 +3374,7 @@ impl AppState {
     pub fn check_collection(&mut self, id: CollectionId, on: bool) -> bool {
         self.save_edit();
         let changed = self.doc.project.check_collection(id, on);
+        self.redraw_collections(changed);
         self.save_edit();
         changed
     }
@@ -3381,13 +3384,14 @@ impl AppState {
     pub fn move_globe_collection(&mut self, id: CollectionId, to: usize) -> bool {
         self.save_edit();
         let moved = self.doc.project.move_globe_collection(id, to);
+        self.redraw_collections(moved);
         self.save_edit();
         moved
     }
 
     /// Moves a layer to index `to` of a collection, as one undo step. Index
-    /// 0 is the bottom. The layer also moves in the draw order, directly
-    /// above or below its new neighbor in the collection.
+    /// 0 is the bottom. The layer also moves in the order of the layer
+    /// records, directly above or below its new neighbor in the collection.
     pub fn move_in_collection(&mut self, id: CollectionId, layer: LayerId, to: usize) -> bool {
         let Some(before) = self.doc.project.collection(id).map(|c| c.layers.clone()) else {
             return false;
@@ -3425,6 +3429,7 @@ impl AppState {
         if let Some(id) = id {
             self.doc.project.check_collection(id, true);
         }
+        self.redraw_collections(id.is_some());
         self.save_edit();
         id
     }
@@ -3440,6 +3445,7 @@ impl AppState {
             project.check_collection(id, true);
             project.set_in_collection(id, layer, true);
         }
+        self.redraw_collections(id.is_some());
         self.save_edit();
         id
     }
@@ -3470,6 +3476,7 @@ impl AppState {
                 project.check_collection(project.world_collection(), true);
             }
         }
+        self.redraw_collections(removed);
         self.save_edit();
         removed
     }
@@ -3478,14 +3485,17 @@ impl AppState {
     pub fn set_in_collection(&mut self, id: CollectionId, layer: LayerId, on: bool) -> bool {
         self.save_edit();
         let changed = self.doc.project.set_in_collection(id, layer, on);
+        self.redraw_collections(changed);
         self.save_edit();
         changed
     }
 
-    /// The IDs of the layers that the Layers panel lists, in the draw order.
-    pub fn shown_layer_ids(&self) -> Vec<LayerId> {
-        let shown = self.doc.project.shown_layers();
-        shown.iter().map(|l| l.id).collect()
+    /// Draws the globe again after a change to the collections.
+    fn redraw_collections(&mut self, changed: bool) {
+        if changed {
+            self.sync_globe();
+            self.touch();
+        }
     }
 
     /// The snap targets of layer `id`, kept or new. A layer with the same

@@ -2167,7 +2167,7 @@ pub(super) fn paint_canvas(
     globe.set_raster_masks(raster_masks(doc, globe));
     // A large vector layer draws from tiles.
     pipeline.vtiles_mut().begin();
-    for layer in doc.project.layers() {
+    for layer in doc.project.drawn_layers() {
         if matches!(layer.kind, vale_store::LayerKind::Vector(_)) {
             pipeline.show_tiles(doc, layer.id, pixels_per_point);
         }

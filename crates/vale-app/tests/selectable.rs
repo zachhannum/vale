@@ -320,3 +320,40 @@ fn merge_is_off_for_a_mixed_selection() {
     h.state_mut().set_feature_selection(vec![towns, other]);
     assert!(h.state().can_merge());
 }
+
+#[test]
+fn a_tap_selects_the_topmost_feature_in_the_drawn_order() {
+    let mut h = harness();
+    let (towns, wells, at) = two_layers(&mut h);
+    h.state_mut().toggle_selectable(towns.layer);
+    h.state_mut().toggle_selectable(wells.layer);
+    let world = h.state().doc.project.world_collection();
+    // Towns goes above Wells in World.
+    let top = h
+        .state()
+        .doc
+        .project
+        .collection(world)
+        .unwrap()
+        .layers
+        .len();
+    assert!(h.state_mut().move_in_collection(world, towns.layer, top));
+    tap_at(&mut h, at);
+    assert_eq!(h.state().feature_selection, vec![towns]);
+
+    // Wells goes into a collection on top of World.
+    let x = h
+        .state_mut()
+        .add_collection_with("Top", wells.layer)
+        .unwrap();
+    h.run_steps(2);
+    tap_at(&mut h, at);
+    assert_eq!(h.state().feature_selection, vec![wells]);
+
+    // Wells is only in a collection that is not checked, so it has no hit.
+    assert!(h.state_mut().set_in_collection(world, wells.layer, false));
+    assert!(h.state_mut().check_collection(x, false));
+    h.run_steps(2);
+    tap_at(&mut h, at);
+    assert_eq!(h.state().feature_selection, vec![towns]);
+}

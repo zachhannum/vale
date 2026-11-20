@@ -174,11 +174,12 @@ impl AppState {
         self.selectable = Selectable::Layers(BTreeSet::new());
     }
 
-    /// The visible selectable layers, top first.
+    /// The selectable layers that the globe draws, top first in the drawn
+    /// order.
     fn select_layers(&self) -> Vec<&Layer> {
-        (self.selectable_layers().into_iter())
-            .filter_map(|id| self.doc.layer(id))
-            .filter(|l| l.visible)
+        let selectable = self.selectable_layers();
+        (self.doc.project.drawn_layers().into_iter().rev())
+            .filter(|l| l.visible && selectable.contains(&l.id))
             .collect()
     }
 
