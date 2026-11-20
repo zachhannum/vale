@@ -116,6 +116,10 @@ pub struct Spec<'a> {
     pub grouped: Option<f32>,
     /// The list paints no highlight, and the caller paints each row.
     pub plain: bool,
+    /// The extra space between the left edge of the highlight and the
+    /// content of a row. The highlight then reaches the left edge of the
+    /// panel while the content is indented.
+    pub indent: f32,
     /// The name of the name field of a row that the user renames.
     pub field: &'a str,
     /// True for a name that a rename applies.
@@ -135,6 +139,7 @@ impl Default for Spec<'_> {
             confine: false,
             grouped: None,
             plain: false,
+            indent: 0.0,
             field: "Name",
             valid: &not_blank,
         }
@@ -480,19 +485,26 @@ struct Shape {
     bottom: f32,
     /// The space at the right of the buttons behind the row.
     margin: f32,
+    /// The extra space at the left of the content of a row.
+    indent: f32,
 }
 
 impl Shape {
     /// The shape of row `i` of `count` rows.
     fn of(spec: Spec, i: usize, count: usize) -> Shape {
-        match spec.grouped {
+        let shape = match spec.grouped {
             Some(radius) => Shape {
                 inset: 0.0,
                 radius: 0.0,
                 bottom: if i + 1 == count { radius } else { 0.0 },
                 margin: BUTTON_GAP,
+                indent: 0.0,
             },
             None => Shape::FREE,
+        };
+        Shape {
+            indent: spec.indent,
+            ..shape
         }
     }
 
@@ -502,10 +514,12 @@ impl Shape {
         radius: 5.0,
         bottom: 5.0,
         margin: 0.0,
+        indent: 0.0,
     };
 
     fn highlight(self, rect: Rect) -> Rect {
-        rect.expand2(vec2(8.0, -self.inset))
+        let highlight = rect.expand2(vec2(8.0, -self.inset));
+        Rect::from_min_max(highlight.min - vec2(self.indent, 0.0), highlight.max)
     }
 
     /// The corners of a highlight. `open`: the buttons behind the row
@@ -901,7 +915,7 @@ fn paint_row<K>(
         }
     }
     let highlight = shape.highlight(rect);
-    let left = rect.left() - 8.0;
+    let left = highlight.left();
     let clip = Rect::from_x_y_ranges(left..=edge + shift.min(0.0), rect.y_range());
     let painter = ui.painter().with_clip_rect(ui.clip_rect().intersect(clip));
     let pressed = body.is_pointer_button_down_on();
