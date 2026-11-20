@@ -1057,6 +1057,27 @@ pub fn text_row_as(
     resp
 }
 
+/// A row with a text in the warning color, for a button that removes.
+pub fn warn_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    name: &str,
+    enabled: bool,
+) -> egui::Response {
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let resp = tap_area(ui, controls, row, name, enabled);
+    if resp.is_pointer_button_down_on() {
+        let back = row.shrink(HIGHLIGHT_INSET);
+        ui.painter()
+            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+    }
+    let at = pos2(row.left(), row.center().y);
+    let color = fade(theme::WARN, enabled);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, name, theme::body(), color);
+    resp
+}
+
 /// The size of the swatch of a color row.
 pub const SWATCH: f32 = 24.0;
 

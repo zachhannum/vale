@@ -122,7 +122,7 @@ impl Cards {
 
 /// The checked collections from the top of the stack, then the others in
 /// the order of creation.
-fn popover_order(project: &Project) -> Vec<(CollectionId, bool)> {
+pub(super) fn popover_order(project: &Project) -> Vec<(CollectionId, bool)> {
     let checked = project.globe_collections();
     let top_first = checked.iter().rev().map(|id| (*id, true));
     let others = (project.collections().iter())
@@ -236,6 +236,21 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             list.shut();
             list.rename = Some((id, name));
         }
+    }
+    if widgets::text_row(
+        ui,
+        controls,
+        super::manage::MANAGE_COLLECTIONS,
+        0.0,
+        false,
+        true,
+    )
+    .clicked()
+    {
+        state.pad.collections_menu = false;
+        state.pad.collection_list = list::ListState::default();
+        state.pad.manage.layers_segment = false;
+        state.pad.manage.open(super::manage::ManagePage::Manage);
     }
 }
 
