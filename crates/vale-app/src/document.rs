@@ -839,6 +839,17 @@ impl Document {
         self.set_map_style(target, layer, &style)
     }
 
+    /// True if `map` links to a map style, and class `i` of `layer` in the map
+    /// differs from class `i` of the layer in the map style, or the map style
+    /// has no such class.
+    pub fn label_class_edited(&self, map: MapId, layer: LayerId, i: usize) -> bool {
+        let Some(shared) = self.linked_style(Target::Map(map)) else {
+            return false;
+        };
+        let own = self.label_classes_in(map, layer);
+        own.get(i) != self.label_classes_in(shared, layer).get(i)
+    }
+
     /// True if `map` links to a map style, and the label weights of a vector
     /// layer differ from the weights in the map style.
     pub fn weights_edited(&self, map: MapId) -> bool {

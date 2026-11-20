@@ -7579,6 +7579,34 @@ fn the_weights_row_shows_edited_for_a_linked_map_with_changed_weights() {
 }
 
 #[test]
+fn a_class_row_shows_edited_for_a_linked_map_with_a_changed_class() {
+    use vale_app::ui::pad::labels::class_note;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let places = layer_id(&h, "Places");
+    let rivers = layer_id(&h, "Rivers");
+    let note = |h: &Pad, layer| {
+        let of = if layer == places { "Places" } else { "Rivers" };
+        class_note(h.state(), map, layer, 0, &classes(h, map, of)[0].name)
+    };
+    assert!(!note(&h, places).contains(EDITED));
+    let style = h.state_mut().save_as_map_style(map).unwrap();
+    h.state_mut().set_map_style_link(map, Some(style));
+    h.run_steps(2);
+    assert!(!note(&h, places).contains(EDITED));
+    h.state_mut()
+        .label_class_step(map, places, 0, |c| c.buffer += 1.0);
+    h.run_steps(2);
+    assert!(note(&h, places).contains(EDITED));
+    assert!(!note(&h, rivers).contains(EDITED));
+
+    // The map style takes the change, and the mark goes away.
+    h.state_mut().update_map_style(map);
+    h.run_steps(2);
+    assert!(!note(&h, places).contains(EDITED));
+}
+
+#[test]
 fn each_change_of_a_placement_option_is_one_undo_step() {
     use vale_style::LabelPosition;
     let dir = tempfile::tempdir().unwrap();

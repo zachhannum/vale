@@ -332,14 +332,10 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         hint(ui, NO_LABEL_LAYERS);
         return;
     }
-    // A class with the name of its layer shows the name one time.
     let list: Vec<(LayerId, usize, String, String)> = (state.label_class_list(map).into_iter())
         .map(|(layer, i, c)| {
-            let mut of = layer_name(state, layer);
-            if of == c.name {
-                of.clear();
-            }
-            (layer, i, c.name, of)
+            let note = class_note(state, map, layer, i, &c.name);
+            (layer, i, c.name, note)
         })
         .collect();
     let mut open = None;
@@ -358,9 +354,19 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     }
 }
 
+/// The gray note of the row of class `i` of `layer` in `map`: the name of
+/// the layer, unless it is the name of the class, and "Edited" if the class
+/// differs from the map style.
+pub fn class_note(state: &AppState, map: MapId, layer: LayerId, i: usize, name: &str) -> String {
+    let of = layer_name(state, layer);
+    let of = if of == name { None } else { Some(of) };
+    let edited = state.doc.label_class_edited(map, layer, i);
+    let edited = edited.then(|| super::atlas::EDITED.to_owned());
+    of.into_iter().chain(edited).collect::<Vec<_>>().join(" · ")
+}
+
 /// The rows of the class list: the layer, the place in the classes of the
-/// layer, the name of the class, and the name of the layer or an empty
-/// text. A swipe to the right selects a class, a swipe to the left shows
+/// layer, the name of the class, and the note of the row. A swipe to the right selects a class, a swipe to the left shows
 /// Rename and Delete, and a hold lifts a class to a new place in the
 /// order. Returns the class that the user taps.
 fn class_rows(

@@ -1145,7 +1145,7 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         OUTSIDE, OVER_HOLES, OVERRUN, OVERRUNS, POLYGON_REPEAT_DISTANCES, REPEAT_DISTANCE,
         REPEAT_LABEL, ZONES,
     };
-    use super::pad::labels::{WEIGHTS, weights_value};
+    use super::pad::labels::{WEIGHTS, class_note, weights_value};
     use vale_store::GeometryKind;
     let map = frame.map;
     if state.atlas.open_weights() == Some(frame.id) {
@@ -1170,14 +1170,11 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     let open = state.atlas.open_class();
     let list = state.label_class_list(map);
     for (layer, i, class) in &list {
-        let name = state
-            .doc
-            .layer(*layer)
-            .map_or_else(String::new, |l| l.name.clone());
-        let text = if name == class.name {
-            name
+        let note = class_note(state, map, *layer, *i, &class.name);
+        let text = if note.is_empty() {
+            class.name.clone()
         } else {
-            format!("{} · {name}", class.name)
+            format!("{} · {note}", class.name)
         };
         let on = open == Some((*layer, *i));
         if ui.selectable_label(on, text).clicked() {
