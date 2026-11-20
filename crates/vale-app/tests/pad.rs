@@ -8522,7 +8522,7 @@ fn snap_types(h: &Pad, layer: vale_store::LayerId, target: vale_store::LayerId) 
 
 #[test]
 fn the_snap_panel_lists_its_rows_in_the_drawn_order() {
-    use vale_app::ui::pad::{SNAP_VERTICES, snap_target_name};
+    use vale_app::ui::pad::{SNAP_POINTS, SNAP_VERTICES, snap_target_name};
     let size = BOARDS[0];
     let (mut h, lines) = line_pad(size);
     let world = h.state().doc.project.world_collection();
@@ -8552,7 +8552,11 @@ fn the_snap_panel_lists_its_rows_in_the_drawn_order() {
     raise_sheet(&mut h);
     let name = |h: &Pad, id| h.state().doc.project.layer(id).unwrap().name.clone();
     let top = |h: &Pad, id| {
-        let row = snap_target_name(SNAP_VERTICES, &name(h, id));
+        let label = match id == places {
+            true => SNAP_POINTS,
+            false => SNAP_VERTICES,
+        };
+        let row = snap_target_name(label, &name(h, id));
         control(h, &row).map(|r| r.top())
     };
     let (active, below, above) = (top(&h, lines), top(&h, rivers), top(&h, places));

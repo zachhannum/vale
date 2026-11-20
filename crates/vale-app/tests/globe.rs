@@ -9256,6 +9256,7 @@ fn the_raster_layers_blend_in_the_order_of_the_collections() {
     assert!(is_grey(middle(&mut h), HIGH));
 
     // With World on top, the high layer covers the low layer.
+    assert!(h.state_mut().set_raster_blend(ids[0], BlendMode::Normal));
     assert!(h.state_mut().move_globe_collection(x, 0));
     assert!(is_grey(middle(&mut h), HIGH));
     h.state_mut().set_raster_opacity(ids[1], 0.5);
