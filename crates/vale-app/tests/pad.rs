@@ -20938,11 +20938,9 @@ fn delete_collection_puts_its_layers_in_world_in_one_step() {
 }
 
 #[test]
-fn the_management_page_lists_the_collections_and_the_layers() {
-    use vale_app::ui::pad::collection::{COLLECTION_NAME, NEW_COLLECTION, layer_row};
-    use vale_app::ui::pad::manage::{
-        ManagePage, SEARCH, SEGMENTS, collection_entry, collection_rows, layer_rows,
-    };
+fn the_management_page_lists_the_collections() {
+    use vale_app::ui::pad::collection::{COLLECTION_NAME, NEW_COLLECTION};
+    use vale_app::ui::pad::manage::{ManagePage, SEARCH, collection_entry, collection_rows};
     use vale_app::ui::pad::widgets::RENAME;
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
@@ -21017,35 +21015,22 @@ fn the_management_page_lists_the_collections_and_the_layers() {
         );
         tap(&mut h, "Back to Collections");
 
-        // The segment Layers lists each layer one time, with Delete on a
-        // swipe.
-        tap(&mut h, SEGMENTS[1]);
-        check_controls(&h, &format!("{what} on the segment Layers"));
-        let project = &h.state().doc.project;
-        assert_eq!(
-            layer_rows(project, "").len(),
-            project.layers().len(),
-            "{what}"
-        );
-        for name in ["Height", "Land", "Rivers", "Places"] {
-            assert!(control(&h, &layer_row(name)).is_some(), "{what} {name}");
-        }
-        tap(&mut h, SEARCH);
-        h.event(egui::Event::Text("riv".to_owned()));
-        h.run_steps(2);
-        assert!(control(&h, &layer_row("Rivers")).is_some(), "{what}");
-        assert!(control(&h, &layer_row("Land")).is_none(), "{what}");
-        swipe_row(&mut h, &layer_row("Rivers"));
-        tap(&mut h, "Delete Rivers");
-        assert!(!layer_names(&h).contains(&"Rivers".to_owned()), "{what}");
-        undo_step(&mut h);
-        assert!(layer_names(&h).contains(&"Rivers".to_owned()), "{what}");
-
-        // A tap on a layer opens its panel, and back goes to the page.
-        tap(&mut h, &layer_row("Rivers"));
+        // The arrow of a layer on the page of a collection opens the panel
+        // of the layer, and back goes to the page.
+        tap(&mut h, &collection_entry("World"));
+        tap(&mut h, "Open Rivers");
         assert_eq!(
             h.state().pad.layer,
             Some(LayerRef::Vector(rivers)),
+            "{what}"
+        );
+        tap(&mut h, "Back to World");
+        assert_eq!(h.state().pad.layer, None, "{what}");
+        assert_eq!(
+            h.state().pad.manage.page,
+            Some(ManagePage::Collection(
+                h.state().doc.project.world_collection()
+            )),
             "{what}"
         );
         tap(&mut h, "Back to Collections");
@@ -21084,7 +21069,7 @@ fn a_check_on_the_collections_page_of_a_layer_is_one_step() {
 #[test]
 fn manual_collection_page_screenshots() {
     use vale_app::ui::pad::collection::layer_row;
-    use vale_app::ui::pad::manage::{ADD_LAYERS, SEGMENTS, collection_entry};
+    use vale_app::ui::pad::manage::{ADD_LAYERS, collection_entry};
     for (size, what) in [(BOARDS[0], "landscape"), (BOARDS[3], "narrow")] {
         let mut h = pad(size);
         three_cards(&mut h);
@@ -21092,9 +21077,8 @@ fn manual_collection_page_screenshots() {
         screenshot::save(&mut h, &format!("pad-manage-collections-{what}"));
         swipe_row(&mut h, &collection_entry("Travel"));
         screenshot::save(&mut h, &format!("pad-manage-swipe-{what}"));
-        tap(&mut h, SEGMENTS[1]);
-        screenshot::save(&mut h, &format!("pad-manage-layers-{what}"));
-        tap(&mut h, SEGMENTS[0]);
+        // The first tap shuts the open row, and the second opens the page.
+        tap(&mut h, &collection_entry("Travel"));
         tap(&mut h, &collection_entry("Travel"));
         swipe_row(&mut h, &layer_row("Rivers"));
         screenshot::save(&mut h, &format!("pad-collection-page-{what}"));

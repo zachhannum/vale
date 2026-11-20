@@ -1,6 +1,5 @@
-//! The pages of the collections in the Layers panel: the management page
-//! with its segments Collections and Layers, the page of a collection, and
-//! "Add layers…".
+//! The pages of the collections in the Layers panel: the management page,
+//! the page of a collection, and "Add layers…".
 
 use eframe::egui;
 use vale_store::{CollectionId, LayerId, Project};
@@ -15,8 +14,6 @@ use crate::ui::AppState;
 
 /// The row of the collection popover that opens the management page.
 pub const MANAGE_COLLECTIONS: &str = "Manage collections";
-/// The segments of the management page.
-pub const SEGMENTS: [&str; 2] = [COLLECTIONS, "Layers"];
 pub const ADD_LAYERS: &str = "Add layers…";
 /// The title of the page of "Add layers…".
 pub const ADD_LAYERS_TITLE: &str = "Add layers";
@@ -38,12 +35,9 @@ pub enum ManagePage {
 pub struct ManageState {
     /// The page that the Layers panel shows in place of the cards.
     pub page: Option<ManagePage>,
-    /// The management page shows the segment Layers.
-    pub layers_segment: bool,
     /// The text of the search field of the management page.
     pub search: String,
     pub collections: list::ListState<CollectionId>,
-    pub layers: list::ListState<LayerId>,
     /// The rows of the layers of the page of a collection.
     pub members: list::ListState<LayerId>,
     /// The text of the search field of "Add layers…".
@@ -58,7 +52,6 @@ impl ManageState {
             ManagePage::Manage => {
                 self.search.clear();
                 self.collections = list::ListState::default();
-                self.layers = list::ListState::default();
             }
             ManagePage::Collection(_) => {
                 self.members = list::ListState::default();
@@ -70,11 +63,6 @@ impl ManageState {
         }
         self.page = Some(page);
     }
-}
-
-/// The name of the tab of a segment on the desktop.
-pub fn segment_name(segment: &str) -> String {
-    format!("Show {segment}")
 }
 
 /// The name of the row of a collection on the management page.
@@ -99,7 +87,7 @@ pub fn collections_line(project: &Project, layer: LayerId) -> String {
     names.join(", ")
 }
 
-/// The collections of the segment Collections whose names hold `search`,
+/// The collections of the management page whose names hold `search`,
 /// in the order of the collection popover.
 pub fn collection_rows(project: &Project, search: &str) -> Vec<CollectionId> {
     (super::collection::popover_order(project).into_iter())
@@ -109,15 +97,6 @@ pub fn collection_rows(project: &Project, search: &str) -> Vec<CollectionId> {
                 .collection(*id)
                 .is_some_and(|c| holds(&c.name, search))
         })
-        .collect()
-}
-
-/// The layers of the segment Layers whose names hold `search`, each one
-/// time, from the top of the order of the layer records.
-pub fn layer_rows(project: &Project, search: &str) -> Vec<LayerId> {
-    (project.layers().iter().rev())
-        .filter(|l| holds(&l.name, search))
-        .map(|l| l.id)
         .collect()
 }
 
@@ -218,29 +197,10 @@ fn hint(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
 }
 
-/// The management page: the segments Collections and Layers, the search
-/// field, and the list of the segment.
+/// The management page: the search field, a row with the count of each
+/// collection, with Rename and Delete on a swipe, and "New collection…".
 fn manage_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    ui.add_space(4.0);
-    let active = usize::from(state.pad.manage.layers_segment);
-    if let Some(i) = widgets::segmented(ui, controls, &SEGMENTS, Some(active), true) {
-        let manage = &mut state.pad.manage;
-        if (i == 1) != manage.layers_segment {
-            manage.layers_segment = i == 1;
-            manage.collections.shut();
-            manage.layers.shut();
-        }
-    }
     super::filter::search_field(ui, controls, SEARCH, &mut state.pad.manage.search);
-    match state.pad.manage.layers_segment {
-        false => manage_collections(ui, state, controls),
-        true => manage_layers(ui, state, controls),
-    }
-}
-
-/// The segment Collections: a row with the count of each collection, with
-/// Rename and Delete on a swipe, and "New collection…".
-fn manage_collections(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     let project = &state.doc.project;
     let world = project.world_collection();
     let shown = collection_rows(project, &state.pad.manage.search);
@@ -310,61 +270,8 @@ fn manage_collections(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Co
     }
 }
 
-/// The segment Layers: a row for each layer with its collections on a
-/// second line, and Delete on a swipe.
-fn manage_layers(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
-    let project = &state.doc.project;
-    let shown = layer_rows(project, &state.pad.manage.search);
-    let mut lines = Vec::new();
-    let mut icons = Vec::new();
-    let mut rows = Vec::new();
-    for id in &shown {
-        let Some(l) = project.layer(*id) else {
-            continue;
-        };
-        lines.push(collections_line(project, l.id));
-        icons.push(super::layer_icon(l));
-        rows.push(list::Row {
-            label: layer_row(&l.name),
-            delete: true,
-            trailing: TOUCH,
-            height: list::TWO_LINE_ROW,
-            ..list::Row::new(l.id, l.name.clone())
-        });
-    }
-    if rows.is_empty() {
-        hint(ui, NO_MATCH);
-    }
-    let list = &mut state.pad.manage.layers;
-    let events = list::show(
-        ui,
-        controls,
-        list,
-        list::Spec::default(),
-        &rows,
-        |ui, controls, cell, i| {
-            let look = list::Look {
-                icon: Some(icons[i]),
-                text: &rows[i].name,
-                detail: Some(&lines[i]),
-                open: true,
-                ..list::Look::default()
-            };
-            list::draw(ui, controls, cell, &look)
-        },
-    );
-    for event in events {
-        match event {
-            list::Event::Tap(id) | list::Event::Open(id) => open_layer(state, id),
-            list::Event::Delete(id) => {
-                state.remove_layer(id);
-            }
-            _ => {}
-        }
-    }
-}
-
-/// The page of a collection: the rows of its layers from the top with Remove on a swipe, "Add layers…", and "Delete collection".
+/// The page of a collection: the rows of its layers from the top with
+/// Remove on a swipe, "Add layers…", and "Delete collection".
 fn collection_body(
     ui: &mut egui::Ui,
     state: &mut AppState,

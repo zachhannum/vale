@@ -831,7 +831,6 @@ fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
             MANAGE_COLLECTIONS.to_string(),
         );
         if manage.clicked() {
-            state.pad.manage.layers_segment = false;
             state.pad.manage.open(ManagePage::Manage);
             ui.close();
         }
@@ -847,9 +846,8 @@ fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
 /// The name of the button that deletes the shown collection.
 pub const DELETE_COLLECTION: &str = "Delete collection";
 
-/// The window of the pages of the collections: the management page with
-/// the segments Collections and Layers, the page of a collection, and
-/// "Add layers…".
+/// The window of the pages of the collections: the management page, the
+/// page of a collection, and "Add layers…".
 fn manage_window(ctx: &egui::Context, state: &mut AppState) {
     let Some(page) = state.pad.manage.page else {
         return;
@@ -901,47 +899,9 @@ fn search_box(ui: &mut egui::Ui, text: &mut String) {
 
 /// The management page of the desktop.
 fn manage_page(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.horizontal(|ui| {
-        for (i, segment) in manage::SEGMENTS.iter().enumerate() {
-            let on = state.pad.manage.layers_segment == (i == 1);
-            let tab = ui.selectable_label(on, *segment);
-            named(
-                &tab,
-                egui::WidgetType::Button,
-                on,
-                manage::segment_name(segment),
-            );
-            if tab.clicked() {
-                state.pad.manage.layers_segment = i == 1;
-            }
-        }
-    });
     search_box(ui, &mut state.pad.manage.search);
     ui.separator();
     let project = &state.doc.project;
-    if state.pad.manage.layers_segment {
-        let rows: Vec<(LayerId, String, String)> =
-            (manage::layer_rows(project, &state.pad.manage.search).into_iter())
-                .filter_map(|id| {
-                    let l = project.layer(id)?;
-                    Some((id, l.name.clone(), manage::collections_line(project, id)))
-                })
-                .collect();
-        for (id, name, line) in rows {
-            ui.horizontal(|ui| {
-                if named_button(ui, &name, super::pad::collection::layer_row(&name), true)
-                    && let Some(l) = state.doc.project.layer(id)
-                {
-                    state.select(Some(LayerRef::of(l)));
-                }
-                ui.weak(line);
-                if named_button(ui, "Delete", format!("Delete {name}"), true) {
-                    state.remove_layer(id);
-                }
-            });
-        }
-        return;
-    }
     let world = project.world_collection();
     let rows: Vec<(CollectionId, String, usize)> =
         (manage::collection_rows(project, &state.pad.manage.search).into_iter())

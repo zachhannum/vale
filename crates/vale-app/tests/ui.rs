@@ -533,10 +533,9 @@ fn the_desktop_list_has_a_group_for_each_checked_collection() {
 
 #[test]
 fn the_desktop_window_manages_the_collections() {
-    use vale_app::ui::pad::collection::{COLLECTION_MENU, NEW_COLLECTION, layer_row};
+    use vale_app::ui::pad::collection::{COLLECTION_MENU, NEW_COLLECTION};
     use vale_app::ui::pad::manage::{
-        ADD_LAYERS, MANAGE_COLLECTIONS, ManagePage, SEGMENTS, add_row, collection_entry,
-        segment_name,
+        ADD_LAYERS, MANAGE_COLLECTIONS, ManagePage, add_row, collection_entry,
     };
     use vale_app::ui::panels::DELETE_COLLECTION;
     let mut h = globe_harness();
@@ -589,15 +588,6 @@ fn the_desktop_window_manages_the_collections() {
     assert!(h.query_by_label("Delete World").is_none());
     click(&mut h, "Delete Collection 1");
     assert_eq!(names(&h, "Rivers"), ["World"]);
-
-    // The segment Layers lists each layer, with Delete.
-    click(&mut h, &segment_name(SEGMENTS[1]));
-    for name in ["Land", "Rivers", "Places"] {
-        assert!(h.query_by_label(&layer_row(name)).is_some(), "{name}");
-    }
-    click(&mut h, "Delete Places");
-    let project = &h.state().doc.project;
-    assert!(!project.layers().iter().any(|l| l.name == "Places"));
 }
 
 #[test]

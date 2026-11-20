@@ -237,7 +237,6 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if widgets::open_row(ui, controls, super::manage::MANAGE_COLLECTIONS, "").clicked() {
         state.pad.collections_menu = false;
         state.pad.collection_list = list::ListState::default();
-        state.pad.manage.layers_segment = false;
         state.pad.manage.open(super::manage::ManagePage::Manage);
     }
 }
