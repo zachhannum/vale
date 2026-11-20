@@ -2,7 +2,7 @@
 //! with its segments Collections and Layers, the page of a collection, and
 //! "Add layers…".
 
-use eframe::egui::{self, Rect, Sense, vec2};
+use eframe::egui;
 use vale_store::{CollectionId, LayerId, Project};
 
 use super::collection::{
@@ -49,8 +49,6 @@ pub struct ManageState {
     /// The text of the search field of "Add layers…".
     pub add_search: String,
     pub add: list::ListState<LayerId>,
-    /// The text of the name field of the page of a collection.
-    name: Option<(CollectionId, String)>,
 }
 
 impl ManageState {
@@ -64,7 +62,6 @@ impl ManageState {
             }
             ManagePage::Collection(_) => {
                 self.members = list::ListState::default();
-                self.name = None;
             }
             ManagePage::AddLayers(_) => {
                 self.add_search.clear();
@@ -215,12 +212,6 @@ pub(super) fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
     }
 }
 
-fn divider(ui: &mut egui::Ui) {
-    let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 9.0), Sense::hover());
-    let line = Rect::from_center_size(line.center(), vec2(line.width(), 1.0));
-    ui.painter().rect_filled(line, 0.0, theme::divider());
-}
-
 fn hint(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
     ui.label(egui::RichText::new(text).color(theme::MUTE));
@@ -307,8 +298,7 @@ fn manage_collections(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Co
             _ => {}
         }
     }
-    divider(ui);
-    if widgets::text_row(ui, controls, NEW_COLLECTION, 0.0, false, true).clicked() {
+    if widgets::add_row(ui, controls, NEW_COLLECTION).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
         if let Some(id) = state.add_collection(&name) {
@@ -374,8 +364,7 @@ fn manage_layers(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
     }
 }
 
-/// The page of a collection: the name field, the rows of its layers from
-/// the top with Remove on a swipe, "Add layers…", and "Delete collection".
+/// The page of a collection: the rows of its layers from the top with Remove on a swipe, "Add layers…", and "Delete collection".
 fn collection_body(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -383,40 +372,10 @@ fn collection_body(
     id: CollectionId,
 ) {
     let project = &state.doc.project;
-    let Some(c) = project.collection(id) else {
+    if project.collection(id).is_none() {
         return;
-    };
-    let world = id == project.world_collection();
-    let name = c.name.clone();
-    if world {
-        widgets::value_row(ui, "Name", &name);
-    } else {
-        let mut text = match state.pad.manage.name.take() {
-            Some((of, text)) if of == id => text,
-            _ => name.clone(),
-        };
-        let valid = project.collection_name_is_free(&text, Some(id));
-        let field = widgets::text_field(
-            ui,
-            controls,
-            COLLECTION_NAME,
-            "Name",
-            None,
-            &mut text,
-            valid,
-        );
-        if field.lost_focus() && text.trim() != name {
-            // A blank name, or the name of another collection, keeps the
-            // old name.
-            state.rename_collection(id, text.trim());
-        }
-        if !field.has_focus() {
-            let project = &state.doc.project;
-            text = project.collection(id).map_or(name, |c| c.name.clone());
-        }
-        state.pad.manage.name = Some((id, text));
     }
-    divider(ui);
+    let world = id == project.world_collection();
 
     let project = &state.doc.project;
     let selected = state.selected_layer;
@@ -481,16 +440,14 @@ fn collection_body(
         }
     }
 
-    if widgets::text_row(ui, controls, ADD_LAYERS, 0.0, false, true).clicked() {
+    if widgets::add_row(ui, controls, ADD_LAYERS).clicked() {
         state.pad.manage.open(ManagePage::AddLayers(id));
     }
-    if !world {
-        divider(ui);
-        if widgets::warn_row(ui, controls, DELETE_COLLECTION, true).clicked()
-            && state.delete_collection(id)
-        {
-            state.pad.manage.page = Some(ManagePage::Manage);
-        }
+    if !world
+        && widgets::warn_row(ui, controls, DELETE_COLLECTION, true).clicked()
+        && state.delete_collection(id)
+    {
+        state.pad.manage.page = Some(ManagePage::Manage);
     }
 }
 

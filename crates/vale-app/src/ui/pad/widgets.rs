@@ -1057,6 +1057,23 @@ pub fn text_row_as(
     resp
 }
 
+/// A row at the end of a list that adds an item, with a plus at its right.
+pub fn add_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str) -> Response {
+    let add = text_row(ui, controls, name, 0.0, false, true);
+    let plus = Rect::from_center_size(
+        pos2(add.rect.right() - ICON / 2.0, add.rect.center().y),
+        vec2(ICON, ICON),
+    );
+    super::icons::paint(
+        ui.painter(),
+        plus,
+        super::icons::Icon::Plus,
+        ICON,
+        theme::MUTE,
+    );
+    add
+}
+
 /// A row with a text in the warning color, for a button that removes.
 pub fn warn_row(
     ui: &mut egui::Ui,

@@ -1,12 +1,12 @@
 //! The attribute schema of a vector layer: the list of the fields in the
 //! panel of the layer, the page of a new field, and the page of a field.
 
-use eframe::egui::{self, Rect, pos2, vec2};
+use eframe::egui;
 use vale_store::{Field, FieldType, LayerId, Value};
 
 use super::geometry::TOUCH;
-use super::icons::{self, Icon};
-use super::widgets::{self, Controls, ICON};
+use super::icons::Icon;
+use super::widgets::{self, Controls};
 use super::{Page, list, raster, theme};
 use crate::ui::AppState;
 use crate::ui::new_feature::can_take_focus;
@@ -134,13 +134,7 @@ pub fn list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id
             _ => {}
         }
     }
-    let add = widgets::text_row(ui, controls, ADD_FIELD, 0.0, false, true);
-    let plus = Rect::from_center_size(
-        pos2(add.rect.right() - ICON / 2.0, add.rect.center().y),
-        vec2(ICON, ICON),
-    );
-    icons::paint(ui.painter(), plus, Icon::Plus, ICON, theme::MUTE);
-    if add.clicked() {
+    if widgets::add_row(ui, controls, ADD_FIELD).clicked() {
         state.pad.page = Some(Page::NewField);
     }
 }

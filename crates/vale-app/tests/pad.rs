@@ -20887,6 +20887,7 @@ fn the_page_of_a_collection_adds_and_removes_its_layers() {
 fn delete_collection_puts_its_layers_in_world_in_one_step() {
     use vale_app::ui::pad::collection::{COLLECTION_NAME, layer_row};
     use vale_app::ui::pad::manage::{DELETE_COLLECTION, ManagePage, collection_entry};
+    use vale_app::ui::pad::widgets::RENAME;
     let dir = tempfile::tempdir().unwrap();
     let mut h = saved_pad(BOARDS[0], dir.path());
     open_panel(&mut h, "Layers");
@@ -20901,21 +20902,30 @@ fn delete_collection_puts_its_layers_in_world_in_one_step() {
     h.run_steps(2);
     assert_eq!(collections_of(&h, rivers), ["Travel"]);
 
-    // World has no name field and no Delete collection.
+    // World has no Delete collection.
     open_manage(&mut h);
     tap(&mut h, &collection_entry("World"));
-    assert!(control(&h, COLLECTION_NAME).is_none());
     assert!(control(&h, DELETE_COLLECTION).is_none());
     tap(&mut h, "Back to Collections");
 
-    // The name field renames the collection when it loses the focus.
-    tap(&mut h, &collection_entry("Travel"));
-    type_text(&mut h, COLLECTION_NAME, "Trade");
+    // A rename on the management page shows on the page of the collection.
+    swipe_row(&mut h, &collection_entry("Travel"));
+    tap(&mut h, &format!("{RENAME} Travel"));
+    assert!(control(&h, COLLECTION_NAME).is_some());
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Trade".to_owned()));
+    h.run_steps(1);
     h.key_press(egui::Key::Enter);
     h.run_steps(2);
     assert_eq!(
         h.state().doc.project.collection(travel).unwrap().name,
         "Trade"
+    );
+    tap(&mut h, &collection_entry("Trade"));
+    assert_eq!(
+        h.state().pad.manage.page,
+        Some(ManagePage::Collection(travel))
     );
     assert!(control(&h, &layer_row("Rivers")).is_some());
 
