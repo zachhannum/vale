@@ -18,6 +18,7 @@ use vale_app::projects::Locations;
 use vale_app::session::Session;
 use vale_app::ui::export_form::{self, EXPORT, ExportForm};
 use vale_app::ui::gradient::{band_row, widest_gap_value};
+use vale_app::ui::pad::collection_choice;
 use vale_app::ui::pad::eyedropper;
 use vale_app::ui::pad::flyout::Flyout;
 use vale_app::ui::pad::geometry::{BrushCard, TOOLS, WidthClass};
@@ -451,8 +452,15 @@ fn check_controls(h: &Pad, what: &str) {
                     "Points",
                     "Polygons",
                     NEW_HEIGHTMAP,
+                    collection_choice::COLLECTION,
+                    collection_choice::NEW_COLLECTION_ROW,
+                    collection_choice::NEW_COLLECTION_NAME,
+                    vale_app::ui::pad::collection::SEARCH_COLLECTIONS,
+                    "Back to Add layer",
+                    "Close Collection",
                 ];
-                let add = in_add && rows.contains(&name);
+                let picker_row = name.starts_with(&collection_choice::row_name(""));
+                let add = in_add && (rows.contains(&name) || picker_row);
                 let tiles = [
                     "Layers",
                     select::ATTRIBUTES,
@@ -738,7 +746,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         tap(&mut h, NEW_RASTER);
         assert!(!h.state().pad.add && h.state().raster_form.is_some());
         tap(&mut h, "Height");
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         let rasters = h.state().doc.project.rasters();
         assert_eq!(rasters.len(), 1, "{what}");
         let first = rasters[0].id;
@@ -754,7 +762,7 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
         tap(&mut h, "Back to Layers");
         tap(&mut h, ADD_LAYER);
         tap(&mut h, NEW_RASTER);
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         tap(&mut h, "Back to Layers");
         let second = h.state().doc.project.rasters()[1].id;
         assert_eq!(raster_name(&h, second), "Raster");
@@ -918,7 +926,7 @@ fn a_new_raster_layer_has_the_picked_face_size() {
 
         tap(&mut h, &face_size_name(1024));
         assert_eq!(h.state().raster_form.as_ref().unwrap().face_size, 1024);
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         assert!(h.state().raster_form.is_none(), "{what}");
         let state = h.state();
         let rasters = state.doc.project.rasters();
@@ -933,7 +941,7 @@ fn a_new_raster_layer_has_the_picked_face_size() {
         // The next layer has the size that is on at first.
         open_raster_form(&mut h);
         assert_eq!(h.state().raster_form.as_ref().unwrap().name, "Raster 2");
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         let second = h.state().doc.project.rasters()[1].clone();
         assert_eq!(raster_name(&h, second.id), "Raster 2");
         assert_eq!(second.face_size, 64);
@@ -983,7 +991,7 @@ fn the_form_offers_four_face_sizes_and_the_preset_gives_the_default() {
         // A face size that the user picks is the size of the layer.
         tap(&mut h, "Precipitation");
         tap(&mut h, &face_size_name(1024));
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         let rain = h.state().doc.project.rasters()[0].clone();
         assert_eq!((rain.face_size, rain.unit.as_str()), (1024, "mm"), "{what}");
     }
@@ -1027,7 +1035,7 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
             && control(&h, raster_form::MAXIMUM).is_some();
         assert_eq!(fields, preset != "Height", "{preset}");
         check_controls(&h, &format!("the form of the preset {preset}"));
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         let state = h.state();
         let rasters = state.doc.project.rasters();
         assert_eq!(rasters.len(), index + 1, "{preset}");
@@ -1065,7 +1073,7 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
     // A preset is a start only: the unit and the range are free.
     type_text(&mut h, raster_form::UNIT, "cm");
     type_text(&mut h, raster_form::MAXIMUM, "400");
-    tap(&mut h, raster_form::ADD);
+    form_tap(&mut h, raster_form::ADD);
     let rain = h.state().doc.project.rasters()[5].clone();
     assert_eq!((rain.unit.as_str(), rain.value_max), ("cm", 400.0));
 }
@@ -1143,6 +1151,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         );
         check_controls(&h, &format!("{what} with the form of another raster layer"));
         let screen = h.state().pad.rects.unwrap().screen;
+        form_scroll_to(&mut h, raster_form::ADD);
         for name in [raster_form::UNIT, raster_form::MAXIMUM, raster_form::ADD] {
             assert!(
                 screen.contains_rect(control(&h, name).unwrap()),
@@ -1160,6 +1169,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         type_text(&mut h, raster_form::MAXIMUM, "2500");
         // A plain value has no unit.
         type_text(&mut h, raster_form::UNIT, " ");
+        form_scroll_to(&mut h, raster_form::ADD);
         assert!(control(&h, raster_form::ADD).is_some(), "{what}");
         assert_eq!(h.state().doc.project.rasters().len(), 1);
 
@@ -1167,7 +1177,7 @@ fn the_form_adds_a_raster_layer_of_another_unit() {
         type_text(&mut h, raster_form::MINIMUM, "-50");
         type_text(&mut h, raster_form::MAXIMUM, "50");
         type_text(&mut h, raster_form::NAME, "Heat");
-        tap(&mut h, raster_form::ADD);
+        form_tap(&mut h, raster_form::ADD);
         let heat = h.state().doc.project.rasters()[1].clone();
         assert_eq!(raster_name(&h, heat.id), "Heat");
         assert_eq!(heat.unit, "°C");
@@ -11971,6 +11981,12 @@ fn the_style_editor_opens_on_the_globe_and_the_flat_view_and_fits_a_finger() {
 /// Taps a control of the form of a new raster layer, after drags on the
 /// margin at the left of the rows that scroll the control into the card.
 fn form_tap(h: &mut Pad, name: &str) {
+    form_scroll_to(h, name);
+    tap(h, name);
+}
+
+/// Scrolls a control of the form of a new raster layer into the card.
+fn form_scroll_to(h: &mut Pad, name: &str) {
     for _ in 0..8 {
         if control(h, name).is_some() {
             break;
@@ -11980,7 +11996,6 @@ fn form_tap(h: &mut Pad, name: &str) {
         let from = pos2(width - close.right() + 4.0, close.bottom() + 260.0);
         drag(h, from, from - vec2(0.0, 200.0), None);
     }
-    tap(h, name);
 }
 
 /// Writes a 2:1 greyscale PNG with three bands of levels from west to east:
@@ -21084,5 +21099,214 @@ fn manual_collection_page_screenshots() {
         screenshot::save(&mut h, &format!("pad-collection-page-{what}"));
         tap(&mut h, ADD_LAYERS);
         screenshot::save(&mut h, &format!("pad-add-layers-{what}"));
+    }
+}
+
+/// A collection that the globe does not check, made with no undo step.
+fn unchecked_collection(h: &mut Pad, name: &str) -> vale_store::CollectionId {
+    let id = h.state_mut().doc.project.add_collection(name).unwrap();
+    h.run_steps(1);
+    id
+}
+
+/// Opens the menu of the new layers in the Layers panel.
+fn open_add_menu(h: &mut Pad) {
+    if panel(h, Panel::Layers).is_none() {
+        open_panel(h, "Layers");
+    }
+    if control(h, "Back to Layers").is_some() {
+        tap(h, "Back to Layers");
+    }
+    tap(h, ADD_LAYER);
+    assert!(h.state().pad.add);
+}
+
+/// The layer of the panel that the Layers panel shows.
+fn shown_vector(h: &Pad) -> vale_store::LayerId {
+    match h.state().pad.layer {
+        Some(LayerRef::Vector(id)) => id,
+        other => panic!("no vector layer: {other:?}"),
+    }
+}
+
+#[test]
+fn each_form_that_makes_a_layer_has_a_collection_row() {
+    use vale_app::ui::pad::collection_choice::COLLECTION;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, _) = islands_pad();
+        h.set_size(vec2(size.0, size.1));
+        h.run_steps(2);
+        open_add_menu(&mut h);
+        let row = control(&h, COLLECTION).unwrap_or_else(|| panic!("{what}: menu"));
+        assert!(h.state().pad.add_rect.unwrap().contains_rect(row), "{what}");
+        h.state_mut().pad.add = false;
+        h.run_steps(2);
+        open_raster_form(&mut h);
+        assert!(control(&h, COLLECTION).is_some(), "{what}: raster form");
+        h.state_mut().raster_form = None;
+        h.run_steps(2);
+        open_polygonize(&mut h);
+        for _ in 0..8 {
+            if control(&h, COLLECTION).is_some() {
+                break;
+            }
+            let card = panel(&h, Panel::Toolbox).unwrap();
+            let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
+            drag(&mut h, from, from - vec2(0.0, 200.0), None);
+        }
+        assert!(control(&h, COLLECTION).is_some(), "{what}: Polygonize");
+    }
+}
+
+#[test]
+fn the_collection_row_starts_on_the_top_collection_of_the_map_on_the_globe() {
+    let mut h = pad(BOARDS[0]);
+    let roads = unchecked_collection(&mut h, "Roads");
+    h.state_mut().add_collection("Coast");
+    let state = h.state_mut();
+    let world = state.doc.project.world_collection();
+    let map = state.doc.project.atlas.add_map();
+    assert!(state.doc.project.set_map_stack(map, vec![roads, world]));
+    state.globe_map = Some(map);
+    assert_eq!(state.collection_choice_name(None), "World");
+    assert!(state.doc.project.set_map_stack(map, vec![world, roads]));
+    assert_eq!(state.collection_choice_name(None), "Roads");
+    open_add_menu(&mut h);
+    tap(&mut h, "Lines");
+    let id = shown_vector(&h);
+    assert_eq!(collections_of(&h, id), ["Roads"]);
+    // The globe checks the collection of the new layer.
+    let project = &h.state().doc.project;
+    assert_eq!(project.globe_collections().last(), Some(&roads));
+}
+
+#[test]
+fn the_collection_row_starts_on_the_topmost_checked_collection_or_world() {
+    let mut h = pad(BOARDS[0]);
+    open_panel(&mut h, "Layers");
+    new_collection(&mut h, "Travel");
+    close_collection_menu(&mut h);
+    assert_eq!(h.state().collection_choice_name(None), "Travel");
+    open_add_menu(&mut h);
+    tap(&mut h, "Lines");
+    assert_eq!(collections_of(&h, shown_vector(&h)), ["Travel"]);
+
+    // With no check, the row starts on World, and the globe checks World.
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().doc.project.set_globe_collections(vec![]);
+    h.run_steps(1);
+    assert_eq!(h.state().collection_choice_name(None), "World");
+    open_add_menu(&mut h);
+    tap(&mut h, "Points");
+    assert_eq!(collections_of(&h, shown_vector(&h)), ["World"]);
+    assert_eq!(h.state().doc.project.globe_collections(), [world]);
+}
+
+#[test]
+fn a_choice_in_the_collection_row_replaces_the_default() {
+    use vale_app::ui::pad::collection_choice::{COLLECTION, row_name};
+    let mut h = pad(BOARDS[0]);
+    h.state_mut().add_collection("Coast");
+    h.state_mut().add_collection("Travel");
+    open_add_menu(&mut h);
+    tap(&mut h, COLLECTION);
+    assert!(h.state().pad.add_picking);
+    tap(&mut h, &row_name("Coast"));
+    // The pick closes the picker, and the menu keeps the choice.
+    assert!(!h.state().pad.add_picking);
+    tap(&mut h, "Lines");
+    assert_eq!(collections_of(&h, shown_vector(&h)), ["Coast"]);
+
+    // The next menu starts on the default again.
+    open_add_menu(&mut h);
+    tap(&mut h, "Polygons");
+    assert_eq!(collections_of(&h, shown_vector(&h)), ["Travel"]);
+}
+
+#[test]
+fn new_collection_in_the_picker_holds_the_new_layer_in_one_undo_step() {
+    use vale_app::ui::pad::collection_choice::{
+        COLLECTION, NEW_COLLECTION_NAME, NEW_COLLECTION_ROW,
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("coast.geojson");
+    let json = r#"{"type":"FeatureCollection","features":[
+      {"type":"Feature","properties":{},"geometry":{"type":"LineString","coordinates":[[0,0],[10,5]]}}
+    ]}"#;
+    std::fs::write(&file, json).unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    open_add_menu(&mut h);
+    tap(&mut h, COLLECTION);
+    tap(&mut h, NEW_COLLECTION_ROW);
+    tap(&mut h, NEW_COLLECTION_NAME);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Vesperan".to_owned()));
+    h.run_steps(2);
+    tap(&mut h, &format!("Back to {ADD_LAYER}"));
+    tap(&mut h, NEW_GEOJSON);
+    assert_eq!(h.state().actions, [Action::GeoJsonDialog]);
+    h.state_mut().actions.clear();
+    let layers = h.state().doc.project.layers().len();
+    h.state_mut().run_action(Action::ImportGeoJson(file));
+    h.run_steps(2);
+    assert_eq!(members_of(&h, "Vesperan"), ["coast"]);
+    let vesperan = collection_id(&h, "Vesperan");
+    assert_eq!(
+        h.state().doc.project.globe_collections().last(),
+        Some(&vesperan)
+    );
+    undo_step(&mut h);
+    let project = &h.state().doc.project;
+    assert!(project.collection(vesperan).is_none());
+    assert_eq!(project.layers().len(), layers);
+    redo_step(&mut h);
+    assert_eq!(members_of(&h, "Vesperan"), ["coast"]);
+}
+
+#[test]
+fn the_globe_checks_the_collection_of_the_output_of_polygonize() {
+    use vale_app::ui::pad::collection_choice::{COLLECTION, row_name};
+    use vale_app::ui::pad::toolbox::RUN;
+    let (mut h, _) = islands_pad();
+    let rivers = unchecked_collection(&mut h, "Rivers");
+    open_polygonize(&mut h);
+    tap(&mut h, COLLECTION);
+    tap(&mut h, &row_name("Rivers"));
+    assert!(control(&h, RUN).is_some());
+    tap(&mut h, RUN);
+    h.run_steps(2);
+    let project = &h.state().doc.project;
+    let outputs = h.state().polygonize_outputs();
+    assert!(!outputs.is_empty());
+    for id in outputs {
+        assert_eq!(collections_of(&h, id), ["Rivers"]);
+    }
+    assert_eq!(project.globe_collections().last(), Some(&rivers));
+}
+
+#[test]
+fn the_collection_row_and_its_picker_have_touch_size_controls() {
+    use vale_app::ui::pad::collection_choice::COLLECTION;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        for name in ["Coast", "Travel", "Harbor of Lys"] {
+            h.state_mut().add_collection(name);
+        }
+        open_add_menu(&mut h);
+        check_controls(&h, &format!("{what} with the menu"));
+        tap(&mut h, COLLECTION);
+        check_controls(&h, &format!("{what} with the picker of the menu"));
+        let menu = h.state().pad.add_rect.unwrap();
+        assert!(menu.bottom() <= size.1, "{what}: {menu:?}");
+        screenshot::save(&mut h, &format!("pad-collection-picker-{what}"));
+        h.state_mut().pad.add = false;
+        h.run_steps(2);
+        open_raster_form(&mut h);
+        tap(&mut h, COLLECTION);
+        assert!(h.state().raster_form.as_ref().unwrap().picking, "{what}");
+        check_controls(&h, &format!("{what} with the picker of the raster form"));
     }
 }

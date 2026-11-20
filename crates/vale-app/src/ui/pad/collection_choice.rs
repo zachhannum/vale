@@ -1,11 +1,12 @@
 //! The Collection row of a form that makes a layer, and its picker.
 
-use eframe::egui::{self, Rect, pos2};
+use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
 use vale_store::{CollectionId, Project};
 
 use super::collection::SEARCH_COLLECTIONS;
+use super::icons::{self, Icon};
 use super::theme;
-use super::widgets::{self, Controls};
+use super::widgets::{self, Controls, PANEL_ROW};
 use crate::ui::AppState;
 use crate::ui::collection_choice::CollectionChoice;
 
@@ -15,6 +16,10 @@ pub const COLLECTION: &str = "Collection";
 pub const NEW_COLLECTION_ROW: &str = "New collection";
 /// The name of the name field of the row "New collection".
 pub const NEW_COLLECTION_NAME: &str = "New collection name";
+
+/// The space between the left edge of a row and its text. The check is at
+/// the left of the text, as in an `option_row`.
+const TEXT_X: f32 = 38.0;
 
 /// The text of the picker. One picker shows at a time.
 #[derive(Default)]
@@ -74,18 +79,32 @@ pub fn picker(
     ui.add_space(4.0);
 
     let new = matches!(choice, Some(CollectionChoice::New(_)));
-    let row = widgets::option_row(
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+    let left = rect.left() + TEXT_X + widgets::text_width(ui, NEW_COLLECTION_ROW, theme::body());
+    let field = Rect::from_min_max(pos2(left + 12.0, rect.top()), rect.max);
+    let label = Rect::from_min_max(rect.min, pos2(field.left(), rect.bottom()));
+    let sense = Sense::click();
+    let row = widgets::hit(
         ui,
         controls,
+        label,
         NEW_COLLECTION_ROW,
-        NEW_COLLECTION_ROW,
-        &[],
-        new,
+        sense,
+        true,
+        Some(new),
     );
-    let left = row.rect.left() + 38.0 + widgets::text_width(ui, NEW_COLLECTION_ROW, theme::body());
-    let field = Rect::from_min_max(
-        pos2(left + 12.0, row.rect.top()),
-        pos2(row.rect.right(), row.rect.bottom()),
+    let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
+    if new {
+        icons::paint(ui.painter(), mark, Icon::Tick, 18.0, theme::ACCENT);
+    }
+    let at = pos2(rect.left() + TEXT_X, rect.center().y);
+    let color = if new { theme::TEXT } else { theme::MUTE };
+    (ui.painter()).text(
+        at,
+        Align2::LEFT_CENTER,
+        NEW_COLLECTION_ROW,
+        theme::body(),
+        color,
     );
     let valid = project.collection_name_is_free(&picker.name, None);
     let font = theme::body();
@@ -164,8 +183,8 @@ pub fn desktop(
     });
     if let Some(CollectionChoice::New(name)) = choice {
         ui.horizontal(|ui| {
-            ui.label("Name");
-            ui.text_edit_singleline(name);
+            let label = ui.label(NEW_COLLECTION_NAME);
+            ui.text_edit_singleline(name).labelled_by(label.id);
         });
     }
 }

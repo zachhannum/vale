@@ -3498,7 +3498,7 @@ fn add_menu(
 ) {
     // A world with no height layer gets one from an import.
     let import = !state.doc.project.rasters().iter().any(is_height);
-    let size = if state.pad.add_picking {
+    let mut size = if state.pad.add_picking {
         let rows = 1 + state.doc.project.collections().len();
         let height = 10.0 + ROW + 8.0 + TOUCH + 4.0 + rows as f32 * PANEL_ROW + 10.0;
         let room = (rects.panel_bottom - rects.screen.top() - rects.bands.top).max(ROW * 3.0);
@@ -3516,10 +3516,20 @@ fn add_menu(
     let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
         beside
     } else {
-        let left = (button.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
-        // A short screen moves the menu up, out of the bottom band.
-        let top = (rects.panel_bottom - size.y).min(button.bottom() + PAD);
-        pos2(left, top.max(rects.screen.top() + rects.bands.top))
+        // A short screen moves the menu up, out of the bottom band. A menu
+        // that then covers its button goes to the left of the button.
+        let below = button.bottom() + PAD;
+        let top = (rects.panel_bottom - size.y).min(below);
+        let top = top.max(rects.screen.top() + rects.bands.top);
+        let right = if top < below {
+            button.left() - PAD
+        } else {
+            button.right()
+        };
+        let left = (right - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
+        // A screen that is still too short scrolls the rows.
+        size.y = size.y.min(rects.panel_bottom - top);
+        pos2(left, top)
     };
     let rect = geometry::off_fold(
         Rect::from_min_size(min, size),
@@ -3557,54 +3567,62 @@ fn add_menu(
                 add_menu_picker(ui, state, controls);
                 return;
             }
-            let choice = state.pad.add_collection.clone();
-            if collection_choice::row(ui, state, controls, choice.as_ref()) {
-                state.pad.add_picking = true;
-            }
-            let valid = state.collection_choice_is_valid(choice.as_ref());
-            menu_heading(ui, NEW_SECTION);
-            for (name, kind) in NEW_LAYERS {
-                if widgets::text_row(ui, controls, name, 0.0, false, valid).clicked() {
-                    state.add_vector_layer(kind, choice.as_ref());
-                    state.pad.add = false;
-                }
-            }
-            // The arrow tells that the row opens a form.
-            let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
-            let arrow = Rect::from_center_size(
-                pos2(raster.rect.right() - 10.0, raster.rect.center().y),
-                vec2(18.0, 18.0),
-            );
-            icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
-            if raster.clicked() {
-                let mut form = RasterForm::open(state);
-                form.collection = choice.clone();
-                state.raster_form = Some(form);
-                state.pad.add = false;
-            }
-            menu_heading(ui, IMPORT_SECTION);
-            let free = state.image_import.is_none() && valid;
-            if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
-                state.import_collection = choice.clone();
-                state.actions.push(Action::ImageLayerDialog);
-                state.pad.add = false;
-            }
-            if widgets::text_row(ui, controls, NEW_GEOJSON, 0.0, false, valid).clicked() {
-                state.import_collection = choice.clone();
-                state.actions.push(Action::GeoJsonDialog);
-                state.pad.add = false;
-            }
-            if import {
-                let enabled = !state.globe.busy() && valid;
-                let row = widgets::text_row(ui, controls, NEW_HEIGHTMAP, 0.0, false, enabled);
-                if row.clicked() {
-                    state.import_collection = choice.clone();
-                    state.actions.push(Action::ImportHeightmapDialog);
-                    state.pad.add = false;
-                }
-            }
+            egui::ScrollArea::vertical()
+                .id_salt("pad-add-layer-rows")
+                .show(ui, |ui| add_menu_rows(ui, state, controls, import));
         },
     );
+}
+
+/// The rows of the menu of the new layers: the Collection row, the rows of
+/// the new layers, and the rows of the imports.
+fn add_menu_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, import: bool) {
+    let choice = state.pad.add_collection.clone();
+    if collection_choice::row(ui, state, controls, choice.as_ref()) {
+        state.pad.add_picking = true;
+    }
+    let valid = state.collection_choice_is_valid(choice.as_ref());
+    menu_heading(ui, NEW_SECTION);
+    for (name, kind) in NEW_LAYERS {
+        if widgets::text_row(ui, controls, name, 0.0, false, valid).clicked() {
+            state.add_vector_layer(kind, choice.as_ref());
+            state.pad.add = false;
+        }
+    }
+    // The arrow tells that the row opens a form.
+    let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
+    let arrow = Rect::from_center_size(
+        pos2(raster.rect.right() - 10.0, raster.rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
+    if raster.clicked() {
+        let mut form = RasterForm::open(state);
+        form.collection = choice.clone();
+        state.raster_form = Some(form);
+        state.pad.add = false;
+    }
+    menu_heading(ui, IMPORT_SECTION);
+    let free = state.image_import.is_none() && valid;
+    if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
+        state.import_collection = choice.clone();
+        state.actions.push(Action::ImageLayerDialog);
+        state.pad.add = false;
+    }
+    if widgets::text_row(ui, controls, NEW_GEOJSON, 0.0, false, valid).clicked() {
+        state.import_collection = choice.clone();
+        state.actions.push(Action::GeoJsonDialog);
+        state.pad.add = false;
+    }
+    if import {
+        let enabled = !state.globe.busy() && valid;
+        let row = widgets::text_row(ui, controls, NEW_HEIGHTMAP, 0.0, false, enabled);
+        if row.clicked() {
+            state.import_collection = choice.clone();
+            state.actions.push(Action::ImportHeightmapDialog);
+            state.pad.add = false;
+        }
+    }
 }
 
 /// The picker of the Collection row of the menu of the new layers. The

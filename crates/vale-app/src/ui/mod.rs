@@ -4750,7 +4750,6 @@ impl AppState {
                     self.begin_new_layer(choice.as_ref());
                     let ids = self.doc.add_imported(imported, Some(&path));
                     self.end_new_layer();
-                    self.save_edit();
                     ids
                 });
                 match read {
