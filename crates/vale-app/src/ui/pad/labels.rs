@@ -138,6 +138,17 @@ pub const OUTSIDE_ZONES: [&str; 8] = [
 /// The highest rank that a tap on a zone gives.
 pub const MAX_ZONE_RANK: u8 = 3;
 pub const BUFFER: &str = "Buffer";
+pub const HARD_BUFFER: &str = "Hard buffer";
+pub const SYMBOL_WEIGHT: &str = "Symbol weight";
+pub const LINE_WEIGHT: &str = "Line weight";
+pub const FILL_WEIGHT: &str = "Fill weight";
+pub const OUTLINE_WEIGHT: &str = "Outline weight";
+pub const BACKGROUND: &str = "Background";
+pub const NEVER_REMOVE: &str = "Never remove";
+/// The value of a weight of 0.
+pub const WEIGHT_FREE: &str = "Free";
+/// The value of the largest weight.
+pub const WEIGHT_FORBIDDEN: &str = "Forbidden";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
 /// The row of the fallbacks, and the title of its page.
@@ -1339,8 +1350,34 @@ fn curve_limit(
     }
 }
 
-/// The Conflicts segment of the panel of a class: the buffer, the
-/// distance between labels with the same text, and the fallbacks.
+/// The text of weight `w` of a class.
+pub fn weight_text(w: f64) -> String {
+    if w <= 0.0 {
+        WEIGHT_FREE.to_owned()
+    } else if w >= vale_style::FORBIDDEN_WEIGHT {
+        WEIGHT_FORBIDDEN.to_owned()
+    } else {
+        format!("{w:.0}")
+    }
+}
+
+/// A weight row: its name, and the field of the class that it edits.
+pub type WeightRow = (&'static str, fn(&mut LabelClass) -> &mut f64);
+
+/// The weight rows of a class of `kind`.
+pub fn weight_rows(kind: GeometryKind) -> &'static [WeightRow] {
+    match kind {
+        GeometryKind::Point => &[(SYMBOL_WEIGHT, |c| &mut c.point_weight)],
+        GeometryKind::Line => &[(LINE_WEIGHT, |c| &mut c.line_weight)],
+        GeometryKind::Polygon => &[
+            (FILL_WEIGHT, |c| &mut c.inside_weight),
+            (OUTLINE_WEIGHT, |c| &mut c.outline_weight),
+        ],
+    }
+}
+
+/// The Conflicts segment of the panel of a class: the buffer, the weights,
+/// the distance between labels with the same text, and the fallbacks.
 fn conflicts_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1355,6 +1392,28 @@ fn conflicts_segment(
         .stepper(ui, controls);
     if let Some(buffer) = buffer {
         state.edit_label_class(map, layer, i, |c| c.buffer = buffer);
+    }
+    let mut hard = class.buffer_hard;
+    if widgets::switch_row(ui, controls, HARD_BUFFER, HARD_BUFFER, &mut hard) {
+        state.label_class_step(map, layer, i, |c| c.buffer_hard = hard);
+    }
+    for &(name, field) in weight_rows(kind) {
+        let value = *field(&mut class.clone());
+        let weight = Number::new(name, value, 0.0..=vale_style::FORBIDDEN_WEIGHT)
+            .step(1.0)
+            .text(weight_text)
+            .slider(ui, controls);
+        if let Some(weight) = weight {
+            state.edit_label_class(map, layer, i, |c| *field(c) = weight);
+        }
+    }
+    let mut background = class.background;
+    if widgets::switch_row(ui, controls, BACKGROUND, BACKGROUND, &mut background) {
+        state.label_class_step(map, layer, i, |c| c.background = background);
+    }
+    let mut never = class.never_remove;
+    if widgets::switch_row(ui, controls, NEVER_REMOVE, NEVER_REMOVE, &mut never) {
+        state.label_class_step(map, layer, i, |c| c.never_remove = never);
     }
     let mut remove = class.remove_duplicates;
     if widgets::switch_row(

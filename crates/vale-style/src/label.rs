@@ -743,6 +743,15 @@ pub const BUFFER: f64 = 1.0;
 /// The default distance between two labels with the same text, in points.
 pub const DUPLICATE_DISTANCE: f64 = 300.0;
 
+/// The weight that forbids labels over a feature. A weight is from 0, free, to this.
+pub const FORBIDDEN_WEIGHT: f64 = 100.0;
+
+/// The default weight of a point symbol.
+pub const POINT_WEIGHT: f64 = FORBIDDEN_WEIGHT;
+
+/// The default weight of a line.
+pub const LINE_WEIGHT: f64 = 30.0;
+
 pub use vale_store::TextCase;
 
 /// The default color of the halo.
@@ -868,6 +877,21 @@ pub struct LabelClass {
     pub min_length: f64,
     /// The margin around the label that other labels keep free, in points.
     pub buffer: f64,
+    /// True forbids other labels in the buffer. False only makes them cost more.
+    pub buffer_hard: bool,
+    /// Points. The weight of the symbol for the labels of other features, from 0, free,
+    /// to `FORBIDDEN_WEIGHT`.
+    pub point_weight: f64,
+    /// Lines. The weight of the line for other labels.
+    pub line_weight: f64,
+    /// Polygons. The weight of the inside of the polygon for other labels.
+    pub inside_weight: f64,
+    /// Polygons. The weight of the outline for other labels.
+    pub outline_weight: f64,
+    /// True places the labels first, and the labels of other classes can cover them.
+    pub background: bool,
+    /// True places each label that has a position, also over other labels.
+    pub never_remove: bool,
     /// True keeps labels with the same text apart.
     pub remove_duplicates: bool,
     /// The smallest distance between two labels with the same text, in points.
@@ -1005,6 +1029,13 @@ impl LabelClass {
             spread_fill: false,
             min_length: 0.0,
             buffer: BUFFER,
+            buffer_hard: true,
+            point_weight: POINT_WEIGHT,
+            line_weight: LINE_WEIGHT,
+            inside_weight: 0.0,
+            outline_weight: 0.0,
+            background: false,
+            never_remove: false,
             remove_duplicates: true,
             duplicate_distance: DUPLICATE_DISTANCE,
             fallbacks: FallbackRank::defaults(),
@@ -1150,6 +1181,13 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "abbreviations": c.abbreviations,
                 "truncation_marker": c.truncation_marker,
                 "leader_distance": c.leader_distance,
+                "buffer_hard": c.buffer_hard,
+                "point_weight": c.point_weight,
+                "line_weight": c.line_weight,
+                "inside_weight": c.inside_weight,
+                "outline_weight": c.outline_weight,
+                "background": c.background,
+                "never_remove": c.never_remove,
             });
             if let (Json::Object(m), Json::Object(f), Json::Object(l), Json::Object(p)) =
                 (&mut class, fallbacks, line, point)
@@ -1370,6 +1408,13 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         spread_fill: flag("spread_fill", false),
         min_length: number("min_length", 0.0),
         buffer: number("buffer", BUFFER),
+        buffer_hard: flag("buffer_hard", true),
+        point_weight: number("point_weight", POINT_WEIGHT),
+        line_weight: number("line_weight", LINE_WEIGHT),
+        inside_weight: number("inside_weight", 0.0),
+        outline_weight: number("outline_weight", 0.0),
+        background: flag("background", false),
+        never_remove: flag("never_remove", false),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
         fallbacks: fallbacks(m),
@@ -1524,6 +1569,13 @@ mod tests {
         a.curve_limit = 0.5;
         a.smoothing = 2.0;
         a.buffer = 3.0;
+        a.buffer_hard = false;
+        a.point_weight = 40.0;
+        a.line_weight = 100.0;
+        a.inside_weight = 15.0;
+        a.outline_weight = 60.0;
+        a.background = true;
+        a.never_remove = true;
         a.remove_duplicates = false;
         a.duplicate_distance = 120.0;
         a.graticule = true;
@@ -1651,6 +1703,12 @@ mod tests {
         assert!(!read[0].spread_fill);
         assert_eq!(read[0].min_length, 0.0);
         assert_eq!(read[0].buffer, 1.0);
+        assert!(read[0].buffer_hard);
+        assert_eq!(read[0].point_weight, 100.0);
+        assert_eq!(read[0].line_weight, 30.0);
+        assert_eq!(read[0].inside_weight, 0.0);
+        assert_eq!(read[0].outline_weight, 0.0);
+        assert!(!read[0].background && !read[0].never_remove);
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);
         assert!(!read[0].graticule);

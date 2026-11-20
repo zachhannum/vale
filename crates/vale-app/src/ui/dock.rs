@@ -1376,6 +1376,18 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
         .step(0.5)
         .suffix(" pt")
         .show(ui);
+    {
+        use super::pad::labels::{BACKGROUND, HARD_BUFFER, NEVER_REMOVE, weight_rows, weight_text};
+        ui.checkbox(&mut class.buffer_hard, HARD_BUFFER);
+        for &(name, field) in weight_rows(kind) {
+            number::slider(name, field(&mut class), 0.0..=vale_style::FORBIDDEN_WEIGHT)
+                .step(1.0)
+                .format(weight_text)
+                .show(ui);
+        }
+        ui.checkbox(&mut class.background, BACKGROUND);
+        ui.checkbox(&mut class.never_remove, NEVER_REMOVE);
+    }
     ui.horizontal(|ui| {
         ui.checkbox(&mut class.remove_duplicates, REMOVE_DUPLICATES);
         if class.remove_duplicates {

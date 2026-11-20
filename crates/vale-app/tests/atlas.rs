@@ -75,6 +75,9 @@ use vale_app::ui::pad::labels::{
     LEADER_LINE, LINE_WIDTH, MATCH_HALO, MATCH_TEXT, MIN_AREA, OVER_HOLES, OVERRUN,
     REPEAT_DISTANCE, REPEAT_LABEL, SHOW_LINE, ZONES, zone_name,
 };
+use vale_app::ui::pad::labels::{
+    BACKGROUND, FILL_WEIGHT, HARD_BUFFER, LINE_WEIGHT, NEVER_REMOVE, OUTLINE_WEIGHT, SYMBOL_WEIGHT,
+};
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::{PANEL_ROW, eye_name};
 use vale_app::ui::pad::{
@@ -4752,12 +4755,14 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
             screenshot::save(&mut h, "pad-atlas-label-conflicts");
         }
         for name in [&value_of(BUFFER), REMOVE_DUPLICATES] {
+            scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
         let distance = value_of(DUPLICATE_DISTANCE);
         assert!(control(&h, &distance).is_none(), "{what}");
         tap(&mut h, REMOVE_DUPLICATES);
         assert!(classes(&h, map, "Places")[1].remove_duplicates, "{what}");
+        scroll_to(&mut h, &distance);
         assert!(control(&h, &distance).is_some(), "{what}");
         check_controls(&h, &format!("{what}: duplicate distance"));
         tap(&mut h, "Back to Labels");
@@ -7300,6 +7305,123 @@ fn the_conflict_options_reach_the_labeler() {
     assert!(!classes(&h, map, "Places")[0].remove_duplicates);
     let all = count(&mut h);
     assert!(apart > 0 && apart < all, "{apart} {all}");
+}
+
+#[test]
+fn the_conflicts_segment_shows_the_weights_of_the_feature_type() {
+    let weights = [SYMBOL_WEIGHT, LINE_WEIGHT, FILL_WEIGHT, OUTLINE_WEIGHT];
+    let check = |h: &mut Pad, shown: &[&str], what: &str| {
+        for name in [HARD_BUFFER, BACKGROUND, NEVER_REMOVE] {
+            scroll_to(h, name);
+            assert!(control(h, name).is_some(), "{what}: {name}");
+        }
+        for name in weights {
+            let field = value_of(name);
+            if shown.contains(&name) {
+                scroll_to(h, &field);
+                assert!(control(h, &field).is_some(), "{what}: {name}");
+                check_controls(h, &format!("{what}: {name}"));
+            } else {
+                assert!(control(h, &field).is_none(), "{what}: {name}");
+            }
+        }
+    };
+    let mut h = labels_pad(BOARDS[0]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, &[SYMBOL_WEIGHT], "point");
+    tap(&mut h, "Back to Labels");
+    tap(&mut h, "Rivers");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, &[LINE_WEIGHT], "line");
+
+    let (mut h, _) = land_pad(BOARDS[0]);
+    tap(&mut h, "Land");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, &[FILL_WEIGHT, OUTLINE_WEIGHT], "polygon");
+}
+
+#[test]
+fn the_weight_options_change_the_map_class() {
+    use vale_labeler::Weight;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad| classes(h, map, "Places")[0].clone();
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    let start = class(&h);
+    assert!(start.buffer_hard && !start.background && !start.never_remove);
+    assert_eq!(start.point_weight, 100.0);
+
+    for name in [HARD_BUFFER, BACKGROUND, NEVER_REMOVE] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    let c = class(&h);
+    assert!(!c.buffer_hard && c.background && c.never_remove);
+    // Each switch is one undo step.
+    tap(&mut h, "Undo");
+    let c = class(&h);
+    assert!(!c.buffer_hard && c.background && !c.never_remove);
+
+    let point = |h: &Pad| match labeler_placement(h, map, "Places", GeometryKind::Point) {
+        Placement::Point(p) => p.weight,
+        _ => panic!("not a point placement"),
+    };
+    assert_eq!(point(&h), Weight::Forbidden);
+    set_number(&mut h, SYMBOL_WEIGHT, "40");
+    assert_eq!(class(&h).point_weight, 40.0);
+    assert_eq!(point(&h), Weight::Cost(4.0));
+    set_number(&mut h, SYMBOL_WEIGHT, "0");
+    assert_eq!(point(&h), Weight::FREE);
+}
+
+#[test]
+fn the_weights_of_a_class_reach_the_labeler() {
+    use vale_app::labels::{placement, weight};
+    use vale_app::ui::pad::labels::weight_text;
+    use vale_labeler::Weight;
+    assert_eq!(weight(0.0), Weight::FREE);
+    assert_eq!(weight(30.0), Weight::Cost(3.0));
+    assert_eq!(weight(99.0), Weight::Cost(9.9));
+    assert_eq!(weight(100.0), Weight::Forbidden);
+    assert_eq!(
+        (weight_text(0.0), weight_text(42.0), weight_text(100.0)),
+        ("Free".into(), "42".into(), "Forbidden".into())
+    );
+
+    let mut line = vale_style::LabelClass::new("R", GeometryKind::Line, 0).unwrap();
+    let Placement::Line(p) = placement(&line, GeometryKind::Line) else {
+        panic!("not a line placement");
+    };
+    assert_eq!(p.weight, Weight::Cost(3.0));
+    line.line_weight = 100.0;
+    let Placement::Line(p) = placement(&line, GeometryKind::Line) else {
+        panic!("not a line placement");
+    };
+    assert_eq!(p.weight, Weight::Forbidden);
+
+    let mut area = vale_style::LabelClass::new("L", GeometryKind::Polygon, 0).unwrap();
+    let Placement::Polygon(p) = placement(&area, GeometryKind::Polygon) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(
+        (p.inside_weight, p.outline_weight),
+        (Weight::FREE, Weight::FREE)
+    );
+    (area.inside_weight, area.outline_weight) = (100.0, 55.0);
+    let Placement::Polygon(p) = placement(&area, GeometryKind::Polygon) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(p.inside_weight, Weight::Forbidden);
+    assert_eq!(p.outline_weight, Weight::Cost(5.5));
 }
 
 #[test]
