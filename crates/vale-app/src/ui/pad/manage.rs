@@ -75,6 +75,11 @@ impl ManageState {
     }
 }
 
+/// The name of the tab of a segment on the desktop.
+pub fn segment_name(segment: &str) -> String {
+    format!("Show {segment}")
+}
+
 /// The name of the row of a collection on the management page.
 pub fn collection_entry(name: &str) -> String {
     format!("{name} collection")
