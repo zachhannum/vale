@@ -1787,7 +1787,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         ),
         Some(Page::RampEditor) => (
             "pad-atlas-classify-ramp-editor",
-            super::ramp_editor::NEW_RAMP_TITLE,
+            super::ramp_editor::title(state),
             super::raster::COLOR_RAMPS,
         ),
         Some(Page::Table) => ("pad-atlas-table", super::table::TITLE, name.as_str()),
@@ -1968,7 +1968,7 @@ fn raster_head(
         Some(Page::RampLabels(_)) => ("pad-atlas-ramp-labels", LABELS, COLOR_RAMPS),
         Some(Page::RampEditor) => (
             "pad-atlas-ramp-editor",
-            super::ramp_editor::NEW_RAMP_TITLE,
+            super::ramp_editor::title(state),
             editor_back.1,
         ),
         Some(Page::Stops) => ("pad-atlas-stops", COLOR_STOPS, name.as_str()),

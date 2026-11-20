@@ -2170,7 +2170,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             if page == Some(Page::RampEditor) =>
         {
             let back = ramp_editor::back_page(state).1;
-            ("pad-ramp-editor", ramp_editor::NEW_RAMP_TITLE, Some(back))
+            ("pad-ramp-editor", ramp_editor::title(state), Some(back))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Stops) => {
             ("pad-stops", raster::COLOR_STOPS, Some(name))

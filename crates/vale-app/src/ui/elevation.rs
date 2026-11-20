@@ -7,7 +7,7 @@ use vale_terrain::{Bands, Rgb, StopLine};
 
 use super::gradient::{self, DESKTOP};
 use super::pad::raster::RampChoice;
-use super::{Action, AppState, LayerRef, number, pad, style_editor};
+use super::{Action, AppState, LayerRef, RampApply, number, pad, style_editor};
 use crate::globe::preview::{LAKE_KM2_RANGE, Preview};
 use crate::ramps::Ramps;
 use crate::world;
@@ -319,8 +319,16 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         // The part that the user chose stays in the memory of egui.
         let key = egui::Id::new(("ramp-part", id, index));
         let picked: Option<usize> = ui.data(|d| d.get_temp(key));
-        let part = picked.map_or(layer.part(&ramp.colors), |i| pad::raster::PARTS[i]);
+        let part = picked.map_or(layer.ramp_part(&ramp.colors()), |i| pad::raster::PARTS[i]);
         let (bands, kind) = pad::raster::ramp_fit(&layer, part);
+        // The number of bands of "Make" also stays in the memory of egui.
+        let count_key = egui::Id::new(("ramp-count", id, index));
+        let range = pad::raster::make_range(&layer, part, 0..layer.colors().len());
+        let made: usize = ui.data(|d| d.get_temp(count_key)).unwrap_or(colors);
+        let mut made = made.clamp(*range.start(), *range.end());
+        // So does the choice of new stops.
+        let new_key = egui::Id::new(("ramp-new", id, index));
+        let new_stops: bool = ui.data(|d| d.get_temp(new_key)).unwrap_or(false);
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
             if split {
                 ui.horizontal(|ui| {
@@ -343,24 +351,41 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
             let mut choose = |ui: &mut egui::Ui, text: &str, choice: RampChoice| {
                 if ui.button(text).clicked() {
                     chosen = Some((index, part, choice));
-                    // The menu stays open after a reverse.
-                    if choice != RampChoice::Reverse {
-                        ui.close();
-                    }
+                    ui.close();
                 }
             };
-            if colors == bands {
-                choose(ui, pad::raster::APPLY_RAMP, RampChoice::Apply(true));
+            ui.horizontal(|ui| {
+                ui.label(pad::raster::STOPS);
+                for (i, name) in pad::raster::STOP_NAMES.iter().enumerate() {
+                    if ui.selectable_label(new_stops == (i == 1), *name).clicked() {
+                        ui.data_mut(|d| d.insert_temp(new_key, i == 1));
+                    }
+                }
+            });
+            if new_stops {
+                ui.horizontal(|ui| {
+                    ui.label(pad::raster::BAND_COUNT);
+                    let drag = egui::DragValue::new(&mut made).range(range.clone());
+                    if ui.add(drag).changed() {
+                        ui.data_mut(|d| d.insert_temp(count_key, made));
+                    }
+                });
+                let fresh = format!("Make {made} {kind}bands");
+                choose(ui, &fresh, RampChoice::Apply(RampApply::Make(made)));
+            } else if colors == bands {
+                choose(
+                    ui,
+                    pad::raster::APPLY_RAMP,
+                    RampChoice::Apply(RampApply::Fit),
+                );
             } else {
-                let keep = format!("Fit to {bands} {kind}bands");
-                choose(ui, &keep, RampChoice::Apply(true));
-                let fresh = format!("Make {colors} {kind}bands");
-                choose(ui, &fresh, RampChoice::Apply(false));
+                let fit = format!("Fit to {bands} {kind}bands");
+                choose(ui, &fit, RampChoice::Apply(RampApply::Fit));
             }
             ui.separator();
             choose(ui, pad::raster::DUPLICATE_RAMP, RampChoice::Duplicate);
             if !ramp.built_in {
-                choose(ui, pad::raster::REVERSE_RAMP, RampChoice::Reverse);
+                choose(ui, pad::raster::EDIT_RAMP, RampChoice::Edit);
                 choose(ui, pad::raster::DELETE_RAMP, RampChoice::Delete);
             }
             if !ramp.built_in || ramp.labels.iter().any(|l| !l.is_empty()) {
@@ -400,11 +425,16 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         return;
     };
     let result = match choice {
-        RampChoice::Apply(keep) => state.apply_ramp(id, index, keep, part, None),
+        RampChoice::Apply(how) => state.apply_ramp(id, index, how, part, None),
         RampChoice::Reverse => state.ramps.reverse(index).map_err(|e| e.to_string()),
         RampChoice::Delete => state.ramps.remove(index).map_err(|e| e.to_string()),
         RampChoice::Duplicate => {
             let source = super::RampSource::Copy(index);
+            state.actions.push(Action::NewRamp(Some(id), source));
+            Ok(())
+        }
+        RampChoice::Edit => {
+            let source = super::RampSource::Edit(index);
             state.actions.push(Action::NewRamp(Some(id), source));
             Ok(())
         }

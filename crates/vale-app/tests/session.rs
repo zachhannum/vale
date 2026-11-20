@@ -7,7 +7,7 @@ use vale_app::memory;
 use vale_app::pipeline::Quality;
 use vale_app::ramps::DraftFrom;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
-use vale_app::ui::{Action, AppState, LayerRef, RampSource, RasterSpec, Workspace};
+use vale_app::ui::{Action, AppState, LayerRef, RampApply, RampSource, RasterSpec, Workspace};
 use vale_store::{
     GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
 };
@@ -439,7 +439,13 @@ fn applying_a_labeled_ramp_names_the_bands() {
         .unwrap();
     let labels = ramps[at].labels.clone();
     state
-        .apply_ramp(climate, at, false, vale_terrain::Part::All, None)
+        .apply_ramp(
+            climate,
+            at,
+            RampApply::Make(labels.len()),
+            vale_terrain::Part::All,
+            None,
+        )
         .unwrap();
     assert_eq!(state.globe.bands_mut(climate).unwrap().names(), labels);
 

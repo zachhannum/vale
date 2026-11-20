@@ -13,6 +13,8 @@ const RAMPS_FILE: &str = "ramps.txt";
 
 /// The word before the colors of a qualitative custom ramp in the file.
 const QUALITATIVE_WORD: &str = "qualitative";
+/// The word between the sea colors and the land colors in the file.
+const SEA_WORD: &str = "sea";
 
 /// The fewest colors of a ramp that the editor makes.
 pub const MIN_COLORS: usize = 2;
@@ -33,6 +35,9 @@ pub struct Ramp {
     pub built_in: bool,
     /// The colors are for classes with no order, so they do not blend.
     pub qualitative: bool,
+    /// The number of colors below sea level. `None`: the colors that are
+    /// mostly blue at the start of the ramp.
+    pub sea: Option<usize>,
 }
 
 impl Ramp {
@@ -44,13 +49,26 @@ impl Ramp {
             colors,
             built_in: false,
             qualitative: false,
+            sea: None,
         }
     }
 
-    /// Reverses the order of the colors and of their labels.
+    /// Reverses the order of the colors and of their labels. Sea level
+    /// stays between the same two colors.
     pub fn reverse(&mut self) {
         self.colors.reverse();
         self.labels.reverse();
+        self.sea = self.sea.map(|sea| self.colors.len() - sea);
+    }
+
+    /// The colors, the labels, and the sea level, for a layer.
+    pub fn colors(&self) -> vale_terrain::RampColors<'_> {
+        vale_terrain::RampColors {
+            colors: &self.colors,
+            labels: &self.labels,
+            qualitative: self.qualitative,
+            sea: self.sea,
+        }
     }
 
     /// The index of the color with this label. Case does not count.
@@ -69,11 +87,7 @@ impl Ramp {
     /// ramp, and even steps from the first color to the last color for
     /// another ramp.
     pub fn classes(&self, n: usize) -> Vec<Rgb> {
-        if self.qualitative {
-            cycle(&self.colors, n)
-        } else {
-            sample(&self.colors, n)
-        }
+        vale_terrain::sample_ramp(&self.colors, n, self.qualitative)
     }
 }
 
@@ -177,6 +191,29 @@ impl Ramps {
         self.write()
     }
 
+    /// Puts a ramp in the place of custom ramp `index`, and returns its
+    /// name. A name that another ramp has gets a number. A built-in ramp
+    /// does not change.
+    pub fn replace(&mut self, index: usize, mut ramp: Ramp) -> std::io::Result<String> {
+        if !self.list.get(index).is_some_and(|r| !r.built_in) {
+            return Ok(ramp.name);
+        }
+        let old = std::mem::take(&mut self.list[index].name);
+        ramp.name = self.free_name(&ramp.name);
+        if ramp.name.is_empty() {
+            ramp.name = old;
+        }
+        ramp.built_in = false;
+        ramp.labels.resize(ramp.colors.len(), String::new());
+        for label in &mut ramp.labels {
+            *label = label.replace(['\t', '\n', '\r'], " ");
+        }
+        let name = ramp.name.clone();
+        self.list[index] = ramp;
+        self.write()?;
+        Ok(name)
+    }
+
     /// Reverses the order of the colors of a custom ramp. A built-in ramp
     /// does not change.
     pub fn reverse(&mut self, index: usize) -> std::io::Result<()> {
@@ -252,6 +289,12 @@ pub struct Draft {
     /// The label of each color.
     pub labels: Vec<String>,
     pub qualitative: bool,
+    /// The number of colors below sea level, while the ramp has a sea
+    /// level of its own.
+    pub sea: Option<usize>,
+    /// The index of the custom ramp that the draft edits. `None`: the draft
+    /// is a new ramp.
+    pub editing: Option<usize>,
     /// The row of the color picker.
     pub selected: Option<usize>,
     pub from: DraftFrom,
@@ -273,6 +316,8 @@ impl Draft {
             colors: vec![[255; 3], [0; 3]],
             labels: vec![String::new(); 2],
             qualitative: false,
+            sea: None,
+            editing: None,
             selected: None,
             from: DraftFrom::Ramps,
             layer: None,
@@ -286,10 +331,27 @@ impl Draft {
             colors: ramp.colors.clone(),
             labels: ramp.labels.clone(),
             qualitative: ramp.qualitative,
+            sea: ramp.sea,
             ..Draft::new()
         };
         draft.fit();
         draft
+    }
+
+    /// The draft of custom ramp `index`. Its save replaces the ramp.
+    pub fn edit(index: usize, ramps: &Ramps) -> Option<Draft> {
+        let ramp = ramps.list().get(index).filter(|r| !r.built_in)?;
+        let mut draft = Draft {
+            name: ramp.name.clone(),
+            colors: ramp.colors.clone(),
+            labels: ramp.labels.clone(),
+            qualitative: ramp.qualitative,
+            sea: ramp.sea,
+            editing: Some(index),
+            ..Draft::new()
+        };
+        draft.fit();
+        Some(draft)
     }
 
     /// A ramp of the colors and the names of bands, from the lowest band.
@@ -314,6 +376,55 @@ impl Draft {
             self.colors.push(last);
         }
         self.labels.resize(self.colors.len(), String::new());
+        self.fit_sea();
+    }
+
+    /// Keeps sea level between two colors.
+    fn fit_sea(&mut self) {
+        let last = self.colors.len().saturating_sub(1).max(1);
+        self.sea = self.sea.map(|sea| sea.clamp(1, last));
+    }
+
+    /// Turns the sea level of the ramp on or off. It starts after the
+    /// colors that are mostly blue at the start, or in the middle.
+    pub fn set_sea(&mut self, on: bool) {
+        let n = self.colors.len();
+        self.sea = on.then(|| vale_terrain::sea_colors(&self.colors).unwrap_or(n / 2));
+        self.fit_sea();
+    }
+
+    /// Moves sea level one color toward the first color. Returns false at
+    /// the first color.
+    pub fn sea_up(&mut self) -> bool {
+        match self.sea {
+            Some(sea) if sea > 1 => {
+                self.sea = Some(sea - 1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Moves sea level one color toward the last color. Returns false at
+    /// the last color.
+    pub fn sea_down(&mut self) -> bool {
+        match self.sea {
+            Some(sea) if sea + 1 < self.colors.len() => {
+                self.sea = Some(sea + 1);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Reverses the order of the colors and of their labels. Sea level
+    /// stays between the same two colors.
+    pub fn reverse(&mut self) {
+        self.colors.reverse();
+        self.labels.reverse();
+        let n = self.colors.len();
+        self.sea = self.sea.map(|sea| n - sea);
+        self.selected = self.selected.map(|i| n - 1 - i);
     }
 
     pub fn can_add(&self) -> bool {
@@ -335,6 +446,8 @@ impl Draft {
         self.colors.insert(at + 1, self.colors[at]);
         self.labels.insert(at + 1, String::new());
         self.selected = Some(at + 1);
+        // A copy of a sea color is a sea color.
+        self.sea = self.sea.map(|sea| if at < sea { sea + 1 } else { sea });
         true
     }
 
@@ -345,6 +458,8 @@ impl Draft {
         }
         self.colors.remove(index);
         self.labels.remove(index);
+        self.sea = self.sea.map(|sea| if index < sea { sea - 1 } else { sea });
+        self.fit_sea();
         self.selected = match self.selected {
             Some(i) if i == index => None,
             Some(i) if i > index => Some(i - 1),
@@ -385,10 +500,11 @@ impl Draft {
     }
 
     /// A ramp can save with a name that is not blank and that no other
-    /// ramp has.
+    /// ramp has. The ramp that the draft edits can keep its name.
     pub fn can_save(&self, ramps: &Ramps) -> bool {
         let name = self.clean_name();
-        !name.is_empty() && !ramps.taken(&name)
+        let other = |(i, r): (usize, &Ramp)| Some(i) != self.editing && r.name == name;
+        !name.is_empty() && !ramps.list().iter().enumerate().any(other)
     }
 
     /// The custom ramp of the draft.
@@ -399,17 +515,22 @@ impl Draft {
             labels: self.labels.clone(),
             built_in: false,
             qualitative: self.qualitative,
+            sea: self.sea,
         }
     }
 }
 
 /// One line for each ramp: the name, a tab, the colors, and then a tab and
 /// a label for each color if a color has a label. The colors of a
-/// qualitative ramp follow the word `qualitative`.
+/// qualitative ramp follow the word `qualitative`. The word `sea` is
+/// between the sea colors and the land colors of a ramp with a sea level.
 fn text(list: &[Ramp]) -> String {
     list.iter()
         .map(|ramp| {
             let mut words: Vec<String> = ramp.colors.iter().map(|c| hex(*c)).collect();
+            if let Some(sea) = ramp.sea.filter(|s| (1..words.len()).contains(s)) {
+                words.insert(sea, SEA_WORD.to_owned());
+            }
             if ramp.qualitative {
                 words.insert(0, QUALITATIVE_WORD.to_owned());
             }
@@ -434,10 +555,22 @@ fn parse(text: &str) -> Vec<Ramp> {
             let (name, colors) = (parts.next()?, parts.next()?);
             let mut words = colors.split_whitespace().peekable();
             let qualitative = words.next_if_eq(&QUALITATIVE_WORD).is_some();
-            let colors: Option<Vec<Rgb>> = words.map(parse_hex).collect();
-            let colors = colors.filter(|c| !c.is_empty())?;
+            let mut sea = None;
+            let mut colors = Vec::new();
+            for word in words {
+                if word == SEA_WORD {
+                    sea = Some(colors.len());
+                } else {
+                    colors.push(parse_hex(word)?);
+                }
+            }
+            if colors.is_empty() {
+                return None;
+            }
+            let n = colors.len();
             let mut ramp = Ramp::new(name, colors);
             ramp.qualitative = qualitative;
+            ramp.sea = sea.filter(|s| (1..n).contains(s));
             for (label, text) in ramp.labels.iter_mut().zip(parts) {
                 *label = text.to_owned();
             }
@@ -722,6 +855,7 @@ fn built_in() -> Vec<Ramp> {
             labels: vec![String::new(); colors.len()],
             built_in: true,
             qualitative: i >= QUALITATIVE,
+            sea: None,
         })
         .collect();
     list.push(Ramp {
@@ -733,35 +867,9 @@ fn built_in() -> Vec<Ramp> {
             .collect(),
         built_in: true,
         qualitative: true,
+        sea: None,
     });
     list
-}
-
-/// `n` colors of a ramp from its first color to its last color, with
-/// linear steps between its colors. One color is the middle of the ramp.
-fn sample(colors: &[Rgb], n: usize) -> Vec<Rgb> {
-    let Some(last) = colors.len().checked_sub(1) else {
-        return Vec::new();
-    };
-    (0..n)
-        .map(|k| {
-            let t = if n < 2 {
-                0.5
-            } else {
-                k as f64 / (n - 1) as f64
-            } * last as f64;
-            let i = (t.floor() as usize).min(last.saturating_sub(1));
-            let (a, b) = (colors[i], colors[(i + 1).min(last)]);
-            let f = t - i as f64;
-            std::array::from_fn(|c| (a[c] as f64 + (b[c] as f64 - a[c] as f64) * f).round() as u8)
-        })
-        .collect()
-}
-
-/// `n` colors of a qualitative ramp: its colors in order, again from the
-/// first color after the last.
-fn cycle(colors: &[Rgb], n: usize) -> Vec<Rgb> {
-    colors.iter().copied().cycle().take(n).collect()
 }
 
 #[cfg(test)]
@@ -827,14 +935,17 @@ mod tests {
     fn a_sample_has_both_ends_and_the_steps_between() {
         let colors = [[0, 0, 0], [100, 200, 50]];
         assert_eq!(
-            sample(&colors, 3),
+            vale_terrain::sample_ramp(&colors, 3, false),
             vec![[0, 0, 0], [50, 100, 25], [100, 200, 50]]
         );
-        assert_eq!(sample(&colors, 1), vec![[50, 100, 25]]);
-        let five = BUILT_IN[0].1;
-        assert_eq!(sample(five, 5), five.to_vec());
         assert_eq!(
-            cycle(&colors, 3),
+            vale_terrain::sample_ramp(&colors, 1, false),
+            vec![[50, 100, 25]]
+        );
+        let five = BUILT_IN[0].1;
+        assert_eq!(vale_terrain::sample_ramp(five, 5, false), five.to_vec());
+        assert_eq!(
+            vale_terrain::sample_ramp(&colors, 3, true),
             vec![[0, 0, 0], [100, 200, 50], [0, 0, 0]]
         );
     }
@@ -1073,5 +1184,79 @@ mod tests {
         assert_eq!(one.colors, [[7; 3], [7; 3]]);
         let many = Draft::from_bands("Many", &[[0; 3]; 40], &[], &ramps);
         assert_eq!(many.colors.len(), MAX_COLORS);
+    }
+
+    #[test]
+    fn the_sea_level_stays_in_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ramps = Ramps::default();
+        ramps.open(Some(dir.path()));
+        let mut coast = Ramp::new("Coast", vec![[23, 70, 66], [90, 163, 154], [111, 155, 85]]);
+        coast.sea = Some(2);
+        ramps.add_ramp(coast).unwrap();
+        let text = std::fs::read_to_string(dir.path().join(RAMPS_FILE)).unwrap();
+        assert_eq!(text, "Coast\t#174642 #5aa39a sea #6f9b55\n");
+        let mut again = Ramps::default();
+        again.open(Some(dir.path()));
+        assert_eq!(again.custom()[0].sea, Some(2));
+        // A ramp with no sea level has no word for it.
+        assert_eq!(parse("A\t#000000 #ffffff")[0].sea, None);
+        // A sea level at an end does not count.
+        assert_eq!(parse("A\tsea #000000 #ffffff")[0].sea, None);
+    }
+
+    #[test]
+    fn the_sea_level_of_a_draft_stays_between_two_colors() {
+        let mut draft = Draft::new();
+        draft.colors = vec![
+            [23, 70, 66],
+            [90, 163, 154],
+            [111, 155, 85],
+            [200, 200, 200],
+        ];
+        draft.labels = vec![String::new(); 4];
+        // Teal is not mostly blue, so the line starts in the middle.
+        draft.set_sea(true);
+        assert_eq!(draft.sea, Some(2));
+        assert!(draft.sea_up());
+        assert!(!draft.sea_up());
+        assert_eq!(draft.sea, Some(1));
+        assert!(draft.sea_down() && draft.sea_down());
+        assert!(!draft.sea_down());
+        assert_eq!(draft.sea, Some(3));
+        // A copy of a sea color is a sea color.
+        draft.selected = Some(0);
+        draft.add_color();
+        assert_eq!(draft.sea, Some(4));
+        // A removed sea color takes the line with it.
+        draft.remove(0);
+        assert_eq!(draft.sea, Some(3));
+        // The line stays between the same two colors.
+        let (below, above) = (draft.colors[2], draft.colors[3]);
+        draft.reverse();
+        assert_eq!(draft.sea, Some(1));
+        assert_eq!((draft.colors[0], draft.colors[1]), (above, below));
+        draft.set_sea(false);
+        assert_eq!(draft.sea, None);
+    }
+
+    #[test]
+    fn the_draft_of_a_custom_ramp_replaces_it() {
+        let mut ramps = Ramps::default();
+        ramps.add("Coast", vec![[0; 3], [255; 3]]).unwrap();
+        ramps.add("Moss", vec![[0; 3], [255; 3]]).unwrap();
+        let at = ramps.list().len() - 2;
+        assert!(Draft::edit(0, &ramps).is_none(), "a built-in ramp");
+        let mut draft = Draft::edit(at, &ramps).unwrap();
+        // The ramp keeps its own name, but it cannot take another name.
+        assert!(draft.can_save(&ramps));
+        draft.name = "Moss".to_owned();
+        assert!(!draft.can_save(&ramps));
+        draft.name = "Coast".to_owned();
+        draft.set_sea(true);
+        let name = ramps.replace(at, draft.to_ramp()).unwrap();
+        assert_eq!(name, "Coast");
+        assert_eq!(ramps.custom().len(), 2);
+        assert_eq!(ramps.list()[at].sea, Some(1));
     }
 }

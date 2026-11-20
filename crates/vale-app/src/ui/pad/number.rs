@@ -884,7 +884,7 @@ impl<'a> Number<'a> {
         let ctx = ui.ctx();
         let size = vec2(4.0 * TOUCH * 1.25, KEYPAD) + vec2(2.0 * PAD, 2.0 * PAD);
         let id = format!("{} keypad", self.name);
-        let own = egui::LayerId::new(Order::Foreground, egui::Id::new(&id));
+        let own = keypad_layer(self.name);
         let card = place(
             ctx,
             anchor,
@@ -1007,6 +1007,11 @@ fn nice_step(value: f64, up: bool) -> f64 {
         series.into_iter().rfind(|v| *v < magnitude - eps)
     };
     sign * next.unwrap_or(0.0)
+}
+
+/// The layer of the keypad of the field of the slider or the stepper `name`.
+pub fn keypad_layer(name: &str) -> egui::LayerId {
+    egui::LayerId::new(Order::Foreground, egui::Id::new(format!("{name} keypad")))
 }
 
 /// True in the frames in which a button that the user holds repeats: after

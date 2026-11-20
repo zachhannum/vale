@@ -82,6 +82,8 @@ pub enum RampSource {
     Copy(usize),
     /// The band colors and the band names of a raster layer.
     Bands(RasterId),
+    /// The custom ramp at this index of the library. The save replaces it.
+    Edit(usize),
 }
 
 /// A request that needs the host: a dialog or a file.
@@ -233,6 +235,16 @@ pub enum Screen {
     Editor,
     /// The start screen with the list of the projects.
     Browser,
+}
+
+/// The way that a ramp colors the bands of a raster layer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RampApply {
+    /// The bands keep their stops.
+    Fit,
+    /// The bands of the part are this number of new bands with even
+    /// spacing.
+    Make(usize),
 }
 
 /// The text of the last import or export of a heightmap.
@@ -4187,7 +4199,7 @@ impl AppState {
         Ok((ramp, count))
     }
 
-    /// Opens the editor of a new ramp.
+    /// Opens the editor of a new ramp, or of a custom ramp.
     fn new_ramp(&mut self, layer: Option<RasterId>, source: RampSource) {
         use crate::ramps::Draft;
         self.open_ramps();
@@ -4197,6 +4209,7 @@ impl AppState {
                 let ramps = &self.ramps;
                 ramps.list().get(index).map(|r| Draft::copy(r, ramps))
             }
+            RampSource::Edit(index) => Draft::edit(index, &self.ramps),
             RampSource::Bands(id) => {
                 let name = self.doc.project.raster_layer(id).map(|l| l.name.clone());
                 let bands = self.globe.bands_mut(id);
@@ -4210,8 +4223,9 @@ impl AppState {
         self.ramp_draft = draft.map(|d| crate::ramps::Draft { layer, ..d });
     }
 
-    /// Adds the ramp in the editor to the ramps, and closes the editor. A
-    /// blank or taken name keeps the editor open.
+    /// Adds the ramp in the editor to the ramps, or puts it in the place of
+    /// the ramp that it edits, and closes the editor. A blank or taken name
+    /// keeps the editor open.
     pub fn save_ramp_draft(&mut self) -> Result<(), String> {
         let Some(draft) = &self.ramp_draft else {
             return Err("No ramp to save.".to_owned());
@@ -4219,12 +4233,17 @@ impl AppState {
         if !draft.can_save(&self.ramps) {
             return Err("Enter a new name.".to_owned());
         }
-        let (ramp, layer) = (draft.to_ramp(), draft.layer);
+        let (ramp, layer, editing) = (draft.to_ramp(), draft.layer, draft.editing);
         let count = ramp.colors.len();
-        let note = match self.ramps.add_ramp(ramp) {
+        let saved = match editing {
+            Some(index) => self.ramps.replace(index, ramp),
+            None => self.ramps.add_ramp(ramp),
+        };
+        let note = match saved {
             Ok(name) => {
                 self.ramp_draft = None;
-                Note::new(format!("Added {name} ({count} colors)"), false, layer)
+                let verb = if editing.is_some() { "Saved" } else { "Added" };
+                Note::new(format!("{verb} {name} ({count} colors)"), false, layer)
             }
             Err(e) => Note::new(e.to_string(), true, layer),
         };
@@ -4239,24 +4258,22 @@ impl AppState {
     }
 
     /// Gives the bands of a part of a raster layer the colors of a ramp.
-    /// With `keep`, the layer keeps its stops. Otherwise, the part gets one
-    /// band for each color. With `window`, only the bands of the window in
-    /// the part change, and new bands spread from its lowest value to its
+    /// With `RampApply::Fit`, the layer keeps its stops. Otherwise, the part
+    /// gets the number of bands of `RampApply::Make`. With `window`, only
+    /// the bands of the window in the part change, and new bands spread from its lowest value to its
     /// highest value.
     pub fn apply_ramp(
         &mut self,
         id: RasterId,
         index: usize,
-        keep: bool,
+        how: RampApply,
         part: vale_terrain::Part,
         window: Option<&pad::stops::FrameWindow>,
     ) -> Result<(), String> {
-        let Some(ramp) = self.ramps.list().get(index) else {
+        let Some(ramp) = self.ramps.list().get(index).cloned() else {
             return Err("Ramp not found.".to_owned());
         };
-        let colors = ramp.colors.clone();
-        let labels = ramp.labels.clone();
-        let qualitative = ramp.qualitative;
+        let colors = ramp.colors();
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
@@ -4271,17 +4288,18 @@ impl AppState {
             .end
             .min(p.end)
             .saturating_sub(range.start.max(p.start));
-        if !keep && count - replaced + colors.len() > vale_terrain::MAX_BANDS {
-            return Err(TOO_MANY_BANDS.to_owned());
-        }
-        let applied = if keep {
-            bands.stretched_in(&colors, &labels, part, range, qualitative)
-        } else {
-            bands.painted_in(&colors, &labels, part, range, lo, hi)
-        };
-        let Some(applied) = applied else {
-            let count = colors.len();
-            return Err(format!("Range is too small for {count} bands."));
+        let applied = match how {
+            RampApply::Fit => bands
+                .stretched_ramp(&colors, part, range)
+                .ok_or_else(|| "No bands to color.".to_owned())?,
+            RampApply::Make(made) => {
+                if count - replaced + made > vale_terrain::MAX_BANDS {
+                    return Err(TOO_MANY_BANDS.to_owned());
+                }
+                bands
+                    .painted_count(&colors, part, range, (lo, hi), made)
+                    .ok_or_else(|| format!("Range is too small for {made} bands."))?
+            }
         };
         *bands = applied;
         self.globe.preview.selected = None;

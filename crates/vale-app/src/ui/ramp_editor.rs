@@ -1,10 +1,11 @@
-//! The window of the editor of a new ramp in the desktop layout.
+//! The window of the editor of a ramp in the desktop layout.
 
 use eframe::egui;
 
 use super::pad::ramp_editor::{
-    ADD_COLOR, FIRST_COLOR_HINT, MOVE_DOWN, MOVE_UP, NEW_RAMP_TITLE, QUALITATIVE, REMOVE_COLOR,
-    SAVE_RAMP, color_name, label_name,
+    ADD_COLOR, EDIT_RAMP_TITLE, FIRST_COLOR_HINT, MOVE_DOWN, MOVE_UP, NEW_RAMP_TITLE, QUALITATIVE,
+    REMOVE_COLOR, REVERSE_COLORS, SAVE_RAMP, SEA_LEVEL, SEA_LEVEL_DOWN, SEA_LEVEL_UP, color_name,
+    label_name,
 };
 use super::region::CANCEL;
 use super::{AppState, Layout};
@@ -15,10 +16,14 @@ enum Change {
     Down(usize),
     Remove(usize),
     Add,
+    SeaUp,
+    SeaDown,
+    Reverse,
 }
 
-/// The window, while a new ramp is in the editor. "Save ramp" adds the ramp
-/// and closes the window, and "Cancel" closes it with no new ramp.
+/// The window, while a ramp is in the editor. "Save ramp" adds the ramp, or
+/// replaces the ramp that the draft edits, and closes the window. "Cancel"
+/// closes it and saves nothing.
 pub fn window(ctx: &egui::Context, state: &mut AppState) {
     if state.layout == Layout::Pad {
         return;
@@ -35,7 +40,11 @@ pub fn window(ctx: &egui::Context, state: &mut AppState) {
         .map(|n| n.text.clone());
     let (mut save, mut cancel) = (false, false);
     let mut change = None;
-    egui::Window::new(NEW_RAMP_TITLE)
+    let title = match draft.editing {
+        Some(_) => EDIT_RAMP_TITLE,
+        None => NEW_RAMP_TITLE,
+    };
+    egui::Window::new(title)
         .id(egui::Id::new("ramp-editor"))
         .collapsible(false)
         .resizable(false)
@@ -60,13 +69,33 @@ pub fn window(ctx: &egui::Context, state: &mut AppState) {
                 ui.add(edit).labelled_by(name.id);
             });
             ui.checkbox(&mut draft.qualitative, QUALITATIVE);
+            // The colors of a qualitative ramp do not split at sea level.
+            let mut sea = draft.sea.is_some();
+            if !draft.qualitative && ui.checkbox(&mut sea, SEA_LEVEL).changed() {
+                draft.set_sea(sea);
+            }
             ui.label(egui::RichText::new(FIRST_COLOR_HINT).weak());
+            let sea = draft.sea.filter(|_| !draft.qualitative);
             let count = draft.colors.len();
             let can_remove = draft.can_remove();
             egui::ScrollArea::vertical()
                 .max_height(400.0)
                 .show(ui, |ui| {
                     for i in 0..count {
+                        if sea == Some(i) {
+                            ui.horizontal(|ui| {
+                                ui.label(SEA_LEVEL);
+                                let up = ui.add_enabled(i > 1, egui::Button::new("⏶").small());
+                                if up.on_hover_text(SEA_LEVEL_UP).clicked() {
+                                    change = Some(Change::SeaUp);
+                                }
+                                let down =
+                                    ui.add_enabled(i + 1 < count, egui::Button::new("⏷").small());
+                                if down.on_hover_text(SEA_LEVEL_DOWN).clicked() {
+                                    change = Some(Change::SeaDown);
+                                }
+                            });
+                        }
                         ui.horizontal(|ui| {
                             ui.color_edit_button_srgb(&mut draft.colors[i])
                                 .on_hover_text(color_name(i));
@@ -96,6 +125,9 @@ pub fn window(ctx: &egui::Context, state: &mut AppState) {
             {
                 change = Some(Change::Add);
             }
+            if ui.button(REVERSE_COLORS).clicked() {
+                change = Some(Change::Reverse);
+            }
             ui.separator();
             ui.horizontal(|ui| {
                 save = ui
@@ -109,6 +141,12 @@ pub fn window(ctx: &egui::Context, state: &mut AppState) {
         Some(Change::Down(i)) => draft.move_down(i),
         Some(Change::Remove(i)) => draft.remove(i),
         Some(Change::Add) => draft.add_color(),
+        Some(Change::SeaUp) => draft.sea_up(),
+        Some(Change::SeaDown) => draft.sea_down(),
+        Some(Change::Reverse) => {
+            draft.reverse();
+            true
+        }
         None => false,
     };
     if cancel {

@@ -13106,6 +13106,7 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
         [200, 160, 90],
     ];
     open_ramp_card(&mut h, "Frame make", colors);
+    tap(&mut h, "New");
     tap(&mut h, "Make 4 bands");
     let after = raster_style(&h, Some(frame(&h, 1).map), layer);
     let values: Vec<f64> = after.stops.iter().map(|s| s.value).collect();
@@ -13125,9 +13126,20 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
     open_ramp_card(&mut h, "Frame many", many);
     let land = w.bands.end - w.bands.start.max(before.sea().unwrap());
     assert!(count - land + 32 > 32);
-    tap(&mut h, "Make 32 land bands");
-    assert!(shown(&h, TOO_MANY_BANDS));
-    assert_eq!(inset_bands(&h, layer), count);
+    // The card offers only the bands that fit.
+    tap(&mut h, "New");
+    assert!(control(&h, "Make 32 land bands").is_none());
+    let make = h
+        .state()
+        .pad
+        .controls
+        .iter()
+        .map(|c| c.name.clone())
+        .find(|n| n.starts_with("Make ") && n.ends_with(" land bands"))
+        .unwrap();
+    tap(&mut h, &make);
+    assert!(!shown(&h, TOO_MANY_BANDS));
+    assert_eq!(inset_bands(&h, layer), 32);
 }
 
 /// Three land colors for a ramp.
@@ -13185,6 +13197,7 @@ fn all_bands_on_the_ramp_card_in_a_frame_changes_the_bands_out_of_the_frame() {
         if all {
             tap(&mut h, SCOPE_NAMES[1]);
         }
+        tap(&mut h, "New");
         tap(&mut h, "Make 3 land bands");
         let after = raster_style(&h, Some(frame(&h, 1).map), layer);
         let (a, b) = (w.bands.start, w.bands.end);
