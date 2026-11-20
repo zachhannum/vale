@@ -18,6 +18,9 @@ fn class(lp: LinePlacement) -> LabelClass {
         margin: 0.0,
         placement: Placement::Line(lp),
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Default::default(),
     }
 }
@@ -191,10 +194,10 @@ fn the_class_sets_the_position_along_the_line() {
 
 #[test]
 fn the_tolerance_lets_the_label_move_from_its_anchor() {
-    let block = vec![Obstacle {
-        rect: Rect::new(140.0, 250.0, 160.0, 298.0),
-        kind: ObstacleKind::Hard,
-    }];
+    let block = vec![Obstacle::rect(
+        Rect::new(140.0, 250.0, 160.0, 298.0),
+        Weight::Forbidden,
+    )];
     let lp = anchored(LineAnchor::FromStart, 50.0);
     let out = run(
         lp.clone(),

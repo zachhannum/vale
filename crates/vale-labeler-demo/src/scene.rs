@@ -169,6 +169,9 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: Some(400.0),
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         },
         LabelClass {
@@ -186,6 +189,9 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 ..Default::default()
             }),
             duplicate_distance: Some(400.0),
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         },
         LabelClass {
@@ -195,6 +201,9 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 1.0,
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: Some(400.0),
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         },
         LabelClass {
@@ -207,6 +216,9 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
             margin: 2.0,
             placement: Placement::Polygon(PolygonPlacement::default()),
             duplicate_distance: None,
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         },
         LabelClass {
@@ -223,6 +235,9 @@ pub fn build(preset: Preset, data_dir: &Path, seed: u64, improve: bool) -> anyho
                 ..Default::default()
             }),
             duplicate_distance: None,
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         },
     ];

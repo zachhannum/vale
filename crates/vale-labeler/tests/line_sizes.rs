@@ -73,6 +73,9 @@ fn class(size: f64) -> LabelClass {
             ..Default::default()
         }),
         duplicate_distance: Some(300.0),
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Default::default(),
     }
 }

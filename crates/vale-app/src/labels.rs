@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 use kurbo::{Point, Rect};
 use vale_labeler::{
     AmbiguousLabels, Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput,
-    LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, ObstacleKind,
+    LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, Weight,
     Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
     TextStyle, place_labels,
 };
@@ -142,6 +142,9 @@ pub fn place(
                 margin: c.buffer,
                 placement: placement(c, pl.kind),
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
+                margin_hard: true,
+                background: false,
+                never_remove: false,
                 fallbacks: fallbacks(c),
             });
             class_colors.push(c.color);
@@ -453,6 +456,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             max_spread: c.line_spread,
             spread_fill: c.spread_fill,
             min_length: c.min_length,
+            ..LinePlacement::default()
         })
     };
     match p {
@@ -475,6 +479,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 vale_style::AmbiguousLabels::AllClasses => AmbiguousLabels::AllClasses,
                 vale_style::AmbiguousLabels::OwnClass => AmbiguousLabels::OwnClass,
             },
+            ..PointPlacement::default()
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
@@ -509,6 +514,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             repeat_distance: c.polygon_repeat.then_some(c.polygon_repeat_distance),
             overrun: c.overrun,
             min_area: c.min_area,
+            ..PolygonPlacement::default()
         }),
     }
 }
@@ -575,10 +581,7 @@ fn symbol_obstacles(
 ) -> Vec<Obstacle> {
     let mut out: Vec<Obstacle> = hard
         .iter()
-        .map(|r| Obstacle {
-            rect: *r,
-            kind: ObstacleKind::Hard,
-        })
+        .map(|r| Obstacle::rect(*r, Weight::Forbidden))
         .collect();
     let meets = |r: Rect| r.x0 <= page.x1 && r.x1 >= page.x0 && r.y0 <= page.y1 && r.y1 >= page.y0;
     let shown = symbols.iter().filter(|s| meets(s.bounds));
@@ -587,14 +590,8 @@ fn symbol_obstacles(
         points
             .into_iter()
             .filter(|s| !labeled.contains(&(s.layer, s.feature)))
-            .map(|s| Obstacle {
-                rect: s.bounds,
-                kind: ObstacleKind::Hard,
-            }),
+            .map(|s| Obstacle::rect(s.bounds, Weight::Forbidden)),
     );
-    out.extend(scatter.into_iter().take(MAX_SOFT).map(|s| Obstacle {
-        rect: s.bounds,
-        kind: ObstacleKind::Soft { cost: SCATTER_COST },
-    }));
+    out.extend(scatter.into_iter().take(MAX_SOFT).map(|s| Obstacle::rect(s.bounds, Weight::Cost(SCATTER_COST))));
     out
 }

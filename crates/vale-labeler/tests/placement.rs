@@ -9,6 +9,9 @@ fn invalid_features_are_reported() {
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Default::default(),
     };
     let pt = Geometry::Point {
@@ -74,6 +77,9 @@ fn class(priority: i32) -> LabelClass {
         margin: 0.0,
         placement: Placement::Point(PointPlacement::default()),
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Default::default(),
     }
 }
@@ -140,20 +146,20 @@ fn obstacles_force_or_keep_position() {
     let at = |kind| {
         let inp = input(
             vec![point(1, 0, "Paris", 200.0, 150.0, 0.0)],
-            vec![Obstacle { rect: area, kind }],
+            vec![Obstacle::rect(area, kind)],
         );
         kind_of(&place_labels(&mut fonts(), &inp), 1)
     };
     assert_ne!(
-        at(ObstacleKind::Hard),
+        at(Weight::Forbidden),
         CandidateKind::Point(PointPosition::TopRight)
     );
     assert_eq!(
-        at(ObstacleKind::Soft { cost: 0.5 }),
+        at(Weight::Cost(0.5)),
         CandidateKind::Point(PointPosition::TopRight)
     );
     assert_ne!(
-        at(ObstacleKind::Soft { cost: 5.0 }),
+        at(Weight::Cost(5.0)),
         CandidateKind::Point(PointPosition::TopRight)
     );
 }
@@ -328,6 +334,9 @@ fn line_class(priority: i32, lp: LinePlacement) -> LabelClass {
         margin: 0.0,
         placement: Placement::Line(lp),
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Default::default(),
     }
 }
@@ -717,8 +726,13 @@ fn assert_valid(inp: &LabelInput, out: &Labeling) {
             }
         }
         for o in &inp.obstacles {
-            if o.kind == ObstacleKind::Hard {
-                let ob = OrientedBox::from_rect(o.rect);
+            if let Obstacle::Polygon {
+                rings,
+                inside: Weight::Forbidden,
+                ..
+            } = o
+            {
+                let ob = OrientedBox::from_rect(Rect::from_points(rings[0][0], rings[0][2]));
                 for bx in &a.boxes {
                     assert!(!bx.intersects(&ob));
                 }

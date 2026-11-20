@@ -22,6 +22,9 @@ fn class(placement: Placement, size: f64, order: Vec<Fallback>) -> LabelClass {
         margin: 0.0,
         placement,
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Fallbacks {
             order,
             min_size: 5.0,
@@ -182,10 +185,7 @@ fn a_crowded_point_label_moves_away_with_a_leader_line() {
     ];
     let obstacles: Vec<Obstacle> = ring
         .iter()
-        .map(|r| Obstacle {
-            rect: *r,
-            kind: ObstacleKind::Hard,
-        })
+        .map(|r| Obstacle::rect(*r, Weight::Forbidden))
         .collect();
     let town = Feature {
         id: 1,
@@ -229,10 +229,7 @@ fn a_leader_line_does_not_cross_a_hard_obstacle() {
     ];
     let obstacles: Vec<Obstacle> = ring
         .iter()
-        .map(|r| Obstacle {
-            rect: *r,
-            kind: ObstacleKind::Hard,
-        })
+        .map(|r| Obstacle::rect(*r, Weight::Forbidden))
         .collect();
     let town = Feature {
         id: 1,
