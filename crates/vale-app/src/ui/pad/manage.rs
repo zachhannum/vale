@@ -33,7 +33,7 @@ pub enum ManagePage {
 /// The state of the pages of the collections.
 #[derive(Default)]
 pub struct ManageState {
-    /// The page that the Layers panel shows in place of the cards.
+    /// The page that the Layers panel shows in place of the collections.
     pub page: Option<ManagePage>,
     /// The text of the search field of the management page.
     pub search: String,
