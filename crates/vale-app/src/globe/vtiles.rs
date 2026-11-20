@@ -463,7 +463,10 @@ impl VectorTiles {
             self.pending.clear();
             return;
         }
-        let wanted = wanted_tiles(grid);
+        // The layers share the atlas, and a quarter of it stays free for
+        // the tiles of the last views.
+        let budget = SLOTS as usize * 3 / 4 / self.shown.len();
+        let wanted = wanted_tiles(grid, budget);
         let frame = self.frame;
         for tiled in self.layers.values() {
             for key in &wanted {
@@ -707,8 +710,10 @@ fn touches(key: TileKey, caps: &[(V3, f64)]) -> bool {
 
 /// The tiles under the view of `grid`, each at the level of the pixels
 /// over it, and the 6 tiles of level 0, coarse levels first and then by
-/// the distance to the middle of the view.
-fn wanted_tiles(grid: &Grid) -> Vec<TileKey> {
+/// the distance to the middle of the view. If the view needs more than
+/// `budget` tiles, the finest tiles give way to their parents until the
+/// tiles fit, so that the tiles cover the whole view.
+fn wanted_tiles(grid: &Grid, budget: usize) -> Vec<TileKey> {
     let mut out: Vec<TileKey> = roots().collect();
     grid.sample(
         |d, px| out.push(tile_at(d, level_for(px))),
@@ -719,6 +724,15 @@ fn wanted_tiles(grid: &Grid) -> Vec<TileKey> {
     );
     out.sort_unstable();
     out.dedup();
+    let mut top = out.iter().map(|k| k.level).max().unwrap_or(0);
+    while out.len() > budget && top > 0 {
+        top -= 1;
+        for key in &mut out {
+            *key = ancestor(*key, top);
+        }
+        out.sort_unstable();
+        out.dedup();
+    }
     let middle = grid.middle();
     out.sort_by(|a, b| {
         let far = |k: &TileKey| middle.map_or(0.0, |m| angle(m, tile_middle(*k)));
@@ -726,10 +740,18 @@ fn wanted_tiles(grid: &Grid) -> Vec<TileKey> {
             .partial_cmp(&(b.level, far(b)))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    // The finest tiles go first when the view needs more than the atlas
-    // holds.
-    out.truncate(SLOTS as usize * 3 / 4);
     out
+}
+
+/// The tile of `key`, or the tile of level `level` that holds it.
+fn ancestor(key: TileKey, level: u8) -> TileKey {
+    let up = key.level.saturating_sub(level);
+    TileKey {
+        level: key.level - up,
+        col: key.col >> up,
+        row: key.row >> up,
+        ..key
+    }
 }
 
 #[cfg(test)]
@@ -880,6 +902,26 @@ mod tests {
                 .values()
                 .all(|r| r.generation == tiled.generation)
         );
+    }
+
+    #[test]
+    fn the_tiles_cover_the_view_when_it_needs_more_than_the_budget() {
+        let grid = view(64.0);
+        let all = wanted_tiles(&grid, usize::MAX);
+        // The 6 tiles of level 0 and fewer of the finest tiles.
+        let budget = all.len() - 8;
+        let got = wanted_tiles(&grid, budget);
+        assert!(got.len() <= budget, "{} of {budget}", got.len());
+        // Each place of the view has its tile at some level.
+        grid.sample(
+            |d, _| {
+                let held = (0..=MAX_LEVEL).any(|l| got.contains(&tile_at(d, l)));
+                assert!(held, "{d:?}");
+            },
+            |_| 0.01,
+        );
+        // The middle keeps a finer level than the 6 tiles of level 0.
+        assert!(got.iter().any(|k| k.level >= 5), "{got:?}");
     }
 
     #[test]
