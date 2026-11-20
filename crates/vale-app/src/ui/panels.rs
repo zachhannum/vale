@@ -929,10 +929,10 @@ fn manage_page(ui: &mut egui::Ui, state: &mut AppState) {
                 .collect();
         for (id, name, line) in rows {
             ui.horizontal(|ui| {
-                if named_button(ui, &name, super::pad::collection::layer_row(&name), true) {
-                    if let Some(l) = state.doc.project.layer(id) {
-                        state.select(Some(LayerRef::of(l)));
-                    }
+                if named_button(ui, &name, super::pad::collection::layer_row(&name), true)
+                    && let Some(l) = state.doc.project.layer(id)
+                {
+                    state.select(Some(LayerRef::of(l)));
                 }
                 ui.weak(line);
                 if named_button(ui, "Delete", format!("Delete {name}"), true) {

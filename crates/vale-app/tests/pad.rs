@@ -539,7 +539,15 @@ fn in_collection_menu(h: &Pad, name: &str) -> bool {
             ]
         })
         .collect();
-    [COLLECTIONS_SIDE, MAPS_SIDE, NEW_COLLECTION, COLLECTION_NAME].contains(&name)
+    let manage = vale_app::ui::pad::manage::MANAGE_COLLECTIONS;
+    [
+        COLLECTIONS_SIDE,
+        MAPS_SIDE,
+        NEW_COLLECTION,
+        COLLECTION_NAME,
+        manage,
+    ]
+    .contains(&name)
         || names.iter().any(|n| n == name)
 }
 
