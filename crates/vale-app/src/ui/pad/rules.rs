@@ -51,8 +51,6 @@ pub const SOLID: &str = "Solid";
 pub const DASHED: &str = "Dashed";
 pub const BRUSH: &str = "Brush";
 pub const TAPER: &str = "Taper";
-pub const DASH: &str = "Dash";
-pub const GAP: &str = "Gap";
 /// The row of the dash pattern, which opens its page.
 pub const PATTERN: &str = "Pattern";
 pub const DOTTED: &str = "Dotted";
@@ -60,14 +58,13 @@ pub const DASH_DOT: &str = "Dash-dot";
 pub const DASH_DOT_DOT: &str = "Dash-dot-dot";
 /// The value of the Pattern row when the lengths match no preset.
 pub const CUSTOM: &str = "Custom";
-pub const ADD_DASH: &str = "Add dash";
-pub const REMOVE_DASH: &str = "Remove dash";
+/// The field of the dash and gap lengths of a pattern.
+pub const LENGTHS: &str = "Lengths";
+pub const LENGTHS_HINT: &str = "Dash and gap lengths in line widths, where a dash of 0 is a dot.";
 /// The ends of the dashes.
 pub const ENDS: &str = "Ends";
 pub const FLAT: &str = "Flat";
 pub const ROUND: &str = "Round";
-/// The unit of a dash length: a multiple of the line width.
-pub const WIDTHS_UNIT: &str = "×";
 pub const TAPER_START: &str = "Start width";
 /// The line type whose width follows the drainage of the height layer.
 pub const FLOW: &str = "Flow";
@@ -143,10 +140,6 @@ pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
 pub const MASK_HINT: &str = "A fill or a stroke with Apply mask on draws only inside the mask. A negative offset clears a line at its edge.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
-/// The range of a dash length and of a gap length, in line widths. A gap is at least one step.
-pub const DASHES: (f64, f64) = (0.0, 20.0);
-/// The step of a dash length and of a gap length, in line widths.
-pub const DASH_STEP: f64 = 0.25;
 /// The range of the size of a shape, in points.
 pub const CIRCLE_SIZES: (f64, f64) = (0.1, 32.0);
 /// The range of the size of a point symbol, in points.
@@ -573,22 +566,10 @@ fn selection_line_rows(
                 None => "",
             };
             open = widgets::open_row(ui, controls, PATTERN, name).clicked();
-            // The lengths that each selected pattern has.
-            let count = (paints.iter())
-                .filter_map(|&i| pattern(&rules[i]).map(|p| p.lengths().len()))
-                .min()
-                .unwrap_or(0);
-            for i in 0..count {
-                let value = number(&|k| match k {
-                    StrokeKind::Dashed(p) => p.lengths().get(i).copied(),
-                    _ => None,
-                });
-                let Some((v, mixed)) = value else {
-                    continue;
-                };
-                if let Some(v) = length_stepper(ui, controls, i, v, mixed) {
-                    changes.push(Change::DashLength(i, v));
-                }
+            let text = rule_edit::shared(rules, paints, |r| pattern(r).map(|p| p.text()));
+            let text = text.filter(|t| !t.1).map(|t| t.0).unwrap_or_default();
+            if let Some(q) = lengths_field(ui, controls, text) {
+                changes.push(Change::DashLengths(q));
             }
             let round = rule_edit::shared(rules, paints, |r| pattern(r).map(|p| p.round));
             let active = round.filter(|r| !r.1).map(|r| usize::from(r.0));
@@ -1739,16 +1720,8 @@ fn line_rows(
                     rule.set_stroke(Some(stroke));
                 }
             };
-            for (i, &v) in p.lengths().iter().enumerate() {
-                if let Some(v) = length_stepper(ui, controls, i, v, false) {
-                    set(p.with_length(i, v));
-                }
-            }
-            let buttons = [(ADD_DASH, ADD_DASH), (REMOVE_DASH, REMOVE_DASH)];
-            match widgets::button_cells(ui, controls, &buttons) {
-                Some(0) => set(p.with_dash_added()),
-                Some(_) => set(p.with_dash_removed()),
-                None => {}
+            if let Some(q) = lengths_field(ui, controls, p.text()) {
+                set(Some(p.with_lengths(&q)));
             }
             let active = usize::from(p.round);
             if let Some(picked) =
@@ -1841,34 +1814,23 @@ pub fn pattern_name(p: DashPattern) -> &'static str {
     }
 }
 
-/// The name of length `i` of a dash pattern: Dash, Gap, Dash 2, Gap 2, and so on.
-pub fn length_name(i: usize) -> String {
-    let name = if i.is_multiple_of(2) { DASH } else { GAP };
-    match i / 2 {
-        0 => name.to_owned(),
-        n => format!("{name} {}", n + 1),
-    }
-}
-
-/// The stepper of length `i` of a dash pattern, in line widths.
-fn length_stepper(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    i: usize,
-    value: f64,
-    mixed: bool,
-) -> Option<f64> {
-    let name = length_name(i);
-    let lo = if i.is_multiple_of(2) {
-        DASHES.0
+/// The field of the lengths of a dash pattern, with a hint below it. `shown` is the text of
+/// the lengths, or empty when the selected patterns differ. While the field has the focus, it
+/// keeps the typed text. Returns the pattern of the text when the user types a valid text.
+fn lengths_field(ui: &mut egui::Ui, controls: &mut Controls, shown: String) -> Option<DashPattern> {
+    let id = egui::Id::new("pad-dash-lengths");
+    let draft = ui.data(|d| d.get_temp::<String>(id));
+    let mut text = draft.clone().unwrap_or(shown);
+    let valid = draft.is_none() || DashPattern::parse(&text, false).is_some();
+    let field = widgets::text_field(ui, controls, LENGTHS, LENGTHS, None, &mut text, valid);
+    let parsed = DashPattern::parse(&text, false).filter(|_| field.changed());
+    if field.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text));
     } else {
-        DASH_STEP
-    };
-    Number::new(&name, value, lo..=DASHES.1)
-        .step(DASH_STEP)
-        .unit(WIDTHS_UNIT)
-        .mixed(mixed)
-        .stepper(ui, controls)
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    widgets::form_hint(ui, LENGTHS_HINT, 20.0);
+    parsed
 }
 
 /// The page of the dash pattern of rule `rule` of layer `id`, or of the

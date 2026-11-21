@@ -2798,10 +2798,17 @@ pub fn value_field(
 
 /// A small text below the value of a row of a form, in the warning color.
 pub fn form_note(ui: &mut egui::Ui, text: &str, height: f32) {
+    small_note(ui, text, height, theme::WARN);
+}
+
+/// A small hint below the value of a row of a form, in the muted color.
+pub fn form_hint(ui: &mut egui::Ui, text: &str, height: f32) {
+    small_note(ui, text, height, theme::MUTE);
+}
+
+fn small_note(ui: &mut egui::Ui, text: &str, height: f32, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
-    let text = egui::RichText::new(text)
-        .font(theme::small())
-        .color(theme::WARN);
+    let text = egui::RichText::new(text).font(theme::small()).color(color);
     let place = rect.shrink2(vec2(12.0, 0.0));
     let layout = egui::Layout::right_to_left(egui::Align::Center);
     ui.scope_builder(
