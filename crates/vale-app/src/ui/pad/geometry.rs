@@ -243,6 +243,10 @@ pub struct Input {
     pub glass: bool,
 }
 
+/// The space at the top of a sheet that holds its grabber, above the title
+/// row.
+pub const GRABBER_SPACE: f32 = 10.0;
+
 /// The space between a glass sheet and the sides and the bottom of the
 /// screen.
 pub const SHEET_INSET: f32 = 8.0;
@@ -519,7 +523,7 @@ pub fn layout(input: &Input) -> Rects {
             SHEET_HEIGHT
         };
         let height = open.min(full);
-        let travel = (height - bands.bottom - ROW).max(0.0);
+        let travel = (height - bands.bottom - GRABBER_SPACE - ROW).max(0.0);
         let rise = full - height;
         let offset = input.sheet_offset.clamp(-rise, travel);
         let sheet_top = screen.bottom() - height + offset;
@@ -917,9 +921,9 @@ mod tests {
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        // The title row is above the bottom band.
-        assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
-        assert_eq!(r.brush_card, BrushCard::Full(118.5));
+        // The grabber and the title row are above the bottom band.
+        assert_eq!(sheet.top(), 834.0 - 20.0 - GRABBER_SPACE - 52.0);
+        assert_eq!(r.brush_card, BrushCard::Full(113.5));
     }
 
     /// An iPhone 16 in portrait, with its safe area.
@@ -1042,11 +1046,12 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet.unwrap().top(), r.column_top);
         assert_eq!(r.column_top, 127.0);
-        // At its title row, the sheet has the rows above it.
+        // At its title row, below the grabber, the sheet has the rows above
+        // it.
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        assert_eq!(sheet.top(), 852.0 - 34.0 - ROW);
+        assert_eq!(sheet.top(), 852.0 - 34.0 - GRABBER_SPACE - ROW);
         assert_eq!(r.tool_cells, TOOLS);
         assert_eq!(r.tools.bottom(), sheet.top() - ROW_GAP);
         assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - ROW_GAP);

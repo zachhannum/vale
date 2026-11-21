@@ -577,7 +577,7 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
 fn scroll_to(h: &mut Pad, name: &str) {
     for _ in 0..8 {
         let card = h.state().atlas.panel_rect.unwrap();
-        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        let inside = |rect: Rect| visible(card).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
@@ -586,12 +586,18 @@ fn scroll_to(h: &mut Pad, name: &str) {
     }
 }
 
+/// The part of a panel that shows its rows: below its header, and above
+/// the bottom band of the screen.
+fn visible(card: Rect) -> Rect {
+    Rect::from_min_max(card.min + vec2(0.0, 40.0), card.max - vec2(0.0, BANDS.1))
+}
+
 /// Scrolls the panel up in small steps until a control is inside the
 /// card.
 fn nudge_up_to(h: &mut Pad, name: &str) {
     for _ in 0..12 {
         let card = h.state().atlas.panel_rect.unwrap();
-        let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
+        let inside = |rect: Rect| visible(card).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
