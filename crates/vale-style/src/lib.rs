@@ -27,13 +27,117 @@ use vale_store::GeometryKind;
 
 use expr::Property;
 
+/// The dashes and gaps of a dashed stroke, in multiples of the stroke width. The lengths
+/// alternate dash and gap, and they start with a dash. A dash of length 0 is a dot.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DashPattern {
+    lengths: [f64; vale_render::stroke::MAX_PATTERN],
+    len: u8,
+    /// Round ends on the dashes. A dot needs round ends.
+    pub round: bool,
+}
+
+/// A named dash pattern.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum DashPreset {
+    Dashed,
+    Dotted,
+    DashDot,
+    DashDotDot,
+}
+
+impl DashPreset {
+    pub const ALL: [DashPreset; 4] = [
+        DashPreset::Dashed,
+        DashPreset::Dotted,
+        DashPreset::DashDot,
+        DashPreset::DashDotDot,
+    ];
+
+    pub const fn pattern(self) -> DashPattern {
+        match self {
+            DashPreset::Dashed => DashPattern::DASHED,
+            DashPreset::Dotted => DashPattern::DOTTED,
+            DashPreset::DashDot => DashPattern::DASH_DOT,
+            DashPreset::DashDotDot => DashPattern::DASH_DOT_DOT,
+        }
+    }
+}
+
+impl DashPattern {
+    /// The most dashes in a pattern. Each dash has a gap.
+    pub const MAX_DASHES: usize = vale_render::stroke::MAX_PATTERN / 2;
+    pub const DASHED: Self = Self::fixed([4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, false);
+    pub const DOTTED: Self = Self::fixed([0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, true);
+    pub const DASH_DOT: Self = Self::fixed([6.0, 2.5, 0.0, 2.5, 0.0, 0.0, 0.0, 0.0], 4, true);
+    pub const DASH_DOT_DOT: Self = Self::fixed([6.0, 2.5, 0.0, 2.5, 0.0, 2.5, 0.0, 0.0], 6, true);
+
+    const fn fixed(lengths: [f64; vale_render::stroke::MAX_PATTERN], len: u8, round: bool) -> Self {
+        DashPattern {
+            lengths,
+            len,
+            round,
+        }
+    }
+
+    /// A pattern of `lengths`, or `None` if they are not a valid pattern: an even count from
+    /// 2 to 8, each dash finite and not negative, and each gap finite and positive.
+    pub fn new(lengths: &[f64], round: bool) -> Option<Self> {
+        if !vale_render::stroke::valid_pattern(lengths) {
+            return None;
+        }
+        let mut a = [0.0; vale_render::stroke::MAX_PATTERN];
+        a[..lengths.len()].copy_from_slice(lengths);
+        Some(DashPattern {
+            lengths: a,
+            len: lengths.len() as u8,
+            round,
+        })
+    }
+
+    pub fn lengths(&self) -> &[f64] {
+        &self.lengths[..self.len as usize]
+    }
+
+    /// The lengths times `k`, for example in points for a stroke of width `k`.
+    pub fn scaled(&self, k: f64) -> Vec<f64> {
+        self.lengths().iter().map(|l| l * k).collect()
+    }
+
+    /// The preset with the same lengths and ends, if any.
+    pub fn preset(&self) -> Option<DashPreset> {
+        DashPreset::ALL.into_iter().find(|p| p.pattern() == *self)
+    }
+
+    /// The pattern with length `i` set to `value`, if `i` is in the pattern and the result
+    /// is valid.
+    pub fn with_length(&self, i: usize, value: f64) -> Option<Self> {
+        let mut l = self.lengths().to_vec();
+        *l.get_mut(i)? = value;
+        Self::new(&l, self.round)
+    }
+
+    /// The pattern with one more dash and gap at the end, if it has room.
+    pub fn with_dash_added(&self) -> Option<Self> {
+        let mut l = self.lengths().to_vec();
+        l.extend([2.0, 2.0]);
+        Self::new(&l, self.round)
+    }
+
+    /// The pattern without its last dash and gap, if it has more than one dash.
+    pub fn with_dash_removed(&self) -> Option<Self> {
+        let l = self.lengths();
+        Self::new(&l[..l.len().saturating_sub(2)], self.round)
+    }
+}
+
 /// How a stroke draws its line.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub enum StrokeKind {
     #[default]
     Solid,
-    /// Dashes and gaps, in points.
-    Dashed { dash: f64, gap: f64 },
+    /// A repeating pattern of dashes and gaps.
+    Dashed(DashPattern),
     /// A textured brush line.
     Brush,
     /// The width grows along the line. `start` is the fraction of the width at the first vertex. The last vertex has the full width.
@@ -43,17 +147,12 @@ pub enum StrokeKind {
 }
 
 impl StrokeKind {
-    pub const DASH: f64 = 4.0;
-    pub const GAP: f64 = 2.0;
     pub const TAPER_START: f64 = 0.25;
     pub const FLOW_MIN: f64 = 0.25;
 
-    /// A dashed kind with the default dash and gap.
+    /// A dashed kind with the default pattern.
     pub const fn dashed() -> Self {
-        StrokeKind::Dashed {
-            dash: Self::DASH,
-            gap: Self::GAP,
-        }
+        StrokeKind::Dashed(DashPattern::DASHED)
     }
 
     /// A taper with the default start.

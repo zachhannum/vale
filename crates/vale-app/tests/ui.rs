@@ -3275,6 +3275,45 @@ fn the_desktop_style_editor_sets_the_flow_line_type() {
 }
 
 #[test]
+fn the_desktop_style_editor_sets_the_dash_pattern() {
+    use vale_app::ui::pad::rules::{ADD_DASH, DASH_DOT, DASHED, ENDS, FLAT, LINE, PATTERN};
+    use vale_style::{DashPattern, StrokeKind};
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
+    let kind = |h: &Harness<'static, AppState>| {
+        let rule = &h.state().doc.entry(rivers).unwrap().style.style.rules[0];
+        rule.stroke().unwrap().kind
+    };
+    h.get_all_by_label(LINE).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(DASHED).click();
+    h.run_steps(2);
+    assert_eq!(kind(&h), StrokeKind::dashed());
+    h.get_all_by_label(PATTERN).last().unwrap().click();
+    h.run_steps(2);
+    h.get_by_label(DASH_DOT).click();
+    h.run_steps(2);
+    assert_eq!(kind(&h), StrokeKind::Dashed(DashPattern::DASH_DOT));
+    h.get_by_label(ADD_DASH).click();
+    h.run_steps(2);
+    let lengths = |h: &Harness<'static, AppState>| match kind(h) {
+        StrokeKind::Dashed(p) => p.lengths().len(),
+        _ => 0,
+    };
+    assert_eq!(lengths(&h), 6);
+    h.get_all_by_label(ENDS).last().unwrap().click();
+    h.run_steps(2);
+    // The open menu is the last node with the name.
+    h.get_all_by_label(FLAT).last().unwrap().click();
+    h.run_steps(2);
+    let StrokeKind::Dashed(p) = kind(&h) else {
+        panic!("{:?}", kind(&h));
+    };
+    assert_eq!(p.lengths().len(), 6);
+    assert!(!p.round);
+}
+
+#[test]
 fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
     use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, LINE, height_layers};
     let mut h = globe_harness();

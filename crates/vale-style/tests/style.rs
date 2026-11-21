@@ -3,9 +3,9 @@ use std::collections::BTreeMap;
 use vale_store::{GeometryKind, LayerId};
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask, Paint, PointSymbolizer,
-    Rule, STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
-    StyleError, Symbolizer, Weights, extent_of, scale_denominator,
+    Color, DashPattern, DashPreset, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask,
+    Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind,
+    StrokeSymbolizer, Style, StyleError, Symbolizer, Weights, extent_of, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -171,7 +171,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 8);
+    assert_eq!(STYLE_VERSION, 9);
 }
 
 #[test]
@@ -274,11 +274,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 9.into());
+        m.insert("version".into(), 10.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(9)))
+        Err(StyleError::Version(Some(10)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -489,10 +489,11 @@ fn each_stroke_kind_round_trips() {
     for kind in [
         StrokeKind::Solid,
         StrokeKind::dashed(),
-        StrokeKind::Dashed {
-            dash: 6.5,
-            gap: 1.5,
-        },
+        StrokeKind::Dashed(DashPattern::new(&[6.5, 1.5], false).unwrap()),
+        StrokeKind::Dashed(DashPattern::DASH_DOT),
+        StrokeKind::Dashed(
+            DashPattern::new(&[3.0, 1.0, 0.0, 1.0, 2.0, 1.0, 0.0, 4.0], true).unwrap(),
+        ),
         StrokeKind::Brush,
         StrokeKind::taper(),
         StrokeKind::Taper { start: 0.1 },
@@ -521,12 +522,26 @@ fn a_stroke_without_kind_reads_as_solid() {
     assert_eq!(read(",\"kind\":\"wavy\""), StrokeKind::Solid);
     assert_eq!(read(",\"kind\":\"flow\""), StrokeKind::Flow { min: 0.25 });
     assert_eq!(read(",\"kind\":\"dashed\""), StrokeKind::dashed());
+    let widths = |l: &[f64]| StrokeKind::Dashed(DashPattern::new(l, false).unwrap());
     assert_eq!(
         read(",\"kind\":\"dashed\",\"gap\":3.0"),
-        StrokeKind::Dashed {
-            dash: 4.0,
-            gap: 3.0
-        }
+        widths(&[2.0, 1.5])
+    );
+    assert_eq!(
+        read(",\"kind\":\"dashed\",\"dash\":6.0,\"gap\":3.0"),
+        widths(&[3.0, 1.5])
+    );
+    assert_eq!(
+        read(",\"kind\":\"dashed\",\"pattern\":[6.0,2.5,0.0,2.5],\"round\":true"),
+        StrokeKind::Dashed(DashPattern::DASH_DOT)
+    );
+    assert_eq!(
+        read(",\"kind\":\"dashed\",\"pattern\":[6.0,0.0]"),
+        StrokeKind::dashed()
+    );
+    assert_eq!(
+        read(",\"kind\":\"dashed\",\"pattern\":[6.0,2.0,1.0]"),
+        StrokeKind::dashed()
     );
     assert_eq!(
         read(",\"kind\":\"taper\""),
@@ -541,7 +556,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"font":null,"italic":true,"priority_field":null,"size":11.0,"text":""},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":8}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":9}"##,
     );
     assert_eq!(json, expected);
 }
@@ -1071,7 +1086,7 @@ fn label_text_round_trips() {
     let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
     s.label.text = "concat(name, ' (' || round(elevation) || ' m)')".to_owned();
     let json = s.to_json();
-    assert!(json.contains("\"version\":8"));
+    assert!(json.contains("\"version\":9"));
     assert_eq!(LayerStyle::from_json(&json).unwrap(), s);
 }
 
@@ -1272,4 +1287,28 @@ fn the_label_weights_of_a_layer_round_trip_with_defaults_for_missing_keys() {
     };
     assert_eq!(back.weights, want);
     assert!(want.free(GeometryKind::Line) && !want.free(GeometryKind::Polygon));
+}
+
+#[test]
+fn a_dash_pattern_knows_its_preset_and_keeps_valid() {
+    for p in DashPreset::ALL {
+        assert_eq!(p.pattern().preset(), Some(p));
+    }
+    let dash_dot = DashPattern::DASH_DOT;
+    let custom = dash_dot.with_length(0, 5.0).unwrap();
+    assert_eq!(custom.lengths(), &[5.0, 2.5, 0.0, 2.5]);
+    assert_eq!(custom.preset(), None);
+    assert_eq!(dash_dot.with_length(1, 0.0), None, "a gap of 0");
+    assert_eq!(dash_dot.with_length(4, 1.0), None, "no length 4");
+    let longer = dash_dot.with_dash_added().unwrap();
+    assert_eq!(longer.lengths().len(), 6);
+    assert_eq!(longer.with_dash_removed(), Some(dash_dot));
+    assert_eq!(
+        DashPattern::DOTTED.with_dash_removed(),
+        None,
+        "one dash stays"
+    );
+    let full = longer.with_dash_added().unwrap();
+    assert_eq!(full.with_dash_added(), None, "four dashes at most");
+    assert_eq!(DashPattern::DASH_DOT.scaled(2.0), vec![12.0, 5.0, 0.0, 5.0]);
 }

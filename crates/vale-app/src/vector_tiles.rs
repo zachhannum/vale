@@ -646,7 +646,7 @@ pub fn render_tile(snap: &Snapshot, paints: &TilePaints, key: TileKey) -> Vec<u8
     }
 }
 
-/// A plain paint with its widths in texels.
+/// A plain paint with its widths in texels. A dash pattern follows the width.
 fn in_pixels(plain: Plain, ppp: f64) -> Plain {
     match plain {
         Plain::Fill(color) => Plain::Fill(color),
@@ -659,7 +659,7 @@ fn in_pixels(plain: Plain, ppp: f64) -> Plain {
             color,
             width: width * ppp,
             round,
-            dash: dash.map(|(d, g)| (d * ppp, g * ppp)),
+            dash,
         },
     }
 }

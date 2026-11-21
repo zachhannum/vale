@@ -9,13 +9,13 @@ use vale_store::{BlendMode, Hillshade, LayerId, RasterDisplay, Rgb, Smoothing, S
 
 use crate::expr::{Filter, FromValue, Property, field_ref};
 use crate::{
-    Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, Mask, PointSymbolizer,
-    RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
-    Weights,
+    Color, DashPattern, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, Mask,
+    PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer,
+    Style, Symbolizer, Weights,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 8;
+pub const STYLE_VERSION: u64 = 9;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -240,10 +240,12 @@ fn stroke_json(s: &StrokeSymbolizer) -> Map<String, Json> {
     m.insert("width".into(), number_json(&s.width));
     match s.kind {
         StrokeKind::Solid => {}
-        StrokeKind::Dashed { dash, gap } => {
+        StrokeKind::Dashed(p) => {
             m.insert("kind".into(), json!("dashed"));
-            m.insert("dash".into(), json!(dash));
-            m.insert("gap".into(), json!(gap));
+            m.insert("pattern".into(), json!(p.lengths()));
+            if p.round {
+                m.insert("round".into(), json!(true));
+            }
         }
         StrokeKind::Brush => {
             m.insert("kind".into(), json!("brush"));
@@ -404,10 +406,11 @@ fn read_tint(m: &Map<String, Json>) -> Result<Option<Property<Color>>, StyleErro
 }
 
 fn read_stroke(m: &Map<String, Json>) -> Result<StrokeSymbolizer, StyleError> {
+    let width = read_number(m.get("width"))?;
     Ok(StrokeSymbolizer {
         color: read_color(m.get("color"))?,
-        width: read_number(m.get("width"))?,
-        kind: read_kind(m),
+        kind: read_kind(m, width.fallback),
+        width,
         apply_mask: true,
     })
 }
@@ -418,13 +421,10 @@ fn read_apply_mask(m: &Map<String, Json>) -> bool {
 }
 
 /// A missing or unknown kind is solid. A missing number is the default.
-fn read_kind(m: &Map<String, Json>) -> StrokeKind {
+fn read_kind(m: &Map<String, Json>, width: f64) -> StrokeKind {
     let number = |k: &str, d: f64| m.get(k).and_then(Json::as_f64).unwrap_or(d);
     match m.get("kind").and_then(Json::as_str) {
-        Some("dashed") => StrokeKind::Dashed {
-            dash: number("dash", StrokeKind::DASH),
-            gap: number("gap", StrokeKind::GAP),
-        },
+        Some("dashed") => StrokeKind::Dashed(read_dash_pattern(m, width)),
         Some("brush") => StrokeKind::Brush,
         Some("taper") => StrokeKind::Taper {
             start: number("start", StrokeKind::TAPER_START),
@@ -433,6 +433,27 @@ fn read_kind(m: &Map<String, Json>) -> StrokeKind {
             min: number("min", StrokeKind::FLOW_MIN),
         },
         _ => StrokeKind::Solid,
+    }
+}
+
+/// A pattern in widths. A dashed stroke of style version 8 or earlier has a dash and a gap in
+/// points, which become widths of the stroke at `width`. A bad or missing pattern is the default.
+fn read_dash_pattern(m: &Map<String, Json>, width: f64) -> DashPattern {
+    let round = m.get("round").and_then(Json::as_bool).unwrap_or(false);
+    if let Some(p) = m.get("pattern").and_then(Json::as_array) {
+        let lengths: Option<Vec<f64>> = p.iter().map(Json::as_f64).collect();
+        return lengths
+            .and_then(|l| DashPattern::new(&l, round))
+            .unwrap_or(DashPattern::DASHED);
+    }
+    let w = if width > 0.0 { width } else { 1.0 };
+    let number = |k: &str| m.get(k).and_then(Json::as_f64);
+    match (number("dash"), number("gap")) {
+        (None, None) => DashPattern::DASHED,
+        (dash, gap) => {
+            let (dash, gap) = (dash.unwrap_or(4.0), gap.unwrap_or(2.0));
+            DashPattern::new(&[dash / w, gap / w], false).unwrap_or(DashPattern::DASHED)
+        }
     }
 }
 
