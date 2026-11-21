@@ -888,11 +888,11 @@ pub fn legend_rows(
 ) -> Vec<LegendRow> {
     let scale = pipeline::frame_rule_scale(projection, frame);
     let mut out = Vec::new();
-    for id in doc.frame.entries.iter().rev().map(|e| e.layer) {
+    for id in doc.map_layers(frame.map).into_iter().rev() {
         let Some(layer) = doc.layer(id) else {
             continue;
         };
-        if !doc.shown(frame.map, id) || layer.geometry().is_none() {
+        if layer.geometry().is_none() {
             continue;
         }
         let Some(entry) = doc.map_entry(Some(frame.map), id) else {

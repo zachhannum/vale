@@ -653,6 +653,8 @@ pub struct AtlasState {
     /// The page of the color stops of `layer` shows all bands, not only
     /// the bands that the frame shows.
     pub stops_all: bool,
+    /// The cards of the Layers tab.
+    pub map_cards: super::pad::map_cards::MapCards,
     /// The bands that the frame shows on the page of the color stops.
     pub stops_window: Option<super::pad::stops::FrameWindow>,
     /// The label class whose panel the Labels tab of this frame shows: its
@@ -897,6 +899,7 @@ impl Default for AtlasState {
             layer: None,
             layer_page: None,
             stops_all: false,
+            map_cards: Default::default(),
             stops_window: None,
             label: None,
             label_page: None,
