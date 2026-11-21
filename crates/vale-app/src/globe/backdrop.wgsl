@@ -115,7 +115,7 @@ const CHROMA: f32 = 0.05;
 const EDGE_HIGHLIGHT: f32 = 0.05;
 const FRESNEL: f32 = 1.0;
 const DISTORTION: f32 = 0.05;
-const BRIGHTNESS: f32 = -0.35;
+const BRIGHTNESS: f32 = -0.45;
 // The radius of the curve of the rim, in points.
 const Z_RADIUS: f32 = 40.0;
 const INDEX: f32 = 1.5;
