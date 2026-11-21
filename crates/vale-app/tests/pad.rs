@@ -3771,19 +3771,37 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
 
 #[test]
 #[ignore = "gpu"]
-fn a_glass_card_shows_the_canvas_with_no_dark_fill() {
+fn a_glass_card_has_no_fill_and_shows_more_of_the_canvas() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| u16::MAX);
-    let frosted = h.render().unwrap();
-    h.state_mut().globe.glass = true;
-    h.run_steps(2);
-    let glass = h.render().unwrap();
-    std::fs::create_dir_all("../../target/app").unwrap();
-    glass.save("../../target/app/test-pad-glass.png").unwrap();
-    for card in cards(&h) {
-        let (frosted, glass) = (card_row(&frosted, card), card_row(&glass, card));
-        let mean = |row: &[i32]| row.iter().sum::<i32>() / row.len() as i32;
-        assert!(mean(&glass) > mean(&frosted) + 40, "{card:?}");
+    let mean = |row: &[i32]| row.iter().sum::<i32>() / row.len() as i32;
+    // The rows of each card over a white and over a black canvas.
+    let rows = |glass: bool, level: u16| {
+        let mut h = blur_pad(|_| level);
+        h.state_mut().globe.glass = glass;
+        h.run_steps(2);
+        let image = h.render().unwrap();
+        if glass && level == u16::MAX {
+            std::fs::create_dir_all("../../target/app").unwrap();
+            image.save("../../target/app/test-pad-glass.png").unwrap();
+        }
+        let means: Vec<i32> = cards(&h)
+            .iter()
+            .map(|&c| mean(&card_row(&image, c)))
+            .collect();
+        means
+    };
+    let frosted: Vec<i32> = rows(false, u16::MAX)
+        .iter()
+        .zip(rows(false, 0))
+        .map(|(white, black)| white - black)
+        .collect();
+    let glass: Vec<i32> = rows(true, u16::MAX)
+        .iter()
+        .zip(rows(true, 0))
+        .map(|(white, black)| white - black)
+        .collect();
+    for (frosted, glass) in frosted.iter().zip(&glass) {
+        assert!(glass > &(frosted + 20), "{glass} over {frosted}");
     }
 }
 

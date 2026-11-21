@@ -22,7 +22,7 @@ pub const REDUCTION: u32 = 4;
 /// tint of the card, grey text stays easy to read over a white canvas.
 pub const GAIN: f32 = 0.7;
 /// The standard deviation of the light blur of a card of glass, in points.
-pub const GLASS_BLUR_POINTS: f32 = 1.8;
+pub const GLASS_BLUR_POINTS: f32 = 3.0;
 /// The light blur has one pixel for this many pixels of the canvas, on
 /// each axis.
 const GLASS_REDUCTION: u32 = 1;
