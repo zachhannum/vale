@@ -110,8 +110,7 @@ fn card(
     let body = rows.len().max(1) as f32 * PANEL_ROW;
     let size = vec2(ui.available_width(), PANEL_ROW + body);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    ui.painter()
-        .rect_filled(rect, theme::CONTROL_RADIUS, fill());
+    ui.painter().rect_filled(rect, theme::TILE_RADIUS, fill());
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
     header(ui, state, controls, (map, id), head, &name, removable);
     let inner = Rect::from_min_max(pos2(rect.left(), head.bottom()), rect.max);
@@ -156,7 +155,7 @@ fn header(
     }];
     let spec = list::Spec {
         reorder: true,
-        grouped: Some(theme::CONTROL_RADIUS),
+        grouped: Some(theme::TILE_RADIUS),
         plain: true,
         ..list::Spec::default()
     };
@@ -191,7 +190,7 @@ fn header(
 /// Paints the name and the grip of a header row.
 fn paint_header(painter: &egui::Painter, head: Rect, name: &str, font: egui::FontId, lifted: bool) {
     if lifted {
-        painter.rect_filled(head, theme::CONTROL_RADIUS, theme::menu());
+        painter.rect_filled(head, theme::TILE_RADIUS, theme::menu());
     }
     let clip = Rect::from_min_max(
         pos2(head.left() + 12.0, head.top()),
@@ -337,8 +336,7 @@ fn restack(
     let list = &mut state.atlas.map_cards.stack;
     let events = list::show(ui, controls, list, spec, &rows, |_, _, cell, i| {
         let head = Rect::from_min_size(cell.rect.min, vec2(cell.rect.width(), PANEL_ROW));
-        cell.painter
-            .rect_filled(head, theme::CONTROL_RADIUS, fill());
+        cell.painter.rect_filled(head, theme::TILE_RADIUS, fill());
         paint_header(
             &cell.painter,
             head,
