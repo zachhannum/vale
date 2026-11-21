@@ -9,10 +9,10 @@
 20	Bratislava	TopRight	858.0	695.3
 22	Podgorica	TopLeft	862.9	884.0
 26	Bern	TopRight	622.6	744.4
-28	Pristina	TopLeft	917.3	869.2
+28	Pristina	TopRight	970.6	869.2
 34	Skopje	TopRight	977.9	892.1
 47	Tunis	TopRight	687.7	1093.3
-56	Reykjavík	TopRight	222.6	52.8
+56	Reykjavík	TopLeft	159.2	52.8
 72	Rabat	TopRight	196.0	1134.8
 73	Chișinău	TopRight	1126.1	687.9
 82	Amman	TopRight	1459.7	1128.2
@@ -20,12 +20,12 @@
 84	Riga	TopLeft	907.7	380.3
 95	Zagreb	BottomLeft	780.5	795.2
 96	Tallinn	TopRight	942.0	292.9
-104	Beirut	TopLeft	1375.8	1068.2
+104	Beirut	TopRight	1420.1	1068.2
 105	Tbilisi	TopRight	1544.0	716.3
-112	Belgrade	TopRight	947.3	800.1
+112	Belgrade	BottomLeft	885.3	816.5
 118	Tirana	TopRight	938.5	919.6
 119	Yerevan	TopRight	1568.2	767.3
-124	Sofia	TopLeft	978.4	859.4
+124	Sofia	BottomRight	1015.6	875.8
 125	Minsk	TopRight	1034.4	465.9
 130	Sarajevo	TopLeft	840.3	839.7
 137	Valletta	TopRight	817.2	1120.8
@@ -34,7 +34,7 @@
 145	Ankara	TopRight	1284.0	891.6
 146	Budapest	TopRight	904.6	713.8
 148	Bucharest	TopLeft	1019.3	787.1
-149	Damascus	TopRight	1459.2	1072.8
+149	Damascus	BottomRight	1459.2	1089.1
 150	Lisbon	TopRight	174.6	959.5
 152	Oslo	TopRight	693.5	301.7
 153	Warsaw	TopRight	919.2	547.7
@@ -75,7 +75,7 @@
 2000112	UKRAINE	Curved	1127.2	621.7
 2000113	POLAND	Curved	847.0	537.1
 2000114	AUSTRIA	Curved	751.5	736.9
-2000115	HUNGARY	Curved	871.4	736.6
+2000115	HUNGARY	Curved	862.6	737.7
 2000117	ROMANIA	Curved	1001.5	756.6
 2000118	LITHUANIA	Curved	931.2	441.5
 2000119	LATVIA	Curved	933.5	396.1
@@ -89,7 +89,7 @@
 2000133	IRELAND	Curved	306.1	483.8
 2000141	ITALY	Curved	653.2	832.5
 2000143	UNITED KINGDOM	Curved	415.2	560.0
-2000144	ICELAND	Curved	258.3	37.0
+2000144	ICELAND	Curved	249.5	55.2
 2000146	GEORGIA	Curved	1485.9	720.5
 2000151	FINLAND	Curved	920.8	191.9
 2000152	SLOVAKIA	Curved	889.7	668.3
@@ -100,4 +100,4 @@
 3000002	NORTH ATLANTIC OCEAN	Curved	117.8	604.4
 3000007	Black Sea	Curved	1273.7	794.5
 3000018	Caspian Sea	Curved	1577.5	575.7
-3000025	Mediterranean Sea	Curved	880.6	1145.3
+3000025	Mediterranean Sea	Curved	1061.1	1139.8
