@@ -481,8 +481,12 @@ fn show_dock(
     let shown = shown_heights(ctx, state, &heights, &folded);
     let total = shown.iter().sum::<f32>() + BAR * shown.len() as f32 + FOOT;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
-    // A collapsing dock slides off the right edge.
-    let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
+    // A collapsing dock slides off the right edge. Where the spring of the
+    // slide springs past the place of the dock, the dock grows to the left
+    // and stays at the edge, so that its corners there stay square.
+    let shift = (slide * room.width()).round();
+    let mut rect = rect.translate(vec2(shift.max(0.0), 0.0));
+    rect.min.x += shift.min(0.0);
     ctx.data_mut(|d| d.insert_temp(handle_y_id(), rect.center().y));
     let radius = geometry::edge_radius(rect, rects.screen);
     let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;

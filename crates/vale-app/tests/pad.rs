@@ -17109,6 +17109,28 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
 }
 
 #[test]
+fn the_dock_stays_at_the_edge_of_the_screen_while_it_slides_in() {
+    let mut h = pad(BOARDS[0]);
+    open_panel(&mut h, "Layers");
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(60);
+    // The springs run, as they do on a device.
+    h.state_mut().headless = false;
+    h.state_mut().pad.docks.world.collapsed = false;
+    let mut shown = 0;
+    for _ in 0..60 {
+        h.step();
+        if let Some(dock) = h.state().pad.dock_rect {
+            // The spring of the slide overshoots, and the dock does not
+            // leave the edge, so its corners there stay square.
+            assert!(dock.right() >= 1194.0, "{dock:?}");
+            shown += 1;
+        }
+    }
+    assert!(shown > 0);
+}
+
+#[test]
 fn the_dock_button_hides_and_shows_the_dock_and_is_off_with_no_panes() {
     use vale_app::ui::pad::DOCK;
     use vale_app::ui::pad::dock_ui::{HIDE_DOCK, SHOW_DOCK};
