@@ -13891,7 +13891,7 @@ fn map_stack(h: &Pad, map: MapId) -> Vec<vale_store::CollectionId> {
 }
 
 #[test]
-fn the_layers_tab_shows_the_collections_of_the_map_as_cards() {
+fn the_layers_tab_shows_the_collections_of_the_map_as_in_the_layers_panel() {
     use vale_app::ui::pad::collection::{dim_row, header_name};
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
@@ -13909,7 +13909,7 @@ fn the_layers_tab_shows_the_collections_of_the_map_as_cards() {
     assert!(control(&h, &dim_row("Land", "World")).is_some());
     assert!(control(&h, &eye_name("Land", true)).is_some());
     screenshot::save(&mut h, "pad-atlas-map-collections");
-    check_controls(&h, "two cards");
+    check_controls(&h, "two collections");
 }
 
 #[test]
@@ -13938,7 +13938,7 @@ fn add_collection_adds_a_collection_to_the_map_in_one_step() {
 }
 
 #[test]
-fn a_drag_of_a_card_header_restacks_the_collections_of_the_map_in_one_step() {
+fn a_drag_of_a_header_row_restacks_the_collections_of_the_map_in_one_step() {
     use vale_app::ui::pad::collection::header_name;
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
@@ -13958,11 +13958,11 @@ fn a_drag_of_a_card_header_restacks_the_collections_of_the_map_in_one_step() {
 }
 
 #[test]
-fn a_swipe_on_a_card_removes_the_collection_from_the_map_in_one_step() {
+fn a_swipe_on_a_header_row_removes_the_collection_from_the_map_in_one_step() {
     use vale_app::ui::pad::collection::header_name;
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
-    // The last card of a map has no Remove.
+    // The last collection of a map has no Remove.
     swipe_row(&mut h, &header_name("World"), -120.0);
     assert!(control(&h, "Remove World").is_none());
 
