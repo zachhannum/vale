@@ -7,7 +7,7 @@ use eframe::egui_wgpu::wgpu;
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::{motion, theme};
-use crate::globe::backdrop::{GLASS_RADIUS, card_shape, marker};
+use crate::globe::backdrop::{GLASS_RADIUS, card_shape, marker, paint_rect};
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +81,7 @@ pub fn card_from(
         order,
         radius,
         Some(grow),
+        None,
         add_contents,
     );
 }
@@ -170,11 +171,39 @@ pub fn form_card(
         order,
         radius,
         Some(grow),
+        None,
         add_contents,
     );
     // The dark fill is above the chrome, and the card is above the fill.
     ctx.move_to_top(scrim);
     ctx.move_to_top(layer);
+}
+
+/// A `card` that a capsule joins with a smooth outline when the cards are
+/// glass, such as the dock and its handle.
+#[allow(clippy::too_many_arguments)]
+pub fn card_with_blob(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    order: egui::Order,
+    radius: CornerRadius,
+    blob: Option<Rect>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        None,
+        blob,
+        add_contents,
+    );
 }
 
 /// A `card` in two parts, one above `gap` and one below it. The gap is
@@ -199,6 +228,7 @@ pub fn split_card(
         order,
         radius,
         None,
+        None,
         add_contents,
     );
 }
@@ -213,6 +243,7 @@ fn any_card(
     order: egui::Order,
     radius: CornerRadius,
     grow: Option<Grow>,
+    blob: Option<Rect>,
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
@@ -268,9 +299,9 @@ fn any_card(
                     // transform of its layer. egui moves the rect of the
                     // callback with the layer.
                     let place = grow.map_or(part, |g| g.transform * part);
-                    let mut callback =
-                        card_shape(format, place, shape(part), ctx.pixels_per_point(), glass);
-                    callback.rect = part;
+                    let pixels = ctx.pixels_per_point();
+                    let mut callback = card_shape(format, place, shape(part), pixels, glass, blob);
+                    callback.rect = paint_rect(part, blob.filter(|_| glass));
                     ui.painter().add(callback);
                 }
                 ui.painter()

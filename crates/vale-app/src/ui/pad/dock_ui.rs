@@ -10,6 +10,7 @@ use super::panes::{self, BAR, Drop};
 use super::widgets::{self, BODY_PAD, Controls, ICON};
 use super::{HOLD_SLOP, HOLD_TIME, motion, point_card, popover, theme};
 use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
+use crate::globe::backdrop::{card_shape, marker};
 use crate::ui::AppState;
 
 /// The handle that changes the width of the dock.
@@ -27,6 +28,8 @@ const TAB_PAD: f32 = 12.0;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
+/// The size of the glass capsule of the handle of the dock.
+const GLASS_HANDLE: (f32, f32) = (20.0, 80.0);
 /// The extra space at each side of the content of a glass sheet.
 const SHEET_GLASS_PAD: f32 = 12.0;
 /// The tab at the right edge that shows a collapsed dock.
@@ -320,7 +323,9 @@ fn edge_tab(
             let resp = widgets::drag_area(ui, controls, rect, SHOW_DOCK);
             let active = pulled || resp.is_pointer_button_down_on();
             let painter = ui.painter().with_clip_rect(rects.screen);
-            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active);
+            // While the dock slides away, the dock draws the capsule.
+            let alone = slide >= 1.0;
+            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active, alone);
             show = live && resp.clicked();
             pull(ui, state, &resp, rects.dock.width());
         });
@@ -486,13 +491,21 @@ fn show_dock(
     let mut drag = None;
     let mut bars = Vec::new();
     let mut actions: Vec<(usize, HeaderOut)> = Vec::new();
-    widgets::card(
+    // On glass, the handle is a part of the dock: a capsule on its left
+    // edge that joins the dock with a smooth outline.
+    let right = rects.screen.right() - rects.bands.right;
+    let handle = widgets::is_glass(ctx).then(|| {
+        let center = pos2(grip_x(rect.left(), right), rect.center().y);
+        Rect::from_center_size(center, vec2(GLASS_HANDLE.0, GLASS_HANDLE.1))
+    });
+    widgets::card_with_blob(
         ctx,
         backdrop,
         "pad-dock",
         rect,
         Order::Middle,
         radius,
+        handle,
         |ui| {
             let mut top = rect.top();
             for (i, head) in heads.iter_mut().enumerate() {
@@ -792,6 +805,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 &painter,
                 pos2(grip_x(dock.left(), right), rect.center().y),
                 active,
+                false,
             );
             if active {
                 let (start, width) = (state.pad.width_drag)
@@ -828,10 +842,27 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
 }
 
 /// Paints the grip of the width handle at `center`. A grip on a dark
-/// capsule shows over a white page and over the dark canvas.
-fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool) {
-    let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
-    painter.rect_filled(capsule, 6.0, theme::card(false).to_opaque());
+/// capsule shows over a white page and over the dark canvas. On glass,
+/// the dock draws the capsule of a grip on the dock, and a grip with
+/// `alone` has a glass capsule of its own.
+fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) {
+    let ctx = painter.ctx();
+    match widgets::backdrop(ctx).filter(|_| widgets::is_glass(ctx)) {
+        Some(format) => {
+            if alone {
+                let capsule = Rect::from_center_size(center, vec2(GLASS_HANDLE.0, GLASS_HANDLE.1));
+                let radius = egui::CornerRadius::same((GLASS_HANDLE.0 / 2.0) as u8);
+                painter.add(marker(Order::Middle, capsule));
+                painter.add(theme::shadow().as_shape(capsule, radius));
+                let pixels = ctx.pixels_per_point();
+                painter.add(card_shape(format, capsule, radius, pixels, true, None));
+            }
+        }
+        None => {
+            let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
+            painter.rect_filled(capsule, 6.0, theme::card(false).to_opaque());
+        }
+    }
     let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
     let color = if active { theme::ACCENT } else { theme::TEXT };
     painter.rect_filled(pill, 2.0, color);

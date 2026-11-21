@@ -94,6 +94,10 @@ struct CardVertex {
     // 1 for a card of glass, the pixels per point, and the radius of the
     // curve of the rim in pixels.
     @location(2) @interpolate(flat) glass: vec4<f32>,
+    // A capsule that joins the card with a smooth outline, such as the
+    // handle of the dock: its center, then half of its width and height,
+    // in pixels. A width of 0: no capsule.
+    @location(3) @interpolate(flat) blob: vec4<f32>,
 }
 
 // egui sets the viewport to the card, so the triangle covers the card.
@@ -103,8 +107,9 @@ fn vs_card(
     @location(0) rect: vec4<f32>,
     @location(1) radii: vec4<f32>,
     @location(2) glass: vec4<f32>,
+    @location(3) blob: vec4<f32>,
 ) -> CardVertex {
-    return CardVertex(corner(i), rect, radii, glass);
+    return CardVertex(corner(i), rect, radii, glass, blob);
 }
 
 // The glass follows the shader of the liquidglass library by Yassine
@@ -145,6 +150,22 @@ fn bevel(d: f32, z: f32) -> f32 {
     return sqrt(d * (2.0 * z - d));
 }
 
+// The distance from the joined outline of a card and a capsule. `q` is the
+// place relative to the card, and `b` the place relative to the capsule of
+// half the size `blob`. The two shapes join over the distance `k`.
+fn shape(q: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, b: vec2<f32>, blob: vec2<f32>, k: f32) -> f32 {
+    let card = rounded(q, half, radii);
+    if blob.x <= 0.0 {
+        return card;
+    }
+    let capsule = rounded(b, blob, vec4<f32>(min(blob.x, blob.y)));
+    let h = clamp(0.5 + 0.5 * (capsule - card) / k, 0.0, 1.0);
+    return mix(capsule, card, h) - k * h * (1.0 - h);
+}
+
+// The distance in points over which a card and its capsule join.
+const JOIN: f32 = 10.0;
+
 fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
 }
@@ -152,9 +173,9 @@ fn hash(p: vec2<f32>) -> f32 {
 // The canvas below a card of glass. The card is a slab of glass whose rim
 // is curved, and light refracts at its top and bottom surfaces. `place` is
 // the place relative to the center, `card` is half the size of the card, and
-// `pixels` is the pixels per point, and `z` is the radius of the curve of
-// the rim in pixels.
-fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pixels: f32, z: f32) -> vec3<f32> {
+// `pixels` is the pixels per point, `z` is the radius of the curve of the
+// rim in pixels, and `blob` is the capsule that joins the card.
+fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pixels: f32, z: f32, blob: vec4<f32>) -> vec3<f32> {
     let unit = pixels / 3.0;
     // A side at the edge of the screen has no rim: the glass goes on past
     // the screen.
@@ -164,7 +185,10 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
     let grow_high = select(vec2<f32>(0.0), vec2<f32>(z), high);
     let half = card + (grow_low + grow_high) * 0.5;
     let p = place + (grow_low - grow_high) * 0.5;
-    let sdf = rounded(p, half, radii);
+    // The place relative to the capsule is `p + to_blob`.
+    let to_blob = pos - p - blob.xy;
+    let k = JOIN * pixels;
+    let sdf = shape(p, half, radii, p + to_blob, blob.zw, k);
     let inside = -sdf;
     let edge = smoothstep(min(half.x, half.y) * 0.35, 0.0, inside);
 
@@ -172,10 +196,13 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
     let e = 2.0 * unit;
     let dx = vec2<f32>(e, 0.0);
     let dy = vec2<f32>(0.0, e);
-    let slope = vec2<f32>(
-        bevel(-rounded(p + dx, half, radii), z) - bevel(-rounded(p - dx, half, radii), z),
-        bevel(-rounded(p + dy, half, radii), z) - bevel(-rounded(p - dy, half, radii), z),
-    ) / (2.0 * e);
+    let height = array<f32, 4>(
+        bevel(-shape(p + dx, half, radii, p + dx + to_blob, blob.zw, k), z),
+        bevel(-shape(p - dx, half, radii, p - dx + to_blob, blob.zw, k), z),
+        bevel(-shape(p + dy, half, radii, p + dy + to_blob, blob.zw, k), z),
+        bevel(-shape(p - dy, half, radii, p - dy + to_blob, blob.zw, k), z),
+    );
+    let slope = vec2<f32>(height[0] - height[1], height[2] - height[3]) / (2.0 * e);
     let normal = normalize(vec3<f32>(-slope, 1.0));
     let depth = smoothstep(0.0, z, inside);
 
@@ -219,13 +246,14 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
 @fragment
 fn fs_card(in: CardVertex) -> @location(0) vec4<f32> {
     let p = in.position.xy - in.rect.xy;
-    let side = mix(in.radii.xz, in.radii.yw, vec2<f32>(step(0.0, p.x)));
-    let radius = mix(side.x, side.y, step(0.0, p.y));
-    let q = abs(p) - in.rect.zw + radius;
-    let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    var distance = rounded(p, in.rect.zw, in.radii);
+    if in.glass.x > 0.0 {
+        let b = in.position.xy - in.blob.xy;
+        distance = shape(p, in.rect.zw, in.radii, b, in.blob.zw, JOIN * in.glass.y);
+    }
     let cover = clamp(0.5 - distance, 0.0, 1.0);
     if in.glass.x > 0.0 {
-        let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.y, in.glass.z);
+        let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.y, in.glass.z, in.blob);
         return vec4<f32>(color * cover, cover);
     }
     let uv = (in.position.xy - g.canvas.xy) / (g.small.xy * g.blur.y);

@@ -3786,6 +3786,31 @@ fn mean(row: &[i32]) -> i32 {
 
 #[test]
 #[ignore = "gpu"]
+fn on_glass_the_handle_of_the_dock_joins_the_dock_with_a_smooth_outline() {
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|_| u16::MAX);
+    h.state_mut().globe.glass = true;
+    h.run_steps(2);
+    let image = h.render().unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    image
+        .save("../../target/app/test-pad-glass-handle.png")
+        .unwrap();
+    let dock = h.state().pad.dock_rect.unwrap();
+    let red = |x: f32, y: f32| image.get_pixel(x as u32, y as u32).0[0];
+    let (left, middle) = (dock.left(), dock.center().y);
+    // The white canvas is grey below the glass.
+    assert!(red(left - 40.0, middle) > 240);
+    // The capsule of the handle stands out of the left edge of the dock.
+    assert!(red(left - 6.0, middle - 20.0) < 160);
+    // Past the end of the capsule, the outline curves into the dock.
+    assert!(red(left - 1.0, middle + 41.0) < 160);
+    // The shadow of the dock darkens the canvas a little there.
+    assert!(red(left - 6.0, middle + 60.0) > 200);
+}
+
+#[test]
+#[ignore = "gpu"]
 fn a_glass_card_maps_the_canvas_into_a_band_of_grey() {
     let _gpu = one_gpu_test();
     let (_, frosted_black) = glass_rows(false, |_| 0);

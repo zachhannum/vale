@@ -52,6 +52,9 @@ struct Instance {
     /// 1 for a card of glass, the pixels per point, and the radius of the
     /// curve of the rim in pixels.
     glass: [f32; 4],
+    /// The capsule that joins a card of glass: its center, then half of
+    /// its size, in pixels. A width of 0: no capsule.
+    blob: [f32; 4],
 }
 
 /// The textures of one screen size.
@@ -145,7 +148,12 @@ impl Pipelines {
         let instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<Instance>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4, 2 => Float32x4],
+            attributes: &wgpu::vertex_attr_array![
+                0 => Float32x4,
+                1 => Float32x4,
+                2 => Float32x4,
+                3 => Float32x4
+            ],
         };
         let pipeline =
             |label, vertex, fragment, blend, buffers: &[Option<wgpu::VertexBufferLayout>]| {
@@ -466,14 +474,20 @@ pub struct CardCallback {
     index: AtomicU32,
 }
 
+/// The distance in points over which a card of glass and its capsule join.
+/// It is `JOIN` in `backdrop.wgsl`.
+pub const JOIN: f32 = 10.0;
+
 /// The shape that draws the blurred canvas in the rounded rectangle of a card.
-/// `glass`: the rim of the card bends the canvas below it.
+/// `glass`: the rim of the card bends the canvas below it. `blob`: a capsule
+/// that joins a card of glass with a smooth outline.
 pub fn card_shape(
     format: wgpu::TextureFormat,
     rect: egui::Rect,
     radius: egui::CornerRadius,
     pixels_per_point: f32,
     glass: bool,
+    blob: Option<egui::Rect>,
 ) -> egui::PaintCallback {
     let center = rect.center() * pixels_per_point;
     let half = rect.size() * 0.5 * pixels_per_point;
@@ -489,10 +503,20 @@ pub fn card_shape(
                 f32::from(radii.into_iter().max().unwrap_or(0)) * pixels_per_point,
                 0.0,
             ],
+            blob: blob.filter(|_| glass).map_or([0.0; 4], |b| {
+                let center = b.center() * pixels_per_point;
+                let half = b.size() * 0.5 * pixels_per_point;
+                [center.x, center.y, half.x, half.y]
+            }),
         },
         index: AtomicU32::new(u32::MAX),
     };
-    egui_wgpu::Callback::new_paint_callback(rect, callback)
+    egui_wgpu::Callback::new_paint_callback(paint_rect(rect, blob.filter(|_| glass)), callback)
+}
+
+/// The rect that the shape of a card and its capsule covers.
+pub fn paint_rect(rect: egui::Rect, blob: Option<egui::Rect>) -> egui::Rect {
+    blob.map_or(rect, |b| rect.union(b.expand(JOIN)))
 }
 
 impl egui_wgpu::CallbackTrait for CardCallback {

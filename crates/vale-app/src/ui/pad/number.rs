@@ -967,6 +967,7 @@ impl<'a> Number<'a> {
                 corner,
                 ctx.pixels_per_point(),
                 glass,
+                None,
             ));
         }
         painter.rect_filled(rect, corner, widgets::card_fill(ctx, backdrop.is_some()));
