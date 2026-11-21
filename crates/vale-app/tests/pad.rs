@@ -3771,35 +3771,25 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
 
 #[test]
 #[ignore = "gpu"]
-fn the_rim_of_a_glass_card_has_a_highlight() {
+fn a_glass_card_shows_the_canvas_with_no_dark_fill() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| 0);
+    let mut h = blur_pad(|_| u16::MAX);
     let frosted = h.render().unwrap();
     h.state_mut().globe.glass = true;
     h.run_steps(2);
     let glass = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
     glass.save("../../target/app/test-pad-glass.png").unwrap();
-    // The cards that stand alone. The top of a docked panel can be a
-    // divider inside a card.
-    let r = h.state().pad.rects.unwrap();
-    for card in [r.workspace, r.actions, r.tools] {
-        // The row of pixels just inside the top edge.
-        let y = card.top() as u32 + 1;
-        let (left, right) = (card.left() as u32 + 16, card.right() as u32 - 16);
-        let red = |image: &image::RgbaImage| -> i32 {
-            (left..right)
-                .map(|x| i32::from(image.get_pixel(x, y).0[0]))
-                .sum()
-        };
-        let width = (right - left) as i32;
-        assert!(red(&glass) > red(&frosted) + width * 20, "{card:?}");
+    for card in cards(&h) {
+        let (frosted, glass) = (card_row(&frosted, card), card_row(&glass, card));
+        let mean = |row: &[i32]| row.iter().sum::<i32>() / row.len() as i32;
+        assert!(mean(&glass) > mean(&frosted) + 40, "{card:?}");
     }
 }
 
 #[test]
 #[ignore = "gpu"]
-fn the_rim_of_a_glass_card_shows_the_canvas_sharper_than_the_blur() {
+fn a_glass_card_shows_the_canvas_sharper_than_the_blur() {
     let _gpu = one_gpu_test();
     let mut h = blur_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
