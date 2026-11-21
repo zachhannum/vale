@@ -382,10 +382,12 @@ fn page_feature(vt: &ViewTransform, index: usize, f: &ProjFeature) -> PageFeatur
 /// The layers that a map draws, in draw order. `None` is the legacy map,
 /// which draws the visible layers.
 fn drawn_layers(doc: &Document, map: Option<MapId>) -> Vec<LayerId> {
-    let entries = doc.frame.entries.iter().map(|e| e.layer);
     match map {
-        None => entries.filter(|id| doc.visible(*id)).collect(),
-        Some(map) => entries.filter(|id| doc.shown(map, *id)).collect(),
+        None => (doc.frame.entries.iter())
+            .map(|e| e.layer)
+            .filter(|id| doc.visible(*id))
+            .collect(),
+        Some(map) => doc.map_layers(map),
     }
 }
 
