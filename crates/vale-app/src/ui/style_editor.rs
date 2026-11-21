@@ -8,7 +8,7 @@ use vale_render::Symbols;
 use vale_store::{Field, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{
-    Color, DashPreset, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, StrokeKind,
+    Color, DashPattern, DashPreset, Hatch, LayerStyle, MarkerShape, Mask, Rule, Stroke, StrokeKind,
 };
 
 use super::expr_field;
@@ -21,11 +21,10 @@ use super::pad::filter;
 use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::{DUPLICATE_RAMP, IMPORT_RAMP, NEW_RAMP};
 use super::pad::rules::{
-    ADD_DASH, ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASH_STEP, DASHED, DASHES, DELETE_RULE,
-    DELETE_RULES, ENDS, EXPRESSION, FILL, FILTER, FLAT, FLOW, FLOW_MIN, HEIGHT_LAYER, LINE,
-    MAX_SCALE, MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, REMOVE_DASH, ROUND, SOLID, STROKE,
-    STROKE_WIDTH, TAPER, TAPER_START, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, length_name,
-    parse_scale, pattern_name, scale_text,
+    ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASHED, DELETE_RULE, DELETE_RULES, ENDS, EXPRESSION,
+    FILL, FILTER, FLAT, FLOW, FLOW_MIN, HEIGHT_LAYER, LENGTHS, LENGTHS_HINT, LINE, MAX_SCALE,
+    MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, ROUND, SOLID, STROKE, STROKE_WIDTH, TAPER,
+    TAPER_START, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale, pattern_name, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -946,30 +945,32 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
                 let named = egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, PATTERN);
                 menu.response.widget_info(|| named.clone());
             });
-            for (i, &v) in p.lengths().iter().enumerate() {
-                let mut v = v;
-                let lo = if i.is_multiple_of(2) {
-                    DASHES.0
-                } else {
-                    DASH_STEP
-                };
-                if number::stepper(&length_name(i), &mut v)
-                    .range(lo..=DASHES.1)
-                    .suffix(" ×")
-                    .show(ui)
-                    .changed()
-                {
-                    next = p.with_length(i, v).or(next);
-                }
-            }
             ui.horizontal(|ui| {
-                if ui.small_button(ADD_DASH).clicked() {
-                    next = p.with_dash_added();
+                ui.label(LENGTHS);
+                let id = salt.with("lengths");
+                let draft = ui.data(|d| d.get_temp::<String>(id));
+                let mut text = draft.clone().unwrap_or_else(|| p.text());
+                let valid = draft.is_none() || DashPattern::parse(&text, false).is_some();
+                let mut edit = egui::TextEdit::singleline(&mut text).desired_width(140.0);
+                if !valid {
+                    edit = edit.text_color(ui.visuals().warn_fg_color);
                 }
-                if ui.small_button(REMOVE_DASH).clicked() {
-                    next = p.with_dash_removed();
+                let field = ui.add(edit);
+                field.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, LENGTHS)
+                });
+                if field.changed()
+                    && let Some(q) = DashPattern::parse(&text, false)
+                {
+                    next = Some(p.with_lengths(&q));
+                }
+                if field.has_focus() {
+                    ui.data_mut(|d| d.insert_temp(id, text));
+                } else {
+                    ui.data_mut(|d| d.remove::<String>(id));
                 }
             });
+            ui.label(LENGTHS_HINT);
             ui.horizontal(|ui| {
                 ui.label(ENDS);
                 let menu = egui::ComboBox::from_id_salt(salt.with("ends"))

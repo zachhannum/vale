@@ -65,23 +65,27 @@ impl DashPreset {
 }
 
 impl DashPattern {
-    /// The most dashes in a pattern. Each dash has a gap.
-    pub const MAX_DASHES: usize = vale_render::stroke::MAX_PATTERN / 2;
-    pub const DASHED: Self = Self::fixed([4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, false);
-    pub const DOTTED: Self = Self::fixed([0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 2, true);
-    pub const DASH_DOT: Self = Self::fixed([6.0, 2.5, 0.0, 2.5, 0.0, 0.0, 0.0, 0.0], 4, true);
-    pub const DASH_DOT_DOT: Self = Self::fixed([6.0, 2.5, 0.0, 2.5, 0.0, 2.5, 0.0, 0.0], 6, true);
+    pub const DASHED: Self = Self::fixed(&[4.0, 2.0], false);
+    pub const DOTTED: Self = Self::fixed(&[0.0, 2.0], true);
+    pub const DASH_DOT: Self = Self::fixed(&[6.0, 2.5, 0.0, 2.5], true);
+    pub const DASH_DOT_DOT: Self = Self::fixed(&[6.0, 2.5, 0.0, 2.5, 0.0, 2.5], true);
 
-    const fn fixed(lengths: [f64; vale_render::stroke::MAX_PATTERN], len: u8, round: bool) -> Self {
+    const fn fixed(l: &[f64], round: bool) -> Self {
+        let mut lengths = [0.0; vale_render::stroke::MAX_PATTERN];
+        let mut i = 0;
+        while i < l.len() {
+            lengths[i] = l[i];
+            i += 1;
+        }
         DashPattern {
             lengths,
-            len,
+            len: l.len() as u8,
             round,
         }
     }
 
     /// A pattern of `lengths`, or `None` if they are not a valid pattern: an even count from
-    /// 2 to 8, each dash finite and not negative, and each gap finite and positive.
+    /// 2 to 16, each dash finite and not negative, and each gap finite and positive.
     pub fn new(lengths: &[f64], round: bool) -> Option<Self> {
         if !vale_render::stroke::valid_pattern(lengths) {
             return None;
@@ -109,25 +113,39 @@ impl DashPattern {
         DashPreset::ALL.into_iter().find(|p| p.pattern() == *self)
     }
 
-    /// The pattern with length `i` set to `value`, if `i` is in the pattern and the result
-    /// is valid.
-    pub fn with_length(&self, i: usize, value: f64) -> Option<Self> {
-        let mut l = self.lengths().to_vec();
-        *l.get_mut(i)? = value;
-        Self::new(&l, self.round)
+    /// The pattern of `text`: lengths with spaces or commas between them. An odd count of
+    /// lengths repeats one time, so that the pattern alternates dash and gap.
+    pub fn parse(text: &str, round: bool) -> Option<Self> {
+        let words = text.split(|c: char| c.is_whitespace() || c == ',');
+        let mut lengths: Vec<f64> = (words.filter(|w| !w.is_empty()))
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .ok()?;
+        if lengths.len() % 2 == 1 {
+            lengths.extend_from_within(..);
+        }
+        Self::new(&lengths, round)
     }
 
-    /// The pattern with one more dash and gap at the end, if it has room.
-    pub fn with_dash_added(&self) -> Option<Self> {
-        let mut l = self.lengths().to_vec();
-        l.extend([2.0, 2.0]);
-        Self::new(&l, self.round)
+    /// The lengths as text, for example `6 2.5 0 2.5`.
+    pub fn text(&self) -> String {
+        let words: Vec<String> = (self.lengths().iter())
+            .map(|l| {
+                format!("{:.2}", l)
+                    .trim_end_matches('0')
+                    .trim_end_matches('.')
+                    .to_owned()
+            })
+            .collect();
+        words.join(" ")
     }
 
-    /// The pattern without its last dash and gap, if it has more than one dash.
-    pub fn with_dash_removed(&self) -> Option<Self> {
-        let l = self.lengths();
-        Self::new(&l[..l.len().saturating_sub(2)], self.round)
+    /// The pattern with the lengths of `other` and the ends of this pattern.
+    pub fn with_lengths(&self, other: &DashPattern) -> Self {
+        DashPattern {
+            round: self.round,
+            ..*other
+        }
     }
 }
 

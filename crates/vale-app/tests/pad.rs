@@ -11544,8 +11544,8 @@ fn a_width_drag_and_a_color_drag_redraw_and_are_one_undo_step_each() {
 #[test]
 fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
     use vale_app::ui::pad::rules::{
-        ADD_DASH, BRUSH, DASH, DASH_DOT, DASHED, FLAT, GAP, LINE, PATTERN, REMOVE_DASH, SOLID,
-        STROKE_WIDTH, TAPER, TAPER_START,
+        BRUSH, DASH_DOT, DASHED, FLAT, LENGTHS, LINE, PATTERN, SOLID, STROKE_WIDTH, TAPER,
+        TAPER_START,
     };
     use vale_style::{DashPattern, StrokeKind};
     for size in [BOARDS[1], BOARDS[3]] {
@@ -11555,26 +11555,22 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         let kind = |h: &Pad| rules(h, rivers)[0].stroke().unwrap().kind;
         open_rule(&mut h, "Rivers", "Default");
         assert_eq!(kind(&h), StrokeKind::Solid, "{what}");
-        assert!(control(&h, DASH).is_none(), "{what}");
+        assert!(control(&h, LENGTHS).is_none(), "{what}");
 
         scroll_to_control(&mut h, DASHED);
         tap(&mut h, DASHED);
         assert_eq!(kind(&h), StrokeKind::dashed(), "{what}");
-        set_number(&mut h, DASH, "12.34");
-        set_number(&mut h, GAP, "6.52");
+        // The field takes a sequence of lengths.
+        scroll_to_control(&mut h, LENGTHS);
+        type_text(&mut h, LENGTHS, "5, 1 0 1");
         let StrokeKind::Dashed(p) = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
         };
-        let (dash, gap) = (p.lengths()[0], p.lengths()[1]);
-        let default = vale_style::DashPattern::DASHED;
-        assert!(
-            dash > default.lengths()[0] && gap > default.lengths()[1],
-            "{what}: {dash} {gap}"
-        );
-        assert!(dash <= 20.0 && gap <= 20.0, "{what}: {dash} {gap}");
-        let twentieths = |v: f64| (v * 20.0 - (v * 20.0).round()).abs() < 1e-9;
-        assert!(twentieths(dash) && twentieths(gap), "{what}: {dash} {gap}");
+        assert_eq!(p.lengths(), &[5.0, 1.0, 0.0, 1.0], "{what}");
         assert_eq!(p.preset(), None, "{what}");
+        // A text that is not a pattern changes nothing.
+        type_text(&mut h, LENGTHS, "5 0");
+        assert_eq!(kind(&h), StrokeKind::Dashed(p), "{what}");
 
         // The Pattern page picks a preset.
         scroll_to_control(&mut h, PATTERN);
@@ -11593,18 +11589,8 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         );
         tap(&mut h, "Back to Default");
         assert_eq!(h.state().pad.page, Some(Page::Rule(0)), "{what}");
-        scroll_to_control(&mut h, "Dash 2");
-        let lengths = |h: &Pad| match kind(h) {
-            StrokeKind::Dashed(p) => p.lengths().len(),
-            _ => 0,
-        };
-        scroll_to_control(&mut h, ADD_DASH);
+        scroll_to_control(&mut h, LENGTHS);
         screenshot::save(&mut h, &format!("pad-dash-dot-{}", size.0));
-        tap(&mut h, ADD_DASH);
-        assert_eq!(lengths(&h), 6, "{what}");
-        scroll_to_control(&mut h, REMOVE_DASH);
-        tap(&mut h, REMOVE_DASH);
-        assert_eq!(lengths(&h), 4, "{what}");
         scroll_to_control(&mut h, FLAT);
         tap(&mut h, FLAT);
         let StrokeKind::Dashed(p) = kind(&h) else {
@@ -11615,7 +11601,7 @@ fn a_rule_page_sets_the_line_type_the_dashes_and_the_taper() {
         scroll_to_control(&mut h, TAPER);
         tap(&mut h, TAPER);
         assert_eq!(kind(&h), StrokeKind::taper(), "{what}");
-        assert!(control(&h, DASH).is_none(), "{what}");
+        assert!(control(&h, LENGTHS).is_none(), "{what}");
         drag_right(&mut h, TAPER_START);
         let StrokeKind::Taper { start } = kind(&h) else {
             panic!("{what}: {:?}", kind(&h));
@@ -21485,7 +21471,7 @@ fn a_swipe_on_a_header_row_takes_the_collection_off_the_globe_in_one_step() {
 
 #[test]
 fn selected_rules_take_one_dash_pattern() {
-    use vale_app::ui::pad::rules::{DASHED, DOTTED, PATTERN, ROUND};
+    use vale_app::ui::pad::rules::{DASHED, DOTTED, LENGTHS, PATTERN, ROUND};
     use vale_store::GeometryKind;
     use vale_style::{DashPattern, StrokeKind};
     let mut h = pad(BOARDS[1]);
@@ -21517,7 +21503,10 @@ fn selected_rules_take_one_dash_pattern() {
     tap(&mut h, "Back to 2 rules");
     assert_eq!(h.state().pad.page, Some(Page::Rules));
     // The lengths and the ends of the shared pattern show.
-    scroll_to_control(&mut h, "Gap");
     scroll_to_control(&mut h, ROUND);
+    // The field sets the lengths of both patterns.
+    type_text(&mut h, LENGTHS, "3 1");
+    let lengths = DashPattern::parse("3 1", true).unwrap();
+    assert_eq!(kinds(&h), [StrokeKind::Dashed(lengths); 2]);
     check_controls(&h, "selected dash patterns");
 }

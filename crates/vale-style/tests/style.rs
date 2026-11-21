@@ -1295,20 +1295,21 @@ fn a_dash_pattern_knows_its_preset_and_keeps_valid() {
         assert_eq!(p.pattern().preset(), Some(p));
     }
     let dash_dot = DashPattern::DASH_DOT;
-    let custom = dash_dot.with_length(0, 5.0).unwrap();
+    let custom = DashPattern::parse("5, 2.5 0 2.5", true).unwrap();
     assert_eq!(custom.lengths(), &[5.0, 2.5, 0.0, 2.5]);
     assert_eq!(custom.preset(), None);
-    assert_eq!(dash_dot.with_length(1, 0.0), None, "a gap of 0");
-    assert_eq!(dash_dot.with_length(4, 1.0), None, "no length 4");
-    let longer = dash_dot.with_dash_added().unwrap();
-    assert_eq!(longer.lengths().len(), 6);
-    assert_eq!(longer.with_dash_removed(), Some(dash_dot));
-    assert_eq!(
-        DashPattern::DOTTED.with_dash_removed(),
-        None,
-        "one dash stays"
-    );
-    let full = longer.with_dash_added().unwrap();
-    assert_eq!(full.with_dash_added(), None, "four dashes at most");
+    assert_eq!(DashPattern::parse("6 2.5 0 2.5", true), Some(dash_dot));
+    assert_eq!(dash_dot.text(), "6 2.5 0 2.5");
+    assert_eq!(DashPattern::parse(&dash_dot.text(), true), Some(dash_dot));
+    // An odd count repeats, as in SVG.
+    let odd = DashPattern::parse("3 1 0.5", false).unwrap();
+    assert_eq!(odd.lengths(), &[3.0, 1.0, 0.5, 3.0, 1.0, 0.5]);
+    for bad in ["", "3 0", "3 -1", "3 x", "0", &["1"; 18].join(" ")] {
+        assert_eq!(DashPattern::parse(bad, false), None, "{bad:?}");
+    }
+    assert!(DashPattern::parse(&["1"; 16].join(" "), false).is_some());
+    let flat = DashPattern::DASHED.with_lengths(&dash_dot);
+    assert_eq!(flat.lengths(), dash_dot.lengths());
+    assert!(!flat.round);
     assert_eq!(DashPattern::DASH_DOT.scaled(2.0), vec![12.0, 5.0, 0.0, 5.0]);
 }

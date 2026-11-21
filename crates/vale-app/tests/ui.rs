@@ -3276,7 +3276,7 @@ fn the_desktop_style_editor_sets_the_flow_line_type() {
 
 #[test]
 fn the_desktop_style_editor_sets_the_dash_pattern() {
-    use vale_app::ui::pad::rules::{ADD_DASH, DASH_DOT, DASHED, ENDS, FLAT, LINE, PATTERN};
+    use vale_app::ui::pad::rules::{DASH_DOT, DASHED, ENDS, FLAT, LENGTHS, LINE, PATTERN};
     use vale_style::{DashPattern, StrokeKind};
     let mut h = globe_harness();
     let rivers = open_rivers(&mut h);
@@ -3294,7 +3294,7 @@ fn the_desktop_style_editor_sets_the_dash_pattern() {
     h.get_by_label(DASH_DOT).click();
     h.run_steps(2);
     assert_eq!(kind(&h), StrokeKind::Dashed(DashPattern::DASH_DOT));
-    h.get_by_label(ADD_DASH).click();
+    type_in(&mut h, LENGTHS, "6 2.5 0 2.5 0 2.5");
     h.run_steps(2);
     let lengths = |h: &Harness<'static, AppState>| match kind(h) {
         StrokeKind::Dashed(p) => p.lengths().len(),

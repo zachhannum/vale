@@ -94,7 +94,7 @@ fn dash_with_bad_lengths_keeps_the_line() {
         &[-1.0, 2.0],
         &[3.0, 0.0],
         &[f64::NAN, 2.0],
-        &[1.0; 10],
+        &[1.0; 18],
     ] {
         assert_eq!(dash(&parts, bad), parts, "{bad:?}");
     }

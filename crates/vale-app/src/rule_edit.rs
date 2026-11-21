@@ -19,8 +19,8 @@ pub enum Change {
     LineKind(StrokeKind),
     /// The dash pattern of each dashed stroke.
     DashPattern(DashPattern),
-    /// Length `.0` of each dash pattern that has it, if the pattern stays valid.
-    DashLength(usize, f64),
+    /// The lengths of each dash pattern. Each pattern keeps its ends.
+    DashLengths(DashPattern),
     /// The ends of each dash pattern.
     DashRound(bool),
     TaperStart(f64),
@@ -82,9 +82,9 @@ fn apply_one(rule: &mut Rule, kind: GeometryKind, change: Change) {
                 *d = p;
             }
         }),
-        Change::DashLength(i, v) => edit(rule, &|s| {
+        Change::DashLengths(p) => edit(rule, &|s| {
             if let StrokeKind::Dashed(d) = &mut s.kind {
-                *d = d.with_length(i, v).unwrap_or(*d);
+                *d = d.with_lengths(&p);
             }
         }),
         Change::DashRound(r) => edit(rule, &|s| {
@@ -232,7 +232,8 @@ mod tests {
             StrokeKind::Dashed(p) => Some(p),
             _ => None,
         };
-        apply(&mut rules, &[0, 1, 2], kind, Change::DashLength(0, 7.0));
+        let custom = DashPattern::parse("7 2", false).unwrap();
+        apply(&mut rules, &[0, 1, 2], kind, Change::DashLengths(custom));
         assert_eq!(pattern(&rules[0]).unwrap().lengths(), &[7.0, 2.0]);
         apply(
             &mut rules,
@@ -259,39 +260,28 @@ mod tests {
     }
 
     #[test]
-    fn a_dash_length_skips_patterns_without_it() {
+    fn dash_lengths_keep_the_ends_of_each_pattern() {
         let kind = GeometryKind::Line;
         let mut rules = classes(kind);
-        apply(
-            &mut rules,
-            &[0],
-            kind,
-            Change::LineKind(StrokeKind::dashed()),
-        );
+        let dashed = Change::LineKind(StrokeKind::dashed());
+        apply(&mut rules, &[0, 1], kind, dashed);
         apply(
             &mut rules,
             &[1],
             kind,
-            Change::LineKind(StrokeKind::dashed()),
+            Change::DashPattern(DashPattern::DOTTED),
         );
-        apply(
-            &mut rules,
-            &[1],
-            kind,
-            Change::DashPattern(DashPattern::DASH_DOT),
-        );
-        apply(&mut rules, &[0, 1], kind, Change::DashLength(3, 4.0));
-        apply(&mut rules, &[0, 1], kind, Change::DashLength(1, 0.0));
-        let lengths = |r: &Rule| match r.stroke().unwrap().kind {
-            StrokeKind::Dashed(p) => p.lengths().to_vec(),
-            _ => vec![],
+        let lengths = DashPattern::parse("6 2.5 0 2.5", false).unwrap();
+        apply(&mut rules, &[0, 1, 2], kind, Change::DashLengths(lengths));
+        let pattern = |r: &Rule| match r.stroke().unwrap().kind {
+            StrokeKind::Dashed(p) => Some(p),
+            _ => None,
         };
-        assert_eq!(
-            lengths(&rules[0]),
-            vec![4.0, 2.0],
-            "no length 3, and no gap of 0"
-        );
-        assert_eq!(lengths(&rules[1]), vec![6.0, 2.5, 0.0, 4.0]);
+        let (a, b) = (pattern(&rules[0]).unwrap(), pattern(&rules[1]).unwrap());
+        assert_eq!(a.lengths(), lengths.lengths());
+        assert_eq!(b.lengths(), lengths.lengths());
+        assert!(!a.round && b.round);
+        assert_eq!(pattern(&rules[2]), None);
     }
 
     #[test]

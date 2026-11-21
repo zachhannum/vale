@@ -12,7 +12,7 @@ pub const MAX_DABS: usize = 20_000;
 pub const DOT: f64 = 0.01;
 
 /// The most lengths in a dash pattern.
-pub const MAX_PATTERN: usize = 8;
+pub const MAX_PATTERN: usize = 16;
 
 /// Whether `pattern` is a valid dash pattern: an even count of lengths from 2 to
 /// `MAX_PATTERN`, with each dash finite and not negative, and each gap finite and positive.
