@@ -14,6 +14,8 @@ use super::{layer_icon, list, popover, theme};
 use crate::ui::AppState;
 
 pub const ADD_COLLECTION: &str = "Add collection…";
+/// The desktop button that takes a collection out of a map.
+pub const REMOVE_COLLECTION: &str = "Remove collection";
 /// The hint of the popover of "Add collection…" when the map has each
 /// collection.
 pub const ALL_COLLECTIONS: &str = "The map has each collection.";
