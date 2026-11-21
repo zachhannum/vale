@@ -91,7 +91,8 @@ struct CardVertex {
     @location(0) @interpolate(flat) rect: vec4<f32>,
     // The corner radii in pixels: top left, top right, bottom left, bottom right.
     @location(1) @interpolate(flat) radii: vec4<f32>,
-    // 1 for a card of glass, then the pixels per point.
+    // 1 for a card of glass, the pixels per point, and the radius of the
+    // curve of the rim in pixels.
     @location(2) @interpolate(flat) glass: vec4<f32>,
 }
 
@@ -109,7 +110,8 @@ fn vs_card(
 // The glass follows the shader of the liquidglass library by Yassine
 // Bouane (MIT). Its lengths in pixels are for a screen with 3 pixels per
 // point, so `unit` scales them. The settings are the settings of the
-// library.
+// library, but the curve of the rim has the radius of the corners of the
+// card, so that the rim has no seams.
 const REFRACTION: f32 = 1.42;
 const CHROMA: f32 = 0.05;
 const EDGE_HIGHLIGHT: f32 = 0.05;
@@ -120,9 +122,6 @@ const DISTORTION: f32 = 0.05;
 // gets much darker.
 const FLOOR: f32 = 0.16;
 const RANGE: f32 = 0.24;
-// The radius of the curve of the rim, in points. It is `GLASS_RADIUS` in
-// `backdrop.rs`.
-const Z_RADIUS: f32 = 40.0;
 const INDEX: f32 = 1.5;
 
 // The signed distance of `p` from the edge of a rounded rectangle, with
@@ -153,19 +152,18 @@ fn hash(p: vec2<f32>) -> f32 {
 // The canvas below a card of glass. The card is a slab of glass whose rim
 // is curved, and light refracts at its top and bottom surfaces. `place` is
 // the place relative to the center, `card` is half the size of the card, and
-// `pixels` is the pixels per point.
-fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pixels: f32) -> vec3<f32> {
+// `pixels` is the pixels per point, and `z` is the radius of the curve of
+// the rim in pixels.
+fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pixels: f32, z: f32) -> vec3<f32> {
     let unit = pixels / 3.0;
     // A side at the edge of the screen has no rim: the glass goes on past
     // the screen.
-    let z_max = Z_RADIUS * pixels;
     let low = pos - place - card <= g.canvas.xy + 1.0;
     let high = pos - place + card >= g.canvas.xy + g.canvas.zw - 1.0;
-    let grow_low = select(vec2<f32>(0.0), vec2<f32>(z_max), low);
-    let grow_high = select(vec2<f32>(0.0), vec2<f32>(z_max), high);
+    let grow_low = select(vec2<f32>(0.0), vec2<f32>(z), low);
+    let grow_high = select(vec2<f32>(0.0), vec2<f32>(z), high);
     let half = card + (grow_low + grow_high) * 0.5;
     let p = place + (grow_low - grow_high) * 0.5;
-    let z = z_max;
     let sdf = rounded(p, half, radii);
     let inside = -sdf;
     let edge = smoothstep(min(half.x, half.y) * 0.35, 0.0, inside);
@@ -227,7 +225,7 @@ fn fs_card(in: CardVertex) -> @location(0) vec4<f32> {
     let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
     let cover = clamp(0.5 - distance, 0.0, 1.0);
     if in.glass.x > 0.0 {
-        let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.y);
+        let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.y, in.glass.z);
         return vec4<f32>(color * cover, cover);
     }
     let uv = (in.position.xy - g.canvas.xy) / (g.small.xy * g.blur.y);

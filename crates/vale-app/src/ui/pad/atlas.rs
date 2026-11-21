@@ -18,7 +18,7 @@ use super::number::Number;
 use super::panes;
 use super::readout;
 use super::text_style;
-use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
+use super::widgets::{self, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
 use super::{NO_LAYERS, export_form_row, layer_icon, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -952,7 +952,7 @@ fn menu_card(
     let radius = theme::CARD_RADIUS.into();
     let order = Order::Foreground;
     widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+        let inner = rect.shrink2(widgets::menu_inset(ui.ctx()));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -1137,8 +1137,8 @@ pub(super) fn named_tabs(
         vec2(ui.available_width(), TOUCH + 2.0 * PAD),
         egui::Sense::hover(),
     );
-    ui.painter()
-        .rect_filled(row, theme::CONTROL_RADIUS, theme::track());
+    let (track, thumb) = widgets::menu_track_radius(ui.ctx());
+    ui.painter().rect_filled(row, track, theme::track());
     let ctx = ui.ctx().clone();
     let widths: Vec<f32> = items
         .iter()
@@ -1158,11 +1158,8 @@ pub(super) fn named_tabs(
         let resp = widgets::tap_area(ui, controls, rect, name, enabled);
         let on = index == active;
         if on || resp.is_pointer_button_down_on() {
-            ui.painter().rect_filled(
-                rect.shrink(2.0),
-                theme::CONTROL_RADIUS - 2.0,
-                theme::raise(),
-            );
+            ui.painter()
+                .rect_filled(rect.shrink(2.0), thumb, theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
         let color = if enabled {

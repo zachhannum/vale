@@ -26,10 +26,10 @@ pub const GLASS_BLUR_POINTS: f32 = 3.0;
 /// The light blur has one pixel for this many pixels of the canvas, on
 /// each axis.
 const GLASS_REDUCTION: u32 = 1;
-/// The corner radius of a card of glass, in points. It is the radius of
-/// the curve of the rim, `Z_RADIUS` in `backdrop.wgsl`, so that the rim
-/// has no seams.
-pub const GLASS_RADIUS: f32 = 40.0;
+/// The largest corner radius of a card of glass, in points. The curve of
+/// the rim of a card has the radius of its corners, so that the rim has no
+/// seams.
+pub const GLASS_RADIUS: f32 = 28.0;
 /// The largest number of cards in one frame.
 const MAX_CARDS: usize = 64;
 
@@ -49,7 +49,8 @@ struct Globals {
 struct Instance {
     rect: [f32; 4],
     radii: [f32; 4],
-    /// 1 for a card of glass, then the pixels per point.
+    /// 1 for a card of glass, the pixels per point, and the radius of the
+    /// curve of the rim in pixels.
     glass: [f32; 4],
 }
 
@@ -482,7 +483,12 @@ pub fn card_shape(
         place: Instance {
             rect: [center.x, center.y, half.x, half.y],
             radii: radii.map(|r| f32::from(r) * pixels_per_point),
-            glass: [f32::from(u8::from(glass)), pixels_per_point, 0.0, 0.0],
+            glass: [
+                f32::from(u8::from(glass)),
+                pixels_per_point,
+                f32::from(radii.into_iter().max().unwrap_or(0)) * pixels_per_point,
+                0.0,
+            ],
         },
         index: AtomicU32::new(u32::MAX),
     };

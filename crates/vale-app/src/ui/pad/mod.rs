@@ -1031,12 +1031,13 @@ pub(super) fn dock_button(
     let start = widgets::press_start(ui);
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
+    let radius = widgets::control_radius(ui.ctx(), inner);
     if shown {
         let fill = theme::ACCENT.gamma_multiply(0.3);
-        painter.rect_filled(inner, theme::CONTROL_RADIUS, fill);
+        painter.rect_filled(inner, radius, fill);
     }
     if resp.is_pointer_button_down_on() {
-        painter.rect_filled(inner, theme::CONTROL_RADIUS, theme::raise());
+        painter.rect_filled(inner, radius, theme::raise());
     }
     let color = if shown { theme::ACCENT } else { theme::MUTE };
     let color = widgets::fade(color, enabled);

@@ -389,10 +389,14 @@ enum Side {
     Left,
 }
 
-/// The mark in the corner of a cell with a flyout.
+/// The mark in the corner of a cell with a flyout. On glass cards, the
+/// highlight of the cell is a circle, and the mark is inside it.
 fn paint_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
     let color = widgets::fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
-    let corner = cell.right_bottom() - vec2(6.0, 6.0);
+    let corner = match widgets::is_glass(ui.ctx()) {
+        true => cell.center() + vec2(12.0, 12.0),
+        false => cell.right_bottom() - vec2(6.0, 6.0),
+    };
     let points = vec![corner, corner - vec2(6.0, 0.0), corner - vec2(0.0, 6.0)];
     let shape = egui::Shape::convex_polygon(points, color, egui::Stroke::NONE);
     ui.painter().add(shape);

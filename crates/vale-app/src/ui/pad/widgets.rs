@@ -398,7 +398,50 @@ fn fill(ui: &egui::Ui, rect: Rect, resp: &Response, active: bool) {
     if active || resp.is_pointer_button_down_on() {
         let rect = rect.shrink(HIGHLIGHT_INSET);
         ui.painter()
-            .rect_filled(rect, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(rect, control_radius(ui.ctx(), rect), theme::raise());
+    }
+}
+
+/// The space between the edge of a menu card and its rows. On glass cards
+/// it is the same on each side, so that a control in the first row has
+/// corners that follow the round corners of the card.
+pub fn menu_inset(ctx: &egui::Context) -> egui::Vec2 {
+    match is_glass(ctx) {
+        true => vec2(MENU_INSET, MENU_INSET),
+        false => vec2(BODY_PAD, 10.0),
+    }
+}
+
+/// The inset of the rows of a glass menu card.
+pub const MENU_INSET: f32 = 12.0;
+
+/// The corner radii of the track of a segmented control in the first row
+/// of a menu card, and of its thumb 6 points inside it. On glass cards they
+/// follow the round corners of the card.
+pub fn menu_track_radius(ctx: &egui::Context) -> (f32, f32) {
+    match is_glass(ctx) {
+        true => {
+            let track = GLASS_RADIUS - MENU_INSET;
+            (track, track - 6.0)
+        }
+        false => (theme::CONTROL_RADIUS, theme::CONTROL_RADIUS - 2.0),
+    }
+}
+
+/// True if the cards are glass.
+pub fn is_glass(ctx: &egui::Context) -> bool {
+    backdrop(ctx).is_some() && glass(ctx)
+}
+
+/// The corner radius of the highlight of a control at `rect`. On glass
+/// cards, a square control has a circle, as the controls of Liquid Glass.
+/// With the padding of the cards, the circle of a cell at the end of a bar
+/// has the center of the round end of the bar.
+pub fn control_radius(ctx: &egui::Context, rect: Rect) -> f32 {
+    let square = (rect.width() - rect.height()).abs() < 1.0;
+    match is_glass(ctx) && square {
+        true => rect.width() / 2.0,
+        false => theme::CONTROL_RADIUS,
     }
 }
 
@@ -3274,10 +3317,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_glass_card_has_round_cells_and_an_even_inset() {
+        let ctx = egui::Context::default();
+        let cell = Rect::from_min_size(Pos2::ZERO, vec2(40.0, 40.0));
+        let tab = Rect::from_min_size(Pos2::ZERO, vec2(140.0, 40.0));
+        set_backdrop(&ctx, Some(wgpu::TextureFormat::Rgba8Unorm));
+        assert_eq!(control_radius(&ctx, cell), theme::CONTROL_RADIUS);
+        assert_eq!(menu_inset(&ctx), vec2(BODY_PAD, 10.0));
+        set_glass(&ctx, true);
+        assert_eq!(control_radius(&ctx, cell), 20.0);
+        assert_eq!(control_radius(&ctx, tab), theme::CONTROL_RADIUS);
+        assert_eq!(menu_inset(&ctx), vec2(MENU_INSET, MENU_INSET));
+    }
+
+    #[test]
     fn a_glass_card_has_the_corners_of_the_rim_or_is_a_capsule() {
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 400.0));
         let card = CornerRadius::same(14);
-        assert_eq!(glass_radius(panel, card), CornerRadius::same(40));
+        assert_eq!(glass_radius(panel, card), CornerRadius::same(28));
         // A card 44 points high is a capsule.
         let bar = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 44.0));
         assert_eq!(glass_radius(bar, card), CornerRadius::same(22));
@@ -3288,7 +3345,7 @@ mod tests {
             ..card
         };
         let round = glass_radius(panel, edge);
-        assert_eq!((round.nw, round.sw, round.ne, round.se), (0, 0, 40, 40));
+        assert_eq!((round.nw, round.sw, round.ne, round.se), (0, 0, 28, 28));
     }
 
     #[test]

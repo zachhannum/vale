@@ -166,12 +166,13 @@ fn view_button(
     let resp = widgets::hit(ui, controls, rect, VIEW, Sense::click(), true, Some(open));
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
+    let radius = widgets::control_radius(ui.ctx(), inner);
     if open {
         let fill = theme::ACCENT.gamma_multiply(0.3);
-        painter.rect_filled(inner, theme::CONTROL_RADIUS, fill);
+        painter.rect_filled(inner, radius, fill);
     }
     if resp.is_pointer_button_down_on() {
-        painter.rect_filled(inner, theme::CONTROL_RADIUS, theme::raise());
+        painter.rect_filled(inner, radius, theme::raise());
     }
     let color = if open { theme::ACCENT } else { theme::MUTE };
     let icon = if flat { Icon::Map } else { Icon::World };
@@ -371,8 +372,8 @@ fn rule(ui: &egui::Ui) {
 /// name in each segment. Returns the view that the user chose.
 fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Option<WorldView> {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), TABS), Sense::hover());
-    ui.painter()
-        .rect_filled(row, theme::CONTROL_RADIUS, theme::track());
+    let (track, thumb) = widgets::menu_track_radius(ui.ctx());
+    ui.painter().rect_filled(row, track, theme::track());
     let inner = row.shrink(PAD);
     let width = inner.width() / 2.0;
     let views = [
@@ -387,8 +388,7 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
         let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, Some(on));
         let painter = ui.painter();
         if on || resp.is_pointer_button_down_on() {
-            let radius = theme::CONTROL_RADIUS - 2.0;
-            painter.rect_filled(rect.shrink(2.0), radius, theme::raise());
+            painter.rect_filled(rect.shrink(2.0), thumb, theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
         let galley = painter.layout_no_wrap(name.to_owned(), theme::body(), color);
@@ -418,7 +418,7 @@ fn menu_card(
     let radius = theme::CARD_RADIUS.into();
     let order = Order::Foreground;
     widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+        let inner = rect.shrink2(widgets::menu_inset(ui.ctx()));
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
