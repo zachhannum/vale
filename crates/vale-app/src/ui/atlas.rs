@@ -654,7 +654,7 @@ pub struct AtlasState {
     /// the bands that the frame shows.
     pub stops_all: bool,
     /// The cards of the Layers tab.
-    pub map_cards: super::pad::map_cards::MapCards,
+    pub map_cards: super::pad::collection::Cards,
     /// The bands that the frame shows on the page of the color stops.
     pub stops_window: Option<super::pad::stops::FrameWindow>,
     /// The label class whose panel the Labels tab of this frame shows: its

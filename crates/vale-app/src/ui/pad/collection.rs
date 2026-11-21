@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use eframe::egui::{self, Align2, Rect, Sense, pos2, vec2};
-use vale_store::{CollectionId, LayerId, Project};
+use vale_store::{CollectionId, LayerId, MapId, Project};
 
 use super::geometry::TOUCH;
 use super::icons::{self, Icon};
@@ -57,6 +57,40 @@ pub fn header_name(name: &str) -> String {
     format!("Card {name}")
 }
 
+/// The view whose collections the rows show: the globe, or a map in the
+/// Layers tab of a frame.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum View {
+    Globe,
+    Map(MapId),
+}
+
+impl View {
+    /// The collections of the view, from the bottom to the top.
+    pub fn stack(self, project: &Project) -> Vec<CollectionId> {
+        match self {
+            View::Globe => project.globe_collections().to_vec(),
+            View::Map(map) => project.map_stack(map),
+        }
+    }
+
+    /// An ID of a spring of the view.
+    fn id(self, name: &str) -> egui::Id {
+        match self {
+            View::Globe => egui::Id::new(name),
+            View::Map(_) => egui::Id::new((name, "map")),
+        }
+    }
+}
+
+/// The state of the rows of a view.
+fn cards_of(state: &mut AppState, view: View) -> &mut Cards {
+    match view {
+        View::Globe => &mut state.pad.cards,
+        View::Map(_) => &mut state.atlas.map_cards,
+    }
+}
+
 /// The name of the row of a layer. A layer takes touch in one card at
 /// most, so the name of its row has no collection.
 pub fn layer_row(layer: &str) -> String {
@@ -93,6 +127,10 @@ pub struct Cards {
     pub lift: Option<CardLift>,
     /// The list of the header rows while a card is lifted.
     pub stack: list::ListState<CollectionId>,
+    /// The swipe of the header row of each collection of a map.
+    pub heads: HashMap<CollectionId, list::ListState<CollectionId>>,
+    /// The popover of "Add collection…" of a map is open.
+    pub adding: bool,
 }
 
 impl Cards {
@@ -132,11 +170,21 @@ pub(super) fn popover_order(project: &Project) -> Vec<(CollectionId, bool)> {
 /// The layers of a card from the top, each with true if a higher card
 /// already draws it.
 pub fn card_rows(project: &Project, id: CollectionId) -> Vec<(LayerId, bool)> {
+    card_rows_in(project, project.globe_collections(), id)
+}
+
+/// The layers of a collection of `stack` from the top, each with true if
+/// a higher collection of the stack already draws it.
+pub fn card_rows_in(
+    project: &Project,
+    stack: &[CollectionId],
+    id: CollectionId,
+) -> Vec<(LayerId, bool)> {
     let Some(c) = project.collection(id) else {
         return Vec::new();
     };
     (c.layers.iter().rev())
-        .map(|l| (*l, project.drawn_above(id, *l)))
+        .map(|l| (*l, project.drawn_above_in(stack, id, *l)))
         .collect()
 }
 
@@ -239,38 +287,44 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
 }
 
-/// The cards of the checked collections, from the top of the stack.
-pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// The cards of the collections of a view, from the top of the stack.
+/// Returns the layer whose row the user tapped in a map.
+pub(super) fn cards(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    view: View,
+) -> Option<LayerId> {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let stack: Vec<CollectionId> = state.doc.project.globe_collections().to_vec();
+    let stack = view.stack(&state.doc.project);
     if stack.is_empty() {
-        state.pad.cards = Cards::default();
+        *cards_of(state, view) = Cards::default();
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_CHECKED).color(theme::MUTE));
-        return;
+        return None;
     }
-    state.pad.cards.lists.retain(|id, _| stack.contains(id));
+    let cards = cards_of(state, view);
+    cards.lists.retain(|id, _| stack.contains(id));
+    cards.heads.retain(|id, _| stack.contains(id));
+    if cards.lift.is_some_and(|l| !stack.contains(&l.id)) {
+        cards.lift = None;
+    }
     // The rows of the cards close on a spring when a card lifts, and they
     // open again after the drop.
-    let lifted = state.pad.cards.lift.is_some();
+    let lifted = cards.lift.is_some();
     let target = if lifted { 0.0 } else { 1.0 };
-    let open = motion::value(
-        ui.ctx(),
-        egui::Id::new("pad-cards-open"),
-        target,
-        motion::SNAPPY,
-    );
+    let open = motion::value(ui.ctx(), view.id("pad-cards-open"), target, motion::SNAPPY);
     // The cards become a list of header rows when no rows show.
     let project = &state.doc.project;
     let tallest = (stack.iter()).fold(0.0_f32, |m, id| m.max(body_height(project, *id)));
     if lifted && tallest * open < 0.5 {
-        restack(ui, state, controls, &stack);
-        return;
+        restack(ui, state, controls, view, &stack);
+        return None;
     }
     // While the rows close, the space above the cards keeps the header of
     // the lifted card under the finger. After the drop, the space closes.
     let top = ui.cursor().top();
-    let space = match state.pad.cards.lift {
+    let space = match cards_of(state, view).lift {
         Some(lift) => {
             let project = &state.doc.project;
             let above: f32 = (stack.iter().rev())
@@ -278,15 +332,20 @@ pub(super) fn cards(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Cont
                 .map(|id| PANEL_ROW + body_height(project, *id) * open)
                 .sum();
             let space = (finger(ui, lift) - lift.grab - top - above).max(0.0);
-            motion::set(ui.ctx(), offset_id(), space);
+            motion::set(ui.ctx(), view.id(OFFSET), space);
             space
         }
-        None => motion::points(ui.ctx(), offset_id(), 0.0, motion::SNAPPY),
+        None => motion::points(ui.ctx(), view.id(OFFSET), 0.0, motion::SNAPPY),
     };
     ui.add_space(space.max(0.0));
+    let mut tapped = None;
     for id in stack.iter().rev() {
-        ui.push_id(("card", id.0), |ui| card(ui, state, controls, *id, open));
+        let inner = ui.push_id(("card", id.0), |ui| {
+            card(ui, state, controls, view, (*id, &stack), open)
+        });
+        tapped = tapped.or(inner.inner);
     }
+    tapped
 }
 
 /// The height of the rows of an open collection. A collapsed collection
@@ -306,9 +365,7 @@ fn finger(ui: &egui::Ui, lift: CardLift) -> f32 {
 }
 
 /// The spring of the space above the header rows of a restack.
-fn offset_id() -> egui::Id {
-    egui::Id::new("pad-cards-offset")
-}
+const OFFSET: &str = "pad-cards-offset";
 
 /// The header rows of the cards in a list that reorders, while a card is
 /// lifted. When the finger lets go, the lifted card moves to its new place
@@ -318,10 +375,11 @@ fn restack(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
+    view: View,
     stack: &[CollectionId],
 ) {
     let top_first: Vec<CollectionId> = stack.iter().rev().copied().collect();
-    let cards = &mut state.pad.cards;
+    let cards = cards_of(state, view);
     let Some(mut lift) = cards.lift else {
         return;
     };
@@ -367,8 +425,8 @@ fn restack(
         let slot = top + from as f32 * PANEL_ROW;
         (finger - lift.grab - slot).max(0.0)
     });
-    state.pad.cards.lift = Some(lift);
-    motion::set(ui.ctx(), offset_id(), offset);
+    cards_of(state, view).lift = Some(lift);
+    motion::set(ui.ctx(), view.id(OFFSET), offset);
     ui.add_space(offset);
     let (area, _) = ui.allocate_exact_size(vec2(width, 0.0), Sense::hover());
     let inner = Rect::from_min_max(
@@ -383,10 +441,11 @@ fn restack(
             .max_rect(inner)
             .layout(egui::Layout::top_down(egui::Align::Min)),
     );
-    let list = &mut state.pad.cards.stack;
     let font = theme::heading(ui.ctx());
-    let project = &state.doc.project;
-    let collapsed: Vec<bool> = rows.iter().map(|r| project.is_collapsed(r.key)).collect();
+    let collapsed: Vec<bool> = (rows.iter())
+        .map(|r| state.doc.project.is_collapsed(r.key))
+        .collect();
+    let list = &mut cards_of(state, view).stack;
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
         // A header row at its full height. Only the lifted row has a fill,
         // as a lifted layer row does.
@@ -407,8 +466,8 @@ fn restack(
         None
     });
     ui.allocate_exact_size(vec2(width, inner.height()), Sense::hover());
-    if state.pad.cards.stack.lift.is_none() {
-        state.pad.cards.lift = None;
+    if cards_of(state, view).stack.lift.is_none() {
+        cards_of(state, view).lift = None;
         // A hold that ends in place acts as a tap on the header row.
         if !lift.moved && events.is_empty() {
             let collapsed = state.doc.project.is_collapsed(lift.id);
@@ -418,37 +477,47 @@ fn restack(
     for event in events {
         if let list::Event::Move { key, to, .. } = event {
             // The rows are from the top, and the stack is from the bottom.
-            state.move_globe_collection(key, top_first.len() - 1 - to);
+            let to = top_first.len() - 1 - to;
+            match view {
+                View::Globe => state.move_globe_collection(key, to),
+                View::Map(map) => state.move_map_collection(map, key, to),
+            };
         }
     }
 }
 
 /// One card: the header row and, while the card is open, the rows of its
 /// layers. `open` is the part of the rows that shows, from 0 to 1, while
-/// the rows close or open around a restack. Returns the rect of the card.
+/// the rows close or open around a restack. Returns the layer whose row
+/// the user tapped in a map.
 fn card(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
-    id: CollectionId,
+    view: View,
+    (id, stack): (CollectionId, &[CollectionId]),
     open: f32,
-) -> Rect {
+) -> Option<LayerId> {
     let project = &state.doc.project;
-    let Some(c) = project.collection(id) else {
-        return Rect::NOTHING;
-    };
+    let c = project.collection(id)?;
     let name = c.name.clone();
     let collapsed = project.is_collapsed(id);
-    let rows = card_rows(project, id);
+    let rows = card_rows_in(project, stack, id);
     let body = body_height(project, id);
     let shown = body * open;
     let size = vec2(ui.available_width(), PANEL_ROW + shown);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let closed = collapsed || shown < 0.5;
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
-    header(ui, state, controls, id, head, &name, collapsed);
+    match view {
+        View::Globe => header(ui, state, controls, id, head, &name, collapsed),
+        View::Map(map) => {
+            let removable = stack.len() > 1;
+            map_header(ui, state, controls, (map, id), head, &name, removable);
+        }
+    }
     if closed {
-        return rect;
+        return None;
     }
     let inner = Rect::from_min_max(
         pos2(rect.left() + ROW_INDENT, head.bottom()),
@@ -469,10 +538,15 @@ fn card(
         child
             .painter()
             .text(at, Align2::LEFT_CENTER, EMPTY_COLLECTION, font, theme::MUTE);
-        return rect;
+        return None;
     }
-    layer_rows(&mut child, state, controls, id, &name, &rows);
-    rect
+    match view {
+        View::Globe => {
+            layer_rows(&mut child, state, controls, id, &name, &rows);
+            None
+        }
+        View::Map(map) => map_rows(&mut child, state, controls, (map, id), &name, &rows),
+    }
 }
 
 /// The header row of a card: the chevron and the name. A tap on the row
@@ -527,6 +601,156 @@ fn header(
         state.pad.cards.shut();
         ui.ctx().request_repaint();
     }
+}
+
+/// The header row of a collection of a map: the chevron and the name. A
+/// tap collapses the collection or opens it, a hold lifts it, and a swipe
+/// to the left shows Remove, which takes the collection out of the map.
+/// The last collection of a map has no Remove.
+fn map_header(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, id): (MapId, CollectionId),
+    head: Rect,
+    name: &str,
+    removable: bool,
+) {
+    let collapsed = state.doc.project.is_collapsed(id);
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(head)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let rows = [list::Row {
+        label: header_name(name),
+        actions: if removable { &[list::REMOVE] } else { &[] },
+        select: false,
+        ..list::Row::new(id, name.to_owned())
+    }];
+    let spec = list::Spec {
+        reorder: true,
+        plain: true,
+        ..list::Spec::default()
+    };
+    let font = theme::heading(ui.ctx());
+    let list = state.atlas.map_cards.heads.entry(id).or_default();
+    let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, _| {
+        let row = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
+        let chevron = Rect::from_center_size(chevron_center(row), vec2(18.0, 18.0));
+        let icon = if collapsed { Icon::Open } else { Icon::Down };
+        icons::paint(&cell.painter, chevron, icon, 18.0, theme::MUTE);
+        paint_name(&cell.painter, row, name, font.clone());
+        None
+    });
+    for event in events {
+        match event {
+            list::Event::Tap(_) => state.set_collapsed(id, !collapsed),
+            list::Event::Lift(_) => {
+                let origin = (ui.input(|i| i.pointer.interact_pos())).unwrap_or(head.center());
+                let cards = &mut state.atlas.map_cards;
+                cards.heads.remove(&id);
+                cards.lift = Some(CardLift {
+                    id,
+                    grab: origin.y - head.top(),
+                    origin,
+                    moved: false,
+                    offset: None,
+                });
+                ui.ctx().request_repaint();
+            }
+            list::Event::Action(_, list::REMOVE) => {
+                state.remove_map_collection(map, id);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The rows of the layers of an open collection of a map, from the top,
+/// with the switch of the map as the eye. A row that a higher collection
+/// already draws is dim and takes no touch. Returns the layer whose row
+/// the user tapped.
+fn map_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (map, id): (MapId, CollectionId),
+    name: &str,
+    rows: &[(LayerId, bool)],
+) -> Option<LayerId> {
+    let project = &state.doc.project;
+    let edited = state.doc.local_changes(map);
+    let selected = state.selected_vector();
+    let mut looks = Vec::new();
+    let mut list_rows = Vec::new();
+    for (layer, dim) in rows {
+        let Some(l) = project.layer(*layer) else {
+            continue;
+        };
+        let note = (!dim && edited.contains(&l.id)).then_some(super::atlas::EDITED);
+        looks.push((
+            super::layer_icon(l),
+            state.doc.switch_on(map, l.id),
+            *dim,
+            note,
+        ));
+        list_rows.push(list::Row {
+            label: match dim {
+                true => dim_row(&l.name, name),
+                false => layer_row(&l.name),
+            },
+            on: !dim && selected == Some(l.id),
+            select: false,
+            lift: false,
+            trailing: if *dim { 0.0 } else { 2.0 * TOUCH },
+            ..list::Row::new(l.id, l.name.clone())
+        });
+    }
+    let spec = list::Spec {
+        indent: ROW_INDENT - ROW_EDGE,
+        ..list::Spec::default()
+    };
+    let list = state.atlas.map_cards.lists.entry(id).or_default();
+    let events = list::show(
+        ui,
+        controls,
+        list,
+        spec,
+        &list_rows,
+        |ui, controls, cell, i| {
+            let (icon, on, dim, note) = looks[i];
+            let look = list::Look {
+                icon: Some(icon),
+                text: &list_rows[i].name,
+                note,
+                eye: (!dim).then_some(on),
+                open: !dim,
+                dim,
+                ..list::Look::default()
+            };
+            list::draw(ui, controls, cell, &look)
+        },
+    );
+    let live = |key: LayerId| {
+        let i = list_rows.iter().position(|r| r.key == key)?;
+        (!looks[i].2).then_some(looks[i].1)
+    };
+    let mut open = None;
+    for event in events {
+        match event {
+            list::Event::Tap(layer) | list::Event::Open(layer) if live(layer).is_some() => {
+                open = Some(layer);
+            }
+            list::Event::Control(layer, list::EYE) => {
+                if let Some(on) = live(layer) {
+                    state.set_map_shown(map, layer, !on);
+                }
+            }
+            _ => {}
+        }
+    }
+    open
 }
 
 /// The center of the chevron of a header row.

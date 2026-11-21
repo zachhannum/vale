@@ -13908,22 +13908,30 @@ fn the_layers_tab_shows_the_collections_of_the_map_as_cards() {
     // Coast draws Land, so the row of Land in World is dim.
     assert!(control(&h, &dim_row("Land", "World")).is_some());
     assert!(control(&h, &eye_name("Land", true)).is_some());
+    screenshot::save(&mut h, "pad-atlas-map-collections");
     check_controls(&h, "two cards");
 }
 
 #[test]
 fn add_collection_adds_a_collection_to_the_map_in_one_step() {
-    use vale_app::ui::pad::map_cards::{ADD_COLLECTION, add_row};
+    use vale_app::ui::pad::collection::collection_row;
+    use vale_app::ui::pad::map_cards::ADD_COLLECTION;
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
     tap(&mut h, ADD_COLLECTION);
-    assert!(control(&h, &add_row("World")).is_none());
-    tap(&mut h, &add_row("Coast"));
+    // The last collection of the map does not change.
+    tap(&mut h, &collection_row("World"));
+    assert_eq!(map_stack(&h, inset), [world]);
+    tap(&mut h, &collection_row("Coast"));
     assert_eq!(map_stack(&h, inset), [world, coast]);
-    assert!(
-        control(&h, &add_row("Coast")).is_none(),
-        "the popover closes"
-    );
+    screenshot::save(&mut h, "pad-atlas-add-collection");
+    h.state_mut().save_waiting().unwrap();
+    // A second tap takes the collection out of the map.
+    tap(&mut h, &collection_row("Coast"));
+    assert_eq!(map_stack(&h, inset), [world]);
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
     undo(&mut h);
     h.run_steps(2);
     assert_eq!(map_stack(&h, inset), [world]);

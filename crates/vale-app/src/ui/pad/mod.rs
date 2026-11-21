@@ -3463,7 +3463,7 @@ fn layer_list(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) 
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    collection::cards(ui, state, controls);
+    collection::cards(ui, state, controls, collection::View::Globe);
 }
 
 /// The name of the header button that deletes the selected layers.

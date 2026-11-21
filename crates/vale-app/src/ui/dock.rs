@@ -601,7 +601,8 @@ fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::
 /// The collections of the map of a frame, from the top of its stack, each
 /// with its layers from the top and the layer switches of the map.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    use super::pad::map_cards::{ADD_COLLECTION, ALL_COLLECTIONS, REMOVE_COLLECTION, card_rows};
+    use super::pad::collection::card_rows_in;
+    use super::pad::map_cards::{ADD_COLLECTION, ALL_COLLECTIONS, REMOVE_COLLECTION};
     let map = frame.map;
     let edited = state.doc.local_changes(map);
     if state.doc.project.layers().is_empty() {
@@ -631,7 +632,7 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 state.remove_map_collection(map, *id);
             }
         });
-        let rows: Vec<_> = (card_rows(&state.doc.project, map, *id).into_iter())
+        let rows: Vec<_> = (card_rows_in(&state.doc.project, &stack, *id).into_iter())
             .filter_map(|(l, dim)| Some((l, state.doc.layer(l)?.name.clone(), dim)))
             .collect();
         for (layer, name, dim) in rows {

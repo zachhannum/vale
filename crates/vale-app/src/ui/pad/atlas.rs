@@ -1643,8 +1643,9 @@ fn layers_tab(
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    let edited: Vec<LayerId> = state.doc.local_changes(map).into_iter().collect();
-    let open = super::map_cards::cards(ui, state, controls, map, &edited);
+    let view = super::collection::View::Map(map);
+    let open = super::collection::cards(ui, state, controls, view);
+    super::map_cards::add_collection(ui, state, controls, map);
     if let Some(layer) = open {
         state.select_vector(layer);
         state.atlas.layer = Some((id, layer));
