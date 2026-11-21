@@ -202,6 +202,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
     state.pad.workspace = Workspace::Atlas;
+    widgets::set_backdrop(&ctx, state.globe.backdrop());
     atlas::sync(state);
     let class = WidthClass::of(screen.width());
     let measuring = state.measuring();

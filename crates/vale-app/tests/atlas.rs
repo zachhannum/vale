@@ -3345,6 +3345,19 @@ fn gpu_vello_draws_the_atlas_with_the_pixels_of_the_cpu() {
 
 #[test]
 #[ignore = "gpu"]
+fn a_start_in_the_atlas_has_glass_widgets() {
+    let _gpu = one_gpu_test();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = vale_app::headless::ui_harness(state(), (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    // The handle of the dock and the other widgets read the glass of this
+    // frame, with no frame of the globe before it.
+    assert!(vale_app::ui::pad::widgets::is_glass(&h.ctx));
+}
+
+#[test]
+#[ignore = "gpu"]
 fn the_cards_of_the_atlas_show_the_page_through_their_glass() {
     let _gpu = one_gpu_test();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
