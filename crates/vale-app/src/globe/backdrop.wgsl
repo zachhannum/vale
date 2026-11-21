@@ -120,21 +120,18 @@ const DISTORTION: f32 = 0.05;
 // gets much darker.
 const FLOOR: f32 = 0.16;
 const RANGE: f32 = 0.24;
-// The radius of the curve of the rim, in points.
+// The radius of the curve of the rim, in points. It is `GLASS_RADIUS` in
+// `backdrop.rs`.
 const Z_RADIUS: f32 = 40.0;
 const INDEX: f32 = 1.5;
 
 // The signed distance of `p` from the edge of a rounded rectangle, with
-// `p` relative to the center. The inner corners of the distance are
-// rounded by `k`, so that the slope of the rim has no seam where the
-// distances to two edges meet.
-fn smooth_rounded(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, k: f32) -> f32 {
+// `p` relative to the center.
+fn rounded(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>) -> f32 {
     let side = mix(radii.xz, radii.yw, vec2<f32>(step(0.0, p.x)));
     let radius = mix(side.x, side.y, step(0.0, p.y));
     let q = abs(p) - half + radius;
-    let h = clamp(0.5 + 0.5 * (q.x - q.y) / k, 0.0, 1.0);
-    let most = mix(q.y, q.x, h) + k * h * (1.0 - h);
-    return length(max(q, vec2<f32>(0.0))) + min(most, 0.0) - radius;
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
 }
 
 // The height of the rim at the distance `d` inside the edge: a quarter
@@ -168,10 +165,8 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
     let grow_high = select(vec2<f32>(0.0), vec2<f32>(z_max), high);
     let half = card + (grow_low + grow_high) * 0.5;
     let p = place + (grow_low - grow_high) * 0.5;
-    // The rim ends before the middle of a narrow card, so that the middle
-    // is flat.
-    let z = min(z_max, 0.8 * min(half.x, half.y));
-    let sdf = smooth_rounded(p, half, radii, z);
+    let z = z_max;
+    let sdf = rounded(p, half, radii);
     let inside = -sdf;
     let edge = smoothstep(min(half.x, half.y) * 0.35, 0.0, inside);
 
@@ -180,10 +175,8 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
     let dx = vec2<f32>(e, 0.0);
     let dy = vec2<f32>(0.0, e);
     let slope = vec2<f32>(
-        bevel(-smooth_rounded(p + dx, half, radii, z), z)
-            - bevel(-smooth_rounded(p - dx, half, radii, z), z),
-        bevel(-smooth_rounded(p + dy, half, radii, z), z)
-            - bevel(-smooth_rounded(p - dy, half, radii, z), z),
+        bevel(-rounded(p + dx, half, radii), z) - bevel(-rounded(p - dx, half, radii), z),
+        bevel(-rounded(p + dy, half, radii), z) - bevel(-rounded(p - dy, half, radii), z),
     ) / (2.0 * e);
     let normal = normalize(vec3<f32>(-slope, 1.0));
     let depth = smoothstep(0.0, z, inside);

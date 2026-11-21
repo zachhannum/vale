@@ -949,15 +949,18 @@ impl<'a> Number<'a> {
         );
         let top = anchor.center().y - size.y / 2.0;
         let rect = place(ctx, anchor, ui.clip_rect(), size, top, None);
-        let radius = theme::CONTROL_RADIUS;
         let backdrop = widgets::backdrop(ctx);
+        let glass = backdrop.is_some() && widgets::glass(ctx);
+        let corner = egui::CornerRadius::from(theme::CONTROL_RADIUS);
+        let corner = match glass {
+            true => widgets::glass_radius(rect, corner),
+            false => corner,
+        };
         if backdrop.is_some() {
             painter.add(marker(Order::Tooltip, rect));
         }
-        painter.add(theme::shadow().as_shape(rect, radius));
+        painter.add(theme::shadow().as_shape(rect, corner));
         if let Some(format) = backdrop {
-            let corner = egui::CornerRadius::from(radius);
-            let glass = widgets::glass(ctx);
             painter.add(card_shape(
                 format,
                 rect,
@@ -966,7 +969,7 @@ impl<'a> Number<'a> {
                 glass,
             ));
         }
-        painter.rect_filled(rect, radius, widgets::card_fill(ctx, backdrop.is_some()));
+        painter.rect_filled(rect, corner, widgets::card_fill(ctx, backdrop.is_some()));
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;

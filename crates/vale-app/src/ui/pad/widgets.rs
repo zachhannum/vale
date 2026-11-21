@@ -7,7 +7,7 @@ use eframe::egui_wgpu::wgpu;
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::{motion, theme};
-use crate::globe::backdrop::{card_shape, marker};
+use crate::globe::backdrop::{GLASS_RADIUS, card_shape, marker};
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -216,6 +216,11 @@ fn any_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
+    let glass = backdrop.is_some() && glass(ctx);
+    let shape = |part: Rect| match glass {
+        true => glass_radius(part, radius),
+        false => radius,
+    };
     egui::Area::new(egui::Id::new(id))
         .order(order)
         .fixed_pos(rect.min)
@@ -254,7 +259,8 @@ fn any_card(
                 if gap.is_some() {
                     ui.interact(part, ui.id().with(("part", i)), Sense::click_and_drag());
                 }
-                ui.painter().add(theme::shadow().as_shape(part, radius));
+                ui.painter()
+                    .add(theme::shadow().as_shape(part, shape(part)));
             }
             for &part in &parts {
                 if let Some(format) = backdrop {
@@ -262,14 +268,13 @@ fn any_card(
                     // transform of its layer. egui moves the rect of the
                     // callback with the layer.
                     let place = grow.map_or(part, |g| g.transform * part);
-                    let glass = glass(ctx);
-                    let mut shape =
-                        card_shape(format, place, radius, ctx.pixels_per_point(), glass);
-                    shape.rect = part;
-                    ui.painter().add(shape);
+                    let mut callback =
+                        card_shape(format, place, shape(part), ctx.pixels_per_point(), glass);
+                    callback.rect = part;
+                    ui.painter().add(callback);
                 }
                 ui.painter()
-                    .rect_filled(part, radius, card_fill(ctx, backdrop.is_some()));
+                    .rect_filled(part, shape(part), card_fill(ctx, backdrop.is_some()));
             }
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
@@ -2031,6 +2036,20 @@ pub fn glass(ctx: &egui::Context) -> bool {
         .unwrap_or(false)
 }
 
+/// The corners of a glass card in `rect`. Each round corner of `radius`
+/// gets the radius of the rim of the glass, up to half the short side, as
+/// the corners of Liquid Glass.
+pub fn glass_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
+    let round = GLASS_RADIUS.min(rect.width().min(rect.height()) / 2.0) as u8;
+    let pick = |corner: u8| if corner > 0 { round } else { 0 };
+    CornerRadius {
+        nw: pick(radius.nw),
+        ne: pick(radius.ne),
+        sw: pick(radius.sw),
+        se: pick(radius.se),
+    }
+}
+
 /// The fill of a card. `backdrop`: the card shows the blurred canvas.
 pub fn card_fill(ctx: &egui::Context, backdrop: bool) -> Color32 {
     match backdrop && glass(ctx) {
@@ -3253,6 +3272,24 @@ fn opacity_strip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_glass_card_has_the_corners_of_the_rim_or_is_a_capsule() {
+        let panel = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 400.0));
+        let card = CornerRadius::same(14);
+        assert_eq!(glass_radius(panel, card), CornerRadius::same(40));
+        // A card 44 points high is a capsule.
+        let bar = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 44.0));
+        assert_eq!(glass_radius(bar, card), CornerRadius::same(22));
+        // A corner at the edge of the screen stays square.
+        let edge = CornerRadius {
+            nw: 0,
+            sw: 0,
+            ..card
+        };
+        let round = glass_radius(panel, edge);
+        assert_eq!((round.nw, round.sw, round.ne, round.se), (0, 0, 40, 40));
+    }
 
     #[test]
     fn a_place_on_the_compass_dial_gives_its_angle() {

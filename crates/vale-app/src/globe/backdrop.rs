@@ -26,6 +26,10 @@ pub const GLASS_BLUR_POINTS: f32 = 3.0;
 /// The light blur has one pixel for this many pixels of the canvas, on
 /// each axis.
 const GLASS_REDUCTION: u32 = 1;
+/// The corner radius of a card of glass, in points. It is the radius of
+/// the curve of the rim, `Z_RADIUS` in `backdrop.wgsl`, so that the rim
+/// has no seams.
+pub const GLASS_RADIUS: f32 = 40.0;
 /// The largest number of cards in one frame.
 const MAX_CARDS: usize = 64;
 
