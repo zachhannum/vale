@@ -412,10 +412,10 @@ pub fn legend(
     for i in shown.clone() {
         let row = row_of[i];
         if *selected == Some(i) || down[i] {
-            painter.rect_filled(row, theme::CONTROL_RADIUS, theme::raise());
+            painter.rect_filled(row, theme::row_radius(row), theme::raise());
         }
         let cell = Rect::from_min_size(row.min, vec2(CELL, row.height()));
-        let r = 8;
+        let r = theme::SMALL_RADIUS as u8;
         let radius = CornerRadius {
             nw: if i + 1 == shown.end { r } else { 0 },
             ne: if i + 1 == shown.end { r } else { 0 },
@@ -475,7 +475,7 @@ pub fn legend(
         } else {
             (PILL, theme::TEXT)
         };
-        painter.rect_filled(pill, 7.0, fill);
+        painter.rect_filled(pill, theme::capsule(pill), fill);
         let mut x = pill.left() + PILL_PAD;
         if on {
             let icon = Rect::from_min_size(pos2(x - 2.0, y - 7.0), vec2(14.0, 14.0));

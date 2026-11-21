@@ -176,7 +176,7 @@ pub fn block(
     let size = vec2(inner.width(), TOUCH + 2.0 * SPACE);
     let (row, _) = child.allocate_exact_size(size, Sense::hover());
     let painter = child.painter();
-    painter.rect_filled(row, 12.0, Color32::from_white_alpha(10));
+    painter.rect_filled(row, inner_radius(), Color32::from_white_alpha(10));
     let at = pos2(row.left() + SPACE, row.center().y);
     let word = painter.text(
         at,
@@ -220,12 +220,12 @@ pub fn block(
         frame,
         Shape::rect_filled(
             rect,
-            14.0,
+            theme::TILE_RADIUS,
             Color32::from_rgba_unmultiplied(130, 150, 255, 14),
         ),
     );
     let stroke = Stroke::new(1.0, border);
-    (ui.painter()).rect_stroke(rect, 14.0, stroke, egui::StrokeKind::Inside);
+    (ui.painter()).rect_stroke(rect, theme::TILE_RADIUS, stroke, egui::StrokeKind::Inside);
 
     if open_code {
         return Some(CasesEdit::OpenCode);
@@ -251,7 +251,12 @@ fn paint_arrow(ui: &egui::Ui, start: egui::Pos2) {
 /// A red frame around a part with an error.
 fn mark(ui: &egui::Ui, rect: Rect) {
     let stroke = Stroke::new(1.5, BAD);
-    (ui.painter()).rect_stroke(rect, 12.0, stroke, egui::StrokeKind::Inside);
+    (ui.painter()).rect_stroke(rect, inner_radius(), stroke, egui::StrokeKind::Inside);
+}
+
+/// The corner radius of a part `SPACE` inside a block.
+fn inner_radius() -> f32 {
+    theme::inner_radius(theme::TILE_RADIUS, SPACE)
 }
 
 /// The arrow and the result in `place`: the keypad field of a number, or a

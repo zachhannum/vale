@@ -402,15 +402,10 @@ pub fn show<P: Token>(
     }
 
     let painter = ui.painter_at(rect.expand(2.0));
-    painter.rect_filled(rect, theme::CONTROL_RADIUS + 2.0, FIELD_FILL);
+    painter.rect_filled(rect, theme::TILE_RADIUS, FIELD_FILL);
     if focused {
         let stroke = Stroke::new(1.5, theme::ACCENT);
-        painter.rect_stroke(
-            rect,
-            theme::CONTROL_RADIUS + 2.0,
-            stroke,
-            egui::StrokeKind::Inside,
-        );
+        painter.rect_stroke(rect, theme::TILE_RADIUS, stroke, egui::StrokeKind::Inside);
     }
     paint::paint(
         ui.painter(),

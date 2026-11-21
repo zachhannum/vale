@@ -150,14 +150,23 @@ pub fn body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         let swatch = Rect::from_center_size(pos2(left + 28.0, area.center().y), vec2(40.0, 28.0));
         let [r, g, b] = draft.colors[i];
         let painter = ui.painter();
-        painter.rect_filled(swatch, 6.0, egui::Color32::from_rgb(r, g, b));
+        painter.rect_filled(
+            swatch,
+            theme::SMALL_RADIUS,
+            egui::Color32::from_rgb(r, g, b),
+        );
         let (width, stroke) = if selected {
             (2.0, theme::ACCENT)
         } else {
             (1.0, theme::MUTE.gamma_multiply(0.5))
         };
         let outline = egui::Stroke::new(width, stroke);
-        painter.rect_stroke(swatch, 6.0, outline, egui::StrokeKind::Outside);
+        painter.rect_stroke(
+            swatch,
+            theme::SMALL_RADIUS,
+            outline,
+            egui::StrokeKind::Outside,
+        );
         if draft.selected != Some(i) {
             continue;
         }
@@ -252,7 +261,7 @@ fn warn_row(
     if resp.is_pointer_button_down_on() {
         let back = row.shrink(widgets::HIGHLIGHT_INSET);
         ui.painter()
-            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(back, theme::row_radius(back), theme::raise());
     }
     let at = pos2(row.left(), row.center().y);
     let color = widgets::fade(theme::WARN, enabled);

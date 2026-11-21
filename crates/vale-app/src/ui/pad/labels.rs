@@ -1174,7 +1174,7 @@ fn zone_grid(
         };
         let fill = if pressed { theme::divider() } else { fill };
         let painter = ui.painter();
-        painter.rect_filled(button, theme::CONTROL_RADIUS, fill);
+        painter.rect_filled(button, theme::TILE_RADIUS, fill);
         painter.text(
             button.center(),
             Align2::CENTER_CENTER,
@@ -1187,7 +1187,7 @@ fn zone_grid(
         let center = Rect::from_center_size(grid.center(), vec2(ZONE_BUTTON, ZONE_BUTTON));
         ui.painter().rect_stroke(
             center,
-            theme::CONTROL_RADIUS,
+            theme::TILE_RADIUS,
             egui::Stroke::new(1.0, theme::divider()),
             egui::StrokeKind::Inside,
         );
@@ -1818,7 +1818,7 @@ fn abbreviations_page(
                 // The fields take no touch while a swipe moves the row.
                 for (rect, text) in [(word_rect, &long), (short_rect, &short)] {
                     let back = rect.shrink(widgets::HIGHLIGHT_INSET);
-                    (cell.painter).rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                    (cell.painter).rect_filled(back, theme::capsule(back), theme::raise());
                     let at = pos2(rect.left() + 12.0, rect.center().y);
                     (cell.painter).text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
                 }
@@ -2109,7 +2109,7 @@ fn diagram(ui: &mut egui::Ui, positions: &[vale_style::PositionRank]) {
             Some(n) => (theme::raise(), n.to_string(), theme::TEXT),
             None => (theme::track(), "–".to_owned(), theme::MUTE),
         };
-        painter.rect_filled(square, 4.0, fill);
+        painter.rect_filled(square, theme::SMALL_RADIUS, fill);
         painter.text(
             square.center(),
             Align2::CENTER_CENTER,

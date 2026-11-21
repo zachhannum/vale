@@ -5,7 +5,7 @@ use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 
 use super::geometry::{self, PANELS_MENU_WIDTH, Rects};
 use super::icons::{self, Icon};
-use super::widgets::{self, Controls, HIGHLIGHT_INSET, ICON, PANEL_ROW};
+use super::widgets::{self, Controls, ICON, PANEL_ROW};
 use super::{PANELS, Panel, theme};
 use crate::ui::{AppState, Workspace, select};
 
@@ -21,7 +21,9 @@ pub const ATLAS: &str = "Atlas";
 pub const SNAP_TILE: &str = "Snap panel";
 
 /// The padding of the menu.
-const PAD: f32 = 12.0;
+const PAD: f32 = theme::ROW_INSET;
+/// The space between the edge of the card and a heading.
+const HEADING_LEFT: f32 = 14.0;
 const TILE_GAP: f32 = 8.0;
 const COLUMNS: usize = 4;
 /// The height of a tile.
@@ -172,7 +174,7 @@ pub fn show(
             let width = (inner.width() - (COLUMNS - 1) as f32 * TILE_GAP) / COLUMNS as f32;
             let mut top = inner.top();
             for group in groups {
-                let at = pos2(inner.left() + HIGHLIGHT_INSET, top + HEADING / 2.0);
+                let at = pos2(inner.left() - PAD + HEADING_LEFT, top + HEADING / 2.0);
                 let heading = group.heading.to_uppercase();
                 ui.painter()
                     .text(at, Align2::LEFT_CENTER, heading, theme::hint(), theme::MUTE);
@@ -245,7 +247,7 @@ fn paint_tile(ui: &egui::Ui, controls: &mut Controls, rect: Rect, tile: &Tile) -
         fill
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    painter.rect_filled(rect, theme::ROW_RADIUS, fill);
     let color = if tile.open {
         theme::ACCENT
     } else {
@@ -269,7 +271,7 @@ fn text_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str) -
         theme::track()
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    painter.rect_filled(rect, theme::capsule(rect), fill);
     painter.text(
         rect.center(),
         Align2::CENTER_CENTER,

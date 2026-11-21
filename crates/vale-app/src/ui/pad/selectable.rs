@@ -85,7 +85,7 @@ pub(super) fn menu(
         .clamp(220.0, 360.0)
         .min(right_edge - left_edge);
     let rows = 3 + layers.len();
-    let full = 20.0 + rows as f32 * PANEL_ROW;
+    let full = 2.0 * widgets::menu_inset().y + rows as f32 * PANEL_ROW;
     // In the row layout, the list is above its cell.
     let rect = if rects.row {
         let height = full.min(cell.top() - 8.0 - top);
@@ -135,7 +135,7 @@ pub(super) fn menu(
         radius,
         cell.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.set_clip_rect(inner);

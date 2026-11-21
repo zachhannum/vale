@@ -3,7 +3,6 @@
 //! selection and of the atlas in the dock.
 
 use eframe::egui::{self, Align2, Order, Rect, pos2, vec2};
-use eframe::egui_wgpu::wgpu;
 use vale_sphere::{INTERVALS, ProjectionKind, interval_text};
 use vale_store::{
     Border, BorderStyle, FrameShape, Graticule, GridColumns, LayerId, LayoutGrid, MapId,
@@ -18,7 +17,7 @@ use super::number::Number;
 use super::panes;
 use super::readout;
 use super::text_style;
-use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
+use super::widgets::{self, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
 use super::{NO_LAYERS, export_form_row, layer_icon, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
@@ -203,6 +202,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     let screen = ctx.viewport_rect();
     state.pad.workspace = Workspace::Atlas;
+    widgets::set_backdrop(&ctx, state.globe.backdrop());
     atlas::sync(state);
     let class = WidthClass::of(screen.width());
     let measuring = state.measuring();
@@ -233,6 +233,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: state.pad.docks.atlas.width,
         camera: state.pad.camera,
         fold: state.pad.fold,
+        glass: state.globe.backdrop().is_some(),
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -904,7 +905,7 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             if button.is_pointer_button_down_on() {
                 let fill = middle.shrink(widgets::HIGHLIGHT_INSET);
                 ui.painter()
-                    .rect_filled(fill, theme::CONTROL_RADIUS, theme::raise());
+                    .rect_filled(fill, widgets::control_radius(fill), theme::raise());
             }
             if button.clicked() {
                 state.pad.open(Panel::Pages);
@@ -940,26 +941,6 @@ fn pressed_outside(ctx: &egui::Context, menu: Rect, button: Rect) -> bool {
     pressed.is_some_and(|pos| !menu.contains(pos) && !button.contains(pos))
 }
 
-/// A blur card for a menu, with rows from the top, that grows from `origin`.
-fn menu_card(
-    ctx: &egui::Context,
-    backdrop: Option<wgpu::TextureFormat>,
-    id: &str,
-    rect: Rect,
-    origin: egui::Pos2,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    let radius = theme::CARD_RADIUS.into();
-    let order = Order::Foreground;
-    widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        contents(&mut ui);
-    });
-}
-
 fn workspace_menu(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -971,7 +952,7 @@ fn workspace_menu(
     let rules = if compact { 2.0 } else { 0.0 };
     let size = vec2(
         geometry::MENU_WIDTH,
-        10.0 + rows * PANEL_ROW + rules * 13.0 + 10.0,
+        2.0 * widgets::menu_inset().y + rows * PANEL_ROW + rules * 13.0,
     );
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -980,7 +961,7 @@ fn workspace_menu(
     }
     let origin = rects.workspace.center().clamp(rect.min, rect.max);
     let backdrop = state.globe.backdrop();
-    menu_card(ctx, backdrop, "pad-menu", rect, origin, |ui| {
+    widgets::menu_card(ctx, backdrop, "pad-menu", rect, origin, |ui| {
         if widgets::text_row(ui, controls, WORKSPACES[0], 0.0, false, true).clicked() {
             state.workspace = Workspace::Globe;
             state.pad.menu = false;
@@ -1137,8 +1118,8 @@ pub(super) fn named_tabs(
         vec2(ui.available_width(), TOUCH + 2.0 * PAD),
         egui::Sense::hover(),
     );
-    ui.painter()
-        .rect_filled(row, theme::CONTROL_RADIUS, theme::track());
+    let (track, thumb) = widgets::menu_track_radius(row, PAD + 2.0);
+    ui.painter().rect_filled(row, track, theme::track());
     let ctx = ui.ctx().clone();
     let widths: Vec<f32> = items
         .iter()
@@ -1158,11 +1139,8 @@ pub(super) fn named_tabs(
         let resp = widgets::tap_area(ui, controls, rect, name, enabled);
         let on = index == active;
         if on || resp.is_pointer_button_down_on() {
-            ui.painter().rect_filled(
-                rect.shrink(2.0),
-                theme::CONTROL_RADIUS - 2.0,
-                theme::raise(),
-            );
+            ui.painter()
+                .rect_filled(rect.shrink(2.0), thumb, theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
         let color = if enabled {

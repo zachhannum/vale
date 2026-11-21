@@ -457,7 +457,7 @@ fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str, range: Option<&ValueR
     ui.add_space(8.0);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 12.0, Color32::from_white_alpha(13));
+    painter.rect_filled(rect, theme::TILE_RADIUS, Color32::from_white_alpha(13));
     let label = value.label().unwrap_or_else(|| NO_VALUE.to_owned());
     let big = theme::font(24.0);
     let left = rect.left() + 16.0;
@@ -802,7 +802,7 @@ fn tray_row(
     let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, None);
     if resp.is_pointer_button_down_on() {
         ui.painter()
-            .rect_filled(rect, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(rect, theme::row_radius(rect), theme::raise());
     }
     let mut x = rect.left() + 8.0;
     let y = rect.center().y;
@@ -841,7 +841,7 @@ fn op_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str, lab
     } else {
         theme::raise()
     };
-    ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    ui.painter().rect_filled(rect, theme::capsule(rect), fill);
     (ui.painter()).text(
         rect.center(),
         Align2::CENTER_CENTER,

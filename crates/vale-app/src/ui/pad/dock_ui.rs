@@ -10,6 +10,7 @@ use super::panes::{self, BAR, Drop};
 use super::widgets::{self, BODY_PAD, Controls, ICON};
 use super::{HOLD_SLOP, HOLD_TIME, motion, point_card, popover, theme};
 use super::{Head, Panel, panel_body, panel_head, panel_icon, panel_name, panel_title, panel_top};
+use crate::globe::backdrop::{card_shape, marker};
 use crate::ui::AppState;
 
 /// The handle that changes the width of the dock.
@@ -27,6 +28,10 @@ const TAB_PAD: f32 = 12.0;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
+/// The size of the glass capsule of the handle of the dock.
+const GLASS_HANDLE: (f32, f32) = (20.0, 80.0);
+/// The extra space at each side of the content of a glass sheet.
+const SHEET_GLASS_PAD: f32 = 12.0;
 /// The tab at the right edge that shows a collapsed dock.
 pub const SHOW_DOCK: &str = "Show dock";
 /// The text of a drag of the width handle that collapses the dock.
@@ -318,7 +323,9 @@ fn edge_tab(
             let resp = widgets::drag_area(ui, controls, rect, SHOW_DOCK);
             let active = pulled || resp.is_pointer_button_down_on();
             let painter = ui.painter().with_clip_rect(rects.screen);
-            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active);
+            // While the dock slides away, the dock draws the capsule.
+            let alone = slide >= 1.0;
+            paint_grip(&painter, pos2(grip_x(dock_left, right), y), active, alone);
             show = live && resp.clicked();
             pull(ui, state, &resp, rects.dock.width());
         });
@@ -474,8 +481,12 @@ fn show_dock(
     let shown = shown_heights(ctx, state, &heights, &folded);
     let total = shown.iter().sum::<f32>() + BAR * shown.len() as f32 + FOOT;
     let rect = Rect::from_min_size(room.min, vec2(room.width(), total.min(room.height())));
-    // A collapsing dock slides off the right edge.
-    let rect = rect.translate(vec2((slide * room.width()).round(), 0.0));
+    // A collapsing dock slides off the right edge. Where the spring of the
+    // slide springs past the place of the dock, the dock grows to the left
+    // and stays at the edge, so that its corners there stay square.
+    let shift = (slide * room.width()).round();
+    let mut rect = rect.translate(vec2(shift.max(0.0), 0.0));
+    rect.min.x += shift.min(0.0);
     ctx.data_mut(|d| d.insert_temp(handle_y_id(), rect.center().y));
     let radius = geometry::edge_radius(rect, rects.screen);
     let names = rect.width() - rects.bands.right >= panes::NAMES_WIDTH;
@@ -484,13 +495,21 @@ fn show_dock(
     let mut drag = None;
     let mut bars = Vec::new();
     let mut actions: Vec<(usize, HeaderOut)> = Vec::new();
-    widgets::card(
+    // On glass, the handle is a part of the dock: a capsule on its left
+    // edge that joins the dock with a smooth outline.
+    let right = rects.screen.right() - rects.bands.right;
+    let handle = widgets::is_glass(ctx).then(|| {
+        let center = pos2(grip_x(rect.left(), right), rect.center().y);
+        Rect::from_center_size(center, vec2(GLASS_HANDLE.0, GLASS_HANDLE.1))
+    });
+    widgets::card_with_blob(
         ctx,
         backdrop,
         "pad-dock",
         rect,
         Order::Middle,
         radius,
+        handle,
         |ui| {
             let mut top = rect.top();
             for (i, head) in heads.iter_mut().enumerate() {
@@ -548,7 +567,7 @@ fn show_dock(
                 } else {
                     theme::MUTE.gamma_multiply(0.6)
                 };
-                ui.painter().rect_filled(pill, 2.0, color);
+                ui.painter().rect_filled(pill, theme::capsule(pill), color);
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
@@ -693,7 +712,7 @@ fn paint_drop(
             let tabs = placed[i].tabs;
             painter.rect_stroke(
                 tabs,
-                theme::CONTROL_RADIUS,
+                widgets::tab_radius(tabs),
                 Stroke::new(2.0, theme::ACCENT),
                 egui::StrokeKind::Inside,
             );
@@ -701,11 +720,7 @@ fn paint_drop(
         None => {}
     }
     let ghost = Rect::from_min_size(pos - vec2(40.0, ROW / 2.0), vec2(220.0, ROW));
-    painter.rect_filled(
-        ghost,
-        theme::CARD_RADIUS,
-        theme::card(false).gamma_multiply(0.9),
-    );
+    painter.rect_filled(ghost, theme::CARD_RADIUS, theme::card().gamma_multiply(0.9));
     let icon_rect = Rect::from_center_size(
         pos2(ghost.left() + BODY_PAD + ICON / 2.0, ghost.center().y),
         vec2(ICON, ICON),
@@ -790,6 +805,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                 &painter,
                 pos2(grip_x(dock.left(), right), rect.center().y),
                 active,
+                false,
             );
             if active {
                 let (start, width) = (state.pad.width_drag)
@@ -814,8 +830,8 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
                         size,
                     );
-                    let fill = theme::card(false).to_opaque();
-                    painter.rect_filled(label, theme::CONTROL_RADIUS, fill);
+                    let fill = theme::card().to_opaque();
+                    painter.rect_filled(label, theme::capsule(label), fill);
                     painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
                 }
                 ctx.request_repaint();
@@ -826,13 +842,30 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
 }
 
 /// Paints the grip of the width handle at `center`. A grip on a dark
-/// capsule shows over a white page and over the dark canvas.
-fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool) {
-    let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
-    painter.rect_filled(capsule, 6.0, theme::card(false).to_opaque());
+/// capsule shows over a white page and over the dark canvas. On glass,
+/// the dock draws the capsule of a grip on the dock, and a grip with
+/// `alone` has a glass capsule of its own.
+fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) {
+    let ctx = painter.ctx();
+    match widgets::backdrop(ctx) {
+        Some(format) => {
+            if alone {
+                let capsule = Rect::from_center_size(center, vec2(GLASS_HANDLE.0, GLASS_HANDLE.1));
+                let radius = egui::CornerRadius::same((GLASS_HANDLE.0 / 2.0) as u8);
+                painter.add(marker(Order::Middle, capsule));
+                painter.add(theme::shadow().as_shape(capsule, radius));
+                let pixels = ctx.pixels_per_point();
+                painter.add(card_shape(format, capsule, radius, pixels, None));
+            }
+        }
+        None => {
+            let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
+            painter.rect_filled(capsule, theme::capsule(capsule), theme::card().to_opaque());
+        }
+    }
     let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
     let color = if active { theme::ACCENT } else { theme::TEXT };
-    painter.rect_filled(pill, 2.0, color);
+    painter.rect_filled(pill, theme::capsule(pill), color);
 }
 
 /// The sheet of a compact screen: the pane of the last focus, with its
@@ -849,15 +882,32 @@ fn show_sheet(
     };
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
-    let r = theme::SHEET_RADIUS as u8;
-    let radius = egui::CornerRadius {
-        nw: r,
-        ne: r,
-        sw: 0,
-        se: 0,
+    let r = theme::CARD_RADIUS as u8;
+    // A glass sheet floats clear of the edges of the screen, with corners
+    // that follow the round corners of the display.
+    let radius = match widgets::is_glass(ctx) {
+        true => egui::CornerRadius::same(theme::SHEET_GLASS_RADIUS as u8),
+        false => egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        },
     };
     let backdrop = state.globe.backdrop();
     let inner = geometry::edge_content(rect, rects.screen, rects.bands);
+    // The header and the rows of a glass sheet keep clear of its round
+    // corners.
+    let inner = match widgets::is_glass(ctx) {
+        true => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
+        false => inner,
+    };
+    // The header of a glass sheet starts below the grabber, so the highlight
+    // of a tab keeps clear of it.
+    let inner = match widgets::is_glass(ctx) {
+        true => Rect::from_min_max(inner.min + vec2(0.0, geometry::GRABBER_SPACE), inner.max),
+        false => inner,
+    };
     let mut out = None;
     widgets::card(
         ctx,
@@ -869,8 +919,11 @@ fn show_sheet(
         |ui| {
             let grabber =
                 Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
-            ui.painter()
-                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
+            ui.painter().rect_filled(
+                grabber,
+                theme::capsule(grabber),
+                theme::MUTE.gamma_multiply(0.6),
+            );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(inner)
@@ -1220,11 +1273,9 @@ fn header_row(
                 Some(active),
             );
             if active {
-                painter.rect_filled(
-                    tab.shrink(widgets::HIGHLIGHT_INSET),
-                    theme::CONTROL_RADIUS,
-                    theme::raise(),
-                );
+                let back = tab.shrink(widgets::HIGHLIGHT_INSET);
+                let radius = widgets::tab_radius(back);
+                painter.rect_filled(back, radius, theme::raise());
             }
             let color = if active { theme::TEXT } else { theme::MUTE };
             let icon_x = if named {

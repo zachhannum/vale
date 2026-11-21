@@ -3678,12 +3678,12 @@ fn settle(h: &mut Pad) {
 /// A harness with the Brush and Layers panels open, in greyscale, and with a
 /// globe that covers the screen. `level` gives the level at a longitude in
 /// degrees.
-fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
-    blur_pad_on(BOARDS[0], level)
+fn glass_pad(level: impl Fn(f64) -> u16) -> Pad {
+    glass_pad_on(BOARDS[0], level)
 }
 
-/// `blur_pad` on a screen of `size`.
-fn blur_pad_on(size: (f32, f32), level: impl Fn(f64) -> u16) -> Pad {
+/// `glass_pad` on a screen of `size`.
+fn glass_pad_on(size: (f32, f32), level: impl Fn(f64) -> u16) -> Pad {
     let mut h = gpu_pad(size);
     let state = h.state_mut();
     // The vector layers of the sample world are hidden.
@@ -3729,34 +3729,31 @@ fn difference(a: &[i32], b: &[i32]) -> i32 {
 
 #[test]
 #[ignore = "gpu"]
-fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
+fn each_card_shows_the_canvas_through_its_glass_and_follows_the_globe() {
     let _gpu = one_gpu_test();
     // Light and dark stripes along the meridians, each 6 degrees wide, so
     // that the edge of a stripe is below each card.
-    let mut h = blur_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
+    let mut h = glass_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
         _ => 0,
     });
     let cards = cards(&h);
     assert!(cards.len() >= 6);
-    let blurred = h.render().unwrap();
+    let glass = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
-    blurred.save("../../target/app/test-pad-blur.png").unwrap();
-    h.state_mut().globe.blur = false;
+    glass.save("../../target/app/test-pad-glass.png").unwrap();
+    h.state_mut().globe.glass = false;
     h.run_steps(2);
     let plain = h.render().unwrap();
-    h.state_mut().globe.blur = true;
+    h.state_mut().globe.glass = true;
     h.state_mut().globe.view = GlobeView::centered(3.0, 0.0);
     h.state_mut().globe.view.zoom = 3.0;
     h.run_steps(2);
     let turned = h.render().unwrap();
 
     for card in cards {
-        let row = card_row(&blurred, card);
+        let row = card_row(&glass, card);
         let width = row.len() as i32;
-        // The edge of a stripe is soft below a card.
-        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-        assert!(step <= 4, "{card:?}: a step of {step}");
         assert!(
             difference(&row, &card_row(&plain, card)) > width * 2,
             "{card:?}"
@@ -3769,12 +3766,93 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
     }
 }
 
+/// The red values of the bottom row of each card, over a canvas of
+/// `level`. `glass`: the cards are glass, else they have a plain fill.
+fn glass_rows(glass: bool, level: impl Fn(f64) -> u16) -> (Pad, Vec<Vec<i32>>) {
+    let mut h = glass_pad(level);
+    h.state_mut().globe.glass = glass;
+    h.run_steps(2);
+    let image = h.render().unwrap();
+    let rows = cards(&h).iter().map(|&c| card_row(&image, c)).collect();
+    (h, rows)
+}
+
+fn mean(row: &[i32]) -> i32 {
+    row.iter().sum::<i32>() / row.len() as i32
+}
+
 #[test]
 #[ignore = "gpu"]
-fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
+fn on_glass_the_handle_of_the_dock_joins_the_dock_with_a_smooth_outline() {
+    let _gpu = one_gpu_test();
+    let mut h = glass_pad(|_| u16::MAX);
+    let image = h.render().unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    image
+        .save("../../target/app/test-pad-glass-handle.png")
+        .unwrap();
+    let dock = h.state().pad.dock_rect.unwrap();
+    let red = |x: f32, y: f32| image.get_pixel(x as u32, y as u32).0[0];
+    let (left, middle) = (dock.left(), dock.center().y);
+    // The white canvas is grey below the glass.
+    assert!(red(left - 40.0, middle) > 240);
+    // The capsule of the handle stands out of the left edge of the dock.
+    assert!(red(left - 6.0, middle - 20.0) < 160);
+    // Past the end of the capsule, the outline curves into the dock.
+    assert!(red(left - 1.0, middle + 41.0) < 160);
+    // The shadow of the dock darkens the canvas a little there.
+    assert!(red(left - 6.0, middle + 60.0) > 200);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_glass_card_maps_the_canvas_into_a_band_of_grey() {
+    let _gpu = one_gpu_test();
+    let (_, plain_black) = glass_rows(false, |_| 0);
+    let (_, glass_black) = glass_rows(true, |_| 0);
+    let (_, glass_white) = glass_rows(true, |_| u16::MAX);
+    for i in 0..glass_black.len() {
+        let (plain_black, black, white) = (
+            mean(&plain_black[i]),
+            mean(&glass_black[i]),
+            mean(&glass_white[i]),
+        );
+        // A dark canvas gets lighter, as the glass has no dark fill. A
+        // white canvas stays a mid grey.
+        assert!(black > plain_black + 10, "{black} over {plain_black}");
+        assert!(white > black + 40 && white < 140, "{white} over {black}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_glass_card_shows_the_canvas_with_a_light_blur() {
+    let _gpu = one_gpu_test();
+    let stripes = |lon: f64| match (lon / 6.0).floor().rem_euclid(2.0) {
+        0.0 => u16::MAX,
+        _ => 0,
+    };
+    let (_, glass) = glass_rows(true, stripes);
+    // The stripes show below a card, and the largest step between two
+    // pixels is a large part of the range of the row, as the blur is light.
+    let sharp = glass
+        .iter()
+        .filter(|row| {
+            let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+            let range = row.iter().max().unwrap() - row.iter().min().unwrap();
+            range > 30 && step as f32 > 0.08 * range as f32
+        })
+        .count();
+    // A card can be too small for an edge of a stripe below its rim.
+    assert!(sharp * 2 > glass.len(), "{sharp} of {}", glass.len());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_glass_of_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     use vale_store::{Feature, Geometry};
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| 0);
+    let mut h = glass_pad(|_| 0);
     // A red polygon covers the side of the globe that faces the view.
     let state = h.state_mut();
     let polygon = state.doc.add_layer(GeometryKind::Polygon);
@@ -3799,7 +3877,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     assert!(difference(&red, &plain) > width * 20);
     assert!(red.iter().zip(&plain).all(|(r, p)| r >= p));
 
-    // The flat view has the polygon in the blur too. A close view puts
+    // The flat view has the polygon in the glass too. A close view puts
     // the polygon below the cards.
     h.state_mut().globe.world_view = WorldView::Flat;
     h.state_mut().globe.flat.zoom = 3.0;
@@ -3808,7 +3886,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     h.state_mut().globe.flat.zoom = 1.0;
     h.state_mut().globe.world_view = WorldView::Globe;
 
-    // A raster mask cuts the polygon in the blur too. The whole world is
+    // A raster mask cuts the polygon in the glass too. The whole world is
     // below sea level, so a mask of the sea keeps the polygon, and a mask
     // of the land leaves nothing.
     let raster = (h.state().doc.project.layers().iter())
@@ -3883,14 +3961,24 @@ fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
 #[ignore = "gpu"]
 fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| u16::MAX);
+    let mut h = glass_pad(|_| u16::MAX);
     let image = h.render().unwrap();
     let c = h.state().globe.rect.center();
     let canvas = image.get_pixel(c.x as u32, c.y as u32).0;
     assert!(canvas[..3].iter().all(|v| *v > 240), "{canvas:?}");
     for card in cards(&h) {
-        let pixel = image.get_pixel(card.left() as u32 + 16, card.bottom() as u32 - 3);
-        let fill = [pixel.0[0], pixel.0[1], pixel.0[2]];
+        // The glass behind the text: the median of the row through the
+        // middle of the card, where the text is. Text is a small part of
+        // the row.
+        let y = card.center().y as u32;
+        let mut row: Vec<[u8; 3]> = (card.left() as u32 + 16..card.right() as u32 - 16)
+            .map(|x| {
+                let p = image.get_pixel(x, y).0;
+                [p[0], p[1], p[2]]
+            })
+            .collect();
+        row.sort_by_key(|p| p[0]);
+        let fill = row[row.len() / 2];
         // The canvas shows through the card.
         assert!(fill[0] > 55, "{card:?}: {fill:?}");
         for text in [theme::TEXT, theme::MUTE, theme::WARN] {
@@ -4637,11 +4725,11 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 251.0))
+            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 243.0))
         );
         let rows = ["World", "Atlas", WORLDS_ROW, EXPORT];
         let tops = rows.map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [94.0, 155.0, 216.0, 277.0]);
+        assert_eq!(tops, [90.0, 151.0, 212.0, 273.0]);
         assert!(control(&h, "Toolbox").is_none());
         h.state_mut().pad.menu = false;
         h.run_steps(2);
@@ -17018,6 +17106,28 @@ fn a_drag_of_the_handle_to_the_edge_collapses_the_dock_and_the_edge_tab_shows_it
     let tab = control(&h, SHOW_DOCK).unwrap().center();
     drag(&mut h, tab, tab - vec2(240.0, 0.0), None);
     assert!(!h.state().pad.docks.world.collapsed);
+}
+
+#[test]
+fn the_dock_stays_at_the_edge_of_the_screen_while_it_slides_in() {
+    let mut h = pad(BOARDS[0]);
+    open_panel(&mut h, "Layers");
+    h.state_mut().pad.docks.world.collapsed = true;
+    h.run_steps(60);
+    // The springs run, as they do on a device.
+    h.state_mut().headless = false;
+    h.state_mut().pad.docks.world.collapsed = false;
+    let mut shown = 0;
+    for _ in 0..60 {
+        h.step();
+        if let Some(dock) = h.state().pad.dock_rect {
+            // The spring of the slide overshoots, and the dock does not
+            // leave the edge, so its corners there stay square.
+            assert!(dock.right() >= 1194.0, "{dock:?}");
+            shown += 1;
+        }
+    }
+    assert!(shown > 0);
 }
 
 #[test]

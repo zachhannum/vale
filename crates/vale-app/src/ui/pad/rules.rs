@@ -1326,7 +1326,7 @@ fn paint_preview(
     square: egui::Rect,
     tint: Option<Color>,
 ) {
-    painter.rect_filled(square, theme::CONTROL_RADIUS.min(6.0), PAPER);
+    painter.rect_filled(square, theme::SMALL_RADIUS, PAPER);
     if let Some(symbol) = symbols.get(name) {
         let side = 0.75 * square.width();
         paint_symbol(painter, symbol, square.center(), side, 0.0, tint);
