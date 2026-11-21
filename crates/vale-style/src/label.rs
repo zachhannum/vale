@@ -868,6 +868,12 @@ pub struct LabelClass {
     pub min_length: f64,
     /// The margin around the label that other labels keep free, in points.
     pub buffer: f64,
+    /// True forbids other labels in the buffer. False only makes them cost more.
+    pub buffer_hard: bool,
+    /// True places the labels first, and the labels of other classes can cover them.
+    pub background: bool,
+    /// True places each label that has a position, also over other labels.
+    pub never_remove: bool,
     /// True keeps labels with the same text apart.
     pub remove_duplicates: bool,
     /// The smallest distance between two labels with the same text, in points.
@@ -1005,6 +1011,9 @@ impl LabelClass {
             spread_fill: false,
             min_length: 0.0,
             buffer: BUFFER,
+            buffer_hard: true,
+            background: false,
+            never_remove: false,
             remove_duplicates: true,
             duplicate_distance: DUPLICATE_DISTANCE,
             fallbacks: FallbackRank::defaults(),
@@ -1150,6 +1159,9 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "abbreviations": c.abbreviations,
                 "truncation_marker": c.truncation_marker,
                 "leader_distance": c.leader_distance,
+                "buffer_hard": c.buffer_hard,
+                "background": c.background,
+                "never_remove": c.never_remove,
             });
             if let (Json::Object(m), Json::Object(f), Json::Object(l), Json::Object(p)) =
                 (&mut class, fallbacks, line, point)
@@ -1370,6 +1382,9 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         spread_fill: flag("spread_fill", false),
         min_length: number("min_length", 0.0),
         buffer: number("buffer", BUFFER),
+        buffer_hard: flag("buffer_hard", true),
+        background: flag("background", false),
+        never_remove: flag("never_remove", false),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
         fallbacks: fallbacks(m),
@@ -1524,6 +1539,9 @@ mod tests {
         a.curve_limit = 0.5;
         a.smoothing = 2.0;
         a.buffer = 3.0;
+        a.buffer_hard = false;
+        a.background = true;
+        a.never_remove = true;
         a.remove_duplicates = false;
         a.duplicate_distance = 120.0;
         a.graticule = true;
@@ -1651,6 +1669,8 @@ mod tests {
         assert!(!read[0].spread_fill);
         assert_eq!(read[0].min_length, 0.0);
         assert_eq!(read[0].buffer, 1.0);
+        assert!(read[0].buffer_hard);
+        assert!(!read[0].background && !read[0].never_remove);
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);
         assert!(!read[0].graticule);

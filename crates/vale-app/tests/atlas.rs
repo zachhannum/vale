@@ -75,6 +75,10 @@ use vale_app::ui::pad::labels::{
     LEADER_LINE, LINE_WIDTH, MATCH_HALO, MATCH_TEXT, MIN_AREA, OVER_HOLES, OVERRUN,
     REPEAT_DISTANCE, REPEAT_LABEL, SHOW_LINE, ZONES, zone_name,
 };
+use vale_app::ui::pad::labels::{
+    BACKGROUND, FILL_WEIGHT, HARD_BUFFER, LINE_WEIGHT, NEVER_REMOVE, NO_VECTOR_LAYERS,
+    OUTLINE_WEIGHT, SYMBOL_WEIGHT, WEIGHTS, weight_name,
+};
 use vale_app::ui::pad::rules::STROKE_WIDTH;
 use vale_app::ui::pad::widgets::{PANEL_ROW, eye_name};
 use vale_app::ui::pad::{
@@ -4752,12 +4756,14 @@ fn the_controls_of_the_labels_tab_work_with_a_finger() {
             screenshot::save(&mut h, "pad-atlas-label-conflicts");
         }
         for name in [&value_of(BUFFER), REMOVE_DUPLICATES] {
+            scroll_to(&mut h, name);
             assert!(control(&h, name).is_some(), "{what}: {name}");
         }
         let distance = value_of(DUPLICATE_DISTANCE);
         assert!(control(&h, &distance).is_none(), "{what}");
         tap(&mut h, REMOVE_DUPLICATES);
         assert!(classes(&h, map, "Places")[1].remove_duplicates, "{what}");
+        scroll_to(&mut h, &distance);
         assert!(control(&h, &distance).is_some(), "{what}");
         check_controls(&h, &format!("{what}: duplicate distance"));
         tap(&mut h, "Back to Labels");
@@ -5624,7 +5630,8 @@ fn the_labels_tab_edits_a_polygon_class() {
 
 /// The labeler placement of the first class of a layer.
 fn labeler_placement(h: &Pad, map: MapId, layer: &str, kind: GeometryKind) -> Placement {
-    vale_app::labels::placement(&classes(h, map, layer)[0], kind)
+    let weights = h.state().doc.weights(map, layer_id(h, layer));
+    vale_app::labels::placement(&classes(h, map, layer)[0], kind, &weights)
 }
 
 /// A pad with the Placement segment of the class of the rivers.
@@ -7300,6 +7307,303 @@ fn the_conflict_options_reach_the_labeler() {
     assert!(!classes(&h, map, "Places")[0].remove_duplicates);
     let all = count(&mut h);
     assert!(apart > 0 && apart < all, "{apart} {all}");
+}
+
+#[test]
+fn the_conflicts_segment_shows_the_switches_and_no_weights() {
+    let weights = [SYMBOL_WEIGHT, LINE_WEIGHT, FILL_WEIGHT, OUTLINE_WEIGHT];
+    let check = |h: &mut Pad, what: &str| {
+        for name in [HARD_BUFFER, BACKGROUND, NEVER_REMOVE] {
+            scroll_to(h, name);
+            assert!(control(h, name).is_some(), "{what}: {name}");
+        }
+        let names: Vec<String> = (h.state().pad.controls.iter())
+            .map(|c| c.name.clone())
+            .collect();
+        for name in weights {
+            let shown = names
+                .iter()
+                .any(|n| n == name || n.ends_with(&format!(" {name} value")));
+            assert!(!shown, "{what}: {name} in {names:?}");
+        }
+    };
+    let mut h = labels_pad(BOARDS[0]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, "point");
+    tap(&mut h, "Back to Labels");
+    tap(&mut h, "Rivers");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, "line");
+
+    let (mut h, _) = land_pad(BOARDS[0]);
+    tap(&mut h, "Land");
+    tap(&mut h, SEGMENTS[2].0);
+    check(&mut h, "polygon");
+}
+
+#[test]
+fn the_conflict_switches_change_the_map_class() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad| classes(h, map, "Places")[0].clone();
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    let start = class(&h);
+    assert!(start.buffer_hard && !start.background && !start.never_remove);
+
+    for name in [HARD_BUFFER, BACKGROUND, NEVER_REMOVE] {
+        scroll_to(&mut h, name);
+        tap(&mut h, name);
+    }
+    let c = class(&h);
+    assert!(!c.buffer_hard && c.background && c.never_remove);
+    // Each switch is one undo step.
+    tap(&mut h, "Undo");
+    let c = class(&h);
+    assert!(!c.buffer_hard && c.background && !c.never_remove);
+}
+
+#[test]
+fn the_weights_of_a_layer_reach_the_labeler() {
+    use vale_app::labels::{placement, weight};
+    use vale_app::ui::pad::labels::weight_text;
+    use vale_labeler::Weight;
+    use vale_style::Weights;
+    assert_eq!(weight(0.0), Weight::FREE);
+    assert_eq!(weight(30.0), Weight::Cost(3.0));
+    assert_eq!(weight(99.0), Weight::Cost(9.9));
+    assert_eq!(weight(100.0), Weight::Forbidden);
+    assert_eq!(
+        (weight_text(0.0), weight_text(42.0), weight_text(100.0)),
+        ("Free".into(), "42".into(), "Forbidden".into())
+    );
+
+    let mut w = Weights::default();
+    let line = vale_style::LabelClass::new("R", GeometryKind::Line, 0).unwrap();
+    let Placement::Line(p) = placement(&line, GeometryKind::Line, &w) else {
+        panic!("not a line placement");
+    };
+    assert_eq!(p.weight, Weight::Cost(3.0));
+    w.line = 100.0;
+    let Placement::Line(p) = placement(&line, GeometryKind::Line, &w) else {
+        panic!("not a line placement");
+    };
+    assert_eq!(p.weight, Weight::Forbidden);
+
+    let point = vale_style::LabelClass::new("P", GeometryKind::Point, 0).unwrap();
+    let Placement::Point(p) = placement(&point, GeometryKind::Point, &w) else {
+        panic!("not a point placement");
+    };
+    assert_eq!(p.weight, Weight::Forbidden);
+
+    let area = vale_style::LabelClass::new("L", GeometryKind::Polygon, 0).unwrap();
+    let Placement::Polygon(p) = placement(&area, GeometryKind::Polygon, &w) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(
+        (p.inside_weight, p.outline_weight),
+        (Weight::FREE, Weight::FREE)
+    );
+    (w.fill, w.outline) = (100.0, 55.0);
+    let Placement::Polygon(p) = placement(&area, GeometryKind::Polygon, &w) else {
+        panic!("not a polygon placement");
+    };
+    assert_eq!(p.inside_weight, Weight::Forbidden);
+    assert_eq!(p.outline_weight, Weight::Cost(5.5));
+}
+
+/// The names of the weight sliders of the Weights page that show.
+fn weight_sliders(h: &Pad) -> Vec<String> {
+    let all = [SYMBOL_WEIGHT, LINE_WEIGHT, FILL_WEIGHT, OUTLINE_WEIGHT];
+    (h.state().pad.controls.iter())
+        .map(|c| c.name.clone())
+        .filter(|n| all.iter().any(|w| n.ends_with(&format!(" {w}"))))
+        .collect()
+}
+
+#[test]
+fn the_weights_row_opens_the_weights_page() {
+    let mut h = labels_pad(BOARDS[0]);
+    let id = frame(&h, 0).id;
+    assert!(control(&h, WEIGHTS).is_some());
+    // The row is above the list of classes.
+    assert!(control(&h, WEIGHTS).unwrap().top() < control(&h, "Places").unwrap().top());
+    tap(&mut h, WEIGHTS);
+    assert_eq!(h.state().atlas.open_weights(), Some(id));
+    assert!(control(&h, "Places").is_none());
+    assert!(!weight_sliders(&h).is_empty());
+    tap(&mut h, "Back to Labels");
+    assert_eq!(h.state().atlas.open_weights(), None);
+    assert!(control(&h, "Places").is_some());
+}
+
+#[test]
+fn the_weights_page_shows_the_sliders_of_each_feature_type() {
+    let mut h = labels_pad(BOARDS[0]);
+    tap(&mut h, WEIGHTS);
+    // The top layer comes first.
+    let top = |h: &Pad, layer: &str, name: &str| {
+        control(h, &value_of(&weight_name(layer, name))).map(|r| r.top())
+    };
+    let (places, rivers, land) = (
+        top(&h, "Places", SYMBOL_WEIGHT).unwrap(),
+        top(&h, "Rivers", LINE_WEIGHT).unwrap(),
+        top(&h, "Land", FILL_WEIGHT).unwrap(),
+    );
+    assert!(places < rivers && rivers < land, "{places} {rivers} {land}");
+    for (layer, names) in [
+        ("Places", &[SYMBOL_WEIGHT][..]),
+        ("Rivers", &[LINE_WEIGHT][..]),
+        ("Land", &[FILL_WEIGHT, OUTLINE_WEIGHT][..]),
+    ] {
+        let all = [SYMBOL_WEIGHT, LINE_WEIGHT, FILL_WEIGHT, OUTLINE_WEIGHT];
+        for name in all {
+            let slider = weight_name(layer, name);
+            if names.contains(&name) {
+                scroll_to(&mut h, &value_of(&slider));
+                assert!(control(&h, &value_of(&slider)).is_some(), "{slider}");
+            } else {
+                assert!(control(&h, &value_of(&slider)).is_none(), "{slider}");
+            }
+        }
+    }
+
+    // A map with no vector layers shows a hint.
+    let mut s = state();
+    let vector: Vec<LayerId> = (s.doc.project.layers().iter())
+        .filter(|l| l.geometry().is_some())
+        .map(|l| l.id)
+        .collect();
+    for id in vector {
+        s.doc.remove_layer(id);
+    }
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, WEIGHTS);
+    assert!(weight_sliders(&h).is_empty());
+    assert!(h.query_by_label(NO_VECTOR_LAYERS).is_some());
+}
+
+#[test]
+fn the_controls_of_the_weights_page_work_with_a_finger() {
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = labels_pad(size);
+        check_controls(&h, &format!("{what}: labels tab"));
+        tap(&mut h, WEIGHTS);
+        check_controls(&h, &format!("{what}: weights page"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-atlas-label-weights");
+        }
+        let land = weight_name("Land", OUTLINE_WEIGHT);
+        scroll_to(&mut h, &value_of(&land));
+        check_controls(&h, &format!("{what}: weights page, scrolled"));
+    }
+}
+
+#[test]
+fn a_weight_edit_changes_the_map_and_is_one_undo_step() {
+    use vale_labeler::Weight;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let (places, rivers) = (layer_id(&h, "Places"), layer_id(&h, "Rivers"));
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, WEIGHTS);
+    assert_eq!(h.state().doc.weights(map, places).point, 100.0);
+    let point = |h: &Pad| match labeler_placement(h, map, "Places", GeometryKind::Point) {
+        Placement::Point(p) => p.weight,
+        _ => panic!("not a point placement"),
+    };
+    assert_eq!(point(&h), Weight::Forbidden);
+
+    set_number(&mut h, &weight_name("Places", SYMBOL_WEIGHT), "40");
+    assert_eq!(h.state().doc.weights(map, places).point, 40.0);
+    assert_eq!(point(&h), Weight::Cost(4.0));
+    // The app saves the edit a short time later.
+    let now = Instant::now();
+    h.state_mut().save_tick(false, now);
+    h.state_mut()
+        .save_tick(false, now + std::time::Duration::from_secs(5));
+    set_number(&mut h, &weight_name("Rivers", LINE_WEIGHT), "0");
+    assert_eq!(h.state().doc.weights(map, rivers).line, 0.0);
+
+    // Each edit is one undo step.
+    tap(&mut h, "Undo");
+    assert_eq!(h.state().doc.weights(map, rivers).line, 30.0);
+    assert_eq!(h.state().doc.weights(map, places).point, 40.0);
+    tap(&mut h, "Undo");
+    assert_eq!(h.state().doc.weights(map, places).point, 100.0);
+}
+
+#[test]
+fn the_weights_row_shows_edited_for_a_linked_map_with_changed_weights() {
+    use vale_app::ui::pad::labels::weights_value;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    assert_eq!(weights_value(h.state(), map), "");
+    let style = h.state_mut().save_as_map_style(map).unwrap();
+    h.state_mut().set_map_style_link(map, Some(style));
+    h.run_steps(2);
+    assert_eq!(weights_value(h.state(), map), "");
+    tap(&mut h, WEIGHTS);
+    set_number(&mut h, &weight_name("Rivers", LINE_WEIGHT), "80");
+    assert_eq!(weights_value(h.state(), map), EDITED);
+    tap(&mut h, "Back to Labels");
+    assert!(control(&h, WEIGHTS).is_some());
+    assert!(
+        h.state()
+            .doc
+            .local_changes(map)
+            .contains(&layer_id(&h, "Rivers"))
+    );
+
+    // An unlinked map has no mark.
+    h.state_mut().set_map_style_link(map, None);
+    h.run_steps(2);
+    assert_eq!(weights_value(h.state(), map), "");
+}
+
+#[test]
+fn a_class_row_shows_edited_for_a_linked_map_with_a_changed_class() {
+    use vale_app::ui::pad::labels::class_note;
+    let mut h = labels_pad(BOARDS[0]);
+    let map = frame(&h, 0).map;
+    let places = layer_id(&h, "Places");
+    let rivers = layer_id(&h, "Rivers");
+    let note = |h: &Pad, layer| {
+        let of = if layer == places { "Places" } else { "Rivers" };
+        class_note(h.state(), map, layer, 0, &classes(h, map, of)[0].name)
+    };
+    assert!(!note(&h, places).contains(EDITED));
+    let style = h.state_mut().save_as_map_style(map).unwrap();
+    h.state_mut().set_map_style_link(map, Some(style));
+    h.run_steps(2);
+    assert!(!note(&h, places).contains(EDITED));
+    h.state_mut()
+        .label_class_step(map, places, 0, |c| c.buffer += 1.0);
+    h.run_steps(2);
+    assert!(note(&h, places).contains(EDITED));
+    assert!(!note(&h, rivers).contains(EDITED));
+
+    // The map style takes the change, and the mark goes away.
+    h.state_mut().update_map_style(map);
+    h.run_steps(2);
+    assert!(!note(&h, places).contains(EDITED));
 }
 
 #[test]

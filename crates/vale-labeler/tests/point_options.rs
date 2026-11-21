@@ -19,6 +19,9 @@ fn class(pp: PointPlacement) -> LabelClass {
         margin: 0.0,
         placement: Placement::Point(pp),
         duplicate_distance: None,
+        margin_hard: true,
+        background: false,
+        never_remove: false,
         fallbacks: Fallbacks {
             order: Vec::new(),
             ..Default::default()
@@ -50,10 +53,7 @@ fn turned(angle: f64) -> Feature {
 }
 
 fn hard(rect: Rect) -> Obstacle {
-    Obstacle {
-        rect,
-        kind: ObstacleKind::Hard,
-    }
+    Obstacle::rect(rect, Weight::Forbidden)
 }
 
 fn run(classes: Vec<LabelClass>, features: Vec<Feature>, obstacles: Vec<Obstacle>) -> Labeling {
@@ -121,7 +121,7 @@ fn a_blocked_position_is_never_used() {
     );
 
     let left = hard(Rect::new(300.0, 290.0, 398.0, 302.0));
-    let out = run_one(pp.clone(), vec![left]);
+    let out = run_one(pp.clone(), vec![left.clone()]);
     assert_eq!(
         out.placed[0].kind,
         CandidateKind::Point(PointPosition::Bottom)
@@ -151,7 +151,7 @@ fn a_crowded_label_moves_out_to_the_largest_offset() {
     assert_eq!(placement(&run_one(pp(Some(2.0)), vec![])), placement(&free));
 
     let strip = hard(Rect::new(404.0, 250.0, 410.0, 350.0));
-    let out = run_one(pp(None), vec![strip]);
+    let out = run_one(pp(None), vec![strip.clone()]);
     assert!(out.placed.is_empty());
     let out = run_one(pp(Some(20.0)), vec![strip]);
     let l = &out.placed[0];
@@ -178,7 +178,7 @@ fn a_centered_label_shifts_a_little_from_the_center() {
 
     let b = l.bounds;
     let right = hard(Rect::new(b.x1 - 2.0, b.y0 - 20.0, b.x1 + 20.0, b.y1 + 20.0));
-    let out = run_one(pp(0.0), vec![right]);
+    let out = run_one(pp(0.0), vec![right.clone()]);
     assert!(out.placed.is_empty());
     let out = run_one(pp(6.0), vec![right]);
     let shift = first(&out.placed[0]).translation() - x0;
@@ -285,8 +285,13 @@ fn an_ambiguous_label_moves_or_goes_away() {
 
     let mut leader = class(pp(&one, AmbiguousLabels::AllClasses));
     leader.fallbacks.order = vec![Fallback::Leader];
+    // The other point is free, so the leader line can pass it.
+    let free = PointPlacement {
+        weight: Weight::FREE,
+        ..PointPlacement::default()
+    };
     let out = run(
-        vec![leader, class(PointPlacement::default())],
+        vec![leader, class(free)],
         vec![
             point(1, 0, "Paris", 400.0, 300.0),
             point(2, 1, "", other_x, 300.0),

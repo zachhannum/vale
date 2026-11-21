@@ -1078,6 +1078,7 @@ pub(super) fn head(state: &mut AppState, panel: Panel) -> Option<Head> {
         },
         (Panel::Labels, Some(id)) => match super::labels::open_class(state) {
             Some(_) => super::labels::class_head(state, id),
+            None if state.atlas.open_weights().is_some() => super::labels::weights_head(state, id),
             None => {
                 let mut head = tab_head(panel, "pad-atlas-labels", id, super::labels::tab);
                 head.buttons = super::labels::class_group_buttons(state, id);

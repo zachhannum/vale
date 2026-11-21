@@ -660,6 +660,8 @@ pub struct AtlasState {
     pub label: Option<(FrameId, LayerId, usize)>,
     /// The page of the panel of `label`.
     pub label_page: Option<ClassPage>,
+    /// The frame whose Weights page the Labels tab shows.
+    pub label_weights: Option<FrameId>,
     /// The frame whose Map style page the Frame tab shows.
     pub map_styles: Option<FrameId>,
     /// The gestures of the map styles of the Map style page.
@@ -796,6 +798,18 @@ impl AtlasState {
         }
     }
 
+    /// The frame whose Weights page the Labels tab shows.
+    pub fn open_weights(&self) -> Option<FrameId> {
+        match (
+            self.selection,
+            self.on(FrameTab::Labels),
+            self.label_weights,
+        ) {
+            (AtlasSelection::Frame(f), true, Some(of)) if f == of => Some(f),
+            _ => None,
+        }
+    }
+
     /// The label class whose panel the Labels tab of the selected frame
     /// shows.
     pub fn open_class(&self) -> Option<(LayerId, usize)> {
@@ -886,6 +900,7 @@ impl Default for AtlasState {
             stops_window: None,
             label: None,
             label_page: None,
+            label_weights: None,
             map_styles: None,
             map_style_list: Default::default(),
             map_style_name: None,

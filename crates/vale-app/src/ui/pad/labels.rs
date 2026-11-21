@@ -7,8 +7,8 @@ use vale_labeler::Face;
 use vale_store::{FrameId, FurnitureText, GeometryKind, LayerId, MapId};
 use vale_style::expr::Filter;
 use vale_style::{
-    AmbiguousLabels, LabelClass, LabelFallback, LabelPlacement, LabelPosition, LineAnchor,
-    LineOrientation,
+    AmbiguousLabels, FORBIDDEN_WEIGHT, LabelClass, LabelFallback, LabelPlacement, LabelPosition,
+    LineAnchor, LineOrientation, Weights,
 };
 
 use super::atlas::{FRAME_TABS, named_tabs};
@@ -138,6 +138,22 @@ pub const OUTSIDE_ZONES: [&str; 8] = [
 /// The highest rank that a tap on a zone gives.
 pub const MAX_ZONE_RANK: u8 = 3;
 pub const BUFFER: &str = "Buffer";
+pub const HARD_BUFFER: &str = "Hard buffer";
+/// The row at the top of the Labels tab, and the title of its page.
+pub const WEIGHTS: &str = "Weights";
+/// The hint of the Weights page of a map with no vector layers.
+pub const NO_VECTOR_LAYERS: &str = "No vector layers.";
+/// The weight sliders of the Weights page.
+pub const SYMBOL_WEIGHT: &str = "Symbol";
+pub const LINE_WEIGHT: &str = "Line";
+pub const FILL_WEIGHT: &str = "Fill";
+pub const OUTLINE_WEIGHT: &str = "Outline";
+pub const BACKGROUND: &str = "Background";
+pub const NEVER_REMOVE: &str = "Never remove";
+/// The value of a weight of 0.
+pub const WEIGHT_FREE: &str = "Free";
+/// The value of the largest weight.
+pub const WEIGHT_FORBIDDEN: &str = "Forbidden";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
 /// The row of the fallbacks, and the title of its page.
@@ -289,6 +305,7 @@ pub(super) fn open_class(state: &mut AppState) -> Option<(MapId, LayerId, usize)
 fn show_class(state: &mut AppState, frame: FrameId, layer: LayerId, i: usize) {
     state.atlas.label = Some((frame, layer, i));
     state.atlas.label_page = None;
+    state.atlas.label_weights = None;
     // The panels of all classes have one key.
     state.pad.scroll_top = Some(CLASS_KEY);
     state.atlas.label_segment = ClassSegment::Text;
@@ -305,19 +322,20 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
         return;
     };
     ui.spacing_mut().item_spacing.y = 0.0;
+    if widgets::open_row(ui, controls, WEIGHTS, weights_value(state, map)).clicked() {
+        state.atlas.label_weights = Some(id);
+        state.atlas.label = None;
+    }
+    ui.add_space(6.0);
     if state.label_layers().is_empty() {
         state.atlas.label_list = ListState::default();
         hint(ui, NO_LABEL_LAYERS);
         return;
     }
-    // A class with the name of its layer shows the name one time.
     let list: Vec<(LayerId, usize, String, String)> = (state.label_class_list(map).into_iter())
         .map(|(layer, i, c)| {
-            let mut of = layer_name(state, layer);
-            if of == c.name {
-                of.clear();
-            }
-            (layer, i, c.name, of)
+            let note = class_note(state, map, layer, i, &c.name);
+            (layer, i, c.name, note)
         })
         .collect();
     let mut open = None;
@@ -336,9 +354,19 @@ pub(super) fn tab(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
     }
 }
 
+/// The gray note of the row of class `i` of `layer` in `map`: the name of
+/// the layer, unless it is the name of the class, and "Edited" if the class
+/// differs from the map style.
+pub fn class_note(state: &AppState, map: MapId, layer: LayerId, i: usize, name: &str) -> String {
+    let of = layer_name(state, layer);
+    let of = if of == name { None } else { Some(of) };
+    let edited = state.doc.label_class_edited(map, layer, i);
+    let edited = edited.then(|| super::atlas::EDITED.to_owned());
+    of.into_iter().chain(edited).collect::<Vec<_>>().join(" · ")
+}
+
 /// The rows of the class list: the layer, the place in the classes of the
-/// layer, the name of the class, and the name of the layer or an empty
-/// text. A swipe to the right selects a class, a swipe to the left shows
+/// layer, the name of the class, and the note of the row. A swipe to the right selects a class, a swipe to the left shows
 /// Rename and Delete, and a hold lifts a class to a new place in the
 /// order. Returns the class that the user taps.
 fn class_rows(
@@ -1339,8 +1367,91 @@ fn curve_limit(
     }
 }
 
-/// The Conflicts segment of the panel of a class: the buffer, the
-/// distance between labels with the same text, and the fallbacks.
+/// The text of weight `w`.
+pub fn weight_text(w: f64) -> String {
+    if w <= 0.0 {
+        WEIGHT_FREE.to_owned()
+    } else if w >= FORBIDDEN_WEIGHT {
+        WEIGHT_FORBIDDEN.to_owned()
+    } else {
+        format!("{w:.0}")
+    }
+}
+
+/// A weight slider: its label, and the weight of the layer that it edits.
+pub type WeightRow = (&'static str, fn(&mut Weights) -> &mut f64);
+
+/// The weight sliders of a layer of `kind`.
+pub fn weight_rows(kind: GeometryKind) -> &'static [WeightRow] {
+    match kind {
+        GeometryKind::Point => &[(SYMBOL_WEIGHT, |w| &mut w.point)],
+        GeometryKind::Line => &[(LINE_WEIGHT, |w| &mut w.line)],
+        GeometryKind::Polygon => &[
+            (FILL_WEIGHT, |w| &mut w.fill),
+            (OUTLINE_WEIGHT, |w| &mut w.outline),
+        ],
+    }
+}
+
+/// The name of the weight slider `label` of layer `layer`, for example
+/// "Rivers Line".
+pub fn weight_name(layer: &str, label: &str) -> String {
+    format!("{layer} {label}")
+}
+
+/// The value of the Weights row of the Labels tab: "Edited" if the map links
+/// to a map style and its weights differ, or else empty.
+pub fn weights_value(state: &AppState, map: MapId) -> &'static str {
+    if state.doc.weights_edited(map) {
+        super::atlas::EDITED
+    } else {
+        ""
+    }
+}
+
+/// The Weights page of frame `id`: each vector layer of its map, top first,
+/// with a slider for each weight of the layer.
+pub(super) fn weights_head(state: &mut AppState, id: FrameId) -> Option<Head> {
+    let map = state.doc.project.atlas.frame(id)?.map;
+    let back_to = |state: &mut AppState| state.atlas.label_weights = None;
+    let body = move |ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        weights_body(ui, state, controls, map);
+    };
+    let parts = PageParts::new("pad-atlas-weights", WEIGHTS, Some(FRAME_TABS[3]));
+    Some(parts.head(Panel::Labels, back_to, |_, _, _| {}, body))
+}
+
+fn weights_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, map: MapId) {
+    let layers = state.label_layers();
+    if layers.is_empty() {
+        hint(ui, NO_VECTOR_LAYERS);
+        return;
+    }
+    // The top layer comes first.
+    for (layer, kind) in layers.into_iter().rev() {
+        let name = layer_name(state, layer);
+        super::raster::heading(ui, &name);
+        let weights = state.doc.weights(map, layer);
+        for &(label, field) in weight_rows(kind) {
+            let control = weight_name(&name, label);
+            let mut value = weights;
+            let weight = Number::new(&control, *field(&mut value), 0.0..=FORBIDDEN_WEIGHT)
+                .label(label)
+                .step(1.0)
+                .text(weight_text)
+                .slider(ui, controls);
+            if let Some(weight) = weight {
+                state.edit_weights(map, layer, |w| *field(w) = weight);
+            }
+        }
+    }
+    ui.add_space(6.0);
+}
+
+/// The Conflicts segment of the panel of a class: the buffer, the switches
+/// of the class, the distance between labels with the same text, and the
+/// fallbacks.
 fn conflicts_segment(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1355,6 +1466,18 @@ fn conflicts_segment(
         .stepper(ui, controls);
     if let Some(buffer) = buffer {
         state.edit_label_class(map, layer, i, |c| c.buffer = buffer);
+    }
+    let mut hard = class.buffer_hard;
+    if widgets::switch_row(ui, controls, HARD_BUFFER, HARD_BUFFER, &mut hard) {
+        state.label_class_step(map, layer, i, |c| c.buffer_hard = hard);
+    }
+    let mut background = class.background;
+    if widgets::switch_row(ui, controls, BACKGROUND, BACKGROUND, &mut background) {
+        state.label_class_step(map, layer, i, |c| c.background = background);
+    }
+    let mut never = class.never_remove;
+    if widgets::switch_row(ui, controls, NEVER_REMOVE, NEVER_REMOVE, &mut never) {
+        state.label_class_step(map, layer, i, |c| c.never_remove = never);
     }
     let mut remove = class.remove_duplicates;
     if widgets::switch_row(

@@ -58,6 +58,9 @@ fn tokyo() -> (GlyphRun, Rect) {
             margin: 0.0,
             placement: Placement::Point(PointPlacement::default()),
             duplicate_distance: None,
+            margin_hard: true,
+            background: false,
+            never_remove: false,
             fallbacks: Default::default(),
         }],
         features: vec![Feature {

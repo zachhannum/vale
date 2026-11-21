@@ -3,6 +3,7 @@
 use crate::collide::{GridIndex, OrientedBox};
 use crate::graticule::Parallels;
 use crate::model::*;
+use crate::obstacle::Obstacles;
 use crate::text::{Fonts, ShapedText};
 use crate::{fallback, improve, line, point, polygon};
 use kurbo::{Affine, Point, Rect};
@@ -31,6 +32,12 @@ pub(crate) struct Instance {
     pub empty_reason: Option<UnplacedReason>,
     /// The fallback tries, in the order of their candidates.
     pub variants: Vec<Variant>,
+    /// The candidates that a forbidden obstacle blocks, kept for a class that never removes.
+    pub blocked: Vec<Candidate>,
+    /// The class is a background class.
+    pub background: bool,
+    /// The margin of a class whose margin is not a hard rule, else 0.
+    pub soft_margin: f64,
 }
 
 /// The candidates of one fallback try, from `first` to the `first` of the next variant.
@@ -56,6 +63,9 @@ impl Instance {
             candidates,
             empty_reason,
             variants: Vec::new(),
+            blocked: Vec::new(),
+            background: false,
+            soft_margin: 0.0,
         }
     }
 
@@ -70,6 +80,9 @@ pub(crate) struct State {
     grid: GridIndex,
     pub chosen: Vec<Option<usize>>,
     scratch: Vec<u32>,
+    /// Soft margins count as hard. If it is `false`, only the text inside a soft margin
+    /// collides.
+    pub strict: bool,
 }
 
 impl State {
@@ -78,10 +91,12 @@ impl State {
             grid: GridIndex::new(bounds, 32.0),
             chosen: vec![None; instance_count],
             scratch: Vec::new(),
+            strict: true,
         }
     }
 
-    /// Pushes every placed instance other than `skip` whose boxes intersect `cand`.
+    /// Pushes every placed instance other than `skip` whose boxes intersect `cand`, which
+    /// belongs to `skip`. A background label and another label do not intersect.
     pub fn hits(
         &mut self,
         instances: &[Instance],
@@ -89,18 +104,23 @@ impl State {
         skip: usize,
         out: &mut Vec<usize>,
     ) {
+        let own = &instances[skip];
+        let soft = |m: f64| if self.strict { 0.0 } else { m };
+        let shrink = soft(own.soft_margin);
         for b in &cand.boxes {
             self.grid.query(b.aabb(), &mut self.scratch);
+            let b = b.inflate(-shrink);
             for &id in &self.scratch {
                 let id = id as usize;
-                if id == skip {
+                if id == skip || instances[id].background != own.background {
                     continue;
                 }
                 let Some(ci) = self.chosen[id] else { continue };
+                let other = soft(instances[id].soft_margin);
                 if instances[id].candidates[ci]
                     .boxes
                     .iter()
-                    .any(|o| o.intersects(b))
+                    .any(|o| o.inflate(-other).intersects(&b))
                 {
                     out.push(id);
                 }
@@ -179,58 +199,50 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     let (merged, absorbed) = merge_lines(input, &valid);
     valid.retain(|(fi, _)| !absorbed.contains_key(fi));
 
-    // Fixed hard obstacles. `owner[i]` is the feature that owns box i, if any.
-    let mut hard: Vec<OrientedBox> = Vec::new();
-    let mut owner: Vec<Option<usize>> = Vec::new();
-    let mut soft: Vec<(OrientedBox, f64)> = Vec::new();
+    // The input obstacles and the features as obstacles, with the weights of their classes.
+    let mut obstacles = Obstacles::new(bounds);
     for o in &input.obstacles {
-        match o.kind {
-            ObstacleKind::Hard => {
-                hard.push(OrientedBox::from_rect(o.rect));
-                owner.push(None);
-            }
-            ObstacleKind::Soft { cost } => soft.push((OrientedBox::from_rect(o.rect), cost)),
-        }
+        obstacles.add(o);
     }
-    for (fi, _) in &valid {
-        if let Geometry::Point {
-            position,
-            symbol_radius,
-            ..
-        } = &input.features[*fi].geometry
-            && *symbol_radius > 0.0
-        {
-            let r = *symbol_radius;
-            hard.push(OrientedBox::from_rect(Rect::new(
-                position.x - r,
-                position.y - r,
-                position.x + r,
-                position.y + r,
-            )));
-            owner.push(Some(*fi));
-        }
-    }
-    let mut hard_grid = GridIndex::new(bounds, 32.0);
-    for (i, b) in hard.iter().enumerate() {
-        hard_grid.insert(i as u32, b.aabb());
-    }
-    let mut soft_grid = GridIndex::new(bounds, 32.0);
-    for (i, (b, _)) in soft.iter().enumerate() {
-        soft_grid.insert(i as u32, b.aabb());
-    }
-
-    // Segments of every line feature, for the crossing cost.
-    let mut seg_grid = GridIndex::new(bounds, 32.0);
-    let mut segs: Vec<(Point, Point, usize)> = Vec::new();
+    let mut line_keys: HashMap<usize, u32> = HashMap::new();
     for (fi, f) in input.features.iter().enumerate() {
-        if let Geometry::Line { path, .. } = &f.geometry {
-            for w in path.windows(2) {
-                seg_grid.insert(
-                    segs.len() as u32,
-                    Rect::new(w[0].x, w[0].y, w[1].x, w[1].y).abs(),
+        let placement = input.classes.get(f.class).map(|c| &c.placement);
+        match &f.geometry {
+            Geometry::Point {
+                position,
+                symbol_radius,
+                ..
+            } if *symbol_radius > 0.0 => {
+                let weight = match placement {
+                    Some(Placement::Point(pp)) => pp.weight,
+                    _ => PointPlacement::default().weight,
+                };
+                let r = *symbol_radius;
+                let rect = Rect::new(
+                    position.x - r,
+                    position.y - r,
+                    position.x + r,
+                    position.y + r,
                 );
-                segs.push((w[0], w[1], absorbed.get(&fi).copied().unwrap_or(fi)));
+                obstacles.add_box(OrientedBox::from_rect(rect), weight, Some(fi));
             }
+            Geometry::Line { path, .. } => {
+                let weight = match placement {
+                    Some(Placement::Line(lp)) => lp.weight,
+                    _ => LinePlacement::default().weight,
+                };
+                let owner = absorbed.get(&fi).copied().unwrap_or(fi);
+                let key = *line_keys
+                    .entry(owner)
+                    .or_insert_with(|| obstacles.line_key());
+                obstacles.add_line(path, 0.0, weight, key, Some(owner));
+            }
+            Geometry::Polygon { rings } => {
+                if let Some(Placement::Polygon(pp)) = placement {
+                    obstacles.add_polygon(rings, pp.inside_weight, pp.outline_weight, Some(fi));
+                }
+            }
+            _ => {}
         }
     }
 
@@ -271,27 +283,26 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         let f = &input.features[*fi];
         let class = &input.classes[f.class];
         for (repeat, slot) in generator.slots(*fi, class, shaped).into_iter().enumerate() {
-            instances.push(Instance::new(*fi, repeat as u32, slot));
+            let mut inst = Instance::new(*fi, repeat as u32, slot);
+            inst.background = class.background;
+            inst.soft_margin = if class.margin_hard { 0.0 } else { class.margin };
+            instances.push(inst);
         }
     }
 
     // Step 2: filter and score.
     let scorer = Scorer {
         bounds,
-        hard: &hard,
-        owner: &owner,
-        hard_grid: &hard_grid,
-        soft: &soft,
-        soft_grid: &soft_grid,
-        segs: &segs,
-        seg_grid: &seg_grid,
+        obstacles: &obstacles,
     };
     for inst in &mut instances {
         if inst.candidates.is_empty() {
             continue;
         }
         let cands = std::mem::take(&mut inst.candidates);
-        match scorer.score(inst.feature_index, cands) {
+        let (kept, blocked) = scorer.score(inst.feature_index, inst.soft_margin, cands);
+        inst.blocked = blocked;
+        match kept {
             Ok(kept) => inst.candidates = kept,
             Err(r) => inst.empty_reason = Some(r),
         }
@@ -306,8 +317,9 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
             &input.features[ib.feature_index],
         );
         let (ca, cb) = (&input.classes[fa.class], &input.classes[fb.class]);
-        cb.priority
-            .cmp(&ca.priority)
+        cb.background
+            .cmp(&ca.background)
+            .then_with(|| cb.priority.cmp(&ca.priority))
             .then_with(|| fb.priority.total_cmp(&fa.priority))
             .then_with(|| fa.id.cmp(&fb.id))
             .then_with(|| ia.repeat.cmp(&ib.repeat))
@@ -326,12 +338,8 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     let mut conflict_buf: Vec<usize> = Vec::new();
     for &i in &order {
         let n = instances[i].candidates.len();
-        for ci in 0..n {
-            improve::conflicts(&instances, &mut state, &dup, i, ci, &mut conflict_buf);
-            if conflict_buf.is_empty() {
-                state.insert(&instances, i, ci);
-                break;
-            }
+        if let Some(ci) = first_free(&instances, &mut state, &dup, i, 0..n, &mut conflict_buf) {
+            state.insert(&instances, i, ci);
         }
     }
 
@@ -381,7 +389,7 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                         cands.retain(|c| c.leader.is_some());
                     }
                 }
-                let Ok(cands) = scorer.score(fi, cands) else {
+                let Ok(cands) = scorer.score(fi, instances[i].soft_margin, cands).0 else {
                     continue;
                 };
                 let first = instances[i].candidates.len();
@@ -391,14 +399,46 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
                     shaped: attempt.shaped,
                     first,
                 });
-                for ci in first..instances[i].candidates.len() {
-                    improve::conflicts(&instances, &mut state, &dup, i, ci, &mut conflict_buf);
-                    if conflict_buf.is_empty() {
-                        state.insert(&instances, i, ci);
-                        break 'fallbacks;
-                    }
+                let n = instances[i].candidates.len();
+                if let Some(ci) =
+                    first_free(&instances, &mut state, &dup, i, first..n, &mut conflict_buf)
+                {
+                    state.insert(&instances, i, ci);
+                    break 'fallbacks;
                 }
             }
+        }
+    }
+
+    // A label that is still out can use the soft margins of other labels, and its own.
+    if instances.iter().any(|inst| inst.soft_margin > 0.0) {
+        state.strict = false;
+        for &i in &order {
+            let n = instances[i].candidates.len();
+            if state.chosen[i].is_none()
+                && let Some(ci) =
+                    first_free(&instances, &mut state, &dup, i, 0..n, &mut conflict_buf)
+            {
+                state.insert(&instances, i, ci);
+            }
+        }
+        state.strict = true;
+    }
+
+    // A class that never removes places each label that is still out at its best candidate,
+    // over other labels and obstacles.
+    for &i in &order {
+        let inst = &mut instances[i];
+        if state.chosen[i].is_some()
+            || !input.classes[input.features[inst.feature_index].class].never_remove
+        {
+            continue;
+        }
+        if inst.candidates.is_empty() && !inst.blocked.is_empty() {
+            inst.candidates.push(inst.blocked.swap_remove(0));
+        }
+        if !inst.candidates.is_empty() {
+            state.insert(&instances, i, 0);
         }
     }
     let total_cost = improve::energy(&instances, &state, &pen);
@@ -722,92 +762,77 @@ impl Generator<'_> {
     }
 }
 
-/// Removes the candidates that leave the bounds or hit a hard obstacle, and adds the costs of
-/// soft obstacles and crossed lines.
+/// The first candidate of `range` that no placed label blocks.
+fn first_free(
+    instances: &[Instance],
+    state: &mut State,
+    dup: &improve::Dup,
+    i: usize,
+    range: std::ops::Range<usize>,
+    buf: &mut Vec<usize>,
+) -> Option<usize> {
+    range.into_iter().find(|&ci| {
+        improve::conflicts(instances, state, dup, i, ci, buf);
+        buf.is_empty()
+    })
+}
+
+/// Removes the candidates that leave the bounds or hit a forbidden obstacle, and adds the costs
+/// of the other obstacles.
 struct Scorer<'a> {
     bounds: Rect,
-    hard: &'a [OrientedBox],
-    /// The feature that owns each hard box, if any.
-    owner: &'a [Option<usize>],
-    hard_grid: &'a GridIndex,
-    soft: &'a [(OrientedBox, f64)],
-    soft_grid: &'a GridIndex,
-    segs: &'a [(Point, Point, usize)],
-    seg_grid: &'a GridIndex,
+    obstacles: &'a Obstacles,
 }
 
 impl Scorer<'_> {
-    /// The kept candidates of feature `own`, sorted by cost, or the reason that none is kept.
-    fn score(&self, own: usize, cands: Vec<Candidate>) -> Result<Vec<Candidate>, UnplacedReason> {
+    /// The kept candidates of feature `own`, sorted by cost, or the reason that none is kept,
+    /// and the candidates that a forbidden obstacle blocks, sorted by cost. Only the text inside
+    /// a soft margin of `soft_margin` avoids obstacles.
+    fn score(
+        &self,
+        own: usize,
+        soft_margin: f64,
+        cands: Vec<Candidate>,
+    ) -> (Result<Vec<Candidate>, UnplacedReason>, Vec<Candidate>) {
         let mut hits: Vec<u32> = Vec::new();
-        let mut soft_hits: Vec<u32> = Vec::new();
+        let mut keys: Vec<u32> = Vec::new();
         let mut kept: Vec<Candidate> = Vec::new();
-        let mut obstructed = false;
+        let mut blocked: Vec<Candidate> = Vec::new();
         for mut c in cands {
             if !c.boxes.iter().all(|b| b.is_inside(self.bounds)) {
                 continue;
             }
-            let mut blocked = false;
-            'hard: for b in &c.boxes {
-                self.hard_grid.query(b.aabb(), &mut hits);
-                for &h in &hits {
-                    if self.owner[h as usize] == Some(own) {
-                        continue;
-                    }
-                    if self.hard[h as usize].intersects(b) {
-                        blocked = true;
-                        break 'hard;
-                    }
-                }
-            }
-            // A leader line does not cross a hard obstacle other than the symbol of its feature.
-            if let Some(l) = c.leader {
-                let line = Rect::from_points(l.anchor, l.end);
-                self.hard_grid.query(line, &mut hits);
-                blocked |= hits.iter().any(|&h| {
-                    self.owner[h as usize] != Some(own)
-                        && self.hard[h as usize].intersects_segment(l.anchor, l.end)
-                });
-            }
-            if blocked {
-                obstructed = true;
-                continue;
-            }
-            // Each soft obstacle adds its cost one time, in obstacle order.
-            soft_hits.clear();
-            for b in &c.boxes {
-                self.soft_grid.query(b.aabb(), &mut hits);
-                soft_hits.extend_from_slice(&hits);
-            }
-            soft_hits.sort_unstable();
-            soft_hits.dedup();
-            for &s in &soft_hits {
-                let (rect, cost) = &self.soft[s as usize];
-                if c.boxes.iter().any(|b| rect.intersects(b)) {
-                    c.cost += cost;
-                }
-            }
-            let mut crossed: Vec<usize> = Vec::new();
-            for b in &c.boxes {
-                self.seg_grid.query(b.aabb(), &mut hits);
-                for &s in &hits {
-                    let (a, e, f) = self.segs[s as usize];
-                    if f != own && !crossed.contains(&f) && b.intersects_segment(a, e) {
-                        crossed.push(f);
-                    }
-                }
-            }
-            c.cost += 3.0 * crossed.len() as f64;
-            kept.push(c);
-        }
-        if kept.is_empty() {
-            return Err(if obstructed {
-                UnplacedReason::Obstructed
+            let text: Vec<OrientedBox>;
+            let boxes = if soft_margin > 0.0 {
+                text = c.boxes.iter().map(|b| b.inflate(-soft_margin)).collect();
+                &text
             } else {
-                UnplacedReason::OutOfBounds
+                &c.boxes
+            };
+            let cost = self.obstacles.cost(own, boxes, &mut hits, &mut keys);
+            // A leader line does not cross a forbidden obstacle other than its own feature.
+            let leader_blocked = c.leader.is_some_and(|l| {
+                self.obstacles
+                    .blocks_segment(own, l.anchor, l.end, &mut hits)
             });
+            match cost {
+                Some(cost) if !leader_blocked => {
+                    c.cost += cost;
+                    kept.push(c);
+                }
+                _ => blocked.push(c),
+            }
+        }
+        blocked.sort_by(|a, b| a.cost.total_cmp(&b.cost));
+        if kept.is_empty() {
+            let reason = if blocked.is_empty() {
+                UnplacedReason::OutOfBounds
+            } else {
+                UnplacedReason::Obstructed
+            };
+            return (Err(reason), blocked);
         }
         kept.sort_by(|a, b| a.cost.total_cmp(&b.cost));
-        Ok(kept)
+        (Ok(kept), blocked)
     }
 }

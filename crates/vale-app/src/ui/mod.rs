@@ -2112,6 +2112,23 @@ impl AppState {
         true
     }
 
+    /// Runs `edit` on the label weights of `layer` in `map`. Returns true if
+    /// they changed.
+    pub fn edit_weights(
+        &mut self,
+        map: MapId,
+        layer: LayerId,
+        edit: impl FnOnce(&mut vale_style::Weights),
+    ) -> bool {
+        let mut weights = self.doc.weights(map, layer);
+        edit(&mut weights);
+        if !self.doc.set_weights(map, layer, weights) {
+            return false;
+        }
+        self.touch();
+        true
+    }
+
     /// `edit_label_class` as one undo step.
     pub fn label_class_step(
         &mut self,

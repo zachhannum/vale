@@ -11,6 +11,7 @@ mod graticule;
 mod improve;
 mod line;
 mod model;
+mod obstacle;
 mod point;
 mod polygon;
 mod text;

@@ -226,6 +226,12 @@ The preset `conic` shows Europe in a Lambert conformal conic projection. The cou
 cargo run --release -p vale-labeler-demo -- --preset conic --out target/demo/conic.png
 ```
 
+The preset `avoid` shows the same map, but the rivers and the borders are forbidden obstacles for the other labels:
+
+```sh
+cargo run --release -p vale-labeler-demo -- --preset avoid --out target/demo/avoid.png
+```
+
 ## Tests
 
 ```sh

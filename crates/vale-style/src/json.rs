@@ -11,6 +11,7 @@ use crate::expr::{Filter, FromValue, Property, field_ref};
 use crate::{
     Color, Hatch, ImageSymbolizer, LabelStyle, LayerStyle, MarkerShape, Mask, PointSymbolizer,
     RasterSymbolizer, Rule, ScatterSymbolizer, StrokeKind, StrokeSymbolizer, Style, Symbolizer,
+    Weights,
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
@@ -67,6 +68,15 @@ impl LayerStyle {
         if let Some(name) = &self.flow_height {
             root["flow_height"] = json!(name);
         }
+        let w = &self.weights;
+        if *w != Weights::default() {
+            root["weights"] = json!({
+                "point": w.point,
+                "line": w.line,
+                "fill": w.fill,
+                "outline": w.outline,
+            });
+        }
         root.to_string()
     }
 
@@ -91,7 +101,24 @@ impl LayerStyle {
             style: Style { rules, mask },
             label,
             flow_height,
+            weights: read_weights(root.get("weights")),
         })
+    }
+}
+
+/// A missing weight reads as its default.
+fn read_weights(j: Option<&Json>) -> Weights {
+    let d = Weights::default();
+    let number = |key: &str, default: f64| {
+        (j.and_then(|j| j.get(key)).and_then(Json::as_f64))
+            .filter(|v| v.is_finite())
+            .unwrap_or(default)
+    };
+    Weights {
+        point: number("point", d.point),
+        line: number("line", d.line),
+        fill: number("fill", d.fill),
+        outline: number("outline", d.outline),
     }
 }
 

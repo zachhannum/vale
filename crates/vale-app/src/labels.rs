@@ -5,22 +5,27 @@ use std::collections::{HashMap, HashSet};
 use kurbo::{Point, Rect};
 use vale_labeler::{
     AmbiguousLabels, Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput,
-    LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, ObstacleKind,
-    Options, Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
-    TextStyle, place_labels,
+    LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, Options,
+    Placement, PointPlacement, PointPosition, PolygonMode, PolygonPlacement, PolygonZones,
+    TextStyle, UnplacedReason, Weight, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
 use vale_store::GeometryKind;
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
     LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
-    LeaderEnd, LeaderStyle, Paint, StackAlign, TextCase,
+    LeaderEnd, LeaderStyle, Paint, StackAlign, TextCase, Weights,
 };
 
 use crate::atlas::FrameTarget;
-use crate::pipeline::{FrameMasks, LabelSummary, PageLayer, PlacedSymbol, Quality, UnplacedInfo};
+use crate::pipeline::{
+    FrameMasks, LabelSummary, PageFeature, PageLayer, PlacedSymbol, Quality, UnplacedInfo,
+};
 
 const MAX_FEATURES: usize = 3000;
+
+/// The most obstacles from the features of the layers with no label class.
+const MAX_OBSTACLES: usize = 3000;
 
 /// The most scatter symbols that labels avoid.
 const MAX_SOFT: usize = 20_000;
@@ -127,21 +132,32 @@ pub fn place(
     let mut features: Vec<Feature> = Vec::new();
     let mut layer_names: Vec<&str> = Vec::new();
     let mut next_id: u64 = 0;
+    // True for each layer of `layers` with a label class.
+    let mut has_class: Vec<bool> = Vec::with_capacity(layers.len());
 
     for (pl, layer_classes) in layers.iter().zip(classes) {
+        // The class of each feature of `pl.features` that gets no text: the first class whose
+        // filter matches it, or else the first class of the layer.
+        let mut empty: Vec<Option<usize>> = vec![None; pl.features.len()];
+        // The style class of each labeler class of the layer.
+        let mut styles: Vec<(usize, &StyleClass)> = Vec::new();
         for c in layer_classes {
             let Ok(text_expr) = Expr::parse(&c.text) else {
                 continue;
             };
             let filter = Filter::new(&c.filter);
             let class = label_classes.len();
+            styles.push((class, c));
             label_classes.push(LabelClass {
                 name: c.name.clone(),
                 style: text_style(c, fonts),
                 priority: c.priority,
                 margin: c.buffer,
-                placement: placement(c, pl.kind),
+                placement: placement(c, pl.kind, &pl.entry.style.weights),
                 duplicate_distance: c.remove_duplicates.then_some(c.duplicate_distance),
+                margin_hard: c.buffer_hard,
+                background: c.background,
+                never_remove: c.never_remove,
                 fallbacks: fallbacks(c),
             });
             class_colors.push(c.color);
@@ -153,7 +169,7 @@ pub fn place(
             ));
             class_halos.push(c.halo.then_some((c.halo_color, c.halo_width)));
 
-            for f in &pl.features {
+            for (k, f) in pl.features.iter().enumerate() {
                 let Some(feature) = pl.layer.features.get(f.index) else {
                     continue;
                 };
@@ -161,10 +177,14 @@ pub fn place(
                 if !filter.matches(&ctx) {
                     continue;
                 }
-                let Some(text) = text_expr.eval(&ctx).label() else {
+                let text = (text_expr.eval(&ctx).label())
+                    .map(|t| c.case.apply(&t))
+                    .unwrap_or_default();
+                if text.is_empty() {
+                    empty[k].get_or_insert(class);
                     continue;
-                };
-                let text = c.case.apply(&text);
+                }
+                labeled.insert((pl.layer.id, f.index));
                 let priority = c
                     .priority_field
                     .as_ref()
@@ -172,29 +192,7 @@ pub fn place(
                     .and_then(|v| v.as_f64())
                     .filter(|v| v.is_finite())
                     .unwrap_or(0.0);
-                let extent = pl.extent(f.index);
-                let stroke_width = extent.stroke_width;
-                let symbol_radius = if extent.marker_radius > 0.0 {
-                    extent.marker_radius + stroke_width
-                } else {
-                    0.0
-                };
-                let angle = c
-                    .angle_field
-                    .as_ref()
-                    .and_then(|a| feature.attributes.get(a))
-                    .and_then(|v| v.as_f64())
-                    .filter(|v| v.is_finite())
-                    .map(f64::to_radians);
-                let shape = if c.offset_from_outline && pl.kind == GeometryKind::Point {
-                    let mut paints = Vec::new();
-                    pl.entry.style.style.paints(&ctx, &mut paints);
-                    paints
-                } else {
-                    Vec::new()
-                };
-                labeled.insert((pl.layer.id, f.index));
-                let mut push = |geometry: Geometry| {
+                for geometry in geometries(pl, f, c, page) {
                     features.push(Feature {
                         id: next_id,
                         class,
@@ -204,40 +202,44 @@ pub fn place(
                     });
                     layer_names.push(&pl.layer.name);
                     next_id += 1;
-                };
-                match pl.kind {
-                    GeometryKind::Line => {
-                        for line in f.lines.iter().filter(|l| l.len() >= 2) {
-                            push(Geometry::Line {
-                                path: line.clone(),
-                                stroke_width,
-                            });
-                        }
-                    }
-                    GeometryKind::Point => {
-                        for p in f.points.iter().filter(|p| page.contains(**p)) {
-                            push(Geometry::Point {
-                                position: *p,
-                                symbol_radius,
-                                angle,
-                                outline: symbol_outline(&shape, *p),
-                            });
-                        }
-                    }
-                    GeometryKind::Polygon => {
-                        // The part inside a polygon mask, if the label stays inside it.
-                        let inside = f.whole.is_none() || pl.entry.style.style.label_in_mask(&ctx);
-                        let rings: Vec<_> = (f.rings_for(inside).iter())
-                            .filter(|r| r.len() >= 3)
-                            .cloned()
-                            .collect();
-                        if !rings.is_empty() {
-                            push(Geometry::Polygon { rings });
-                        }
-                    }
                 }
             }
         }
+        has_class.push(!styles.is_empty());
+        // A feature with no text is an obstacle with the weights of its layer.
+        let Some(&first) = styles.first() else {
+            continue;
+        };
+        for (f, class) in pl.features.iter().zip(empty) {
+            if labeled.contains(&(pl.layer.id, f.index)) {
+                continue;
+            }
+            let (class, c) = (class.and_then(|k| styles.iter().find(|(i, _)| *i == k)))
+                .copied()
+                .unwrap_or(first);
+            labeled.insert((pl.layer.id, f.index));
+            for geometry in geometries(pl, f, c, page) {
+                features.push(Feature {
+                    id: next_id,
+                    class,
+                    text: String::new(),
+                    priority: 0.0,
+                    geometry,
+                });
+                layer_names.push(&pl.layer.name);
+                next_id += 1;
+            }
+        }
+    }
+
+    // A layer with no label class is an obstacle with its weights. The top layers come first.
+    let mut layer_obstacles: Vec<Obstacle> = Vec::new();
+    let mut symbol_weights: HashMap<vale_store::LayerId, Weight> = HashMap::new();
+    for (pl, _) in (layers.iter().zip(&has_class)).rev().filter(|(_, c)| !**c) {
+        if pl.kind == GeometryKind::Point {
+            symbol_weights.insert(pl.layer.id, weight(pl.entry.style.weights.point));
+        }
+        obstacles_of(pl, page, &mut labeled, &mut layer_obstacles);
     }
 
     // Keep the most important features when there are too many. IDs stay as they are.
@@ -245,9 +247,21 @@ pub fn place(
         let mut order: Vec<usize> = (0..features.len()).collect();
         order.sort_by(|&a, &b| {
             let (fa, fb) = (&features[a], &features[b]);
-            let ka = (label_classes[fa.class].priority, fa.priority);
-            let kb = (label_classes[fb.class].priority, fb.priority);
-            kb.0.cmp(&ka.0).then(kb.1.total_cmp(&ka.1)).then(a.cmp(&b))
+            // Features with text come first.
+            let ka = (
+                !fa.text.is_empty(),
+                label_classes[fa.class].priority,
+                fa.priority,
+            );
+            let kb = (
+                !fb.text.is_empty(),
+                label_classes[fb.class].priority,
+                fb.priority,
+            );
+            (kb.0.cmp(&ka.0))
+                .then(kb.1.cmp(&ka.1))
+                .then(kb.2.total_cmp(&ka.2))
+                .then(a.cmp(&b))
         });
         let mut keep = vec![false; features.len()];
         for &i in order.iter().take(MAX_FEATURES) {
@@ -268,7 +282,11 @@ pub fn place(
         bounds: page,
         classes: label_classes,
         features,
-        obstacles: symbol_obstacles(obstacles, symbols, &labeled, page),
+        obstacles: {
+            let mut all = symbol_obstacles(obstacles, symbols, &labeled, &symbol_weights, page);
+            all.extend(layer_obstacles);
+            all
+        },
         parallels,
         options: Options {
             seed: 24301,
@@ -317,6 +335,7 @@ pub fn place(
         unplaced: labeling
             .unplaced
             .iter()
+            .filter(|u| u.reason != UnplacedReason::EmptyText)
             .map(|u| UnplacedInfo {
                 layer: names.get(&u.feature).copied().unwrap_or("").to_string(),
                 text: u.text.clone(),
@@ -414,10 +433,10 @@ pub fn leader_items(
     items
 }
 
-/// The labeler placement of a class. A placement that does not fit `kind`
-/// gives the default placement of `kind`. A point class tries the positions
-/// that are on, in their rank.
-pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
+/// The labeler placement of a class of a layer with `weights`. A placement
+/// that does not fit `kind` gives the default placement of `kind`. A point
+/// class tries the positions that are on, in their rank.
+pub fn placement(c: &StyleClass, kind: GeometryKind, weights: &Weights) -> Placement {
     let p = if c.placement.fits(kind) {
         c.placement
     } else {
@@ -453,6 +472,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             max_spread: c.line_spread,
             spread_fill: c.spread_fill,
             min_length: c.min_length,
+            weight: weight(weights.line),
         })
     };
     match p {
@@ -475,6 +495,7 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
                 vale_style::AmbiguousLabels::AllClasses => AmbiguousLabels::AllClasses,
                 vale_style::AmbiguousLabels::OwnClass => AmbiguousLabels::OwnClass,
             },
+            weight: weight(weights.point),
         }),
         StylePlacement::AboveOrBelow => line(LinePlacement::default().sides),
         StylePlacement::LineAbove => line(vec![LineSide::Above]),
@@ -509,6 +530,8 @@ pub fn placement(c: &StyleClass, kind: GeometryKind) -> Placement {
             repeat_distance: c.polygon_repeat.then_some(c.polygon_repeat_distance),
             overrun: c.overrun,
             min_area: c.min_area,
+            inside_weight: weight(weights.fill),
+            outline_weight: weight(weights.outline),
         }),
     }
 }
@@ -550,6 +573,129 @@ fn symbol_outline(paints: &[Paint], p: Point) -> Option<Vec<Point>> {
     best.map(|(_, ring)| ring)
 }
 
+/// The labeler geometries of feature `f` of `pl` for class `c`, on `page`.
+fn geometries(pl: &PageLayer<'_>, f: &PageFeature, c: &StyleClass, page: Rect) -> Vec<Geometry> {
+    let ctx = pl.context(f.index);
+    let extent = pl.extent(f.index);
+    let stroke_width = extent.stroke_width;
+    match pl.kind {
+        GeometryKind::Line => (f.lines.iter())
+            .filter(|l| l.len() >= 2)
+            .map(|line| Geometry::Line {
+                path: line.clone(),
+                stroke_width,
+            })
+            .collect(),
+        GeometryKind::Point => {
+            let symbol_radius = if extent.marker_radius > 0.0 {
+                extent.marker_radius + stroke_width
+            } else {
+                0.0
+            };
+            let angle = (c.angle_field.as_ref())
+                .and_then(|a| pl.layer.features.get(f.index)?.attributes.get(a))
+                .and_then(|v| v.as_f64())
+                .filter(|v| v.is_finite())
+                .map(f64::to_radians);
+            let mut shape = Vec::new();
+            if c.offset_from_outline {
+                pl.entry.style.style.paints(&ctx, &mut shape);
+            }
+            (f.points.iter())
+                .filter(|p| page.contains(**p))
+                .map(|p| Geometry::Point {
+                    position: *p,
+                    symbol_radius,
+                    angle,
+                    outline: symbol_outline(&shape, *p),
+                })
+                .collect()
+        }
+        GeometryKind::Polygon => {
+            // The part inside a polygon mask, if the label stays inside it.
+            let inside = f.whole.is_none() || pl.entry.style.style.label_in_mask(&ctx);
+            let rings: Vec<_> = (f.rings_for(inside).iter())
+                .filter(|r| r.len() >= 3)
+                .cloned()
+                .collect();
+            if rings.is_empty() {
+                Vec::new()
+            } else {
+                vec![Geometry::Polygon { rings }]
+            }
+        }
+    }
+}
+
+/// Adds to `out` the obstacles of the features of `pl`, a layer with no label
+/// class, with the weights of the layer, up to `MAX_OBSTACLES`. A point with a
+/// marker is a disc and goes in `labeled`, so its symbol is not an obstacle again.
+fn obstacles_of(
+    pl: &PageLayer<'_>,
+    page: Rect,
+    labeled: &mut HashSet<(vale_store::LayerId, usize)>,
+    out: &mut Vec<Obstacle>,
+) {
+    let w = pl.entry.style.weights;
+    if w.free(pl.kind) {
+        return;
+    }
+    for f in &pl.features {
+        if out.len() >= MAX_OBSTACLES {
+            return;
+        }
+        let extent = pl.extent(f.index);
+        match pl.kind {
+            GeometryKind::Point => {
+                if extent.marker_radius <= 0.0 {
+                    continue;
+                }
+                let radius = extent.marker_radius + extent.stroke_width;
+                labeled.insert((pl.layer.id, f.index));
+                out.extend(f.points.iter().filter(|p| page.contains(**p)).map(|p| {
+                    Obstacle::Point {
+                        position: *p,
+                        radius,
+                        weight: weight(w.point),
+                    }
+                }));
+            }
+            GeometryKind::Line => {
+                out.extend(
+                    f.lines
+                        .iter()
+                        .filter(|l| l.len() >= 2)
+                        .map(|l| Obstacle::Line {
+                            path: l.clone(),
+                            width: extent.stroke_width,
+                            weight: weight(w.line),
+                        }),
+                );
+            }
+            GeometryKind::Polygon => {
+                let rings: Vec<_> = (f.rings.iter()).filter(|r| r.len() >= 3).cloned().collect();
+                if !rings.is_empty() {
+                    out.push(Obstacle::Polygon {
+                        rings,
+                        inside: weight(w.fill),
+                        outline: weight(w.outline),
+                    });
+                }
+            }
+        }
+    }
+    out.truncate(MAX_OBSTACLES);
+}
+
+/// The labeler weight of a weight of a layer, from 0, free, to `FORBIDDEN_WEIGHT`.
+pub fn weight(w: f64) -> Weight {
+    if w >= vale_style::FORBIDDEN_WEIGHT {
+        Weight::Forbidden
+    } else {
+        Weight::Cost(w.max(0.0) / 10.0)
+    }
+}
+
 /// The labeler position of a position of a class.
 pub fn point_position(p: LabelPosition) -> PointPosition {
     match p {
@@ -565,20 +711,20 @@ pub fn point_position(p: LabelPosition) -> PointPosition {
 }
 
 /// The obstacles: each rectangle of `hard`, each point symbol, and the
-/// scatter symbols. The label of a feature avoids its own symbol by its
-/// symbol radius, so the symbol of a labeled feature is not an obstacle.
+/// scatter symbols. A feature that goes to the labeler, with text or with
+/// none, has its symbol as its geometry, so its symbol is not an obstacle.
+/// The symbol of a layer in `weights` has that weight, and the symbol of
+/// another layer is forbidden.
 fn symbol_obstacles(
     hard: &[Rect],
     symbols: &[PlacedSymbol],
     labeled: &HashSet<(vale_store::LayerId, usize)>,
+    weights: &HashMap<vale_store::LayerId, Weight>,
     page: Rect,
 ) -> Vec<Obstacle> {
     let mut out: Vec<Obstacle> = hard
         .iter()
-        .map(|r| Obstacle {
-            rect: *r,
-            kind: ObstacleKind::Hard,
-        })
+        .map(|r| Obstacle::rect(*r, Weight::Forbidden))
         .collect();
     let meets = |r: Rect| r.x0 <= page.x1 && r.x1 >= page.x0 && r.y0 <= page.y1 && r.y1 >= page.y0;
     let shown = symbols.iter().filter(|s| meets(s.bounds));
@@ -587,14 +733,20 @@ fn symbol_obstacles(
         points
             .into_iter()
             .filter(|s| !labeled.contains(&(s.layer, s.feature)))
-            .map(|s| Obstacle {
-                rect: s.bounds,
-                kind: ObstacleKind::Hard,
-            }),
+            .map(|s| {
+                (
+                    s,
+                    weights.get(&s.layer).copied().unwrap_or(Weight::Forbidden),
+                )
+            })
+            .filter(|(_, w)| *w != Weight::FREE)
+            .map(|(s, w)| Obstacle::rect(s.bounds, w)),
     );
-    out.extend(scatter.into_iter().take(MAX_SOFT).map(|s| Obstacle {
-        rect: s.bounds,
-        kind: ObstacleKind::Soft { cost: SCATTER_COST },
-    }));
+    out.extend(
+        scatter
+            .into_iter()
+            .take(MAX_SOFT)
+            .map(|s| Obstacle::rect(s.bounds, Weight::Cost(SCATTER_COST))),
+    );
     out
 }

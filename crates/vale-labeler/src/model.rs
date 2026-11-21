@@ -97,6 +97,9 @@ pub struct PointPlacement {
     pub no_flip: bool,
     /// Which other points make a candidate ambiguous.
     pub ambiguous: AmbiguousLabels,
+    /// The weight of the symbol for the labels of other features. A feature with no text
+    /// keeps its weight.
+    pub weight: Weight,
 }
 
 impl Default for PointPlacement {
@@ -109,6 +112,7 @@ impl Default for PointPlacement {
             graticule: false,
             no_flip: false,
             ambiguous: AmbiguousLabels::Keep,
+            weight: Weight::Forbidden,
         }
     }
 }
@@ -205,6 +209,9 @@ pub struct LinePlacement {
     pub spread_fill: bool,
     /// A visible line shorter than this gets no label, in page units.
     pub min_length: f64,
+    /// The weight of the line for the labels of other features. A feature with no text
+    /// keeps its weight.
+    pub weight: Weight,
 }
 
 impl Default for LinePlacement {
@@ -227,6 +234,7 @@ impl Default for LinePlacement {
             max_spread: 0.0,
             spread_fill: false,
             min_length: 0.0,
+            weight: Weight::Cost(3.0),
         }
     }
 }
@@ -374,6 +382,11 @@ pub struct PolygonPlacement {
     /// A part of the visible polygon with less area than this gets no label, in square page
     /// units.
     pub min_area: f64,
+    /// The weight of the inside of the shape for the labels of other features. A feature
+    /// with no text keeps its weights.
+    pub inside_weight: Weight,
+    /// The weight of the outline of the shape for the labels of other features.
+    pub outline_weight: Weight,
 }
 
 impl Default for PolygonPlacement {
@@ -392,6 +405,8 @@ impl Default for PolygonPlacement {
             repeat_distance: None,
             overrun: 0.0,
             min_area: 0.0,
+            inside_weight: Weight::FREE,
+            outline_weight: Weight::FREE,
         }
     }
 }
@@ -546,6 +561,15 @@ pub struct LabelClass {
     /// `None` keeps all of them.
     pub duplicate_distance: Option<f64>,
     pub fallbacks: Fallbacks,
+    /// Other labels keep the margin free. If it is `false`, the margin stays free where it
+    /// can, but a label that does not fit otherwise can use it, and only the text avoids
+    /// obstacles.
+    pub margin_hard: bool,
+    /// The labels are placed first, and the labels of other classes can cover them.
+    pub background: bool,
+    /// Each label that has a candidate is placed, also where it overlaps other labels and
+    /// obstacles.
+    pub never_remove: bool,
 }
 
 /// Page-space geometry of a feature.
@@ -584,20 +608,58 @@ pub struct Feature {
     pub geometry: Geometry,
 }
 
-/// How an obstacle affects labels.
+/// How much labels avoid an obstacle.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum ObstacleKind {
+pub enum Weight {
+    /// Overlap adds this cost. A cost of 0 is free.
+    Cost(f64),
     /// Labels may not overlap it.
-    Hard,
-    /// Overlap adds `cost`.
-    Soft { cost: f64 },
+    Forbidden,
 }
 
-/// A rectangle that labels avoid.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Obstacle {
-    pub rect: Rect,
-    pub kind: ObstacleKind,
+impl Weight {
+    /// Labels can overlap it at no cost.
+    pub const FREE: Weight = Weight::Cost(0.0);
+}
+
+/// A shape in page space that labels avoid.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Obstacle {
+    /// A disc.
+    Point {
+        position: Point,
+        radius: f64,
+        weight: Weight,
+    },
+    /// A line with a width.
+    Line {
+        path: Vec<Point>,
+        width: f64,
+        weight: Weight,
+    },
+    /// Closed rings with the even-odd fill rule. A label that touches the inside costs
+    /// `inside`, and a label that crosses a ring costs `outline` as well.
+    Polygon {
+        rings: Vec<Vec<Point>>,
+        inside: Weight,
+        outline: Weight,
+    },
+}
+
+impl Obstacle {
+    /// A rectangle with one weight for its inside and its outline.
+    pub fn rect(rect: Rect, weight: Weight) -> Self {
+        Obstacle::Polygon {
+            rings: vec![vec![
+                Point::new(rect.x0, rect.y0),
+                Point::new(rect.x1, rect.y0),
+                Point::new(rect.x1, rect.y1),
+                Point::new(rect.x0, rect.y1),
+            ]],
+            inside: weight,
+            outline: weight,
+        }
+    }
 }
 
 /// Engine options.

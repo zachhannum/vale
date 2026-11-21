@@ -5,7 +5,7 @@ use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
     Color, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask, Paint, PointSymbolizer,
     Rule, STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind, StrokeSymbolizer, Style,
-    StyleError, Symbolizer, extent_of, scale_denominator,
+    StyleError, Symbolizer, Weights, extent_of, scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -1236,4 +1236,40 @@ fn the_height_layer_of_flow_round_trips_and_follows_a_rename() {
     assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
     style.rename_raster("Other", "Name");
     assert_eq!(style.flow_height.as_deref(), Some("Highlands"));
+}
+
+#[test]
+fn the_label_weights_of_a_layer_round_trip_with_defaults_for_missing_keys() {
+    let mut style = line_with(StrokeKind::Solid);
+    assert_eq!(
+        style.weights,
+        Weights {
+            point: 100.0,
+            line: 30.0,
+            fill: 0.0,
+            outline: 0.0
+        }
+    );
+    assert!(!style.to_json().contains("weights"));
+    style.weights = Weights {
+        point: 40.0,
+        line: 100.0,
+        fill: 15.0,
+        outline: 60.0,
+    };
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back.weights, style.weights);
+    assert_eq!(back, style);
+
+    // A missing key reads as its default.
+    let mut json: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    json["weights"] = serde_json::json!({ "line": 0.0, "outline": 5.0 });
+    let back = LayerStyle::from_json(&json.to_string()).unwrap();
+    let want = Weights {
+        line: 0.0,
+        outline: 5.0,
+        ..Weights::default()
+    };
+    assert_eq!(back.weights, want);
+    assert!(want.free(GeometryKind::Line) && !want.free(GeometryKind::Polygon));
 }
