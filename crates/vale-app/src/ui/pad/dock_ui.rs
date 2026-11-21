@@ -27,6 +27,8 @@ const TAB_PAD: f32 = 12.0;
 /// A drag of the width handle this far past the narrowest dock collapses
 /// the dock.
 pub const COLLAPSE_DRAG: f32 = 40.0;
+/// The extra space at each side of the content of a glass sheet.
+const SHEET_GLASS_PAD: f32 = 12.0;
 /// The tab at the right edge that shows a collapsed dock.
 pub const SHOW_DOCK: &str = "Show dock";
 /// The text of a drag of the width handle that collapses the dock.
@@ -693,7 +695,7 @@ fn paint_drop(
             let tabs = placed[i].tabs;
             painter.rect_stroke(
                 tabs,
-                theme::CONTROL_RADIUS,
+                widgets::tab_radius(ctx, tabs),
                 Stroke::new(2.0, theme::ACCENT),
                 egui::StrokeKind::Inside,
             );
@@ -850,14 +852,25 @@ fn show_sheet(
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
     let r = theme::SHEET_RADIUS as u8;
-    let radius = egui::CornerRadius {
-        nw: r,
-        ne: r,
-        sw: 0,
-        se: 0,
+    // A glass sheet floats clear of the edges of the screen, with corners
+    // that follow the round corners of the display.
+    let radius = match widgets::is_glass(ctx) {
+        true => egui::CornerRadius::same(theme::SHEET_GLASS_RADIUS as u8),
+        false => egui::CornerRadius {
+            nw: r,
+            ne: r,
+            sw: 0,
+            se: 0,
+        },
     };
     let backdrop = state.globe.backdrop();
     let inner = geometry::edge_content(rect, rects.screen, rects.bands);
+    // The header and the rows of a glass sheet keep clear of its round
+    // corners.
+    let inner = match widgets::is_glass(ctx) {
+        true => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
+        false => inner,
+    };
     let mut out = None;
     widgets::card(
         ctx,
@@ -1220,11 +1233,9 @@ fn header_row(
                 Some(active),
             );
             if active {
-                painter.rect_filled(
-                    tab.shrink(widgets::HIGHLIGHT_INSET),
-                    theme::CONTROL_RADIUS,
-                    theme::raise(),
-                );
+                let back = tab.shrink(widgets::HIGHLIGHT_INSET);
+                let radius = widgets::tab_radius(painter.ctx(), back);
+                painter.rect_filled(back, radius, theme::raise());
             }
             let color = if active { theme::TEXT } else { theme::MUTE };
             let icon_x = if named {

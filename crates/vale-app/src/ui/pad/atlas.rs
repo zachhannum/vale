@@ -233,6 +233,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: state.pad.docks.atlas.width,
         camera: state.pad.camera,
         fold: state.pad.fold,
+        glass: state.globe.glass && state.globe.backdrop().is_some(),
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input

@@ -14,6 +14,9 @@ pub const WARN: Color32 = Color32::from_rgb(242, 184, 92);
 pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 pub const CARD_RADIUS: f32 = 14.0;
 pub const SHEET_RADIUS: f32 = 18.0;
+/// The corner radius of a glass sheet: the radius of the corners of the
+/// display of a phone, less the inset of the sheet.
+pub const SHEET_GLASS_RADIUS: f32 = 47.0;
 pub const CONTROL_RADIUS: f32 = 10.0;
 /// The opacity of a control that does nothing yet.
 pub const OFF: f32 = 0.35;

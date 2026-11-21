@@ -433,6 +433,15 @@ pub fn is_glass(ctx: &egui::Context) -> bool {
     backdrop(ctx).is_some() && glass(ctx)
 }
 
+/// The corner radius of the highlight of a tab at `rect`. On glass cards
+/// it is a capsule.
+pub fn tab_radius(ctx: &egui::Context, rect: Rect) -> f32 {
+    match is_glass(ctx) {
+        true => rect.height().min(rect.width()) / 2.0,
+        false => theme::CONTROL_RADIUS,
+    }
+}
+
 /// The corner radius of the highlight of a control at `rect`. On glass
 /// cards, a square control has a circle, as the controls of Liquid Glass.
 /// With the padding of the cards, the circle of a cell at the end of a bar
@@ -2080,10 +2089,13 @@ pub fn glass(ctx: &egui::Context) -> bool {
 }
 
 /// The corners of a glass card in `rect`. Each round corner of `radius`
-/// gets the radius of the rim of the glass, up to half the short side, as
-/// the corners of Liquid Glass.
+/// gets `GLASS_RADIUS`, or the largest corner of `radius` if that is more,
+/// up to half the short side, as the corners of Liquid Glass.
 pub fn glass_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
-    let round = GLASS_RADIUS.min(rect.width().min(rect.height()) / 2.0) as u8;
+    let most = f32::from(radius.nw.max(radius.ne).max(radius.sw).max(radius.se));
+    let round = GLASS_RADIUS
+        .max(most)
+        .min(rect.width().min(rect.height()) / 2.0) as u8;
     let pick = |corner: u8| if corner > 0 { round } else { 0 };
     CornerRadius {
         nw: pick(radius.nw),

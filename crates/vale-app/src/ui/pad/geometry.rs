@@ -238,7 +238,14 @@ pub struct Input {
     pub camera: Option<Rect>,
     /// The folding region of a partially folded device.
     pub fold: Option<Rect>,
+    /// The cards are glass. On a compact screen, the cards of the top row
+    /// and the sheet then float clear of the edges of the screen.
+    pub glass: bool,
 }
+
+/// The space between a glass sheet and the sides and the bottom of the
+/// screen.
+pub const SHEET_INSET: f32 = 8.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rects {
@@ -465,20 +472,30 @@ pub fn layout(input: &Input) -> Rects {
     let column_top = top + ROW + GAP;
 
     // The cards at the ends of the top row and the tool column touch the
-    // side edges of the screen.
-    let edge = screen.left();
-    let workspace = Rect::from_min_size(
-        pos2(edge, top),
-        vec2(bands.left + input.workspace_width, ROW),
-    );
+    // side edges of the screen. On a compact screen with glass, the cards
+    // of the top row float at the margin.
+    let float = input.glass && class == WidthClass::Compact;
     let actions_width = match class {
         WidthClass::Compact => ACTIONS_WIDTH - BUTTON_STEP,
         _ => ACTIONS_WIDTH,
     };
-    let mut actions = Rect::from_min_max(
-        pos2(screen.right() - bands.right - actions_width, top),
-        pos2(screen.right(), top + ROW),
-    );
+    let (workspace, mut actions) = if float {
+        (
+            Rect::from_min_size(pos2(left, top), vec2(input.workspace_width, ROW)),
+            Rect::from_min_size(pos2(right - actions_width, top), vec2(actions_width, ROW)),
+        )
+    } else {
+        (
+            Rect::from_min_size(
+                pos2(screen.left(), top),
+                vec2(bands.left + input.workspace_width, ROW),
+            ),
+            Rect::from_min_max(
+                pos2(screen.right() - bands.right - actions_width, top),
+                pos2(screen.right(), top + ROW),
+            ),
+        )
+    };
     let mut workspace = workspace;
     // The card of the top row at the corner of the camera moves along the
     // row, out of the region of the camera.
@@ -507,6 +524,13 @@ pub fn layout(input: &Input) -> Rects {
         let offset = input.sheet_offset.clamp(-rise, travel);
         let sheet_top = screen.bottom() - height + offset;
         let rect = Rect::from_min_max(pos2(screen.left(), sheet_top), screen.max);
+        let rect = match input.glass {
+            true => Rect::from_min_max(
+                rect.min + vec2(SHEET_INSET, 0.0),
+                rect.max - vec2(SHEET_INSET, SHEET_INSET),
+            ),
+            false => rect,
+        };
         (input.panel.then_some(rect), travel, rise)
     } else {
         (None, 0.0, 0.0)
@@ -603,7 +627,10 @@ pub fn layout(input: &Input) -> Rects {
     let height = column_content
         .min(room)
         .max(COLUMN_CELL + 2.0 * COLUMN_INSET);
-    let tools = Rect::from_min_size(pos2(edge, column_top), vec2(bands.left + COLUMN, height));
+    let tools = Rect::from_min_size(
+        pos2(screen.left(), column_top),
+        vec2(bands.left + COLUMN, height),
+    );
     let brush_card = if slider == 0.0 {
         BrushCard::Button
     } else if space == SLIDER_TEXT {
@@ -798,6 +825,7 @@ mod tests {
             dock_width: 340.0,
             camera: None,
             fold: None,
+            glass: false,
         }
     }
 
@@ -982,6 +1010,22 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.tool_cells, TOOLS);
         assert_eq!(r.tools.width(), strip_width(TOOLS));
+    }
+
+    #[test]
+    fn on_a_phone_with_glass_the_top_row_and_the_sheet_float_clear_of_the_edges() {
+        let mut input = phone();
+        input.panel = true;
+        input.glass = true;
+        let r = layout(&input);
+        assert_eq!(r.workspace.left(), MARGIN);
+        assert_eq!(r.actions.right(), 393.0 - MARGIN);
+        assert_eq!(r.sheet, Some(rect(8.0, 400.0, 377.0, 444.0)));
+        // A tablet keeps the cards at the edges.
+        let mut tablet = board(1194.0, 834.0);
+        tablet.glass = true;
+        let r = layout(&tablet);
+        assert_eq!((r.workspace.left(), r.actions.right()), (0.0, 1194.0));
     }
 
     #[test]
