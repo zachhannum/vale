@@ -243,8 +243,8 @@ pub struct Input {
     pub glass: bool,
 }
 
-/// The space at the top of a sheet that holds its grabber, above the title
-/// row.
+/// The space at the top of a glass sheet that holds its grabber, above the
+/// title row.
 pub const GRABBER_SPACE: f32 = 10.0;
 
 /// The space between a glass sheet and the sides and the bottom of the
@@ -523,7 +523,8 @@ pub fn layout(input: &Input) -> Rects {
             SHEET_HEIGHT
         };
         let height = open.min(full);
-        let travel = (height - bands.bottom - GRABBER_SPACE - ROW).max(0.0);
+        let grabber = if input.glass { GRABBER_SPACE } else { 0.0 };
+        let travel = (height - bands.bottom - grabber - ROW).max(0.0);
         let rise = full - height;
         let offset = input.sheet_offset.clamp(-rise, travel);
         let sheet_top = screen.bottom() - height + offset;
@@ -921,9 +922,9 @@ mod tests {
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        // The grabber and the title row are above the bottom band.
-        assert_eq!(sheet.top(), 834.0 - 20.0 - GRABBER_SPACE - 52.0);
-        assert_eq!(r.brush_card, BrushCard::Full(113.5));
+        // The title row is above the bottom band.
+        assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
+        assert_eq!(r.brush_card, BrushCard::Full(118.5));
     }
 
     /// An iPhone 16 in portrait, with its safe area.
@@ -1025,6 +1026,11 @@ mod tests {
         assert_eq!(r.workspace.left(), MARGIN);
         assert_eq!(r.actions.right(), 393.0 - MARGIN);
         assert_eq!(r.sheet, Some(rect(8.0, 400.0, 377.0, 444.0)));
+        // At its title row, the grabber and the title row are above the
+        // bottom band.
+        input.sheet_offset = 1000.0;
+        let low = layout(&input).sheet.unwrap();
+        assert_eq!(low.top(), 852.0 - 34.0 - GRABBER_SPACE - ROW);
         // A tablet keeps the cards at the edges.
         let mut tablet = board(1194.0, 834.0);
         tablet.glass = true;
@@ -1046,12 +1052,11 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.sheet.unwrap().top(), r.column_top);
         assert_eq!(r.column_top, 127.0);
-        // At its title row, below the grabber, the sheet has the rows above
-        // it.
+        // At its title row, the sheet has the rows above it.
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        assert_eq!(sheet.top(), 852.0 - 34.0 - GRABBER_SPACE - ROW);
+        assert_eq!(sheet.top(), 852.0 - 34.0 - ROW);
         assert_eq!(r.tool_cells, TOOLS);
         assert_eq!(r.tools.bottom(), sheet.top() - ROW_GAP);
         assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - ROW_GAP);

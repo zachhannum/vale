@@ -898,9 +898,12 @@ fn show_sheet(
         true => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
         false => inner,
     };
-    // The header starts below the grabber, so the highlight of a tab keeps
-    // clear of it.
-    let inner = Rect::from_min_max(inner.min + vec2(0.0, geometry::GRABBER_SPACE), inner.max);
+    // The header of a glass sheet starts below the grabber, so the highlight
+    // of a tab keeps clear of it.
+    let inner = match widgets::is_glass(ctx) {
+        true => Rect::from_min_max(inner.min + vec2(0.0, geometry::GRABBER_SPACE), inner.max),
+        false => inner,
+    };
     let mut out = None;
     widgets::card(
         ctx,
