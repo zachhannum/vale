@@ -1184,3 +1184,79 @@ fn an_export_wider_than_the_largest_texture_draws_in_strips_with_no_seam() {
         .count();
     assert!(off <= 100, "{off} pixels differ");
 }
+
+/// An Atlas workspace with a red and a blue polygon layer that cover the
+/// middle of the frame, in World, red below blue.
+fn two_squares() -> (App, [vale_store::LayerId; 2]) {
+    use vale_store::{Feature, Geometry, GeometryKind};
+    use vale_style::Color;
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    let square = vec![
+        [-60.0, -60.0],
+        [60.0, -60.0],
+        [60.0, 60.0],
+        [-60.0, 60.0],
+        [-60.0, -60.0],
+    ];
+    let ids = [RED, BLUE].map(|color| {
+        let layer = state.doc.add_layer(GeometryKind::Polygon);
+        let feature = Feature::new(
+            Geometry::Polygons(vec![vec![square.clone()]]),
+            Default::default(),
+        );
+        assert!(state.doc.project.add_feature(layer, feature));
+        let style = &mut state.doc.entry_mut(layer).unwrap().style;
+        style.set_fill(Some(Color::rgb(color[0], color[1], color[2])));
+        style.set_stroke(None);
+        layer
+    });
+    state.touch();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    (h, ids)
+}
+
+const RED: [u8; 3] = [200, 30, 30];
+const BLUE: [u8; 3] = [30, 30, 200];
+
+fn close(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 8)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_the_collections_of_its_map_in_their_stacking_order() {
+    let _gpu = one_gpu_test();
+    let (mut h, [red, _]) = two_squares();
+    let frame = open_frame(&h);
+    // Off the lines of the graticule.
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let world = h.state().doc.project.world_collection();
+    assert_eq!(h.state().doc.project.map_stack(frame.map), [world]);
+    let top = pixel(&mut h, middle);
+    assert!(close(top, BLUE), "{top:?}");
+
+    // Red is also in a collection on top of World, and it draws once, at
+    // its place in the top collection.
+    let x = h.state_mut().add_collection_with("Top", red).unwrap();
+    assert!(h.state_mut().add_map_collection(frame.map, x));
+    assert_eq!(h.state().doc.project.map_stack(frame.map), [world, x]);
+    let top = pixel(&mut h, middle);
+    assert!(close(top, RED), "{top:?}");
+
+    // World goes on top, so red is again at its place in World, below blue.
+    assert!(h.state_mut().move_map_collection(frame.map, x, 0));
+    let top = pixel(&mut h, middle);
+    assert!(close(top, BLUE), "{top:?}");
+
+    // A map without World draws only red.
+    assert!(h.state_mut().remove_map_collection(frame.map, world));
+    let top = pixel(&mut h, middle);
+    assert!(close(top, RED), "{top:?}");
+}

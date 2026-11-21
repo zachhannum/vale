@@ -12655,20 +12655,20 @@ fn a_drag_on_the_rows_scrolls_a_short_layers_pane() {
     }
     h.run_steps(3);
     // The pane is too short for its rows.
-    assert!(control(&h, "Layer Places").is_none());
+    assert!(control(&h, "Layer Land").is_none());
     let rect = (h.state().pad.panels.iter())
         .find(|(p, _)| *p == Panel::Layers)
         .unwrap()
         .1;
-    let land = control(&h, "Layer Land").unwrap();
+    let places = control(&h, "Layer Places").unwrap();
     drag(
         &mut h,
-        land.center(),
-        land.center() - vec2(0.0, 80.0),
+        places.center(),
+        places.center() - vec2(0.0, 80.0),
         Input::Finger,
     );
-    let places = control(&h, "Layer Places").expect("a row that scrolled into view");
-    assert!(rect.contains_rect(places), "{places:?}");
+    let land = control(&h, "Layer Land").expect("a row that scrolled into view");
+    assert!(rect.contains_rect(land), "{land:?}");
 }
 
 /// `towns_pad` with the inset exited and selected.
@@ -13869,4 +13869,152 @@ fn a_color_key_shows_the_bands_of_a_moved_frame_when_the_finger_lifts() {
     let after = rows(&h);
     assert_ne!(after, before);
     assert!(after[0] < before[0], "{before:?} {after:?}");
+}
+
+/// A pad with two frames of two maps and a session, on the Layers tab of
+/// the inset, with the collection "Coast" that holds Land.
+fn collection_pad() -> (tempfile::TempDir, Pad, MapId, vale_store::CollectionId) {
+    let (dir, s) = session_state();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let land = layer_id(&h, "Land");
+    let coast = h.state_mut().add_collection_with("Coast", land).unwrap();
+    show_tab(&mut h, FRAME_TABS[2]);
+    h.state_mut().save_waiting().unwrap();
+    let inset = frame(&h, 1).map;
+    (dir, h, inset, coast)
+}
+
+fn map_stack(h: &Pad, map: MapId) -> Vec<vale_store::CollectionId> {
+    h.state().doc.project.map_stack(map)
+}
+
+#[test]
+fn the_layers_tab_shows_the_collections_of_the_map_as_cards() {
+    use vale_app::ui::pad::collection::{dim_row, header_name};
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    assert_eq!(map_stack(&h, inset), [world], "a new map has World");
+    assert!(control(&h, &header_name("World")).is_some());
+    assert!(control(&h, &header_name("Coast")).is_none());
+    assert!(control(&h, &eye_name("Rivers", true)).is_some());
+
+    assert!(h.state_mut().add_map_collection(inset, coast));
+    h.run_steps(3);
+    let top = control(&h, &header_name("Coast")).unwrap();
+    let below = control(&h, &header_name("World")).unwrap();
+    assert!(top.top() < below.top());
+    // Coast draws Land, so the row of Land in World is dim.
+    assert!(control(&h, &dim_row("Land", "World")).is_some());
+    assert!(control(&h, &eye_name("Land", true)).is_some());
+    check_controls(&h, "two cards");
+}
+
+#[test]
+fn add_collection_adds_a_collection_to_the_map_in_one_step() {
+    use vale_app::ui::pad::map_cards::{ADD_COLLECTION, add_row};
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    tap(&mut h, ADD_COLLECTION);
+    assert!(control(&h, &add_row("World")).is_none());
+    tap(&mut h, &add_row("Coast"));
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+    assert!(
+        control(&h, &add_row("Coast")).is_none(),
+        "the popover closes"
+    );
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world]);
+}
+
+#[test]
+fn a_drag_of_a_card_header_restacks_the_collections_of_the_map_in_one_step() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().add_map_collection(inset, coast);
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(3);
+    hold_and_drag(&mut h, &header_name("Coast"));
+    h.run_steps(3);
+    assert_eq!(map_stack(&h, inset), [coast, world]);
+    assert!(
+        control(&h, &eye_name("Rivers", true)).is_some(),
+        "the cards open"
+    );
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+}
+
+#[test]
+fn a_swipe_on_a_card_removes_the_collection_from_the_map_in_one_step() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    // The last card of a map has no Remove.
+    swipe_row(&mut h, &header_name("World"), -120.0);
+    assert!(control(&h, "Remove World").is_none());
+
+    h.state_mut().add_map_collection(inset, coast);
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(3);
+    swipe_row(&mut h, &header_name("Coast"), -120.0);
+    tap(&mut h, "Remove Coast");
+    assert_eq!(map_stack(&h, inset), [world]);
+    assert!(h.state().doc.project.collection(coast).is_some());
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+}
+
+#[test]
+fn a_layer_that_joins_a_collection_shows_in_each_map_of_the_collection() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let main = frame(&h, 0).map;
+    let rivers = layer_id(&h, "Rivers");
+    for map in [main, inset] {
+        assert!(h.state_mut().set_map_stack(map, vec![coast]));
+        assert!(!shows(&h, map, "Rivers") && shows(&h, map, "Land"));
+    }
+    assert!(h.state_mut().set_in_collection(coast, rivers, true));
+    assert!(shows(&h, main, "Rivers") && shows(&h, inset, "Rivers"));
+    let drawn = h.state().doc.map_layers(inset);
+    assert_eq!(drawn.last(), Some(&rivers));
+}
+
+#[test]
+fn a_layer_switch_that_is_off_stays_off_while_the_layer_stays_in_the_collection() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    h.state_mut().add_map_collection(inset, coast);
+    h.run_steps(2);
+    tap(&mut h, &eye_name("Land", true));
+    assert!(!shows(&h, inset, "Land"));
+    let land = layer_id(&h, "Land");
+    let rivers = layer_id(&h, "Rivers");
+    h.state_mut().set_in_collection(coast, rivers, true);
+    h.state_mut().move_map_collection(inset, coast, 0);
+    h.run_steps(2);
+    assert!(!shows(&h, inset, "Land"));
+    assert!(control(&h, &eye_name("Land", false)).is_some());
+    let project = &h.state().doc.project;
+    assert!(project.collection(coast).unwrap().layers.contains(&land));
+    assert!(!h.state().doc.map_layers(inset).contains(&land));
+}
+
+#[test]
+fn a_delete_of_a_collection_removes_it_from_each_map() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let main = frame(&h, 0).map;
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().add_map_collection(main, coast);
+    h.state_mut().set_map_stack(inset, vec![coast]);
+    assert!(h.state_mut().delete_collection(coast));
+    assert_eq!(map_stack(&h, main), [world]);
+    assert_eq!(map_stack(&h, inset), [world]);
+    undo(&mut h);
+    assert_eq!(map_stack(&h, main), [world, coast]);
+    assert_eq!(map_stack(&h, inset), [coast]);
 }
