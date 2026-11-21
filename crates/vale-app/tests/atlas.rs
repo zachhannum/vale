@@ -3345,7 +3345,7 @@ fn gpu_vello_draws_the_atlas_with_the_pixels_of_the_cpu() {
 
 #[test]
 #[ignore = "gpu"]
-fn the_cards_of_the_atlas_show_the_blurred_page() {
+fn the_cards_of_the_atlas_show_the_page_through_their_glass() {
     let _gpu = one_gpu_test();
     let setup = egui_kittest::wgpu::default_wgpu_setup();
     let mut h = vale_app::headless::ui_harness(state(), (1194.0, 834.0), 1.0, setup);
@@ -3359,19 +3359,15 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
     view.offset.x += card.center().x - rect.left();
     view.offset.y += card.top() - 20.0 - rect.top();
     h.run_steps(3);
-    let blurred = h.render().unwrap();
+    let glass = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
-    blurred
-        .save("../../target/app/test-atlas-blur.png")
-        .unwrap();
-    h.state_mut().globe.blur = false;
+    glass.save("../../target/app/test-atlas-glass.png").unwrap();
+    h.state_mut().globe.glass = false;
     h.run_steps(2);
     let plain = h.render().unwrap();
 
-    let row = card_row(&blurred, card);
+    let row = card_row(&glass, card);
     let width = row.len() as i32;
-    let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-    assert!(step <= 5, "a step of {step}");
     let sharp = card_row(&plain, card);
     let difference: i32 = row.iter().zip(&sharp).map(|(a, b)| (a - b).abs()).sum();
     assert!(difference > width * 2, "{difference}");
@@ -3379,7 +3375,7 @@ fn the_cards_of_the_atlas_show_the_blurred_page() {
 
 #[test]
 #[ignore = "gpu"]
-fn the_blur_behind_a_card_shows_the_raster_layers_of_a_frame() {
+fn the_glass_of_a_card_shows_the_raster_layers_of_a_frame() {
     let _gpu = one_gpu_test();
     // A black height layer in a frame on a white page.
     let mut state = AppState::new(Document::empty()).unwrap();

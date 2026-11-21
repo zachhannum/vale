@@ -1045,9 +1045,8 @@ pub struct Globe {
     pub stats: Stats,
     /// The brush debug panel is open.
     pub debug: bool,
-    /// The cards of the iPad layout show the blurred canvas.
-    pub blur: bool,
-    /// The rim of a card with the blur bends the canvas like glass.
+    /// The cards of the iPad layout are glass. If not, they have a plain
+    /// fill.
     pub glass: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
@@ -1198,8 +1197,7 @@ impl Globe {
             pick_level: false,
             stats: Stats::new(face_size as u32),
             debug: false,
-            blur: true,
-            glass: false,
+            glass: true,
             test_report: None,
             zoom_report: None,
             uploads: Uploads::default(),
@@ -2074,10 +2072,10 @@ impl Globe {
         self.request_rivers();
     }
 
-    /// The format of the blurred canvas behind a card. `None`: a card has a
-    /// plain fill.
+    /// The format of the glass of the cards. `None`: a card has a plain
+    /// fill.
     pub fn backdrop(&self) -> Option<wgpu::TextureFormat> {
-        self.format.filter(|_| self.blur)
+        self.format.filter(|_| self.glass)
     }
 
     /// True if the brush is the tool and it can paint the heightmap. If

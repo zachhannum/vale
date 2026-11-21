@@ -1,27 +1,21 @@
-// The blurred copy of the canvas that a card of the iPad layout shows. The
-// frame drawn so far shrinks into a texture at a reduced size, and two passes
-// blur it. A card of glass reads a copy at the full size with a light blur.
+// The glass of the cards of the iPad layout. The frame drawn so far is
+// copied to a texture, and two passes give the copy a light blur. Each card
+// draws the copy through its glass.
 
 struct Globals {
     // The left and the top of the canvas on the screen, then its width and
     // its height, in pixels.
     canvas: vec4<f32>,
-    // The width and the height of the reduced copy in pixels, then the
-    // direction of the blur pass.
-    small: vec4<f32>,
-    // The standard deviation of the blur in pixels of the reduced copy, the
-    // reduction, and the gain of the backdrop.
+    // The width and the height of the copy in pixels, then the direction of
+    // the blur pass.
+    copy: vec4<f32>,
+    // The standard deviation of the blur in pixels.
     blur: vec4<f32>,
-    // The width and the height of the copy with the light blur in pixels,
-    // then its reduction.
-    clear: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(0) @binding(1) var source: texture_2d<f32>;
 @group(0) @binding(2) var bilinear: sampler;
-// The copy with the light blur. Only the cards of glass read it.
-@group(0) @binding(3) var clear: texture_2d<f32>;
 
 // The largest distance of a blur tap from the center, in pixels.
 const MAX_REACH: i32 = 48;
@@ -48,8 +42,8 @@ fn gauss(x: f32, sigma: f32) -> f32 {
 fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sigma = max(g.blur.x, 0.01);
     let reach = min(i32(ceil(sigma * 2.5)), MAX_REACH);
-    let uv = frag.xy / g.small.xy;
-    let tap = g.small.zw / g.small.xy;
+    let uv = frag.xy / g.copy.xy;
+    let tap = g.copy.zw / g.copy.xy;
     var sum = textureSampleLevel(source, bilinear, uv, 0.0);
     var total = 1.0;
     for (var i = 1; i <= reach; i += 2) {
@@ -71,28 +65,14 @@ fn fs_copy(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return textureSampleLevel(source, bilinear, frag.xy / size, 0.0);
 }
 
-// One pixel of the reduced copy: the mean of the 4 by 4 pixels of the frame
-// that it covers. Each bilinear tap reads 2 by 2 pixels.
-@fragment
-fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let size = vec2<f32>(textureDimensions(source));
-    let center = frag.xy * g.blur.y;
-    var sum = vec4<f32>(0.0);
-    for (var i = 0; i < 4; i += 1) {
-        let offset = vec2<f32>(f32(i & 1) * 2.0 - 1.0, f32(i >> 1u) * 2.0 - 1.0);
-        sum += textureSampleLevel(source, bilinear, (center + offset) / size, 0.0);
-    }
-    return sum * 0.25;
-}
-
 struct CardVertex {
     @builtin(position) position: vec4<f32>,
     // The center of the card, then half of its width and height, in pixels.
     @location(0) @interpolate(flat) rect: vec4<f32>,
     // The corner radii in pixels: top left, top right, bottom left, bottom right.
     @location(1) @interpolate(flat) radii: vec4<f32>,
-    // 1 for a card of glass, the pixels per point, and the radius of the
-    // curve of the rim in pixels.
+    // The pixels per point, and the radius of the curve of the rim in
+    // pixels.
     @location(2) @interpolate(flat) glass: vec4<f32>,
     // A capsule that joins the card with a smooth outline, such as the
     // handle of the dock: its center, then half of its width and height,
@@ -126,7 +106,7 @@ const DISTORTION: f32 = 0.05;
 // RANGE`, so that a dark canvas gets a little lighter and a light canvas
 // gets much darker.
 const FLOOR: f32 = 0.16;
-const RANGE: f32 = 0.24;
+const RANGE: f32 = 0.19;
 const INDEX: f32 = 1.5;
 
 // The signed distance of `p` from the edge of a rounded rectangle, with
@@ -218,12 +198,12 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
 
     // Red bends outward and blue inward.
     let fringe = normal.xy * CHROMA * 36.0 * (edge * 0.7 + 0.3) * unit;
-    let scale = 1.0 / (g.clear.xy * g.clear.z);
+    let scale = 1.0 / g.copy.xy;
     let at = (pos + shift - g.canvas.xy) * scale;
     var color = vec3<f32>(
-        textureSampleLevel(clear, bilinear, at + fringe * scale, 0.0).r,
-        textureSampleLevel(clear, bilinear, at, 0.0).g,
-        textureSampleLevel(clear, bilinear, at - fringe * scale, 0.0).b,
+        textureSampleLevel(source, bilinear, at + fringe * scale, 0.0).r,
+        textureSampleLevel(source, bilinear, at, 0.0).g,
+        textureSampleLevel(source, bilinear, at - fringe * scale, 0.0).b,
     );
     color = (FLOOR + RANGE * color) * (1.0 + 0.06 * depth);
 
@@ -242,21 +222,13 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
     return clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// The blurred canvas inside the rounded rectangle of a card.
+// The glass inside the outline of a card.
 @fragment
 fn fs_card(in: CardVertex) -> @location(0) vec4<f32> {
     let p = in.position.xy - in.rect.xy;
-    var distance = rounded(p, in.rect.zw, in.radii);
-    if in.glass.x > 0.0 {
-        let b = in.position.xy - in.blob.xy;
-        distance = shape(p, in.rect.zw, in.radii, b, in.blob.zw, JOIN * in.glass.y);
-    }
+    let b = in.position.xy - in.blob.xy;
+    let distance = shape(p, in.rect.zw, in.radii, b, in.blob.zw, JOIN * in.glass.x);
     let cover = clamp(0.5 - distance, 0.0, 1.0);
-    if in.glass.x > 0.0 {
-        let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.y, in.glass.z, in.blob);
-        return vec4<f32>(color * cover, cover);
-    }
-    let uv = (in.position.xy - g.canvas.xy) / (g.small.xy * g.blur.y);
-    let color = textureSampleLevel(source, bilinear, uv, 0.0).rgb * g.blur.z;
+    let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.x, in.glass.y, in.blob);
     return vec4<f32>(color * cover, cover);
 }

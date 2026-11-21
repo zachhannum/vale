@@ -397,7 +397,7 @@ fn restack(
             vec2(cell.rect.width() + 16.0, PANEL_ROW),
         );
         if cell.lifted {
-            let fill = theme::card(false).to_opaque();
+            let fill = theme::card().to_opaque();
             cell.painter.rect_filled(pill, LIFT_RADIUS, fill);
             cell.painter.rect_filled(pill, LIFT_RADIUS, theme::raise());
         }

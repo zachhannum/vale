@@ -716,11 +716,7 @@ fn paint_drop(
         None => {}
     }
     let ghost = Rect::from_min_size(pos - vec2(40.0, ROW / 2.0), vec2(220.0, ROW));
-    painter.rect_filled(
-        ghost,
-        theme::CARD_RADIUS,
-        theme::card(false).gamma_multiply(0.9),
-    );
+    painter.rect_filled(ghost, theme::CARD_RADIUS, theme::card().gamma_multiply(0.9));
     let icon_rect = Rect::from_center_size(
         pos2(ghost.left() + BODY_PAD + ICON / 2.0, ghost.center().y),
         vec2(ICON, ICON),
@@ -830,7 +826,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
                         size,
                     );
-                    let fill = theme::card(false).to_opaque();
+                    let fill = theme::card().to_opaque();
                     painter.rect_filled(label, theme::CONTROL_RADIUS, fill);
                     painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
                 }
@@ -847,7 +843,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
 /// `alone` has a glass capsule of its own.
 fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) {
     let ctx = painter.ctx();
-    match widgets::backdrop(ctx).filter(|_| widgets::is_glass(ctx)) {
+    match widgets::backdrop(ctx) {
         Some(format) => {
             if alone {
                 let capsule = Rect::from_center_size(center, vec2(GLASS_HANDLE.0, GLASS_HANDLE.1));
@@ -855,12 +851,12 @@ fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) 
                 painter.add(marker(Order::Middle, capsule));
                 painter.add(theme::shadow().as_shape(capsule, radius));
                 let pixels = ctx.pixels_per_point();
-                painter.add(card_shape(format, capsule, radius, pixels, true, None));
+                painter.add(card_shape(format, capsule, radius, pixels, None));
             }
         }
         None => {
             let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
-            painter.rect_filled(capsule, 6.0, theme::card(false).to_opaque());
+            painter.rect_filled(capsule, 6.0, theme::card().to_opaque());
         }
     }
     let pill = Rect::from_center_size(center, vec2(4.0, 48.0));

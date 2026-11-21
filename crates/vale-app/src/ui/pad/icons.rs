@@ -478,7 +478,7 @@ pub fn paint_pin(painter: &egui::Painter, rect: Rect, size: f32, color: Color32,
 /// strokes of an icon overlap, and a translucent color is darker where they
 /// overlap.
 fn opaque(color: Color32) -> Color32 {
-    let [r, g, b, _] = theme::card(true).to_srgba_unmultiplied();
+    let [r, g, b, _] = theme::glass_tone().to_opaque().to_srgba_unmultiplied();
     let keep = 1.0 - color.a() as f32 / 255.0;
     let mix = |c: u8, b: u8| (c as f32 + b as f32 * keep).round().min(255.0) as u8;
     Color32::from_rgb(mix(color.r(), r), mix(color.g(), g), mix(color.b(), b))

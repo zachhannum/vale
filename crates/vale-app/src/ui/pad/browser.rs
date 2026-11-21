@@ -202,7 +202,7 @@ fn card(
 ) {
     let open = widgets::tap_area(ui, controls, rect, &open_name(&entry.name), true);
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CARD_RADIUS, theme::card(false).to_opaque());
+    painter.rect_filled(rect, theme::CARD_RADIUS, theme::card().to_opaque());
     if open.is_pointer_button_down_on() {
         painter.rect_filled(rect, theme::CARD_RADIUS, theme::raise());
     }
@@ -324,7 +324,7 @@ fn card_above(
     let radius = theme::CARD_RADIUS.into();
     let contents = |ui: &mut egui::Ui| {
         ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+            .rect_filled(rect, radius, theme::card().to_opaque());
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         add_contents(ui);
     };

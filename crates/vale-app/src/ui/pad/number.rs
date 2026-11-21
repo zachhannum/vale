@@ -950,7 +950,7 @@ impl<'a> Number<'a> {
         let top = anchor.center().y - size.y / 2.0;
         let rect = place(ctx, anchor, ui.clip_rect(), size, top, None);
         let backdrop = widgets::backdrop(ctx);
-        let glass = backdrop.is_some() && widgets::glass(ctx);
+        let glass = backdrop.is_some();
         let corner = egui::CornerRadius::from(theme::CONTROL_RADIUS);
         let corner = match glass {
             true => widgets::glass_radius(rect, corner),
@@ -966,11 +966,10 @@ impl<'a> Number<'a> {
                 rect,
                 corner,
                 ctx.pixels_per_point(),
-                glass,
                 None,
             ));
         }
-        painter.rect_filled(rect, corner, widgets::card_fill(ctx, backdrop.is_some()));
+        painter.rect_filled(rect, corner, widgets::card_fill(backdrop.is_some()));
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;

@@ -1,9 +1,8 @@
-//! The blurred copy of the canvas behind the cards of the iPad layout.
+//! The glass of the cards of the iPad layout.
 //!
 //! A card puts a marker in the paint jobs. At the marker, egui ends its
-//! render pass, and the hook shrinks the frame drawn so far to the small
-//! texture and blurs it. Then the cards draw the small texture. For a card
-//! of glass, the hook also makes a copy at the full size with a light blur.
+//! render pass, and the hook copies the frame drawn so far and gives the
+//! copy a light blur. Then each card draws the copy through its glass.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,19 +12,8 @@ use eframe::egui_wgpu::{self, wgpu};
 
 use super::compile::{Compiled, render_pipeline};
 
-/// The standard deviation of the blur, in points.
-pub const BLUR_POINTS: f32 = 20.0;
-/// The blurred copy has one pixel for this many pixels of the canvas, on
-/// each axis.
-pub const REDUCTION: u32 = 4;
-/// A card shows the blurred canvas at this part of its brightness. With the
-/// tint of the card, grey text stays easy to read over a white canvas.
-pub const GAIN: f32 = 0.7;
-/// The standard deviation of the light blur of a card of glass, in points.
-pub const GLASS_BLUR_POINTS: f32 = 3.0;
-/// The light blur has one pixel for this many pixels of the canvas, on
-/// each axis.
-const GLASS_REDUCTION: u32 = 1;
+/// The standard deviation of the blur of the copy, in points.
+pub const BLUR_POINTS: f32 = 3.0;
 /// The largest corner radius of a card of glass, in points. The curve of
 /// the rim of a card has the radius of its corners, so that the rim has no
 /// seams.
@@ -38,9 +26,8 @@ const MAX_CARDS: usize = 64;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
     canvas: [f32; 4],
-    small: [f32; 4],
+    copy: [f32; 4],
     blur: [f32; 4],
-    clear: [f32; 4],
 }
 
 /// The place of one card. The layout matches `backdrop.wgsl`.
@@ -49,34 +36,27 @@ struct Globals {
 struct Instance {
     rect: [f32; 4],
     radii: [f32; 4],
-    /// 1 for a card of glass, the pixels per point, and the radius of the
-    /// curve of the rim in pixels.
+    /// The pixels per point, and the radius of the curve of the rim in
+    /// pixels.
     glass: [f32; 4],
-    /// The capsule that joins a card of glass: its center, then half of
-    /// its size, in pixels. A width of 0: no capsule.
+    /// The capsule that joins the card: its center, then half of its size,
+    /// in pixels. A width of 0: no capsule.
     blob: [f32; 4],
 }
 
 /// The textures of one screen size.
 struct Targets {
     size: [u32; 2],
-    small_size: [u32; 2],
-    clear_size: [u32; 2],
-    /// The reduced frame, and the target of the first blur pass.
-    small: [wgpu::TextureView; 2],
-    /// The copy with the light blur, and the target of its first pass.
-    clear: [wgpu::TextureView; 2],
-    /// The two blur passes. The first reads `small[0]`.
+    /// The copy of the frame, and the target of the first blur pass.
+    copy: [wgpu::TextureView; 2],
+    /// The two blur passes. The first reads `copy[0]`.
     passes: [wgpu::BindGroup; 2],
-    /// The two passes of the light blur. The first reads `clear[0]`.
-    clear_passes: [wgpu::BindGroup; 2],
-    /// Reads the blurred copy and the copy with the light blur.
+    /// Reads the blurred copy.
     from_blur: wgpu::BindGroup,
 }
 
 /// The pipelines of the backdrop.
 struct Pipelines {
-    down: wgpu::RenderPipeline,
     copy: wgpu::RenderPipeline,
     blur: wgpu::RenderPipeline,
     card: wgpu::RenderPipeline,
@@ -86,10 +66,8 @@ struct Pipelines {
 struct State {
     pixels_per_point: f32,
     targets: Option<Targets>,
-    /// True when the small texture holds a blur of this frame.
+    /// True when the copy holds a blur of this frame.
     captured: bool,
-    /// A card of this frame is glass.
-    glass: bool,
 }
 
 /// The part of the backdrop that the hook and the cards share.
@@ -98,12 +76,11 @@ struct Shared {
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
     /// A worker compiles them when a card first needs them. Until then,
-    /// the cards show no blur.
+    /// the cards show no glass.
     pipelines: Compiled<Pipelines>,
-    /// The values for the cards and the shrink, for each of the two blur
-    /// passes, for the shrink to half the size, and for each of the two
-    /// passes of the light blur.
-    globals: [wgpu::Buffer; 6],
+    /// The values for the cards and the copy, and for each of the two blur
+    /// passes.
+    globals: [wgpu::Buffer; 3],
     state: Mutex<State>,
 }
 
@@ -118,7 +95,7 @@ pub struct Backdrop {
 struct Hook(Arc<Shared>);
 
 /// The marker that a card of this order puts before its shapes. The cards
-/// of a higher order show the cards of a lower order in their blur.
+/// of a higher order show the cards of a lower order through their glass.
 pub fn marker(order: egui::Order, rect: egui::Rect) -> egui::Shape {
     let level = match order {
         egui::Order::Background => 0,
@@ -188,7 +165,6 @@ impl Pipelines {
             };
         let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         Pipelines {
-            down: pipeline("backdrop down", "vs_full", "fs_down", None, &[]),
             copy: pipeline("backdrop copy", "vs_full", "fs_copy", None, &[]),
             blur: pipeline("backdrop blur", "vs_full", "fs_blur", None, &[]),
             card: pipeline(
@@ -233,17 +209,9 @@ impl Backdrop {
                     2,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
-                entry(
-                    3,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
             ],
         });
-        let globals = [0; 6].map(|_| {
+        let globals = [0; 3].map(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("backdrop globals"),
                 size: size_of::<Globals>() as u64,
@@ -269,7 +237,6 @@ impl Backdrop {
                 pixels_per_point: 1.0,
                 targets: None,
                 captured: false,
-                glass: false,
             }),
         };
         Backdrop {
@@ -295,13 +262,11 @@ impl Shared {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `clear` is a texture that the pass does not draw into.
     fn bind(
         &self,
         device: &wgpu::Device,
         globals: usize,
         view: &wgpu::TextureView,
-        clear: &wgpu::TextureView,
     ) -> wgpu::BindGroup {
         device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("backdrop"),
@@ -319,17 +284,11 @@ impl Shared {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(clear),
-                },
             ],
         })
     }
 
     fn targets(&self, device: &wgpu::Device, size: [u32; 2]) -> Targets {
-        let small_size = size.map(|s| s.div_ceil(REDUCTION));
-        let clear_size = size.map(|s| s.div_ceil(GLASS_REDUCTION));
         let view = |[width, height]: [u32; 2]| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("backdrop blur"),
@@ -348,23 +307,15 @@ impl Shared {
             });
             texture.create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let small = [view(small_size), view(small_size)];
-        let clear = [view(clear_size), view(clear_size)];
+        let copy = [view(size), view(size)];
         Targets {
             size,
-            small_size,
-            clear_size,
             passes: [
-                self.bind(device, 1, &small[0], &clear[0]),
-                self.bind(device, 2, &small[1], &clear[0]),
+                self.bind(device, 1, &copy[0]),
+                self.bind(device, 2, &copy[1]),
             ],
-            clear_passes: [
-                self.bind(device, 4, &clear[0], &small[1]),
-                self.bind(device, 5, &clear[1], &small[1]),
-            ],
-            from_blur: self.bind(device, 0, &small[0], &clear[0]),
-            small,
-            clear,
+            from_blur: self.bind(device, 0, &copy[0]),
+            copy,
         }
     }
 
@@ -387,25 +338,17 @@ impl Shared {
         if !same {
             state.targets = Some(self.targets(device, size));
         }
-        let targets = state.targets.as_ref().expect("set above");
-        let small = targets.small_size.map(|s| s as f32);
-        let clear = targets.clear_size.map(|s| s as f32);
-        let sigma = BLUR_POINTS * state.pixels_per_point / REDUCTION as f32;
-        let light = GLASS_BLUR_POINTS * state.pixels_per_point / GLASS_REDUCTION as f32;
-        let passes = [
-            (small, [0.0, 0.0], sigma, REDUCTION),
-            (small, [1.0, 0.0], sigma, REDUCTION),
-            (small, [0.0, 1.0], sigma, REDUCTION),
-            (clear, [0.0, 0.0], light, GLASS_REDUCTION),
-            (clear, [1.0, 0.0], light, GLASS_REDUCTION),
-            (clear, [0.0, 1.0], light, GLASS_REDUCTION),
-        ];
-        for (buffer, (target, direction, sigma, reduction)) in self.globals.iter().zip(passes) {
+        let sigma = BLUR_POINTS * state.pixels_per_point;
+        let [width, height] = size.map(|s| s as f32);
+        for (buffer, direction) in self
+            .globals
+            .iter()
+            .zip([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+        {
             let globals = Globals {
-                canvas: [0.0, 0.0, size[0] as f32, size[1] as f32],
-                small: [target[0], target[1], direction[0], direction[1]],
-                blur: [sigma, reduction as f32, GAIN, 0.0],
-                clear: [clear[0], clear[1], GLASS_REDUCTION as f32, 0.0],
+                canvas: [0.0, 0.0, width, height],
+                copy: [width, height, direction[0], direction[1]],
+                blur: [sigma, 0.0, 0.0, 0.0],
             };
             queue.write_buffer(buffer, 0, bytemuck::bytes_of(&globals));
         }
@@ -429,20 +372,12 @@ impl egui_wgpu::BackdropHook for Hook {
         let pixels_per_point = state.pixels_per_point;
         shared.resize(device, queue, &mut state, size, pixels_per_point);
         let targets = state.targets.as_ref().expect("set above");
-        let from_frame = shared.bind(device, 0, frame, &targets.clear[0]);
-        let mut steps = vec![
-            (&pipelines.down, &from_frame, &targets.small[0]),
-            (&pipelines.blur, &targets.passes[0], &targets.small[1]),
-            (&pipelines.blur, &targets.passes[1], &targets.small[0]),
+        let from_frame = shared.bind(device, 0, frame);
+        let steps = [
+            (&pipelines.copy, &from_frame, &targets.copy[0]),
+            (&pipelines.blur, &targets.passes[0], &targets.copy[1]),
+            (&pipelines.blur, &targets.passes[1], &targets.copy[0]),
         ];
-        let clear_from_frame = shared.bind(device, 3, frame, &targets.small[1]);
-        if state.glass {
-            steps.extend([
-                (&pipelines.copy, &clear_from_frame, &targets.clear[0]),
-                (&pipelines.blur, &targets.clear_passes[0], &targets.clear[1]),
-                (&pipelines.blur, &targets.clear_passes[1], &targets.clear[0]),
-            ]);
-        }
         for (pipeline, bind_group, view) in steps {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("backdrop"),
@@ -465,8 +400,7 @@ impl egui_wgpu::BackdropHook for Hook {
     }
 }
 
-/// The blurred canvas behind one card. egui calls it inside its own render
-/// pass.
+/// The glass of one card. egui calls it inside its own render pass.
 pub struct CardCallback {
     format: wgpu::TextureFormat,
     place: Instance,
@@ -474,19 +408,17 @@ pub struct CardCallback {
     index: AtomicU32,
 }
 
-/// The distance in points over which a card of glass and its capsule join.
+/// The distance in points over which a card and its capsule join.
 /// It is `JOIN` in `backdrop.wgsl`.
 pub const JOIN: f32 = 10.0;
 
-/// The shape that draws the blurred canvas in the rounded rectangle of a card.
-/// `glass`: the rim of the card bends the canvas below it. `blob`: a capsule
-/// that joins a card of glass with a smooth outline.
+/// The shape that draws the glass in the rounded rectangle of a card.
+/// `blob`: a capsule that joins the card with a smooth outline.
 pub fn card_shape(
     format: wgpu::TextureFormat,
     rect: egui::Rect,
     radius: egui::CornerRadius,
     pixels_per_point: f32,
-    glass: bool,
     blob: Option<egui::Rect>,
 ) -> egui::PaintCallback {
     let center = rect.center() * pixels_per_point;
@@ -498,12 +430,12 @@ pub fn card_shape(
             rect: [center.x, center.y, half.x, half.y],
             radii: radii.map(|r| f32::from(r) * pixels_per_point),
             glass: [
-                f32::from(u8::from(glass)),
                 pixels_per_point,
                 f32::from(radii.into_iter().max().unwrap_or(0)) * pixels_per_point,
                 0.0,
+                0.0,
             ],
-            blob: blob.filter(|_| glass).map_or([0.0; 4], |b| {
+            blob: blob.map_or([0.0; 4], |b| {
                 let center = b.center() * pixels_per_point;
                 let half = b.size() * 0.5 * pixels_per_point;
                 [center.x, center.y, half.x, half.y]
@@ -511,7 +443,7 @@ pub fn card_shape(
         },
         index: AtomicU32::new(u32::MAX),
     };
-    egui_wgpu::Callback::new_paint_callback(paint_rect(rect, blob.filter(|_| glass)), callback)
+    egui_wgpu::Callback::new_paint_callback(paint_rect(rect, blob), callback)
 }
 
 /// The rect that the shape of a card and its capsule covers.
@@ -548,10 +480,6 @@ impl egui_wgpu::CallbackTrait for CardCallback {
             );
             shared.resize(device, queue, &mut state, size, pixels_per_point);
             state.captured = false;
-            state.glass = false;
-        }
-        if self.place.glass[0] > 0.0 {
-            backdrop.shared.state().glass = true;
         }
         let index = backdrop.cards.len();
         if index < MAX_CARDS {
@@ -579,7 +507,7 @@ impl egui_wgpu::CallbackTrait for CardCallback {
         Vec::new()
     }
 
-    /// egui calls it after the hook blurred the frame below the card.
+    /// egui calls it after the hook copied the frame below the card.
     fn paint(
         &self,
         _info: egui::PaintCallbackInfo,

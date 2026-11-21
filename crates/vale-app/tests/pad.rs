@@ -3678,12 +3678,12 @@ fn settle(h: &mut Pad) {
 /// A harness with the Brush and Layers panels open, in greyscale, and with a
 /// globe that covers the screen. `level` gives the level at a longitude in
 /// degrees.
-fn blur_pad(level: impl Fn(f64) -> u16) -> Pad {
-    blur_pad_on(BOARDS[0], level)
+fn glass_pad(level: impl Fn(f64) -> u16) -> Pad {
+    glass_pad_on(BOARDS[0], level)
 }
 
-/// `blur_pad` on a screen of `size`.
-fn blur_pad_on(size: (f32, f32), level: impl Fn(f64) -> u16) -> Pad {
+/// `glass_pad` on a screen of `size`.
+fn glass_pad_on(size: (f32, f32), level: impl Fn(f64) -> u16) -> Pad {
     let mut h = gpu_pad(size);
     let state = h.state_mut();
     // The vector layers of the sample world are hidden.
@@ -3729,34 +3729,31 @@ fn difference(a: &[i32], b: &[i32]) -> i32 {
 
 #[test]
 #[ignore = "gpu"]
-fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
+fn each_card_shows_the_canvas_through_its_glass_and_follows_the_globe() {
     let _gpu = one_gpu_test();
     // Light and dark stripes along the meridians, each 6 degrees wide, so
     // that the edge of a stripe is below each card.
-    let mut h = blur_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
+    let mut h = glass_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
         _ => 0,
     });
     let cards = cards(&h);
     assert!(cards.len() >= 6);
-    let blurred = h.render().unwrap();
+    let glass = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
-    blurred.save("../../target/app/test-pad-blur.png").unwrap();
-    h.state_mut().globe.blur = false;
+    glass.save("../../target/app/test-pad-glass.png").unwrap();
+    h.state_mut().globe.glass = false;
     h.run_steps(2);
     let plain = h.render().unwrap();
-    h.state_mut().globe.blur = true;
+    h.state_mut().globe.glass = true;
     h.state_mut().globe.view = GlobeView::centered(3.0, 0.0);
     h.state_mut().globe.view.zoom = 3.0;
     h.run_steps(2);
     let turned = h.render().unwrap();
 
     for card in cards {
-        let row = card_row(&blurred, card);
+        let row = card_row(&glass, card);
         let width = row.len() as i32;
-        // The edge of a stripe is soft below a card.
-        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-        assert!(step <= 4, "{card:?}: a step of {step}");
         assert!(
             difference(&row, &card_row(&plain, card)) > width * 2,
             "{card:?}"
@@ -3769,10 +3766,10 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
     }
 }
 
-/// The mean red value of the bottom row of each card, over a canvas of
-/// `level`.
+/// The red values of the bottom row of each card, over a canvas of
+/// `level`. `glass`: the cards are glass, else they have a plain fill.
 fn glass_rows(glass: bool, level: impl Fn(f64) -> u16) -> (Pad, Vec<Vec<i32>>) {
-    let mut h = blur_pad(level);
+    let mut h = glass_pad(level);
     h.state_mut().globe.glass = glass;
     h.run_steps(2);
     let image = h.render().unwrap();
@@ -3788,9 +3785,7 @@ fn mean(row: &[i32]) -> i32 {
 #[ignore = "gpu"]
 fn on_glass_the_handle_of_the_dock_joins_the_dock_with_a_smooth_outline() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| u16::MAX);
-    h.state_mut().globe.glass = true;
-    h.run_steps(2);
+    let mut h = glass_pad(|_| u16::MAX);
     let image = h.render().unwrap();
     std::fs::create_dir_all("../../target/app").unwrap();
     image
@@ -3813,59 +3808,51 @@ fn on_glass_the_handle_of_the_dock_joins_the_dock_with_a_smooth_outline() {
 #[ignore = "gpu"]
 fn a_glass_card_maps_the_canvas_into_a_band_of_grey() {
     let _gpu = one_gpu_test();
-    let (_, frosted_black) = glass_rows(false, |_| 0);
+    let (_, plain_black) = glass_rows(false, |_| 0);
     let (_, glass_black) = glass_rows(true, |_| 0);
     let (_, glass_white) = glass_rows(true, |_| u16::MAX);
     for i in 0..glass_black.len() {
-        let (frosted_black, black, white) = (
-            mean(&frosted_black[i]),
+        let (plain_black, black, white) = (
+            mean(&plain_black[i]),
             mean(&glass_black[i]),
             mean(&glass_white[i]),
         );
         // A dark canvas gets lighter, as the glass has no dark fill. A
         // white canvas stays a mid grey.
-        assert!(black > frosted_black + 10, "{black} over {frosted_black}");
+        assert!(black > plain_black + 10, "{black} over {plain_black}");
         assert!(white > black + 40 && white < 140, "{white} over {black}");
     }
 }
 
 #[test]
 #[ignore = "gpu"]
-fn a_glass_card_shows_the_canvas_sharper_than_the_blur() {
+fn a_glass_card_shows_the_canvas_with_a_light_blur() {
     let _gpu = one_gpu_test();
     let stripes = |lon: f64| match (lon / 6.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
         _ => 0,
     };
-    // The largest step between two pixels, as a part of the range of the
-    // row.
-    let sharpness = |row: &Vec<i32>| {
-        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-        let range = row.iter().max().unwrap() - row.iter().min().unwrap();
-        step as f32 / (range + 1) as f32
-    };
-    let (_, frosted) = glass_rows(false, stripes);
-    let (mut h, glass) = glass_rows(true, stripes);
-    std::fs::create_dir_all("../../target/app").unwrap();
-    h.render()
-        .unwrap()
-        .save("../../target/app/test-pad-glass.png")
-        .unwrap();
-    let sharper = frosted
+    let (_, glass) = glass_rows(true, stripes);
+    // The stripes show below a card, and the largest step between two
+    // pixels is a large part of the range of the row, as the blur is light.
+    let sharp = glass
         .iter()
-        .zip(&glass)
-        .filter(|(frosted, glass)| sharpness(glass) > 2.0 * sharpness(frosted))
+        .filter(|row| {
+            let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+            let range = row.iter().max().unwrap() - row.iter().min().unwrap();
+            range > 30 && step as f32 > 0.08 * range as f32
+        })
         .count();
     // A card can be too small for an edge of a stripe below its rim.
-    assert!(sharper * 2 > glass.len(), "{sharper} of {}", glass.len());
+    assert!(sharp * 2 > glass.len(), "{sharp} of {}", glass.len());
 }
 
 #[test]
 #[ignore = "gpu"]
-fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
+fn the_glass_of_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     use vale_store::{Feature, Geometry};
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| 0);
+    let mut h = glass_pad(|_| 0);
     // A red polygon covers the side of the globe that faces the view.
     let state = h.state_mut();
     let polygon = state.doc.add_layer(GeometryKind::Polygon);
@@ -3890,7 +3877,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     assert!(difference(&red, &plain) > width * 20);
     assert!(red.iter().zip(&plain).all(|(r, p)| r >= p));
 
-    // The flat view has the polygon in the blur too. A close view puts
+    // The flat view has the polygon in the glass too. A close view puts
     // the polygon below the cards.
     h.state_mut().globe.world_view = WorldView::Flat;
     h.state_mut().globe.flat.zoom = 3.0;
@@ -3899,7 +3886,7 @@ fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     h.state_mut().globe.flat.zoom = 1.0;
     h.state_mut().globe.world_view = WorldView::Globe;
 
-    // A raster mask cuts the polygon in the blur too. The whole world is
+    // A raster mask cuts the polygon in the glass too. The whole world is
     // below sea level, so a mask of the sea keeps the polygon, and a mask
     // of the land leaves nothing.
     let raster = (h.state().doc.project.layers().iter())
@@ -3974,14 +3961,24 @@ fn contrast(a: [u8; 3], b: [u8; 3]) -> f64 {
 #[ignore = "gpu"]
 fn text_on_a_card_is_easy_to_read_over_a_white_canvas() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|_| u16::MAX);
+    let mut h = glass_pad(|_| u16::MAX);
     let image = h.render().unwrap();
     let c = h.state().globe.rect.center();
     let canvas = image.get_pixel(c.x as u32, c.y as u32).0;
     assert!(canvas[..3].iter().all(|v| *v > 240), "{canvas:?}");
     for card in cards(&h) {
-        let pixel = image.get_pixel(card.left() as u32 + 16, card.bottom() as u32 - 3);
-        let fill = [pixel.0[0], pixel.0[1], pixel.0[2]];
+        // The glass behind the text: the median of the row through the
+        // middle of the card, where the text is. Text is a small part of
+        // the row.
+        let y = card.center().y as u32;
+        let mut row: Vec<[u8; 3]> = (card.left() as u32 + 16..card.right() as u32 - 16)
+            .map(|x| {
+                let p = image.get_pixel(x, y).0;
+                [p[0], p[1], p[2]]
+            })
+            .collect();
+        row.sort_by_key(|p| p[0]);
+        let fill = row[row.len() / 2];
         // The canvas shows through the card.
         assert!(fill[0] > 55, "{card:?}: {fill:?}");
         for text in [theme::TEXT, theme::MUTE, theme::WARN] {

@@ -45,7 +45,8 @@ pub fn fade(color: Color32, enabled: bool) -> Color32 {
 }
 
 /// A floating card. A touch on the card does not go to the canvas below it.
-/// `backdrop`: the card shows the blurred canvas, in a texture of this format.
+/// `backdrop`: the card is glass, with a copy of the canvas in a texture of
+/// this format.
 pub fn card(
     ctx: &egui::Context,
     backdrop: Option<wgpu::TextureFormat>,
@@ -247,7 +248,7 @@ fn any_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
-    let glass = backdrop.is_some() && glass(ctx);
+    let glass = backdrop.is_some();
     let shape = |part: Rect| match glass {
         true => glass_radius(part, radius),
         false => radius,
@@ -274,7 +275,7 @@ fn any_card(
             if let Some(grow) = grow {
                 ui.multiply_opacity(grow.opacity);
             }
-            // The blur shows what the frame drew below this order, without
+            // The glass shows what the frame drew below this order, without
             // the shadow.
             if backdrop.is_some() {
                 ui.painter().add(marker(order, rect));
@@ -295,17 +296,17 @@ fn any_card(
             }
             for &part in &parts {
                 if let Some(format) = backdrop {
-                    // The blur draws at the place of the card after the
+                    // The glass draws at the place of the card after the
                     // transform of its layer. egui moves the rect of the
                     // callback with the layer.
                     let place = grow.map_or(part, |g| g.transform * part);
                     let pixels = ctx.pixels_per_point();
-                    let mut callback = card_shape(format, place, shape(part), pixels, glass, blob);
-                    callback.rect = paint_rect(part, blob.filter(|_| glass));
+                    let mut callback = card_shape(format, place, shape(part), pixels, blob);
+                    callback.rect = paint_rect(part, blob);
                     ui.painter().add(callback);
                 }
                 ui.painter()
-                    .rect_filled(part, shape(part), card_fill(ctx, backdrop.is_some()));
+                    .rect_filled(part, shape(part), card_fill(backdrop.is_some()));
             }
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
@@ -461,7 +462,7 @@ pub fn menu_track_radius(ctx: &egui::Context) -> (f32, f32) {
 
 /// True if the cards are glass.
 pub fn is_glass(ctx: &egui::Context) -> bool {
-    backdrop(ctx).is_some() && glass(ctx)
+    backdrop(ctx).is_some()
 }
 
 /// The corner radius of the highlight of a tab at `rect`. On glass cards
@@ -2102,21 +2103,10 @@ fn backdrop_id() -> egui::Id {
     egui::Id::new("pad-backdrop")
 }
 
-/// Keeps the texture format of the blurred canvas for this frame, for the
-/// cards that controls open, or `None` with no blur.
+/// Keeps the texture format of the glass for this frame, for the
+/// cards that controls open, or `None` with no glass.
 pub fn set_backdrop(ctx: &egui::Context, format: Option<wgpu::TextureFormat>) {
     ctx.data_mut(|data| data.insert_temp(backdrop_id(), format));
-}
-
-/// Keeps for this frame whether the cards with the blur are glass.
-pub fn set_glass(ctx: &egui::Context, glass: bool) {
-    ctx.data_mut(|data| data.insert_temp(backdrop_id().with("glass"), glass));
-}
-
-/// True if the cards with the blur are glass.
-pub fn glass(ctx: &egui::Context) -> bool {
-    ctx.data(|data| data.get_temp(backdrop_id().with("glass")))
-        .unwrap_or(false)
 }
 
 /// The corners of a glass card in `rect`. Each round corner of `radius`
@@ -2136,15 +2126,15 @@ pub fn glass_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
     }
 }
 
-/// The fill of a card. `backdrop`: the card shows the blurred canvas.
-pub fn card_fill(ctx: &egui::Context, backdrop: bool) -> Color32 {
-    match backdrop && glass(ctx) {
+/// The fill of a card. `backdrop`: the card is glass.
+pub fn card_fill(backdrop: bool) -> Color32 {
+    match backdrop {
         true => theme::glass(),
-        false => theme::card(backdrop),
+        false => theme::card(),
     }
 }
 
-/// The texture format of the blurred canvas, as `set_backdrop` keeps it.
+/// The texture format of the glass, as `set_backdrop` keeps it.
 pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
     ctx.data(|data| data.get_temp(backdrop_id())).flatten()
 }
@@ -3364,10 +3354,10 @@ mod tests {
         let ctx = egui::Context::default();
         let cell = Rect::from_min_size(Pos2::ZERO, vec2(40.0, 40.0));
         let tab = Rect::from_min_size(Pos2::ZERO, vec2(140.0, 40.0));
-        set_backdrop(&ctx, Some(wgpu::TextureFormat::Rgba8Unorm));
+        set_backdrop(&ctx, None);
         assert_eq!(control_radius(&ctx, cell), theme::CONTROL_RADIUS);
         assert_eq!(menu_inset(&ctx), vec2(BODY_PAD, 10.0));
-        set_glass(&ctx, true);
+        set_backdrop(&ctx, Some(wgpu::TextureFormat::Rgba8Unorm));
         assert_eq!(control_radius(&ctx, cell), 20.0);
         assert_eq!(control_radius(&ctx, tab), theme::CONTROL_RADIUS);
         assert_eq!(menu_inset(&ctx), vec2(MENU_INSET, MENU_INSET));

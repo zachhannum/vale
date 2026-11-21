@@ -8,9 +8,12 @@ pub const CANVAS: Color32 = Color32::from_rgb(15, 17, 19);
 /// The globe below the raster layers of the world.
 pub const GROUND: Color32 = Color32::from_rgb(64, 70, 79);
 pub const TEXT: Color32 = Color32::from_rgb(231, 233, 236);
-pub const MUTE: Color32 = Color32::from_rgb(174, 181, 190);
-/// The color of a text that warns.
-pub const WARN: Color32 = Color32::from_rgb(242, 184, 92);
+/// The color of a secondary text and of an icon that is not active. Over
+/// the glass of a white canvas, it has a contrast of 4.5 to 1.
+pub const MUTE: Color32 = Color32::from_rgb(216, 220, 226);
+/// The color of a text that warns. Over the glass of a white canvas, it has
+/// a contrast of 4.5 to 1.
+pub const WARN: Color32 = Color32::from_rgb(250, 216, 152);
 pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 pub const CARD_RADIUS: f32 = 14.0;
 pub const SHEET_RADIUS: f32 = 18.0;
@@ -21,11 +24,15 @@ pub const CONTROL_RADIUS: f32 = 10.0;
 /// The opacity of a control that does nothing yet.
 pub const OFF: f32 = 0.35;
 
-/// The fill of a card. `blur`: the card shows the blurred canvas below the
-/// fill. A card with no blur is less clear.
-pub fn card(blur: bool) -> Color32 {
-    let alpha = if blur { 184 } else { 228 };
-    Color32::from_rgba_unmultiplied(26, 29, 33, alpha)
+/// The fill of a card with no glass.
+pub fn card() -> Color32 {
+    Color32::from_rgba_unmultiplied(26, 29, 33, 228)
+}
+
+/// A color near the look of a glass card, for a shape that joins a card,
+/// such as the point of a card.
+pub fn glass_tone() -> Color32 {
+    Color32::from_rgba_unmultiplied(58, 60, 64, 236)
 }
 
 /// The fill of a card of glass. The glass dims the canvas itself, so the
@@ -37,7 +44,7 @@ pub fn glass() -> Color32 {
 /// The fill of a menu that opens over a card. It is opaque and lighter
 /// than the card.
 pub fn menu() -> Color32 {
-    card(false).to_opaque().blend(raise())
+    card().to_opaque().blend(raise())
 }
 
 /// The fill of a selected control.

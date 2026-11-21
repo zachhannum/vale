@@ -312,7 +312,7 @@ pub fn paint_exits(ctx: &egui::Context) {
         .unwrap_or_default();
     let mut pictures: Vec<Picture> = ctx.data(|d| d.get_temp(pictures_id())).unwrap_or_default();
     for k in kept {
-        // A blur reads the screen of its own frame, so a picture leaves it
+        // The glass reads the screen of its own frame, so a picture leaves it
         // out.
         let shapes = ctx.graphics(|g| {
             g.get(k.layer).map_or_else(Vec::new, |list| {

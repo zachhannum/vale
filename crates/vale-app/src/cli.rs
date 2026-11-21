@@ -72,9 +72,6 @@ pub struct Args {
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
-    /// With --layout pad: the cards are glass.
-    #[arg(long)]
-    pub glass: bool,
     /// Choose the Measure tool, with a path through these places. A last
     /// place that is the first place closes the path.
     #[arg(long, value_name = "LON,LAT LON,LAT ...", allow_hyphen_values = true)]

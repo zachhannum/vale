@@ -405,7 +405,7 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
     chosen
 }
 
-/// A blur card for a menu, with rows from the top, that grows from `origin`.
+/// A glass card for a menu, with rows from the top, that grows from `origin`.
 /// The blur also shows the cards below the menu.
 fn menu_card(
     ctx: &egui::Context,

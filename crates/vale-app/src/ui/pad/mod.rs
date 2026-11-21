@@ -711,7 +711,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     state.pad.workspace = Workspace::Globe;
     widgets::set_backdrop(&ctx, state.globe.backdrop());
-    widgets::set_glass(&ctx, state.globe.glass);
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame. The dock floats over the canvas.
@@ -737,7 +736,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: state.pad.docks.world.width,
         camera: state.pad.camera,
         fold: state.pad.fold,
-        glass: state.globe.glass && state.globe.backdrop().is_some(),
+        glass: state.globe.backdrop().is_some(),
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -3563,7 +3562,7 @@ fn add_menu(
         |ui| {
             // A sheet below the menu does not show through it.
             if rects.sheet.is_some() {
-                let fill = theme::card(false).to_opaque();
+                let fill = theme::card().to_opaque();
                 ui.painter().rect_filled(rect, radius, fill);
             }
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
