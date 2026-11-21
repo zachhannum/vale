@@ -44,8 +44,15 @@ const UNSUITED: f64 = 4.0;
 /// unplaced label, so the horizontal label is the fallback where no curved label fits.
 const FALLBACK: f64 = 50.0;
 
-/// The fractions of the axis that a curved label spans, best first. Zero adds no spread.
-const FILLS: [f64; 4] = [0.85, 0.7, 0.55, 0.0];
+/// The part of the axis or of the width that a label with the widest spread fills.
+const FILL: f64 = 0.85;
+
+/// The spreads that a label tries, as fractions of the widest spread, widest first.
+const SPREAD_STEPS: [f64; 6] = [1.0, 0.8, 0.6, 0.4, 0.2, 0.0];
+
+/// The cost of a label with no spread in a class that spreads. A narrower spread costs a part
+/// of it, so the widest spread that fits wins.
+const NARROW: f64 = 6.0;
 
 /// The step between the positions of a curved label along the axis, as a fraction of its length.
 const SHIFT: f64 = 0.08;
@@ -313,14 +320,9 @@ fn curved(
     // The baseline is below the axis by half the cap height, so the text centers on the axis.
     let base = parallel(m, -shaped.cap_height / 2.0);
     let limit = pp.max_glyph_turn;
-    let mut spans: Vec<f64> = Vec::new();
-    for (fi, fill) in FILLS.iter().enumerate() {
-        let extra = spread(fill * len, shaped, pp.max_spread * size);
+    for (extra, narrow) in spreads(len, shaped, pp.max_spread * size, size) {
         let span = adv + extra * gaps as f64;
-        if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
-            continue;
-        }
-        spans.push(span);
+        let scale = turn_scale(shaped, extra);
         for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0] {
             let mid = 0.5 * len + k * SHIFT * len;
             if mid - span / 2.0 < 0.0 || mid + span / 2.0 > len {
@@ -331,14 +333,14 @@ fn curved(
                 continue;
             }
             let f = follow(&base, start, shaped, extra);
-            if f.max_turn > TURN_CAP * limit {
+            if f.max_turn / scale > TURN_CAP * limit {
                 continue;
             }
-            let turns = turn_cost(&f, limit);
+            let turns = turn_cost(&f, limit, scale);
             let Some(c) = grid.candidate(shaped, f.transforms, class.margin, PAD * size) else {
                 continue;
             };
-            let cost = base_cost + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
+            let cost = base_cost + narrow + 0.5 * k.abs() + turns;
             out.push(Candidate {
                 kind: CandidateKind::Polygon { curved: true },
                 cost: cost + c.cost,
@@ -406,14 +408,8 @@ fn horizontal(
             Some((_, _, w)) => *w,
             None => grid.row_width(i),
         } - 2.0 * PAD * size;
-        let mut spans: Vec<f64> = Vec::new();
-        for (fi, fill) in FILLS.iter().enumerate() {
-            let extra = spread(fill * width, shaped, pp.max_spread * size);
+        for (extra, narrow) in spreads(width, shaped, pp.max_spread * size, size) {
             let span = extra * gaps;
-            if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
-                continue;
-            }
-            spans.push(span);
             let transforms = if let Some((curve, at, _)) = &through {
                 // The ink centers on the site, as in horizontal text.
                 let base = parallel(curve, ink.center().y);
@@ -438,7 +434,7 @@ fn horizontal(
                     + zone_cost
                     + 3.0 * (1.0 - d / dmax).max(0.0)
                     + 0.1 * rank as f64
-                    + 0.5 * fi as f64,
+                    + narrow,
                 ..cand
             });
         }
@@ -535,14 +531,9 @@ fn along_parallels(
             (a.min(b), a.max(b))
         };
         let base = parallel(&curve, -shaped.cap_height / 2.0);
-        let mut spans: Vec<f64> = Vec::new();
-        for (fi, fill) in FILLS.iter().enumerate() {
-            let extra = spread(fill * len, shaped, pp.max_spread * size);
+        for (extra, narrow) in spreads(len, shaped, pp.max_spread * size, size) {
             let span = adv + extra * gaps as f64;
-            if spans.iter().any(|s| (s - span).abs() < 0.5 * size) {
-                continue;
-            }
-            spans.push(span);
+            let scale = turn_scale(shaped, extra);
             for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0] {
                 let mid = lo + 0.5 * len + k * SHIFT * len;
                 if mid - span / 2.0 < lo || mid + span / 2.0 > hi {
@@ -553,14 +544,14 @@ fn along_parallels(
                     continue;
                 }
                 let f = follow(&base, start, shaped, extra);
-                if f.max_turn > TURN_CAP * pp.max_glyph_turn {
+                if f.max_turn / scale > TURN_CAP * pp.max_glyph_turn {
                     continue;
                 }
-                let turns = turn_cost(&f, pp.max_glyph_turn);
+                let turns = turn_cost(&f, pp.max_glyph_turn, scale);
                 let Some(c) = grid.candidate(shaped, f.transforms, class.margin, PAD * size) else {
                     continue;
                 };
-                let cost = room_cost + 0.1 * rank as f64 + 0.5 * fi as f64 + 0.5 * k.abs() + turns;
+                let cost = room_cost + 0.1 * rank as f64 + narrow + 0.5 * k.abs() + turns;
                 out.push(Candidate {
                     kind: CandidateKind::Polygon { curved: true },
                     cost: cost + c.cost,
@@ -617,10 +608,11 @@ pub(crate) fn follow(base: &Measured, start: f64, shaped: &ShapedText, extra: f6
     }
 }
 
-/// The cost of the turns of `f`, with `limit` as the angle above which a turn costs more.
-fn turn_cost(f: &Follow, limit: f64) -> f64 {
-    let over = f.max_turn - limit;
-    let mut cost = 6.0 * f.turn_sum / PI;
+/// The cost of the turns of `f`, with `limit` as the angle above which a turn costs more. The
+/// turns of `f` are divided by `scale`, the result of [`turn_scale`].
+fn turn_cost(f: &Follow, limit: f64, scale: f64) -> f64 {
+    let over = f.max_turn / scale - limit;
+    let mut cost = 6.0 * f.turn_sum / scale / PI;
     if over > 0.0 {
         cost += OVER_TURN_COST + OVER_TURN_WEIGHT * over / limit.max(1e-9);
     }
@@ -644,6 +636,37 @@ pub(crate) fn glyph_boxes(
         bounds = Some(bounds.map_or(r, |u| u.union(r)));
     }
     (boxes, bounds.unwrap_or(Rect::ZERO))
+}
+
+/// The turn between two letters grows with the distance between them. The turns of text with
+/// `extra` space between its letters, divided by this, are the turns of the text with no spread
+/// on the same curve. Thus the curve limit holds for text with no spread.
+fn turn_scale(shaped: &ShapedText, extra: f64) -> f64 {
+    let n = shaped.glyph_count();
+    if n == 0 || shaped.advance <= 0.0 {
+        return 1.0;
+    }
+    let pitch = shaped.advance / n as f64;
+    (pitch + extra) / pitch
+}
+
+/// The extra spaces between two letters that a label in `len` tries, widest first, with the
+/// cost of each. The widest makes the text fill [`FILL`] of `len`, with at most `max`.
+fn spreads(len: f64, shaped: &ShapedText, max: f64, size: f64) -> Vec<(f64, f64)> {
+    let widest = spread(FILL * len, shaped, max);
+    let gaps = shaped.glyph_count().saturating_sub(1) as f64;
+    let mut out: Vec<(f64, f64)> = Vec::new();
+    for step in SPREAD_STEPS {
+        let extra = step * widest;
+        if out
+            .iter()
+            .any(|(e, _)| (e - extra).abs() * gaps < 0.5 * size)
+        {
+            continue;
+        }
+        out.push((extra, NARROW * (1.0 - step)));
+    }
+    out
 }
 
 /// The extra space between two letters that makes the text `len` long, at most `max`.
