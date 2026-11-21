@@ -1,7 +1,9 @@
-use vale_render::Point;
+use kurbo::BezPath;
+use vale_render::stroke::DOT;
 use vale_render::stroke::{
     Dab, TaperPiece, brush_dabs, dash, sampled, taper, taper_measured, taper_path, varying,
 };
+use vale_render::{Color, DisplayList, Item, Point, render_rgba};
 
 /// The distance from `p` to the segment `a`-`b`, and the distance from `a` to the foot.
 fn project(p: Point, a: Point, b: Point) -> (f64, f64) {
@@ -45,7 +47,7 @@ fn dashes_are_even_along_an_irregular_curve() {
     let split = 31;
     let parts = vec![line[..=split].to_vec(), line[split..].to_vec()];
     let total = length(&line);
-    let pieces = dash(&parts, 3.0, 2.0);
+    let pieces = dash(&parts, &[3.0, 2.0]);
     assert!(pieces.len() > 10);
 
     // Each piece as (start, end) on the whole line. A dash cut by the part boundary is
@@ -86,8 +88,84 @@ fn dashes_are_even_along_an_irregular_curve() {
 #[test]
 fn dash_with_bad_lengths_keeps_the_line() {
     let parts = vec![vec![Point::new(0.0, 0.0), Point::new(10.0, 0.0)]];
-    assert_eq!(dash(&parts, 0.0, 2.0), parts);
-    assert_eq!(dash(&parts, 3.0, -1.0), parts);
+    for bad in [
+        &[3.0][..],
+        &[3.0, 2.0, 1.0],
+        &[-1.0, 2.0],
+        &[3.0, 0.0],
+        &[f64::NAN, 2.0],
+        &[1.0; 18],
+    ] {
+        assert_eq!(dash(&parts, bad), parts, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_dash_dot_pattern_cuts_dashes_and_dots() {
+    let parts = vec![vec![Point::new(0.0, 5.0), Point::new(30.0, 5.0)]];
+    let pieces = dash(&parts, &[4.0, 2.0, 0.0, 2.0]);
+    let spans: Vec<(f64, f64)> = pieces
+        .iter()
+        .map(|p| {
+            assert!(p.iter().all(|q| q.y == 5.0), "a piece leaves the line");
+            (p[0].x, p[p.len() - 1].x)
+        })
+        .collect();
+    let want = [
+        (0.0, 4.0),
+        (6.0, 6.0),
+        (8.0, 12.0),
+        (14.0, 14.0),
+        (16.0, 20.0),
+        (22.0, 22.0),
+        (24.0, 28.0),
+        (30.0, 30.0),
+    ];
+    assert_eq!(spans.len(), want.len(), "{spans:?}");
+    for ((s, e), (ws, we)) in spans.iter().zip(want) {
+        if ws == we {
+            assert!((s - (ws - DOT / 2.0)).abs() < 1e-9 && (e - (we + DOT / 2.0)).abs() < 1e-9);
+        } else {
+            assert!((s - ws).abs() < 1e-9 && (e - we).abs() < 1e-9, "{s} {e}");
+        }
+    }
+}
+
+#[test]
+fn a_dot_follows_the_direction_of_the_line() {
+    let parts = vec![vec![Point::new(0.0, 0.0), Point::new(0.0, 10.0)]];
+    let pieces = dash(&parts, &[0.0, 3.0]);
+    assert_eq!(pieces.len(), 4);
+    for p in &pieces {
+        assert_eq!(p.len(), 2);
+        assert!((p[1] - p[0] - kurbo::Vec2::new(0.0, DOT)).hypot() < 1e-12);
+    }
+}
+
+#[test]
+fn a_round_dot_draws_a_disk() {
+    let mut list = DisplayList::new(40.0, 20.0);
+    let mut path = BezPath::new();
+    for piece in dash(
+        &[vec![Point::new(5.0, 10.0), Point::new(35.0, 10.0)]],
+        &[0.0, 10.0],
+    ) {
+        path.move_to(piece[0]);
+        path.line_to(piece[1]);
+    }
+    list.push(Item::Stroke {
+        path,
+        color: Color::rgb(0, 0, 255),
+        width: 6.0,
+        round: true,
+    });
+    let img = render_rgba(&list, 1.0).unwrap();
+    let alpha = |x: usize, y: usize| img.data[(y * img.width + x) * 4 + 3];
+    for x in [5, 15, 25] {
+        assert!(alpha(x, 10) > 200, "no dot at {x}");
+        assert!(alpha(x, 8) > 100, "the dot at {x} is not round");
+    }
+    assert_eq!(alpha(10, 10), 0, "a gap is drawn");
 }
 
 fn assert_tangent(c: Point, r: f64, on: Point, other: Point) {

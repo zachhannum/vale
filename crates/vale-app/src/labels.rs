@@ -391,7 +391,7 @@ pub fn leader_items(
     let parts = if (stop - from).hypot() <= 1e-9 {
         Vec::new()
     } else if style.dashed {
-        vale_render::stroke::dash(&[vec![from, stop]], style.dash, style.dash_gap)
+        vale_render::stroke::dash(&[vec![from, stop]], &[style.dash, style.dash_gap])
     } else {
         vec![vec![from, stop]]
     };

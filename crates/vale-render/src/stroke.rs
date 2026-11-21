@@ -8,47 +8,83 @@ use kurbo::{BezPath, Circle, Point, Shape, Vec2};
 /// The most dabs that one feature gets from `brush_dabs`.
 pub const MAX_DABS: usize = 20_000;
 
-/// Cuts the parts into dashes of length `dash` with gaps of length `gap`, along the arc length.
+/// The length of the piece that stands for a dot. A stroke with round caps draws it as a disk.
+pub const DOT: f64 = 0.01;
+
+/// The most lengths in a dash pattern.
+pub const MAX_PATTERN: usize = 16;
+
+/// Whether `pattern` is a valid dash pattern: an even count of lengths from 2 to
+/// `MAX_PATTERN`, with each dash finite and not negative, and each gap finite and positive.
+pub fn valid_pattern(pattern: &[f64]) -> bool {
+    pattern.len() >= 2
+        && pattern.len() <= MAX_PATTERN
+        && pattern.len().is_multiple_of(2)
+        && pattern.iter().enumerate().all(|(i, &l)| {
+            l.is_finite()
+                && if i.is_multiple_of(2) {
+                    l >= 0.0
+                } else {
+                    l > 0.0
+                }
+        })
+}
+
+/// Cuts the parts into dashes along the arc length. `pattern` alternates dash and gap
+/// lengths, and it starts with a dash.
 ///
 /// A dash includes the vertices that it crosses. The phase runs on across vertices and parts.
-/// If `dash` or `gap` is not a positive number, the parts come back unchanged.
-pub fn dash(parts: &[Vec<Point>], dash: f64, gap: f64) -> Vec<Vec<Point>> {
-    if !(dash > 0.0 && gap > 0.0 && dash.is_finite() && gap.is_finite()) {
+/// A dash of length 0 is a dot: a piece of length `DOT` along the line, centered on the place
+/// of the dot. If `pattern` is not valid, the parts come back unchanged.
+pub fn dash(parts: &[Vec<Point>], pattern: &[f64]) -> Vec<Vec<Point>> {
+    if !valid_pattern(pattern) {
         return parts.to_vec();
     }
     let mut out = Vec::new();
-    let mut on = true;
-    let mut left = dash;
+    let mut i: usize = 0;
+    let mut left = pattern[0];
     for part in parts {
         if part.len() < 2 {
             continue;
         }
-        let mut cur: Vec<Point> = if on { vec![part[0]] } else { Vec::new() };
+        let mut cur: Vec<Point> = if i.is_multiple_of(2) {
+            vec![part[0]]
+        } else {
+            Vec::new()
+        };
         for w in part.windows(2) {
             let (a, b) = (w[0], w[1]);
             let len = a.distance(b);
+            if len == 0.0 {
+                continue;
+            }
             let mut t = 0.0;
-            while len > 0.0 && len - t >= left {
+            while len - t >= left {
                 t += left;
                 let p = a.lerp(b, t / len);
-                if on {
-                    push_new(&mut cur, p);
-                    if cur.len() >= 2 {
-                        out.push(std::mem::take(&mut cur));
+                if i.is_multiple_of(2) {
+                    if pattern[i] == 0.0 {
+                        let d = (b - a) * (DOT / 2.0 / len);
+                        out.push(vec![p - d, p + d]);
+                    } else {
+                        push_new(&mut cur, p);
+                        if cur.len() >= 2 {
+                            out.push(std::mem::take(&mut cur));
+                        }
                     }
                     cur.clear();
                 } else {
                     cur = vec![p];
                 }
-                on = !on;
-                left = if on { dash } else { gap };
+                i = (i + 1) % pattern.len();
+                left = pattern[i];
             }
             left -= len - t;
-            if on {
+            if i.is_multiple_of(2) {
                 push_new(&mut cur, b);
             }
         }
-        if on && cur.len() >= 2 {
+        if i.is_multiple_of(2) && cur.len() >= 2 {
             out.push(cur);
         }
     }
