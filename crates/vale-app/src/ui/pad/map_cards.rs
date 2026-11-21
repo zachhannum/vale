@@ -238,7 +238,6 @@ fn layer_rows(
             on: !dim && selected == Some(l.id),
             select: false,
             lift: false,
-            enabled: !dim,
             trailing: if *dim { 0.0 } else { 2.0 * TOUCH },
             ..list::Row::new(l.id, l.name.clone())
         });
