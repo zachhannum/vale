@@ -711,6 +711,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
     state.pad.workspace = Workspace::Globe;
     widgets::set_backdrop(&ctx, state.globe.backdrop());
+    widgets::set_glass(&ctx, state.globe.glass);
     let screen = ctx.viewport_rect();
     // The globe paints after the panels, so a change in a panel shows in
     // the same frame. The dock floats over the canvas.

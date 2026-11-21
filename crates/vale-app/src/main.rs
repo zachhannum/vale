@@ -210,6 +210,7 @@ fn run() -> anyhow::Result<u8> {
                 state.text_size = args.text_size;
                 state.pad.camera = camera;
                 state.pad.fold = fold;
+                state.globe.glass = args.glass;
                 apply_import(&args, state, true)?;
                 // The flyout of the brush modes closes while no layer is
                 // painted, so it opens after the import.

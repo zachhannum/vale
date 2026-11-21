@@ -357,7 +357,7 @@ pub fn tooltip(
                     ]
                 }
             };
-            let fill = theme::card(backdrop.is_some());
+            let fill = widgets::card_fill(painter.ctx(), backdrop.is_some());
             painter.add(egui::Shape::convex_polygon(point, fill, egui::Stroke::NONE));
             let at = pos2(rect.left() + 14.0, rect.center().y);
             painter.text(

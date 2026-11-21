@@ -3771,6 +3771,58 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
 
 #[test]
 #[ignore = "gpu"]
+fn the_rim_of_a_glass_card_has_a_highlight() {
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|_| 0);
+    let frosted = h.render().unwrap();
+    h.state_mut().globe.glass = true;
+    h.run_steps(2);
+    let glass = h.render().unwrap();
+    std::fs::create_dir_all("../../target/app").unwrap();
+    glass.save("../../target/app/test-pad-glass.png").unwrap();
+    // The cards that stand alone. The top of a docked panel can be a
+    // divider inside a card.
+    let r = h.state().pad.rects.unwrap();
+    for card in [r.workspace, r.actions, r.tools] {
+        // The row of pixels just inside the top edge.
+        let y = card.top() as u32 + 1;
+        let (left, right) = (card.left() as u32 + 16, card.right() as u32 - 16);
+        let red = |image: &image::RgbaImage| -> i32 {
+            (left..right)
+                .map(|x| i32::from(image.get_pixel(x, y).0[0]))
+                .sum()
+        };
+        let width = (right - left) as i32;
+        assert!(red(&glass) > red(&frosted) + width * 20, "{card:?}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_rim_of_a_glass_card_shows_the_canvas_sharper_than_the_blur() {
+    let _gpu = one_gpu_test();
+    let mut h = blur_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
+        0.0 => u16::MAX,
+        _ => 0,
+    });
+    h.state_mut().globe.glass = true;
+    h.run_steps(2);
+    let glass = h.render().unwrap();
+    let cards = cards(&h);
+    let mut sharp = 0;
+    for &card in &cards {
+        let row = card_row(&glass, card);
+        let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
+        if step > 8 {
+            sharp += 1;
+        }
+    }
+    // A card can be too small for an edge of a stripe below its rim.
+    assert!(sharp * 2 > cards.len(), "{sharp} of {}", cards.len());
+}
+
+#[test]
+#[ignore = "gpu"]
 fn the_blur_behind_a_card_shows_the_visible_vector_layers_in_the_draw_order() {
     use vale_store::{Feature, Geometry};
     let _gpu = one_gpu_test();

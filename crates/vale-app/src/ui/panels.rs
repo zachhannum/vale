@@ -1322,6 +1322,10 @@ pub(super) fn debug_controls(ui: &mut egui::Ui, state: &mut AppState) {
     ui.label(globe.stats.gpu_line());
     ui.label(globe.stats.frame_time_line());
     ui.checkbox(&mut globe.blur, "Blur behind the cards");
+    ui.add_enabled(
+        globe.blur,
+        egui::Checkbox::new(&mut globe.glass, "Glass cards"),
+    );
     match globe.stats.last() {
         Some(stroke) => {
             ui.label(stroke.title());

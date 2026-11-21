@@ -25,6 +25,12 @@ pub fn card(blur: bool) -> Color32 {
     Color32::from_rgba_unmultiplied(26, 29, 33, alpha)
 }
 
+/// The fill of a card of glass. The glass dims the canvas itself, so the
+/// fill is lighter than the fill of `card`.
+pub fn glass() -> Color32 {
+    Color32::from_rgba_unmultiplied(26, 29, 33, 96)
+}
+
 /// The fill of a menu that opens over a card. It is opaque and lighter
 /// than the card.
 pub fn menu() -> Color32 {

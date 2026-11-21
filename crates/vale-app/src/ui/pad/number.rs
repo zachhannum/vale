@@ -957,9 +957,16 @@ impl<'a> Number<'a> {
         painter.add(theme::shadow().as_shape(rect, radius));
         if let Some(format) = backdrop {
             let corner = egui::CornerRadius::from(radius);
-            painter.add(card_shape(format, rect, corner, ctx.pixels_per_point()));
+            let glass = widgets::glass(ctx);
+            painter.add(card_shape(
+                format,
+                rect,
+                corner,
+                ctx.pixels_per_point(),
+                glass,
+            ));
         }
-        painter.rect_filled(rect, radius, theme::card(backdrop.is_some()));
+        painter.rect_filled(rect, radius, widgets::card_fill(ctx, backdrop.is_some()));
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;

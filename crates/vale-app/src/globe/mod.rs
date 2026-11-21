@@ -1047,6 +1047,8 @@ pub struct Globe {
     pub debug: bool,
     /// The cards of the iPad layout show the blurred canvas.
     pub blur: bool,
+    /// The rim of a card with the blur bends the canvas like glass.
+    pub glass: bool,
     /// The text of the last stroke test.
     pub test_report: Option<String>,
     /// The text of the last zoom test.
@@ -1197,6 +1199,7 @@ impl Globe {
             stats: Stats::new(face_size as u32),
             debug: false,
             blur: true,
+            glass: false,
             test_report: None,
             zoom_report: None,
             uploads: Uploads::default(),
