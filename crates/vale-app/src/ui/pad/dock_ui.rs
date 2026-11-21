@@ -563,7 +563,7 @@ fn show_dock(
                 } else {
                     theme::MUTE.gamma_multiply(0.6)
                 };
-                ui.painter().rect_filled(pill, 2.0, color);
+                ui.painter().rect_filled(pill, theme::capsule(pill), color);
                 if resp.dragged() && resp.drag_delta().y != 0.0 {
                     let delta = resp.drag_delta().y;
                     let dock = state.pad.dock_mut();
@@ -708,7 +708,7 @@ fn paint_drop(
             let tabs = placed[i].tabs;
             painter.rect_stroke(
                 tabs,
-                widgets::tab_radius(ctx, tabs),
+                widgets::tab_radius(tabs),
                 Stroke::new(2.0, theme::ACCENT),
                 egui::StrokeKind::Inside,
             );
@@ -827,7 +827,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         size,
                     );
                     let fill = theme::card().to_opaque();
-                    painter.rect_filled(label, theme::CONTROL_RADIUS, fill);
+                    painter.rect_filled(label, theme::capsule(label), fill);
                     painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
                 }
                 ctx.request_repaint();
@@ -856,12 +856,12 @@ fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) 
         }
         None => {
             let capsule = Rect::from_center_size(center, vec2(12.0, 64.0));
-            painter.rect_filled(capsule, 6.0, theme::card().to_opaque());
+            painter.rect_filled(capsule, theme::capsule(capsule), theme::card().to_opaque());
         }
     }
     let pill = Rect::from_center_size(center, vec2(4.0, 48.0));
     let color = if active { theme::ACCENT } else { theme::TEXT };
-    painter.rect_filled(pill, 2.0, color);
+    painter.rect_filled(pill, theme::capsule(pill), color);
 }
 
 /// The sheet of a compact screen: the pane of the last focus, with its
@@ -878,7 +878,7 @@ fn show_sheet(
     };
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
-    let r = theme::SHEET_RADIUS as u8;
+    let r = theme::CARD_RADIUS as u8;
     // A glass sheet floats clear of the edges of the screen, with corners
     // that follow the round corners of the display.
     let radius = match widgets::is_glass(ctx) {
@@ -909,8 +909,11 @@ fn show_sheet(
         |ui| {
             let grabber =
                 Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
-            ui.painter()
-                .rect_filled(grabber, 3.0, theme::MUTE.gamma_multiply(0.6));
+            ui.painter().rect_filled(
+                grabber,
+                theme::capsule(grabber),
+                theme::MUTE.gamma_multiply(0.6),
+            );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
                     .max_rect(inner)
@@ -1261,7 +1264,7 @@ fn header_row(
             );
             if active {
                 let back = tab.shrink(widgets::HIGHLIGHT_INSET);
-                let radius = widgets::tab_radius(painter.ctx(), back);
+                let radius = widgets::tab_radius(back);
                 painter.rect_filled(back, radius, theme::raise());
             }
             let color = if active { theme::TEXT } else { theme::MUTE };

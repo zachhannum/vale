@@ -4725,11 +4725,11 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         let menu = h.state().pad.menu_rect.unwrap();
         assert_eq!(
             menu,
-            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 251.0))
+            Rect::from_min_size(pos2(16.0, 84.0), vec2(240.0, 243.0))
         );
         let rows = ["World", "Atlas", WORLDS_ROW, EXPORT];
         let tops = rows.map(|name| control(&h, name).unwrap().top());
-        assert_eq!(tops, [94.0, 155.0, 216.0, 277.0]);
+        assert_eq!(tops, [90.0, 151.0, 212.0, 273.0]);
         assert!(control(&h, "Toolbox").is_none());
         h.state_mut().pad.menu = false;
         h.run_steps(2);

@@ -1229,7 +1229,7 @@ fn style_gallery(
         if on || resp.is_pointer_button_down_on() {
             let back = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
             ui.painter()
-                .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                .rect_filled(back, theme::TILE_RADIUS, theme::raise());
         }
         let left = rect.left() + 38.0;
         let title_y = rect.top() + 22.0;
@@ -1250,7 +1250,7 @@ fn style_gallery(
         let height = width * (h / w) as f32;
         let paper = Rect::from_min_size(pos2(left, rect.top() + 40.0), vec2(width, height));
         ui.painter()
-            .rect_filled(paper.expand(4.0), 6.0, egui::Color32::WHITE);
+            .rect_filled(paper.expand(4.0), theme::SMALL_RADIUS, egui::Color32::WHITE);
         if let Some(texture) = atlas::bar_preview(&ctx, state, bar, kind, width) {
             let uv = Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
             ui.painter().image(texture, paper, uv, egui::Color32::WHITE);

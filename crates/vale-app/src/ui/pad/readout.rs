@@ -4,7 +4,6 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align2, Color32, Order, Rect, Sense, pos2, vec2};
-use eframe::egui_wgpu::wgpu;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use super::geometry::{self, PAD, ROW, Rects, TOUCH};
@@ -166,7 +165,7 @@ fn view_button(
     let resp = widgets::hit(ui, controls, rect, VIEW, Sense::click(), true, Some(open));
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
-    let radius = widgets::control_radius(ui.ctx(), inner);
+    let radius = widgets::control_radius(inner);
     if open {
         let fill = theme::ACCENT.gamma_multiply(0.3);
         painter.rect_filled(inner, radius, fill);
@@ -272,7 +271,7 @@ pub(super) fn view_menu(
         return;
     }
     let rows = if flat { 4.0 } else { 1.0 };
-    let height = 10.0 + TABS + rows * PANEL_ROW + 10.0;
+    let height = 2.0 * widgets::menu_inset().y + TABS + rows * PANEL_ROW;
     let screen = rects.screen.shrink(geometry::PANEL_GAP);
     let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
     let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
@@ -282,7 +281,10 @@ pub(super) fn view_menu(
     let list = |open: bool| {
         open.then(|| {
             let kinds = ProjectionKind::ALL.len() as f32;
-            let size = vec2(geometry::MENU_WIDTH, 10.0 + kinds * PANEL_ROW + 10.0);
+            let size = vec2(
+                geometry::MENU_WIDTH,
+                2.0 * widgets::menu_inset().y + kinds * PANEL_ROW,
+            );
             let side = menu.right() + geometry::PANEL_GAP;
             let left = if side + size.x <= screen.right() {
                 side
@@ -317,7 +319,7 @@ pub(super) fn view_menu(
         state.pad.view_menu_rect = Some(menu);
         let backdrop = state.globe.backdrop();
         let origin = button.center().clamp(menu.min, menu.max);
-        menu_card(ctx, backdrop, "pad-view-menu", menu, origin, |ui| {
+        widgets::menu_card(ctx, backdrop, "pad-view-menu", menu, origin, |ui| {
             view_rows(ui, state, controls, flat);
         });
     }
@@ -372,9 +374,12 @@ fn rule(ui: &egui::Ui) {
 /// name in each segment. Returns the view that the user chose.
 fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Option<WorldView> {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), TABS), Sense::hover());
-    let (track, thumb) = widgets::menu_track_radius(ui.ctx());
-    ui.painter().rect_filled(row, track, theme::track());
-    let inner = row.shrink(PAD);
+    // The track is `theme::ROW_INSET` from the sides and the top of the card.
+    let inset = widgets::menu_inset();
+    let track = row.expand2(vec2(inset.x - theme::ROW_INSET, inset.y - theme::ROW_INSET));
+    let (radius, thumb) = widgets::menu_track_radius(track, 2.0 * widgets::HIGHLIGHT_INSET);
+    ui.painter().rect_filled(track, radius, theme::track());
+    let inner = track.shrink(widgets::HIGHLIGHT_INSET);
     let width = inner.width() / 2.0;
     let views = [
         (VIEWS[0], Icon::World, WorldView::Globe),
@@ -388,7 +393,8 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
         let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, Some(on));
         let painter = ui.painter();
         if on || resp.is_pointer_button_down_on() {
-            painter.rect_filled(rect.shrink(2.0), thumb, theme::raise());
+            let back = rect.shrink(widgets::HIGHLIGHT_INSET);
+            painter.rect_filled(back, thumb, theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
         let galley = painter.layout_no_wrap(name.to_owned(), theme::body(), color);
@@ -405,27 +411,6 @@ fn view_tabs(ui: &mut egui::Ui, controls: &mut Controls, view: WorldView) -> Opt
     chosen
 }
 
-/// A glass card for a menu, with rows from the top, that grows from `origin`.
-/// The blur also shows the cards below the menu.
-fn menu_card(
-    ctx: &egui::Context,
-    backdrop: Option<wgpu::TextureFormat>,
-    id: &str,
-    rect: Rect,
-    origin: egui::Pos2,
-    contents: impl FnOnce(&mut egui::Ui),
-) {
-    let radius = theme::CARD_RADIUS.into();
-    let order = Order::Foreground;
-    widgets::card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
-        let inner = rect.shrink2(widgets::menu_inset(ui.ctx()));
-        let layout = egui::Layout::top_down(egui::Align::Min);
-        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-        contents(&mut ui);
-    });
-}
-
 /// The list of the projections of the flat view in `rect`. A tap on a row
 /// picks the projection and closes the list.
 fn projections(
@@ -436,7 +421,7 @@ fn projections(
     origin: egui::Pos2,
 ) {
     let backdrop = state.globe.backdrop();
-    menu_card(ctx, backdrop, "pad-projections", rect, origin, |ui| {
+    widgets::menu_card(ctx, backdrop, "pad-projections", rect, origin, |ui| {
         let spec = state.globe.flat.spec();
         let kinds = ProjectionKind::ALL;
         let rows: Vec<list::Row<usize>> = (kinds.iter().enumerate())

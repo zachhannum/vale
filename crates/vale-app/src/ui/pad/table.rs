@@ -178,7 +178,8 @@ pub fn page(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 if selection.contains(&uuid) {
                     let tint = theme::ACCENT.gamma_multiply(0.22);
                     let back = row.shrink2(vec2(0.0, HIGHLIGHT_INSET));
-                    ui.painter().rect_filled(back, theme::CONTROL_RADIUS, tint);
+                    ui.painter()
+                        .rect_filled(back, theme::row_radius(back), tint);
                 }
                 let mut left = row.left();
                 for (field, &w) in layer.fields.iter().zip(&widths) {

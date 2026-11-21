@@ -548,7 +548,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let body = ctx.data(|d| d.get_temp::<f32>(body_id)).unwrap_or(460.0);
     let (rect, radius) = if compact {
         let rect = Rect::from_min_max(pos2(screen.left(), rects.bands.top), screen.max);
-        let r = theme::SHEET_RADIUS as u8;
+        let r = theme::CARD_RADIUS as u8;
         let radius = egui::CornerRadius {
             nw: r,
             ne: r,
@@ -919,14 +919,16 @@ fn progress(ui: &mut egui::Ui, state: &AppState, controls: &mut Controls) -> boo
         .text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
     ui.add_space(8.0);
     let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
-    ui.painter().rect_filled(bar, 3.0, theme::raise());
+    ui.painter()
+        .rect_filled(bar, theme::capsule(bar), theme::raise());
     let (page, count) = state
         .atlas_export
         .as_ref()
         .map_or((0, 1), |job| job.progress());
     let done = (page.saturating_sub(1) as f32 / count.max(1) as f32).clamp(0.0, 1.0);
     let filled = Rect::from_min_size(bar.min, vec2(bar.width() * done, bar.height()));
-    ui.painter().rect_filled(filled, 3.0, theme::ACCENT);
+    ui.painter()
+        .rect_filled(filled, theme::capsule(bar), theme::ACCENT);
     ui.add_space(12.0);
     widgets::button_row_in(ui, controls, CANCEL_EXPORT, true, theme::WARN).clicked()
 }

@@ -1089,7 +1089,7 @@ pub fn band_card(
                 if resp.is_pointer_button_down_on() {
                     let back = row.shrink(widgets::HIGHLIGHT_INSET);
                     ui.painter()
-                        .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+                        .rect_filled(back, theme::row_radius(back), theme::raise());
                 }
                 let at = pos2(row.left(), row.center().y);
                 let text = REMOVE_STOP;
@@ -1552,7 +1552,7 @@ pub fn labels_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contr
                 Rect::from_center_size(pos2(rect.left() + 16.0, rect.center().y), vec2(32.0, 24.0));
             let color = ramp.colors[i];
             let fill = egui::Color32::from_rgb(color[0], color[1], color[2]);
-            cell.painter.rect_filled(swatch, 4.0, fill);
+            cell.painter.rect_filled(swatch, theme::SMALL_RADIUS, fill);
             let field = Rect::from_min_max(
                 pos2(
                     rect.left() + widgets::FORM_LABEL,

@@ -81,7 +81,6 @@ const MENU_VALUES: usize = 60;
 const CONTROL: f32 = TOUCH;
 /// The space between the controls of a row, and around them.
 const SPACE: f32 = 8.0;
-const ROW_RADIUS: f32 = 12.0;
 /// The height of the row of the heading and the views.
 const HEAD: f32 = 48.0;
 /// The width of the menu of a control.
@@ -590,7 +589,7 @@ fn menu_button(ui: &egui::Ui, controls: &mut Controls, rect: Rect, name: &str, t
         theme::raise()
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CONTROL_RADIUS - 2.0, fill);
+    painter.rect_filled(rect, theme::capsule(rect), fill);
     let at = pos2(rect.left() + 14.0, rect.center().y);
     painter.text(at, Align2::LEFT_CENTER, text, theme::body(), theme::TEXT);
     let chevron = Rect::from_center_size(
@@ -972,7 +971,7 @@ fn simple_row(
     let (places, lines) = flow(&kept, x0, width - SPACE - button);
     let (row, _) = ui.allocate_exact_size(vec2(width, row_height(lines)), Sense::hover());
     ui.painter()
-        .rect_filled(row, ROW_RADIUS, Color32::from_white_alpha(10));
+        .rect_filled(row, theme::TILE_RADIUS, Color32::from_white_alpha(10));
     lead_word(ui, row, lead);
     let mut placed = places.into_iter().map(|r| r.translate(row.min.to_vec2()));
     let out = (widths.iter())
@@ -1010,7 +1009,7 @@ pub fn code_row(
     let resp = widgets::hit(ui, controls, place, &name, Sense::click(), true, None);
     ui.painter().rect(
         place.shrink2(vec2(0.0, 4.0)),
-        8.0,
+        theme::capsule(place.shrink2(vec2(0.0, 4.0))),
         Color32::from_rgba_unmultiplied(239, 107, 107, 30),
         Stroke::new(1.0, BAD.gamma_multiply(0.6)),
         egui::StrokeKind::Inside,
@@ -1078,7 +1077,7 @@ fn group_card(
     let stroke = Stroke::new(1.0, Color32::from_white_alpha(36));
     ui.painter().set(
         frame,
-        Shape::rect_stroke(rect, ROW_RADIUS, stroke, egui::StrokeKind::Inside),
+        Shape::rect_stroke(rect, theme::TILE_RADIUS, stroke, egui::StrokeKind::Inside),
     );
 }
 
@@ -1103,13 +1102,13 @@ fn match_line(ui: &mut egui::Ui, n: usize, m: usize) {
     ui.add(egui::Label::new(text).selectable(false));
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, 3.0, theme::track());
+    painter.rect_filled(rect, theme::capsule(rect), theme::track());
     let part = if m == 0 { 0.0 } else { n as f32 / m as f32 };
     let fill = Rect::from_min_size(
         rect.min,
         vec2(rect.width() * part.clamp(0.0, 1.0), rect.height()),
     );
-    painter.rect_filled(fill, 3.0, theme::ACCENT);
+    painter.rect_filled(fill, theme::capsule(rect), theme::ACCENT);
     ui.add_space(4.0);
 }
 

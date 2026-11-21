@@ -11,6 +11,9 @@ use crate::ui::token_field;
 pub const FILL: Color32 = Color32::from_rgb(31, 34, 38);
 /// The size of the arrow, from the card to its tip.
 const ARROW: f32 = 9.0;
+/// The least space between the point of the arrow and a side of the card,
+/// so that the arrow stays clear of the round corners.
+const ARROW_EDGE: f32 = theme::CARD_RADIUS + ARROW;
 /// The space between the popover and the edge of the screen.
 const MARGIN: f32 = 8.0;
 /// The distance from the left of the card to the arrow, as the arrow
@@ -122,7 +125,7 @@ pub fn show(
         anchor
             .center()
             .x
-            .clamp(rect.left() + 20.0, rect.right() - 20.0),
+            .clamp(rect.left() + ARROW_EDGE, rect.right() - ARROW_EDGE),
         if below { rect.top() } else { rect.bottom() },
     );
     let grow = widgets::grow(ctx, egui::LayerId::new(egui::Order::Tooltip, id), tip);
@@ -133,8 +136,8 @@ pub fn show(
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {
-            let radius = theme::CARD_RADIUS;
             let (card, _) = ui.allocate_exact_size(rect.size(), Sense::click());
+            let radius = theme::CARD_RADIUS.min(theme::capsule(card));
             ui.multiply_opacity(grow.opacity);
             let painter = ui.painter();
             painter.add(theme::shadow().as_shape(card, radius));
@@ -142,7 +145,7 @@ pub fn show(
             let tip_x = anchor
                 .center()
                 .x
-                .clamp(card.left() + 20.0, card.right() - 20.0);
+                .clamp(card.left() + ARROW_EDGE, card.right() - ARROW_EDGE);
             let arrow = if below {
                 let base = card.top() + 1.0;
                 [

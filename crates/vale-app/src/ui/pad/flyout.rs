@@ -10,7 +10,7 @@ use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, Rects};
 use super::icons::{self, Icon};
-use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
+use super::widgets::{self, Controls, PANEL_ROW};
 use super::{HOLD_SLOP, HOLD_TIME, ModeGroup, theme};
 
 /// A group of choices with a flyout.
@@ -321,7 +321,7 @@ pub fn tooltip(
     };
     let rect = geometry::off_fold(rect, tip.cell, rects.fold, rects.screen);
     flyouts.tip_rect = Some(rect);
-    let radius = theme::CONTROL_RADIUS.into();
+    let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
         backdrop,
@@ -425,7 +425,7 @@ pub fn show(
         return None;
     };
     let rows = choices.len() as f32;
-    let full = 10.0 + rows * PANEL_ROW + 10.0;
+    let full = 2.0 * widgets::menu_inset().y + rows * PANEL_ROW;
     // In the row layout, the list is above its cell. Else it is at the
     // right of the strip.
     let rect = if rects.row {
@@ -473,7 +473,7 @@ pub fn show(
         radius,
         cell.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.set_clip_rect(inner);

@@ -391,7 +391,8 @@ impl<'a> Number<'a> {
             pinned = tap.clicked();
             let back = cell.expand2(vec2(8.0, -2.0)).with_max_x(cell.right());
             if tap.is_pointer_button_down_on() {
-                ui.painter().rect_filled(back, 8.0, theme::raise());
+                ui.painter()
+                    .rect_filled(back, theme::row_radius(back), theme::raise());
             }
             let at = Rect::from_center_size(pos2(start - 8.0 - PIN / 2.0, y), vec2(PIN, PIN));
             let color = if on {
@@ -585,7 +586,7 @@ impl<'a> Number<'a> {
             pos2(row.right() - 2.0 * TOUCH - VALUE_WIDTH, y - HEIGHT / 2.0),
             pos2(row.right(), y + HEIGHT / 2.0),
         );
-        let radius = theme::CONTROL_RADIUS;
+        let radius = theme::capsule(whole);
         painter.rect_filled(whole, radius, fade(theme::raise(), enabled));
         let touch = |left: f32, width: f32| {
             Rect::from_min_size(pos2(left, y - TOUCH / 2.0), vec2(width, TOUCH))
@@ -826,7 +827,7 @@ impl<'a> Number<'a> {
 
         let painter = ui.painter();
         let pressed = edit.is_some() || resp.is_pointer_button_down_on();
-        let radius = theme::CONTROL_RADIUS;
+        let radius = theme::capsule(back);
         match look {
             Look::Box => {
                 let fill = if pressed {
@@ -950,12 +951,7 @@ impl<'a> Number<'a> {
         let top = anchor.center().y - size.y / 2.0;
         let rect = place(ctx, anchor, ui.clip_rect(), size, top, None);
         let backdrop = widgets::backdrop(ctx);
-        let glass = backdrop.is_some();
-        let corner = egui::CornerRadius::from(theme::CONTROL_RADIUS);
-        let corner = match glass {
-            true => widgets::glass_radius(rect, corner),
-            false => corner,
-        };
+        let corner = widgets::card_radius(rect, egui::CornerRadius::from(theme::CARD_RADIUS));
         if backdrop.is_some() {
             painter.add(marker(Order::Tooltip, rect));
         }
@@ -1170,7 +1166,7 @@ fn paint_track(
     held: bool,
 ) {
     let painter = ui.painter();
-    let radius = theme::CONTROL_RADIUS;
+    let radius = theme::capsule(track);
     painter.rect_filled(track, radius, theme::track());
     if !enabled {
         return;
@@ -1204,8 +1200,12 @@ fn paint_track(
     };
     let handle = if held { handle.expand(1.5) } else { handle };
     let shadow = handle.translate(vec2(0.0, 1.5)).expand(1.0);
-    painter.rect_filled(shadow, 5.0, Color32::from_black_alpha(70));
-    painter.rect_filled(handle, 4.0, theme::TEXT);
+    painter.rect_filled(
+        shadow,
+        theme::capsule(shadow),
+        Color32::from_black_alpha(70),
+    );
+    painter.rect_filled(handle, theme::capsule(handle), theme::TEXT);
 }
 
 #[cfg(test)]

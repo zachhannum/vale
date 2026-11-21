@@ -7,7 +7,7 @@ use eframe::egui_wgpu::wgpu;
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
 use super::{motion, theme};
-use crate::globe::backdrop::{GLASS_RADIUS, card_shape, marker, paint_rect};
+use crate::globe::backdrop::{card_shape, marker, paint_rect};
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -248,11 +248,7 @@ fn any_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
-    let glass = backdrop.is_some();
-    let shape = |part: Rect| match glass {
-        true => glass_radius(part, radius),
-        false => radius,
-    };
+    let shape = |part: Rect| card_radius(part, radius);
     egui::Area::new(egui::Id::new(id))
         .order(order)
         .fixed_pos(rect.min)
@@ -430,34 +426,44 @@ fn fill(ui: &egui::Ui, rect: Rect, resp: &Response, active: bool) {
     if active || resp.is_pointer_button_down_on() {
         let rect = rect.shrink(HIGHLIGHT_INSET);
         ui.painter()
-            .rect_filled(rect, control_radius(ui.ctx(), rect), theme::raise());
+            .rect_filled(rect, control_radius(rect), theme::raise());
     }
 }
 
-/// The space between the edge of a menu card and its rows. On glass cards
-/// it is the same on each side, so that a control in the first row has
-/// corners that follow the round corners of the card.
-pub fn menu_inset(ctx: &egui::Context) -> egui::Vec2 {
-    match is_glass(ctx) {
-        true => vec2(MENU_INSET, MENU_INSET),
-        false => vec2(BODY_PAD, 10.0),
-    }
+/// The space between the edge of a menu card and the rect of its rows. A
+/// row highlight reaches 8 points past the sides of the rect and sits
+/// `HIGHLIGHT_INSET` inside its top and bottom, so each highlight is
+/// `theme::ROW_INSET` from the edge of the card.
+pub fn menu_inset() -> egui::Vec2 {
+    vec2(BODY_PAD, theme::ROW_INSET - HIGHLIGHT_INSET)
 }
 
-/// The inset of the rows of a glass menu card.
-pub const MENU_INSET: f32 = 12.0;
+/// A card for a menu, with rows from the top, that grows from `origin`.
+/// The rows are `menu_inset` inside the card.
+pub fn menu_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    origin: Pos2,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    let radius = theme::CARD_RADIUS.into();
+    let order = egui::Order::Foreground;
+    card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
+        let inner = rect.shrink2(menu_inset());
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        contents(&mut ui);
+    });
+}
 
-/// The corner radii of the track of a segmented control in the first row
-/// of a menu card, and of its thumb 6 points inside it. On glass cards they
-/// follow the round corners of the card.
-pub fn menu_track_radius(ctx: &egui::Context) -> (f32, f32) {
-    match is_glass(ctx) {
-        true => {
-            let track = GLASS_RADIUS - MENU_INSET;
-            (track, track - 6.0)
-        }
-        false => (theme::CONTROL_RADIUS, theme::CONTROL_RADIUS - 2.0),
-    }
+/// The corner radii of the track of a segmented control at `track`, and of
+/// its thumb `inset` points inside it. Both are capsules.
+pub fn menu_track_radius(track: Rect, inset: f32) -> (f32, f32) {
+    let outer = theme::capsule(track);
+    (outer, theme::inner_radius(outer, inset))
 }
 
 /// True if the cards are glass.
@@ -465,24 +471,20 @@ pub fn is_glass(ctx: &egui::Context) -> bool {
     backdrop(ctx).is_some()
 }
 
-/// The corner radius of the highlight of a tab at `rect`. On glass cards
-/// it is a capsule.
-pub fn tab_radius(ctx: &egui::Context, rect: Rect) -> f32 {
-    match is_glass(ctx) {
-        true => rect.height().min(rect.width()) / 2.0,
-        false => theme::CONTROL_RADIUS,
-    }
+/// The corner radius of the highlight of a tab at `rect`: a capsule.
+pub fn tab_radius(rect: Rect) -> f32 {
+    theme::capsule(rect)
 }
 
-/// The corner radius of the highlight of a control at `rect`. On glass
-/// cards, a square control has a circle, as the controls of Liquid Glass.
-/// With the padding of the cards, the circle of a cell at the end of a bar
-/// has the center of the round end of the bar.
-pub fn control_radius(ctx: &egui::Context, rect: Rect) -> f32 {
+/// The corner radius of the highlight of a control at `rect`. A square
+/// control has a circle, as the controls of Liquid Glass. With the padding
+/// of the cards, the circle of a cell at the end of a bar has the center of
+/// the round end of the bar. Other controls have the radius of a row.
+pub fn control_radius(rect: Rect) -> f32 {
     let square = (rect.width() - rect.height()).abs() < 1.0;
-    match is_glass(ctx) && square {
-        true => rect.width() / 2.0,
-        false => theme::CONTROL_RADIUS,
+    match square {
+        true => theme::capsule(rect),
+        false => theme::row_radius(rect),
     }
 }
 
@@ -585,7 +587,7 @@ pub fn segments(
         let thumb =
             slide_thumb(ui, id, egui::Rangef::new(card.left(), left), rect).shrink(HIGHLIGHT_INSET);
         ui.painter()
-            .rect_filled(thumb, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(thumb, theme::capsule(thumb), theme::raise());
     }
     let mut chosen = None;
     for (index, (&(label, enabled), &rect)) in items.iter().zip(&rects).enumerate() {
@@ -645,7 +647,7 @@ pub fn small_segments_named(
     active: usize,
 ) -> Option<usize> {
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CONTROL_RADIUS, Color32::from_black_alpha(77));
+    painter.rect_filled(rect, theme::capsule(rect), Color32::from_black_alpha(77));
     let inner = rect.shrink(SMALL_TRACK_PAD);
     let total: f32 = labels
         .iter()
@@ -665,7 +667,8 @@ pub fn small_segments_named(
     if let Some(&item) = items.get(active) {
         let id = ui.id().with(("small-segments", names));
         let thumb = slide_thumb(ui, id, rect.x_range(), item);
-        ui.painter().rect_filled(thumb, 8.0, theme::raise());
+        ui.painter()
+            .rect_filled(thumb, theme::capsule(thumb), theme::raise());
     }
     let mut chosen = None;
     for (i, (label, &item)) in labels.iter().zip(&items).enumerate() {
@@ -675,7 +678,8 @@ pub fn small_segments_named(
         let name = names.get(i).unwrap_or(label);
         let resp = hit(ui, controls, touch, name, Sense::click(), true, Some(on));
         if !on && resp.is_pointer_button_down_on() {
-            ui.painter().rect_filled(item, 8.0, theme::raise());
+            ui.painter()
+                .rect_filled(item, theme::capsule(item), theme::raise());
         }
         let color = if on { theme::TEXT } else { theme::MUTE };
         ui.painter().text(
@@ -709,7 +713,7 @@ pub fn menu_button(
     let resp = hit(ui, controls, rect, name, Sense::click(), true, Some(open));
     if open || resp.is_pointer_button_down_on() {
         ui.painter()
-            .rect_filled(rect, theme::CARD_RADIUS, theme::raise());
+            .rect_filled(rect, theme::capsule(rect), theme::raise());
     }
     let at = pos2(rect.left() + 18.0, rect.center().y);
     ui.painter()
@@ -1137,7 +1141,7 @@ pub fn text_row_as(
     if selected || resp.is_pointer_button_down_on() {
         ui.painter().rect_filled(
             rect.expand2(vec2(8.0, -HIGHLIGHT_INSET)),
-            5.0,
+            theme::row_radius(rect.shrink2(vec2(0.0, HIGHLIGHT_INSET))),
             theme::raise(),
         );
     }
@@ -1169,11 +1173,20 @@ pub fn color_row(
     );
     let painter = ui.painter();
     if a < 255 {
-        paint_checker(painter, swatch, SWATCH / 4.0, 6);
+        paint_checker(painter, swatch, SWATCH / 4.0, theme::SMALL_RADIUS as u8);
     }
-    painter.rect_filled(swatch, 6.0, Color32::from_rgba_unmultiplied(r, g, b, a));
+    painter.rect_filled(
+        swatch,
+        theme::SMALL_RADIUS,
+        Color32::from_rgba_unmultiplied(r, g, b, a),
+    );
     let stroke = egui::Stroke::new(1.0, theme::divider());
-    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        swatch,
+        theme::SMALL_RADIUS,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
     row
 }
 
@@ -1192,7 +1205,12 @@ pub fn mixed_color_row(
     );
     let painter = ui.painter();
     let stroke = egui::Stroke::new(1.0, theme::divider());
-    painter.rect_stroke(swatch, 6.0, stroke, egui::StrokeKind::Inside);
+    painter.rect_stroke(
+        swatch,
+        theme::SMALL_RADIUS,
+        stroke,
+        egui::StrokeKind::Inside,
+    );
     let inset = swatch.shrink(5.0);
     let slash = egui::Stroke::new(1.5, theme::MUTE);
     painter.line_segment([inset.left_bottom(), inset.right_top()], slash);
@@ -1459,7 +1477,7 @@ pub fn option_row(
     if on || resp.is_pointer_button_down_on() {
         let back = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
         ui.painter()
-            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(back, theme::row_radius(back), theme::raise());
     }
     let mark = Rect::from_center_size(pos2(rect.left() + 18.0, rect.center().y), vec2(18.0, 18.0));
     if on {
@@ -1597,7 +1615,7 @@ pub fn choice_field(
     }
     let ctx = ui.ctx().clone();
     let rows = (choices.len() as f32).min(MENU_ROWS);
-    let size = vec2(row.width(), 10.0 + rows * PANEL_ROW + 10.0);
+    let size = vec2(row.width(), 2.0 * menu_inset().y + rows * PANEL_ROW);
     let screen = ctx.viewport_rect();
     let below = row.bottom() + PAD;
     let y = if below + size.y <= screen.bottom() - PAD {
@@ -1638,7 +1656,7 @@ pub fn choice_field(
         origin,
         |ui| {
             ui.painter().rect_filled(rect, radius, theme::menu());
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.set_clip_rect(inner);
@@ -1694,7 +1712,7 @@ pub fn text_area(
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), Sense::hover());
     let field = rect.shrink2(vec2(0.0, HIGHLIGHT_INSET));
     ui.painter()
-        .rect_filled(field, theme::CONTROL_RADIUS, theme::raise());
+        .rect_filled(field, theme::TILE_RADIUS, theme::raise());
     let inner = field.shrink2(vec2(12.0, 10.0));
     let edit = egui::TextEdit::multiline(text)
         .id(ui.id().with(name))
@@ -1756,7 +1774,7 @@ pub fn field_at(
 ) -> Response {
     let back = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
-        .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+        .rect_filled(back, theme::capsule(back), theme::raise());
     let mut inner = field.shrink2(vec2(12.0, 0.0));
     if let Some(suffix) = suffix {
         let at = pos2(inner.right(), inner.center().y);
@@ -2109,12 +2127,12 @@ pub fn set_backdrop(ctx: &egui::Context, format: Option<wgpu::TextureFormat>) {
     ctx.data_mut(|data| data.insert_temp(backdrop_id(), format));
 }
 
-/// The corners of a glass card in `rect`. Each round corner of `radius`
-/// gets `GLASS_RADIUS`, or the largest corner of `radius` if that is more,
+/// The corners of a card in `rect`. Each round corner of `radius` gets
+/// `theme::CARD_RADIUS`, or the largest corner of `radius` if that is more,
 /// up to half the short side, as the corners of Liquid Glass.
-pub fn glass_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
+pub fn card_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
     let most = f32::from(radius.nw.max(radius.ne).max(radius.sw).max(radius.se));
-    let round = GLASS_RADIUS
+    let round = theme::CARD_RADIUS
         .max(most)
         .min(rect.width().min(rect.height()) / 2.0) as u8;
     let pick = |corner: u8| if corner > 0 { round } else { 0 };
@@ -2269,18 +2287,13 @@ pub fn key_field_at(
     let back = field.shrink(HIGHLIGHT_INSET);
     if right {
         if edit.is_some() {
-            painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            painter.rect_filled(back, theme::capsule(back), theme::raise());
         }
     } else {
-        painter.rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+        painter.rect_filled(back, theme::capsule(back), theme::raise());
         if edit.is_some() {
             let stroke = egui::Stroke::new(1.5, theme::ACCENT);
-            painter.rect_stroke(
-                back,
-                theme::CONTROL_RADIUS,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
+            painter.rect_stroke(back, theme::capsule(back), stroke, egui::StrokeKind::Inside);
         }
     }
     let mut inner = field.shrink2(vec2(12.0, 0.0));
@@ -2370,7 +2383,7 @@ pub fn keypad(ui: &mut egui::Ui, controls: &mut Controls, height: f32) -> bool {
                 (false, Key::Done) => theme::ACCENT,
                 (false, _) => theme::raise(),
             };
-            ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+            ui.painter().rect_filled(back, theme::capsule(back), fill);
             let font = theme::font(17.0);
             match key {
                 Key::Delete => icons::paint(ui.painter(), at, Icon::Delete, ICON, theme::TEXT),
@@ -2480,7 +2493,7 @@ pub fn segmented_at(
 ) -> Option<usize> {
     let track = field.shrink(HIGHLIGHT_INSET);
     ui.painter()
-        .rect_filled(track, theme::CONTROL_RADIUS, theme::track());
+        .rect_filled(track, theme::capsule(track), theme::track());
     let width = field.width() / choices.len() as f32;
     if let Some(index) = active.filter(|&i| i < choices.len()) {
         let min = pos2(field.left() + index as f32 * width, field.top());
@@ -2488,7 +2501,7 @@ pub fn segmented_at(
         let id = ui.id().with(("choice-row", choices));
         let thumb = slide_thumb(ui, id, field.x_range(), rect).shrink(2.0);
         ui.painter()
-            .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, theme::raise());
+            .rect_filled(thumb, theme::capsule(thumb), theme::raise());
     }
     let mut chosen = None;
     for (index, choice) in choices.iter().enumerate() {
@@ -2508,8 +2521,7 @@ pub fn segmented_at(
         if !on && resp.is_pointer_button_down_on() {
             let thumb = rect.intersect(track).shrink(2.0);
             let fill = fade(theme::raise(), enabled);
-            ui.painter()
-                .rect_filled(thumb, theme::CONTROL_RADIUS - 2.0, fill);
+            ui.painter().rect_filled(thumb, theme::capsule(thumb), fill);
         }
         let color = fade(if on { theme::TEXT } else { theme::MUTE }, enabled);
         let at = rect.center();
@@ -2657,7 +2669,7 @@ pub fn chips(
         } else {
             theme::track()
         };
-        ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+        ui.painter().rect_filled(back, theme::capsule(back), fill);
         let color = if on { theme::TEXT } else { theme::MUTE };
         ui.painter().text(
             rect.center(),
@@ -2701,7 +2713,7 @@ pub fn chip_row(
                 } else {
                     theme::track()
                 };
-                ui.painter().rect_filled(back, theme::CONTROL_RADIUS, fill);
+                ui.painter().rect_filled(back, theme::capsule(back), fill);
                 let painter = ui.painter();
                 painter.text(
                     rect.center(),
@@ -2830,15 +2842,10 @@ pub fn tiles(
             theme::track()
         };
         let painter = ui.painter();
-        painter.rect_filled(rect, theme::CONTROL_RADIUS, fill);
+        painter.rect_filled(rect, theme::TILE_RADIUS, fill);
         if on {
             let stroke = egui::Stroke::new(2.0, theme::ACCENT);
-            painter.rect_stroke(
-                rect,
-                theme::CONTROL_RADIUS,
-                stroke,
-                egui::StrokeKind::Inside,
-            );
+            painter.rect_stroke(rect, theme::TILE_RADIUS, stroke, egui::StrokeKind::Inside);
         }
         let square = Rect::from_center_size(
             pos2(rect.center().x, rect.top() + 8.0 + picture / 2.0),
@@ -2892,7 +2899,7 @@ pub fn value_field(
     if ui.memory(|memory| memory.has_focus(id)) {
         let back = field.shrink(HIGHLIGHT_INSET);
         ui.painter()
-            .rect_filled(back, theme::CONTROL_RADIUS, theme::raise());
+            .rect_filled(back, theme::capsule(back), theme::raise());
     }
     let mut inner = field.shrink2(vec2(12.0, 0.0));
     let at = pos2(inner.right(), inner.center().y);
@@ -2985,7 +2992,7 @@ pub fn accent_button_in(
         (true, false) => (theme::ACCENT.gamma_multiply(0.8), theme::CANVAS),
     };
     let back = rect.shrink(HIGHLIGHT_INSET);
-    ui.painter().rect_filled(back, theme::CONTROL_RADIUS, color);
+    ui.painter().rect_filled(back, theme::capsule(back), color);
     let at = rect.center();
     ui.painter()
         .text(at, Align2::CENTER_CENTER, name, theme::body(), text);
@@ -3021,7 +3028,7 @@ pub fn button_row_in(
         fill.gamma_multiply(0.8)
     };
     ui.painter()
-        .rect_filled(back, theme::CONTROL_RADIUS, fade(color, enabled));
+        .rect_filled(back, theme::capsule(back), fade(color, enabled));
     let at = rect.center();
     ui.painter().text(
         at,
@@ -3056,7 +3063,7 @@ pub fn button_cells(
             theme::ACCENT.gamma_multiply(0.8)
         };
         let back = rect.shrink(HIGHLIGHT_INSET);
-        ui.painter().rect_filled(back, theme::CONTROL_RADIUS, color);
+        ui.painter().rect_filled(back, theme::capsule(back), color);
         ui.painter().text(
             rect.center(),
             Align2::CENTER_CENTER,
@@ -3250,10 +3257,11 @@ fn picker(
         ui.painter().add(egui::Shape::mesh(mesh));
         let x = bar.left() + hsva.h * bar.width();
         let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
-        ui.painter().rect_filled(thumb, 3.0, theme::TEXT);
+        ui.painter()
+            .rect_filled(thumb, theme::capsule(thumb), theme::TEXT);
         ui.painter().rect_stroke(
             thumb,
-            3.0,
+            theme::capsule(thumb),
             egui::Stroke::new(1.0, Color32::BLACK),
             egui::StrokeKind::Outside,
         );
@@ -3328,10 +3336,10 @@ fn opacity_strip(
     painter.add(egui::Shape::mesh(mesh));
     let x = bar.left() + a as f32 / 255.0 * bar.width();
     let thumb = Rect::from_center_size(pos2(x, strip.center().y), vec2(8.0, TOUCH - 8.0));
-    painter.rect_filled(thumb, 3.0, theme::TEXT);
+    painter.rect_filled(thumb, theme::capsule(thumb), theme::TEXT);
     painter.rect_stroke(
         thumb,
-        3.0,
+        theme::capsule(thumb),
         egui::Stroke::new(1.0, Color32::BLACK),
         egui::StrokeKind::Outside,
     );
@@ -3350,34 +3358,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_glass_card_has_round_cells_and_an_even_inset() {
-        let ctx = egui::Context::default();
+    fn a_card_has_round_cells_and_an_even_inset() {
         let cell = Rect::from_min_size(Pos2::ZERO, vec2(40.0, 40.0));
         let tab = Rect::from_min_size(Pos2::ZERO, vec2(140.0, 40.0));
-        set_backdrop(&ctx, None);
-        assert_eq!(control_radius(&ctx, cell), theme::CONTROL_RADIUS);
-        assert_eq!(menu_inset(&ctx), vec2(BODY_PAD, 10.0));
-        set_backdrop(&ctx, Some(wgpu::TextureFormat::Rgba8Unorm));
-        assert_eq!(control_radius(&ctx, cell), 20.0);
-        assert_eq!(control_radius(&ctx, tab), theme::CONTROL_RADIUS);
-        assert_eq!(menu_inset(&ctx), vec2(MENU_INSET, MENU_INSET));
+        let row = Rect::from_min_size(Pos2::ZERO, vec2(240.0, 56.0));
+        assert_eq!(control_radius(cell), 20.0);
+        assert_eq!(control_radius(tab), 20.0);
+        assert_eq!(control_radius(row), theme::ROW_RADIUS);
+        assert_eq!(tab_radius(tab), 20.0);
+        // A row highlight reaches 8 points past the sides of the rows, and
+        // sits `HIGHLIGHT_INSET` inside their top and bottom.
+        let inset = menu_inset();
+        assert_eq!(inset.x - 8.0, theme::ROW_INSET);
+        assert_eq!(inset.y + HIGHLIGHT_INSET, theme::ROW_INSET);
+        assert_eq!(menu_track_radius(tab, 4.0), (20.0, 16.0));
     }
 
     #[test]
-    fn a_glass_card_has_the_corners_of_the_rim_or_is_a_capsule() {
+    fn a_row_is_concentric_with_its_card() {
+        assert_eq!(theme::ROW_RADIUS + theme::ROW_INSET, theme::CARD_RADIUS);
+        let wide = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 30.0));
+        assert_eq!(theme::capsule(wide), 15.0);
+        assert_eq!(theme::row_radius(wide), 15.0);
+        assert_eq!(theme::inner_radius(15.0, 4.0), 11.0);
+        assert_eq!(theme::inner_radius(3.0, 4.0), 0.0);
+    }
+
+    #[test]
+    fn a_card_has_the_corners_of_the_rim_or_is_a_capsule() {
         let panel = Rect::from_min_size(Pos2::ZERO, vec2(320.0, 400.0));
         let card = CornerRadius::same(14);
-        assert_eq!(glass_radius(panel, card), CornerRadius::same(28));
+        assert_eq!(card_radius(panel, card), CornerRadius::same(28));
         // A card 44 points high is a capsule.
         let bar = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 44.0));
-        assert_eq!(glass_radius(bar, card), CornerRadius::same(22));
+        assert_eq!(card_radius(bar, card), CornerRadius::same(22));
+        // A larger corner stays.
+        let sheet = CornerRadius::same(theme::SHEET_GLASS_RADIUS as u8);
+        assert_eq!(card_radius(panel, sheet), sheet);
         // A corner at the edge of the screen stays square.
         let edge = CornerRadius {
             nw: 0,
             sw: 0,
             ..card
         };
-        let round = glass_radius(panel, edge);
+        let round = card_radius(panel, edge);
         assert_eq!((round.nw, round.sw, round.ne, round.se), (0, 0, 28, 28));
     }
 

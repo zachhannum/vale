@@ -1031,7 +1031,7 @@ pub(super) fn dock_button(
     let start = widgets::press_start(ui);
     let painter = ui.painter();
     let inner = rect.shrink(widgets::HIGHLIGHT_INSET);
-    let radius = widgets::control_radius(ui.ctx(), inner);
+    let radius = widgets::control_radius(inner);
     if shown {
         let fill = theme::ACCENT.gamma_multiply(0.3);
         painter.rect_filled(inner, radius, fill);
@@ -1736,7 +1736,7 @@ fn merge_menu(
         .fold(0.0, f32::max);
     let screen = rects.screen.shrink(PAD);
     let width = (widest + 2.0 * widgets::BODY_PAD + 16.0).clamp(220.0, 360.0);
-    let height = 20.0 + (choices.len() + 1) as f32 * widgets::PANEL_ROW;
+    let height = 2.0 * widgets::menu_inset().y + (choices.len() + 1) as f32 * widgets::PANEL_ROW;
     // In the row layout, the list is above its cell.
     let rect = if rects.row {
         let height = height.min(cell.top() - 8.0 - rects.column_top);
@@ -1767,7 +1767,7 @@ fn merge_menu(
         radius,
         cell.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(widgets::BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
@@ -3502,12 +3502,12 @@ fn add_menu(
     let import = !state.doc.project.rasters().iter().any(is_height);
     let mut size = if state.pad.add_picking {
         let picker = collection_choice::picker_height(&state.doc.project);
-        let height = 10.0 + ROW + picker + 10.0;
+        let height = 2.0 * widgets::menu_inset().y + ROW + picker;
         let room = (rects.panel_bottom - rects.screen.top() - rects.bands.top).max(ROW * 3.0);
         vec2(PICK_WIDTH, height.min(room))
     } else {
         let rows = 4 + NEW_LAYERS.len() + usize::from(import);
-        let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
+        let height = 2.0 * widgets::menu_inset().y + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW;
         vec2(ADD_WIDTH, height)
     };
     let pane = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
@@ -3565,7 +3565,7 @@ fn add_menu(
                 let fill = theme::card().to_opaque();
                 ui.painter().rect_filled(rect, radius, fill);
             }
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
@@ -4050,7 +4050,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
 /// The workspace menu of the compact layout: the two workspaces, the Worlds
 /// row, and the Export row.
 fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let height = 10.0 + 4.0 * PANEL_ROW + 3.0 * 13.0 + 10.0;
+    let height = 2.0 * widgets::menu_inset().y + 4.0 * PANEL_ROW + 3.0 * 13.0;
     let size = vec2(geometry::MENU_WIDTH, height);
     let rect = Rect::from_min_size(rects.menu, size);
     state.pad.menu_rect = Some(rect);
@@ -4074,7 +4074,7 @@ fn menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rect
         radius,
         rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
@@ -4123,7 +4123,7 @@ pub(super) fn export_form_row(
 fn rule(ui: &mut egui::Ui) {
     let (rule, _) = ui.allocate_exact_size(vec2(ui.available_width(), 13.0), egui::Sense::hover());
     let line = Rect::from_center_size(rule.center(), vec2(rule.width(), 1.0));
-    ui.painter().rect_filled(line, 0.0, theme::raise());
+    ui.painter().rect_filled(line, 0.0, theme::divider());
 }
 
 /// Opens or closes the menu of the worlds. The menu shows the worlds that
@@ -4166,7 +4166,10 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         true => (rows + 1.0, rule_height + 13.0),
         false => (rows, rule_height),
     };
-    let size = vec2(width, 10.0 + shown + rule_height + rows * PANEL_ROW + 10.0);
+    let size = vec2(
+        width,
+        2.0 * widgets::menu_inset().y + shown + rule_height + rows * PANEL_ROW,
+    );
     let rect = Rect::from_min_size(rects.menu, size);
     let room = Rect::from_x_y_ranges(rects.screen.x_range(), rects.menu.y..=rects.panel_bottom);
     let rect = geometry::off_fold(rect, rects.workspace, rects.fold, room);
@@ -4191,7 +4194,7 @@ fn worlds_menu(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         radius,
         rects.workspace.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;

@@ -516,8 +516,8 @@ impl Shape {
     /// The shape of a row of a list that is not grouped.
     const FREE: Shape = Shape {
         inset: HIGHLIGHT_INSET,
-        radius: 5.0,
-        bottom: 5.0,
+        radius: theme::ROW_RADIUS,
+        bottom: theme::ROW_RADIUS,
         margin: 0.0,
         indent: 0.0,
     };
@@ -545,7 +545,7 @@ impl Shape {
 }
 
 /// The radius of the corners of a button behind a row.
-const BUTTON_RADIUS: f32 = 5.0;
+const BUTTON_RADIUS: f32 = theme::ROW_RADIUS;
 
 /// The tint of a selected row, or the highlight of a row that is chosen
 /// or pressed.

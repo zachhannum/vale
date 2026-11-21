@@ -14,10 +14,6 @@ use super::compile::{Compiled, render_pipeline};
 
 /// The standard deviation of the blur of the copy, in points.
 pub const BLUR_POINTS: f32 = 3.0;
-/// The largest corner radius of a card of glass, in points. The curve of
-/// the rim of a card has the radius of its corners, so that the rim has no
-/// seams.
-pub const GLASS_RADIUS: f32 = 28.0;
 /// The largest number of cards in one frame.
 const MAX_CARDS: usize = 64;
 

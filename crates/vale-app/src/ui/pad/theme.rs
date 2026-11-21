@@ -15,14 +15,40 @@ pub const MUTE: Color32 = Color32::from_rgb(216, 220, 226);
 /// a contrast of 4.5 to 1.
 pub const WARN: Color32 = Color32::from_rgb(250, 216, 152);
 pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
-pub const CARD_RADIUS: f32 = 14.0;
-pub const SHEET_RADIUS: f32 = 18.0;
+/// The corner radius of a card, a menu, a popover, a sheet, and the dock. A
+/// card with a short side under two times this radius is a capsule.
+pub const CARD_RADIUS: f32 = 28.0;
 /// The corner radius of a glass sheet: the radius of the corners of the
 /// display of a phone, less the inset of the sheet.
 pub const SHEET_GLASS_RADIUS: f32 = 47.0;
-pub const CONTROL_RADIUS: f32 = 10.0;
+/// The space between the edge of a card and the highlight of a row or a
+/// control in its first or last row.
+pub const ROW_INSET: f32 = 8.0;
+/// The corner radius of the highlight of a row. It is concentric with the
+/// corners of the card, `ROW_INSET` inside it.
+pub const ROW_RADIUS: f32 = CARD_RADIUS - ROW_INSET;
+/// The corner radius of a large block in a panel or a menu, such as a tile.
+pub const TILE_RADIUS: f32 = 16.0;
+/// The corner radius of a small swatch or preview.
+pub const SMALL_RADIUS: f32 = 6.0;
 /// The opacity of a control that does nothing yet.
 pub const OFF: f32 = 0.35;
+
+/// The corner radius of a capsule in `rect`: half its short side.
+pub fn capsule(rect: egui::Rect) -> f32 {
+    rect.width().min(rect.height()).max(0.0) / 2.0
+}
+
+/// The corner radius of a row highlight in `rect`, up to a capsule.
+pub fn row_radius(rect: egui::Rect) -> f32 {
+    ROW_RADIUS.min(capsule(rect))
+}
+
+/// The corner radius of a shape `inset` inside a shape of radius `outer`,
+/// so that the two are concentric.
+pub fn inner_radius(outer: f32, inset: f32) -> f32 {
+    (outer - inset).max(0.0)
+}
 
 /// The fill of a card with no glass.
 pub fn card() -> Color32 {
