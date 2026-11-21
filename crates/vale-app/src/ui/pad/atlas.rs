@@ -1742,12 +1742,21 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     let name = state.doc.layer(layer)?.name.clone();
     let rules = state.doc.map_style(map, layer)?.style.rules;
     let page = match state.atlas.layer_page {
-        Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i))
-            if i >= rules.len() =>
-        {
-            None
-        }
-        Some(Page::Rule(_) | Page::Symbols(_) | Page::MarkerShape(_) | Page::MarkerFill(_)) => {
+        Some(
+            Page::Rule(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i)
+            | Page::DashPattern(Some(i)),
+        ) if i >= rules.len() => None,
+        Some(
+            Page::Rule(_)
+            | Page::Symbols(_)
+            | Page::MarkerShape(_)
+            | Page::MarkerFill(_)
+            | Page::DashPattern(Some(_)),
+        ) => state.atlas.layer_page,
+        Some(Page::DashPattern(None)) if !state.pad.rules.picked(layer).is_empty() => {
             state.atlas.layer_page
         }
         Some(Page::Classify | Page::Ramps | Page::RampLabels(_) | Page::Mask) => {
@@ -1760,10 +1769,14 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     };
     state.atlas.layer_page = page;
     let rule_name = match page {
-        Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
-            rules[i].name.clone()
-        }
-        Some(Page::Rules) => super::rules::selection_title(state, layer),
+        Some(
+            Page::Rule(i)
+            | Page::Symbols(i)
+            | Page::MarkerShape(i)
+            | Page::MarkerFill(i)
+            | Page::DashPattern(Some(i)),
+        ) => rules[i].name.clone(),
+        Some(Page::Rules | Page::DashPattern(None)) => super::rules::selection_title(state, layer),
         _ => String::new(),
     };
     let (key, title, back) = match page {
@@ -1774,6 +1787,9 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             &*rule_name,
         ),
         Some(Page::MarkerFill(_)) => ("pad-atlas-marker-fill", super::rules::FILL, &*rule_name),
+        Some(Page::DashPattern(_)) => {
+            ("pad-atlas-dash-pattern", super::rules::PATTERN, &*rule_name)
+        }
         Some(Page::Classify) => ("pad-atlas-classify", super::classify::TITLE, name.as_str()),
         Some(Page::Mask) => ("pad-atlas-mask", super::rules::MASK, name.as_str()),
         Some(Page::Ramps) => (
@@ -1799,9 +1815,13 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
     let parts = PageParts::new(key, title, Some(back));
     let back_to = move |state: &mut AppState| {
         state.atlas.layer_page = match page {
-            Some(Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)) => {
-                Some(Page::Rule(i))
-            }
+            Some(
+                Page::Symbols(i)
+                | Page::MarkerShape(i)
+                | Page::MarkerFill(i)
+                | Page::DashPattern(Some(i)),
+            ) => Some(Page::Rule(i)),
+            Some(Page::DashPattern(None)) => Some(Page::Rules),
             Some(Page::Ramps) => Some(Page::Classify),
             Some(Page::RampLabels(_)) => Some(Page::Ramps),
             Some(Page::RampEditor) => {
@@ -1842,6 +1862,9 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             }
             Some(Page::MarkerFill(i)) => {
                 super::rules::marker_fill_body(ui, state, controls, layer, i);
+            }
+            Some(Page::DashPattern(rule)) => {
+                super::rules::dash_pattern_body(ui, state, controls, layer, rule);
             }
             Some(Page::Classify) => super::classify::body(ui, state, controls, layer),
             Some(Page::Mask) => super::rules::mask_body(ui, state, controls, layer),
