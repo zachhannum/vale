@@ -384,7 +384,7 @@ fn preview(ui: &mut egui::Ui, help: &ExprHelp, text: &str, look: &mut Look) {
     let h = texture.as_ref().map_or(0.0, |t| t.size.y + 24.0).max(56.0);
     let (rect, _) = ui.allocate_exact_size(vec2(width, h), Sense::hover());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 12.0, PAPER);
+    painter.rect_filled(rect, theme::TILE_RADIUS, PAPER);
     match &texture {
         Some(t) => {
             let image = Rect::from_center_size(rect.center(), t.size);
@@ -737,7 +737,7 @@ fn bar_button(
     } else {
         theme::raise()
     };
-    ui.painter().rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    ui.painter().rect_filled(rect, theme::capsule(rect), fill);
     match arrow {
         Some(()) => paint_break(ui.painter(), rect, theme::MUTE),
         None => {
@@ -789,7 +789,7 @@ pub fn bar_chip(
         theme::raise()
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CONTROL_RADIUS, fill);
+    painter.rect_filled(rect, theme::capsule(rect), fill);
     let y = rect.center().y;
     if let Some(g) = glyph {
         paint_glyph(

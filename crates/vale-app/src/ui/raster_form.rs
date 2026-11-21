@@ -673,7 +673,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let radius = theme::CARD_RADIUS.into();
     widgets::form_card(ctx, CARD, screen, rect, radius, false, |ui| {
         ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+            .rect_filled(rect, radius, theme::card().to_opaque());
         ui.spacing_mut().item_spacing.y = 0.0;
         if form.picking {
             let title = collection_choice::COLLECTION;

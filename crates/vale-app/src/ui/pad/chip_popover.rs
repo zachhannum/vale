@@ -219,7 +219,7 @@ fn places_row(
         pos2(row.right() - 124.0, row.center().y - 18.0),
         vec2(124.0, 36.0),
     );
-    painter.rect_filled(track, theme::CONTROL_RADIUS, Color32::from_black_alpha(77));
+    painter.rect_filled(track, theme::capsule(track), Color32::from_black_alpha(77));
     let value = places.map_or("–".to_owned(), |p| p.to_string());
     painter.text(
         track.center(),
@@ -561,7 +561,8 @@ fn wrap_page(ui: &mut egui::Ui, controls: &mut Controls, chip: &Chip) -> Option<
                 let resp =
                     widgets::hit(ui, controls, row, &wrap_name(f), Sense::click(), true, None);
                 if resp.is_pointer_button_down_on() {
-                    ui.painter().rect_filled(row, 8.0, theme::raise());
+                    ui.painter()
+                        .rect_filled(row, theme::row_radius(row), theme::raise());
                 }
                 let painter = ui.painter();
                 let y = row.center().y;

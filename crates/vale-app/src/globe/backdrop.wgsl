@@ -1,16 +1,15 @@
-// The blurred copy of the canvas that a card of the iPad layout shows. The
-// frame drawn so far shrinks into a texture at a reduced size, and two passes
-// blur it.
+// The glass of the cards of the iPad layout. The frame drawn so far is
+// copied to a texture, and two passes give the copy a light blur. Each card
+// draws the copy through its glass.
 
 struct Globals {
     // The left and the top of the canvas on the screen, then its width and
     // its height, in pixels.
     canvas: vec4<f32>,
-    // The width and the height of the reduced copy in pixels, then the
-    // direction of the blur pass.
-    small: vec4<f32>,
-    // The standard deviation of the blur in pixels of the reduced copy, the
-    // reduction, and the gain of the backdrop.
+    // The width and the height of the copy in pixels, then the direction of
+    // the blur pass.
+    copy: vec4<f32>,
+    // The standard deviation of the blur in pixels.
     blur: vec4<f32>,
 }
 
@@ -43,8 +42,8 @@ fn gauss(x: f32, sigma: f32) -> f32 {
 fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let sigma = max(g.blur.x, 0.01);
     let reach = min(i32(ceil(sigma * 2.5)), MAX_REACH);
-    let uv = frag.xy / g.small.xy;
-    let tap = g.small.zw / g.small.xy;
+    let uv = frag.xy / g.copy.xy;
+    let tap = g.copy.zw / g.copy.xy;
     var sum = textureSampleLevel(source, bilinear, uv, 0.0);
     var total = 1.0;
     for (var i = 1; i <= reach; i += 2) {
@@ -59,18 +58,11 @@ fn fs_blur(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     return sum / total;
 }
 
-// One pixel of the reduced copy: the mean of the 4 by 4 pixels of the frame
-// that it covers. Each bilinear tap reads 2 by 2 pixels.
+// A copy of the frame at the full size.
 @fragment
-fn fs_down(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+fn fs_copy(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let size = vec2<f32>(textureDimensions(source));
-    let center = frag.xy * g.blur.y;
-    var sum = vec4<f32>(0.0);
-    for (var i = 0; i < 4; i += 1) {
-        let offset = vec2<f32>(f32(i & 1) * 2.0 - 1.0, f32(i >> 1u) * 2.0 - 1.0);
-        sum += textureSampleLevel(source, bilinear, (center + offset) / size, 0.0);
-    }
-    return sum * 0.25;
+    return textureSampleLevel(source, bilinear, frag.xy / size, 0.0);
 }
 
 struct CardVertex {
@@ -79,6 +71,13 @@ struct CardVertex {
     @location(0) @interpolate(flat) rect: vec4<f32>,
     // The corner radii in pixels: top left, top right, bottom left, bottom right.
     @location(1) @interpolate(flat) radii: vec4<f32>,
+    // The pixels per point, and the radius of the curve of the rim in
+    // pixels.
+    @location(2) @interpolate(flat) glass: vec4<f32>,
+    // A capsule that joins the card with a smooth outline, such as the
+    // handle of the dock: its center, then half of its width and height,
+    // in pixels. A width of 0: no capsule.
+    @location(3) @interpolate(flat) blob: vec4<f32>,
 }
 
 // egui sets the viewport to the card, so the triangle covers the card.
@@ -87,20 +86,149 @@ fn vs_card(
     @builtin(vertex_index) i: u32,
     @location(0) rect: vec4<f32>,
     @location(1) radii: vec4<f32>,
+    @location(2) glass: vec4<f32>,
+    @location(3) blob: vec4<f32>,
 ) -> CardVertex {
-    return CardVertex(corner(i), rect, radii);
+    return CardVertex(corner(i), rect, radii, glass, blob);
 }
 
-// The blurred canvas inside the rounded rectangle of a card.
+// The glass follows the shader of the liquidglass library by Yassine
+// Bouane (MIT). Its lengths in pixels are for a screen with 3 pixels per
+// point, so `unit` scales them. The settings are the settings of the
+// library, but the curve of the rim has the radius of the corners of the
+// card, so that the rim has no seams.
+const REFRACTION: f32 = 1.42;
+const CHROMA: f32 = 0.05;
+const EDGE_HIGHLIGHT: f32 = 0.05;
+const FRESNEL: f32 = 1.0;
+const DISTORTION: f32 = 0.05;
+// The glass maps the canvas into a band of grey from `FLOOR` to `FLOOR +
+// RANGE`, so that a dark canvas gets a little lighter and a light canvas
+// gets much darker.
+const FLOOR: f32 = 0.16;
+const RANGE: f32 = 0.19;
+const INDEX: f32 = 1.5;
+
+// The signed distance of `p` from the edge of a rounded rectangle, with
+// `p` relative to the center.
+fn rounded(p: vec2<f32>, half: vec2<f32>, radii: vec4<f32>) -> f32 {
+    let side = mix(radii.xz, radii.yw, vec2<f32>(step(0.0, p.x)));
+    let radius = mix(side.x, side.y, step(0.0, p.y));
+    let q = abs(p) - half + radius;
+    return length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+// The height of the rim at the distance `d` inside the edge: a quarter
+// circle of the radius `z`.
+fn bevel(d: f32, z: f32) -> f32 {
+    if d <= 0.0 {
+        return 0.0;
+    }
+    if d >= z {
+        return z;
+    }
+    return sqrt(d * (2.0 * z - d));
+}
+
+// The distance from the joined outline of a card and a capsule. `q` is the
+// place relative to the card, and `b` the place relative to the capsule of
+// half the size `blob`. The two shapes join over the distance `k`.
+fn shape(q: vec2<f32>, half: vec2<f32>, radii: vec4<f32>, b: vec2<f32>, blob: vec2<f32>, k: f32) -> f32 {
+    let card = rounded(q, half, radii);
+    if blob.x <= 0.0 {
+        return card;
+    }
+    let capsule = rounded(b, blob, vec4<f32>(min(blob.x, blob.y)));
+    let h = clamp(0.5 + 0.5 * (capsule - card) / k, 0.0, 1.0);
+    return mix(capsule, card, h) - k * h * (1.0 - h);
+}
+
+// The distance in points over which a card and its capsule join.
+const JOIN: f32 = 10.0;
+
+fn hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
+
+// The canvas below a card of glass. The card is a slab of glass whose rim
+// is curved, and light refracts at its top and bottom surfaces. `place` is
+// the place relative to the center, `card` is half the size of the card, and
+// `pixels` is the pixels per point, `z` is the radius of the curve of the
+// rim in pixels, and `blob` is the capsule that joins the card.
+fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pixels: f32, z: f32, blob: vec4<f32>) -> vec3<f32> {
+    let unit = pixels / 3.0;
+    // A side at the edge of the screen has no rim: the glass goes on past
+    // the screen.
+    let low = pos - place - card <= g.canvas.xy + 1.0;
+    let high = pos - place + card >= g.canvas.xy + g.canvas.zw - 1.0;
+    let grow_low = select(vec2<f32>(0.0), vec2<f32>(z), low);
+    let grow_high = select(vec2<f32>(0.0), vec2<f32>(z), high);
+    let half = card + (grow_low + grow_high) * 0.5;
+    let p = place + (grow_low - grow_high) * 0.5;
+    // The place relative to the capsule is `p + to_blob`.
+    let to_blob = pos - p - blob.xy;
+    let k = JOIN * pixels;
+    let sdf = shape(p, half, radii, p + to_blob, blob.zw, k);
+    let inside = -sdf;
+    let edge = smoothstep(min(half.x, half.y) * 0.35, 0.0, inside);
+
+    // The normal of the top surface, from the slope of the rim.
+    let e = 2.0 * unit;
+    let dx = vec2<f32>(e, 0.0);
+    let dy = vec2<f32>(0.0, e);
+    let height = array<f32, 4>(
+        bevel(-shape(p + dx, half, radii, p + dx + to_blob, blob.zw, k), z),
+        bevel(-shape(p - dx, half, radii, p - dx + to_blob, blob.zw, k), z),
+        bevel(-shape(p + dy, half, radii, p + dy + to_blob, blob.zw, k), z),
+        bevel(-shape(p - dy, half, radii, p - dy + to_blob, blob.zw, k), z),
+    );
+    let slope = vec2<f32>(height[0] - height[1], height[2] - height[3]) / (2.0 * e);
+    let normal = normalize(vec3<f32>(-slope, 1.0));
+    let depth = smoothstep(0.0, z, inside);
+
+    // The ray bends at the top and at the bottom surface, and more where
+    // the glass is thick. The whole card also pulls the canvas a little
+    // toward its center.
+    let power = 1.0 - 1.0 / INDEX;
+    let thick = bevel(inside, z) / max(z, 1.0);
+    var shift = slope * power * (2.0 + 0.5 * thick) * REFRACTION * 30.0 * unit;
+    shift += -p / max(half, vec2<f32>(1.0)) * REFRACTION * 4.0 * unit * depth;
+    let noise = p / unit * 0.08;
+    shift += (vec2<f32>(hash(noise), hash(noise + vec2<f32>(37.0))) - 0.5) * DISTORTION * 4.0 * unit;
+
+    // Red bends outward and blue inward.
+    let fringe = normal.xy * CHROMA * 36.0 * (edge * 0.7 + 0.3) * unit;
+    let scale = 1.0 / g.copy.xy;
+    let at = (pos + shift - g.canvas.xy) * scale;
+    var color = vec3<f32>(
+        textureSampleLevel(source, bilinear, at + fringe * scale, 0.0).r,
+        textureSampleLevel(source, bilinear, at, 0.0).g,
+        textureSampleLevel(source, bilinear, at - fringe * scale, 0.0).b,
+    );
+    color = (FLOOR + RANGE * color) * (1.0 + 0.06 * depth);
+
+    // The light on the glass: a reflection that grows where the surface is
+    // steep, a thin line inside the edge that is brighter at the top, and
+    // a glow along the rim.
+    let fresnel = pow(1.0 - abs(normal.z), 4.0) * FRESNEL;
+    let border = 1.5 * unit;
+    var line = smoothstep(-border - unit, -border, sdf) * (1.0 - smoothstep(-unit, 0.0, sdf));
+    line *= 0.4 + 0.6 * (0.5 - 0.5 * p.y / half.y);
+    let rim = edge * EDGE_HIGHLIGHT * 0.22;
+    let glow = smoothstep(5.0 * unit, 0.0, inside) * EDGE_HIGHLIGHT * 0.15;
+    let reflection = (normal.y * 0.5 + 0.5) * fresnel * 0.08;
+    color += vec3<f32>(rim + glow + line * EDGE_HIGHLIGHT * 0.55 + reflection);
+    color = mix(color, vec3<f32>(1.0), fresnel * 0.2);
+    return clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// The glass inside the outline of a card.
 @fragment
 fn fs_card(in: CardVertex) -> @location(0) vec4<f32> {
     let p = in.position.xy - in.rect.xy;
-    let side = mix(in.radii.xz, in.radii.yw, vec2<f32>(step(0.0, p.x)));
-    let radius = mix(side.x, side.y, step(0.0, p.y));
-    let q = abs(p) - in.rect.zw + radius;
-    let distance = length(max(q, vec2<f32>(0.0))) + min(max(q.x, q.y), 0.0) - radius;
+    let b = in.position.xy - in.blob.xy;
+    let distance = shape(p, in.rect.zw, in.radii, b, in.blob.zw, JOIN * in.glass.x);
     let cover = clamp(0.5 - distance, 0.0, 1.0);
-    let uv = (in.position.xy - g.canvas.xy) / (g.small.xy * g.blur.y);
-    let color = textureSampleLevel(source, bilinear, uv, 0.0).rgb * g.blur.z;
+    let color = glass(in.position.xy, p, in.rect.zw, in.radii, in.glass.x, in.glass.y, in.blob);
     return vec4<f32>(color * cover, cover);
 }

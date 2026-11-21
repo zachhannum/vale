@@ -38,8 +38,6 @@ pub const ROW_INDENT: f32 = NAME_X - 2.0;
 /// The space between each edge of the list and the content of a row. The
 /// highlight of a row reaches the edges of the list.
 const ROW_EDGE: f32 = 8.0;
-/// The radius of the fill of a lifted header row, as of a highlight.
-const LIFT_RADIUS: f32 = 5.0;
 
 /// The name of the popover row of a collection.
 pub fn collection_row(name: &str) -> String {
@@ -397,9 +395,10 @@ fn restack(
             vec2(cell.rect.width() + 16.0, PANEL_ROW),
         );
         if cell.lifted {
-            let fill = theme::card(false).to_opaque();
-            cell.painter.rect_filled(pill, LIFT_RADIUS, fill);
-            cell.painter.rect_filled(pill, LIFT_RADIUS, theme::raise());
+            let fill = theme::card().to_opaque();
+            cell.painter.rect_filled(pill, theme::ROW_RADIUS, fill);
+            cell.painter
+                .rect_filled(pill, theme::ROW_RADIUS, theme::raise());
         }
         let chevron = Rect::from_center_size(chevron_center(pill), vec2(18.0, 18.0));
         let icon = if collapsed[i] { Icon::Open } else { Icon::Down };

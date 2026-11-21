@@ -10,7 +10,7 @@ use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, Rects};
 use super::icons::{self, Icon};
-use super::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
+use super::widgets::{self, Controls, PANEL_ROW};
 use super::{HOLD_SLOP, HOLD_TIME, ModeGroup, theme};
 
 /// A group of choices with a flyout.
@@ -321,7 +321,7 @@ pub fn tooltip(
     };
     let rect = geometry::off_fold(rect, tip.cell, rects.fold, rects.screen);
     flyouts.tip_rect = Some(rect);
-    let radius = theme::CONTROL_RADIUS.into();
+    let radius = theme::CARD_RADIUS.into();
     widgets::card(
         ctx,
         backdrop,
@@ -357,7 +357,10 @@ pub fn tooltip(
                     ]
                 }
             };
-            let fill = theme::card(backdrop.is_some());
+            let fill = match backdrop {
+                Some(_) => theme::glass_tone(),
+                None => theme::card(),
+            };
             painter.add(egui::Shape::convex_polygon(point, fill, egui::Stroke::NONE));
             let at = pos2(rect.left() + 14.0, rect.center().y);
             painter.text(
@@ -389,10 +392,14 @@ enum Side {
     Left,
 }
 
-/// The mark in the corner of a cell with a flyout.
+/// The mark in the corner of a cell with a flyout. On glass cards, the
+/// highlight of the cell is a circle, and the mark is inside it.
 fn paint_mark(ui: &egui::Ui, cell: Rect, active: bool, enabled: bool) {
     let color = widgets::fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
-    let corner = cell.right_bottom() - vec2(6.0, 6.0);
+    let corner = match widgets::is_glass(ui.ctx()) {
+        true => cell.center() + vec2(12.0, 12.0),
+        false => cell.right_bottom() - vec2(6.0, 6.0),
+    };
     let points = vec![corner, corner - vec2(6.0, 0.0), corner - vec2(0.0, 6.0)];
     let shape = egui::Shape::convex_polygon(points, color, egui::Stroke::NONE);
     ui.painter().add(shape);
@@ -418,7 +425,7 @@ pub fn show(
         return None;
     };
     let rows = choices.len() as f32;
-    let full = 10.0 + rows * PANEL_ROW + 10.0;
+    let full = 2.0 * widgets::menu_inset().y + rows * PANEL_ROW;
     // In the row layout, the list is above its cell. Else it is at the
     // right of the strip.
     let rect = if rects.row {
@@ -466,7 +473,7 @@ pub fn show(
         radius,
         cell.center().clamp(rect.min, rect.max),
         |ui| {
-            let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+            let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             ui.set_clip_rect(inner);

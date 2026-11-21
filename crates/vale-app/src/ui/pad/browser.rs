@@ -141,6 +141,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         dock_width: super::panes::WIDTH,
         camera: state.pad.camera,
         fold: state.pad.fold,
+        glass: false,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;
@@ -201,13 +202,17 @@ fn card(
 ) {
     let open = widgets::tap_area(ui, controls, rect, &open_name(&entry.name), true);
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::CARD_RADIUS, theme::card(false).to_opaque());
+    painter.rect_filled(rect, theme::TILE_RADIUS, theme::card().to_opaque());
     if open.is_pointer_button_down_on() {
-        painter.rect_filled(rect, theme::CARD_RADIUS, theme::raise());
+        painter.rect_filled(rect, theme::TILE_RADIUS, theme::raise());
     }
 
     let picture = Rect::from_min_size(rect.min, vec2(rect.width(), rect.width())).shrink(CARD_PAD);
-    painter.rect_filled(picture, theme::CONTROL_RADIUS, theme::track());
+    painter.rect_filled(
+        picture,
+        theme::inner_radius(theme::TILE_RADIUS, CARD_PAD),
+        theme::track(),
+    );
     match state.browser.texture(ui.ctx(), entry) {
         Some(texture) => egui::Image::new(&texture).paint_at(ui, picture),
         // A file of an older version has no picture until it is open one
@@ -323,7 +328,7 @@ fn card_above(
     let radius = theme::CARD_RADIUS.into();
     let contents = |ui: &mut egui::Ui| {
         ui.painter()
-            .rect_filled(rect, radius, theme::card(false).to_opaque());
+            .rect_filled(rect, radius, theme::card().to_opaque());
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         add_contents(ui);
     };
@@ -354,7 +359,10 @@ fn actions_menu(
     let readable = entry.error.is_none() && entry.availability == Availability::Here;
     let rows = if readable { 3.0 } else { 1.0 };
     let rule_height = if readable { 13.0 } else { 0.0 };
-    let size = vec2(MENU_WIDTH, 10.0 + rows * PANEL_ROW + rule_height + 10.0);
+    let size = vec2(
+        MENU_WIDTH,
+        2.0 * widgets::menu_inset().y + rows * PANEL_ROW + rule_height,
+    );
     // The menu opens below the button or the card, or above it near the
     // bottom of the screen.
     let lowest = screen.bottom() - bands.bottom - MARGIN - size.y;
@@ -371,7 +379,7 @@ fn actions_menu(
     controls.clear();
     let origin = menu.button.center().clamp(rect.min, rect.max);
     card_above(ctx, "pad-project-menu", rect, Some(origin), |ui| {
-        let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
+        let inner = rect.shrink2(widgets::menu_inset());
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
         let ui = &mut ui;

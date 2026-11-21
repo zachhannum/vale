@@ -8,27 +8,69 @@ pub const CANVAS: Color32 = Color32::from_rgb(15, 17, 19);
 /// The globe below the raster layers of the world.
 pub const GROUND: Color32 = Color32::from_rgb(64, 70, 79);
 pub const TEXT: Color32 = Color32::from_rgb(231, 233, 236);
-pub const MUTE: Color32 = Color32::from_rgb(174, 181, 190);
-/// The color of a text that warns.
-pub const WARN: Color32 = Color32::from_rgb(242, 184, 92);
+/// The color of a secondary text and of an icon that is not active. Over
+/// the glass of a white canvas, it has a contrast of 4.5 to 1.
+pub const MUTE: Color32 = Color32::from_rgb(216, 220, 226);
+/// The color of a text that warns. Over the glass of a white canvas, it has
+/// a contrast of 4.5 to 1.
+pub const WARN: Color32 = Color32::from_rgb(250, 216, 152);
 pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
-pub const CARD_RADIUS: f32 = 14.0;
-pub const SHEET_RADIUS: f32 = 18.0;
-pub const CONTROL_RADIUS: f32 = 10.0;
+/// The corner radius of a card, a menu, a popover, a sheet, and the dock. A
+/// card with a short side under two times this radius is a capsule.
+pub const CARD_RADIUS: f32 = 28.0;
+/// The corner radius of a glass sheet: the radius of the corners of the
+/// display of a phone, less the inset of the sheet.
+pub const SHEET_GLASS_RADIUS: f32 = 47.0;
+/// The space between the edge of a card and the highlight of a row or a
+/// control in its first or last row.
+pub const ROW_INSET: f32 = 8.0;
+/// The corner radius of the highlight of a row. It is concentric with the
+/// corners of the card, `ROW_INSET` inside it.
+pub const ROW_RADIUS: f32 = CARD_RADIUS - ROW_INSET;
+/// The corner radius of a large block in a panel or a menu, such as a tile.
+pub const TILE_RADIUS: f32 = 16.0;
+/// The corner radius of a small swatch or preview.
+pub const SMALL_RADIUS: f32 = 6.0;
 /// The opacity of a control that does nothing yet.
 pub const OFF: f32 = 0.35;
 
-/// The fill of a card. `blur`: the card shows the blurred canvas below the
-/// fill. A card with no blur is less clear.
-pub fn card(blur: bool) -> Color32 {
-    let alpha = if blur { 184 } else { 228 };
-    Color32::from_rgba_unmultiplied(26, 29, 33, alpha)
+/// The corner radius of a capsule in `rect`: half its short side.
+pub fn capsule(rect: egui::Rect) -> f32 {
+    rect.width().min(rect.height()).max(0.0) / 2.0
+}
+
+/// The corner radius of a row highlight in `rect`, up to a capsule.
+pub fn row_radius(rect: egui::Rect) -> f32 {
+    ROW_RADIUS.min(capsule(rect))
+}
+
+/// The corner radius of a shape `inset` inside a shape of radius `outer`,
+/// so that the two are concentric.
+pub fn inner_radius(outer: f32, inset: f32) -> f32 {
+    (outer - inset).max(0.0)
+}
+
+/// The fill of a card with no glass.
+pub fn card() -> Color32 {
+    Color32::from_rgba_unmultiplied(26, 29, 33, 228)
+}
+
+/// A color near the look of a glass card, for a shape that joins a card,
+/// such as the point of a card.
+pub fn glass_tone() -> Color32 {
+    Color32::from_rgba_unmultiplied(58, 60, 64, 236)
+}
+
+/// The fill of a card of glass. The glass dims the canvas itself, so the
+/// card has no fill.
+pub fn glass() -> Color32 {
+    Color32::TRANSPARENT
 }
 
 /// The fill of a menu that opens over a card. It is opaque and lighter
 /// than the card.
 pub fn menu() -> Color32 {
-    card(false).to_opaque().blend(raise())
+    card().to_opaque().blend(raise())
 }
 
 /// The fill of a selected control.

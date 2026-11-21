@@ -209,11 +209,7 @@ fn tiles(
             false => theme::raise(),
         };
         let painter = ui.painter();
-        painter.rect_filled(
-            rect,
-            theme::CONTROL_RADIUS + 4.0,
-            widgets::fade(fill, ready),
-        );
+        painter.rect_filled(rect, theme::TILE_RADIUS, widgets::fade(fill, ready));
         let text = theme::body();
         let job = name_job(
             name,
@@ -265,7 +261,7 @@ fn hero(ui: &mut egui::Ui, icon: Icon, about: &str) {
     ui.horizontal_top(|ui| {
         let (square, _) = ui.allocate_exact_size(vec2(HERO_ICON, HERO_ICON), Sense::hover());
         let painter = ui.painter();
-        painter.rect_filled(square, theme::CONTROL_RADIUS + 2.0, theme::raise());
+        painter.rect_filled(square, theme::TILE_RADIUS, theme::raise());
         icons::paint(painter, square, icon, 32.0, theme::ACCENT);
         ui.add_space(6.0);
         let about = egui::RichText::new(about).color(theme::MUTE);
