@@ -320,7 +320,7 @@ fn curved(
     // The baseline is below the axis by half the cap height, so the text centers on the axis.
     let base = parallel(m, -shaped.cap_height / 2.0);
     let limit = pp.max_glyph_turn;
-    for (extra, narrow) in spreads(len, shaped, pp.max_spread * size, size) {
+    for (extra, narrow) in spreads(len, len, shaped, pp.max_spread * size, size) {
         let span = adv + extra * gaps as f64;
         let scale = turn_scale(shaped, extra);
         for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0] {
@@ -408,7 +408,7 @@ fn horizontal(
             Some((_, _, w)) => *w,
             None => grid.row_width(i),
         } - 2.0 * PAD * size;
-        for (extra, narrow) in spreads(width, shaped, pp.max_spread * size, size) {
+        for (extra, narrow) in spreads(width, width, shaped, pp.max_spread * size, size) {
             let span = extra * gaps;
             let transforms = if let Some((curve, at, _)) = &through {
                 // The ink centers on the site, as in horizontal text.
@@ -519,6 +519,7 @@ fn along_parallels(
 
     let adv = shaped.advance;
     let gaps = shaped.glyph_count().saturating_sub(1);
+    let longest = runs.iter().map(|r| r.2 - r.1).fold(0.0, f64::max);
     for (rank, (curve, lo, hi)) in runs.into_iter().enumerate() {
         let len = hi - lo;
         if len < adv {
@@ -531,7 +532,7 @@ fn along_parallels(
             (a.min(b), a.max(b))
         };
         let base = parallel(&curve, -shaped.cap_height / 2.0);
-        for (extra, narrow) in spreads(len, shaped, pp.max_spread * size, size) {
+        for (extra, narrow) in spreads(len, longest, shaped, pp.max_spread * size, size) {
             let span = adv + extra * gaps as f64;
             let scale = turn_scale(shaped, extra);
             for k in [0.0, 1.0, -1.0, 2.0, -2.0, 3.0, -3.0] {
@@ -651,9 +652,11 @@ fn turn_scale(shaped: &ShapedText, extra: f64) -> f64 {
 }
 
 /// The extra spaces between two letters that a label in `len` tries, widest first, with the
-/// cost of each. The widest makes the text fill [`FILL`] of `len`, with at most `max`.
-fn spreads(len: f64, shaped: &ShapedText, max: f64, size: f64) -> Vec<(f64, f64)> {
+/// cost of each. The widest makes the text fill [`FILL`] of `len`, with at most `max`. The cost
+/// grows with the shortfall from the widest spread in `best`, the longest room in the shape.
+fn spreads(len: f64, best: f64, shaped: &ShapedText, max: f64, size: f64) -> Vec<(f64, f64)> {
     let widest = spread(FILL * len, shaped, max);
+    let top = spread(FILL * best.max(len), shaped, max);
     let gaps = shaped.glyph_count().saturating_sub(1) as f64;
     let mut out: Vec<(f64, f64)> = Vec::new();
     for step in SPREAD_STEPS {
@@ -664,7 +667,8 @@ fn spreads(len: f64, shaped: &ShapedText, max: f64, size: f64) -> Vec<(f64, f64)
         {
             continue;
         }
-        out.push((extra, NARROW * (1.0 - step)));
+        let short = if top > 0.0 { 1.0 - extra / top } else { 0.0 };
+        out.push((extra, NARROW * short));
     }
     out
 }

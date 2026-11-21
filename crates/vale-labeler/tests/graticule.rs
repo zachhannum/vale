@@ -428,3 +428,36 @@ fn a_polygon_label_along_the_parallels_moves_with_the_page() {
         "{first:?}"
     );
 }
+
+#[test]
+fn a_label_along_the_parallel_spreads_in_the_widest_part() {
+    // An obstacle covers the east end of the bar, so the label on the bar cannot spread fully.
+    // It is still wider there than the widest label in the block.
+    let input = LabelInput {
+        bounds: PAGE,
+        classes: vec![class(Placement::Polygon(PolygonPlacement {
+            max_spread: 100.0,
+            ..parallel_mode()
+        }))],
+        features: vec![Feature {
+            id: 1,
+            class: 0,
+            text: "Bar".into(),
+            priority: 0.0,
+            geometry: Geometry::Polygon {
+                rings: vec![bar_and_block()],
+            },
+        }],
+        obstacles: vec![Obstacle::rect(
+            Rect::new(440.0, 90.0, 710.0, 160.0),
+            Weight::Forbidden,
+        )],
+        parallels: straight(),
+        options: Options::default(),
+    };
+    let out = place_labels(&mut fonts(), &input);
+    assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+    let b = out.placed[0].bounds;
+    assert!(b.center().y < 150.0, "the label is in the block: {b:?}");
+    assert!(b.width() > 200.0, "the label is {} wide", b.width());
+}
