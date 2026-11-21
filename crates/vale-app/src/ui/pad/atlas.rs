@@ -20,7 +20,7 @@ use super::readout;
 use super::text_style;
 use super::widgets::{self, BODY_PAD, Controls, Keys, PANEL_ROW, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
-use super::{NO_LAYERS, export_form_row, layer_icon, rule, theme, toggle_worlds, worlds_menu};
+use super::{NO_LAYERS, export_form_row, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::distortion::{self, ScaleError};
 use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor};
@@ -1649,8 +1649,8 @@ fn graticule_color_frame(ctx: &egui::Context, state: &mut AppState) {
     }
 }
 
-/// The layers that the map of a frame can draw, in the order of the Layers
-/// panel. The eye of a row turns the layer on or off in the map.
+/// The collections of the map of a frame as cards, from the top of the
+/// stack of the map, with the layer switches of the map.
 fn layers_tab(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1660,56 +1660,13 @@ fn layers_tab(
     let Some(map) = state.doc.project.atlas.frame(id).map(|f| f.map) else {
         return;
     };
-    ui.spacing_mut().item_spacing.y = 0.0;
-    let edited = state.doc.local_changes(map);
-    let looks: Vec<_> = (state.doc.project.layers().iter())
-        .map(|l| (layer_icon(l), state.doc.shown(map, l.id)))
-        .collect();
-    let selected = state.selected_vector();
-    let rows: Vec<list::Row<LayerId>> = (state.doc.project.layers().iter())
-        .map(|l| list::Row {
-            label: format!("Layer {}", l.name),
-            on: selected == Some(l.id),
-            trailing: 2.0 * TOUCH,
-            ..list::Row::new(l.id, l.name.clone())
-        })
-        .collect();
-    if rows.is_empty() {
+    if state.doc.project.layers().is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new(NO_LAYERS).color(theme::MUTE));
         return;
     }
-    let mut gestures = list::ListState::default();
-    let spec = list::Spec::default();
-    let events = list::show(
-        ui,
-        controls,
-        &mut gestures,
-        spec,
-        &rows,
-        |ui, controls, cell, i| {
-            let look = list::Look {
-                icon: Some(looks[i].0),
-                text: &rows[i].name,
-                note: edited.contains(&rows[i].key).then_some(EDITED),
-                eye: Some(looks[i].1),
-                open: true,
-                ..list::Look::default()
-            };
-            list::draw(ui, controls, cell, &look)
-        },
-    );
-    let mut open = None;
-    for event in events {
-        match event {
-            list::Event::Tap(layer) | list::Event::Open(layer) => open = Some(layer),
-            list::Event::Control(layer, list::EYE) => {
-                let shown = state.doc.shown(map, layer);
-                state.set_map_shown(map, layer, !shown);
-            }
-            _ => {}
-        }
-    }
+    let edited: Vec<LayerId> = state.doc.local_changes(map).into_iter().collect();
+    let open = super::map_cards::cards(ui, state, controls, map, &edited);
     if let Some(layer) = open {
         state.select_vector(layer);
         state.atlas.layer = Some((id, layer));

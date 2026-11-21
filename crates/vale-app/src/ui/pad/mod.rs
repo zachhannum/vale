@@ -54,6 +54,7 @@ pub mod label_text;
 pub mod labels;
 pub mod list;
 pub mod manage;
+pub mod map_cards;
 pub mod motion;
 pub mod number;
 pub mod panels_menu;

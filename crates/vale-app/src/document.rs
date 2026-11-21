@@ -886,15 +886,37 @@ impl Document {
         self.set_map_style(target, layer, &globe)
     }
 
-    /// True if a target shows a layer.
+    /// True if a target shows a layer. A map shows a layer that one of its
+    /// collections holds and that its layer switch shows.
     pub fn shown(&self, target: impl Into<Target>, layer: LayerId) -> bool {
         let atlas = &self.project.atlas;
         match target.into() {
-            Target::Map(m) => atlas.map(m).is_some() && atlas.shows(m, layer),
+            Target::Map(m) => self.switch_on(m, layer) && self.in_map(m, layer),
             Target::Style(s) => atlas
                 .map_style(s)
                 .is_some_and(|s| !s.hidden.contains(&layer)),
         }
+    }
+
+    /// True if the layer switch of a map is on.
+    pub fn switch_on(&self, map: MapId, layer: LayerId) -> bool {
+        let atlas = &self.project.atlas;
+        atlas.map(map).is_some() && atlas.shows(map, layer)
+    }
+
+    /// True if a collection of the map holds the layer.
+    pub fn in_map(&self, map: MapId, layer: LayerId) -> bool {
+        (self.project.map_stack(map).iter())
+            .filter_map(|c| self.project.collection(*c))
+            .any(|c| c.layers.contains(&layer))
+    }
+
+    /// The layers that a map draws, from the bottom to the top: the layers
+    /// of its collections in the order of its stack, with the switch on.
+    pub fn map_layers(&self, map: MapId) -> Vec<LayerId> {
+        (self.project.map_layer_ids(map).into_iter())
+            .filter(|l| self.switch_on(map, *l))
+            .collect()
     }
 
     /// Shows or hides a layer in a target. A map with a map style holds

@@ -598,41 +598,89 @@ fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::
     });
 }
 
+/// The collections of the map of a frame, from the top of its stack, each
+/// with its layers from the top and the layer switches of the map.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
-    let edited = state.doc.local_changes(frame.map);
-    let rows: Vec<_> = (state.doc.project.layers().iter().rev())
-        .map(|l| (l.id, l.name.clone()))
-        .collect();
-    if rows.is_empty() {
+    use super::pad::map_cards::{ADD_COLLECTION, ALL_COLLECTIONS, REMOVE_COLLECTION, card_rows};
+    let map = frame.map;
+    let edited = state.doc.local_changes(map);
+    if state.doc.project.layers().is_empty() {
         ui.weak(NO_LAYERS);
     }
+    let stack = state.doc.project.map_stack(map);
     let open = state.atlas.open_layer();
-    for (layer, name) in rows {
+    for (at, id) in stack.iter().enumerate().rev() {
+        let Some(name) = state.doc.project.collection(*id).map(|c| c.name.clone()) else {
+            continue;
+        };
         ui.horizontal(|ui| {
-            let mut shown = state.doc.shown(frame.map, layer);
-            let check = ui.checkbox(&mut shown, &name);
-            if check.changed() {
-                state.set_map_shown(frame.map, layer, shown);
+            ui.strong(&name);
+            if ui
+                .add_enabled(at + 1 < stack.len(), egui::Button::new("▲"))
+                .clicked()
+            {
+                state.move_map_collection(map, *id, at + 1);
             }
-            if state.doc.entry(layer).is_some() {
-                check.context_menu(|ui| {
-                    if ui.button(super::table::OPEN_TABLE).clicked() {
-                        state.open_table(layer);
-                        ui.close();
-                    }
-                });
+            if ui.add_enabled(at > 0, egui::Button::new("▼")).clicked() {
+                state.move_map_collection(map, *id, at - 1);
             }
-            if ui.selectable_label(open == Some(layer), "Style").clicked() {
-                if open != Some(layer) {
-                    state.select_vector(layer);
-                }
-                state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
-            }
-            if edited.contains(&layer) {
-                ui.weak(EDITED);
+            if ui
+                .add_enabled(stack.len() > 1, egui::Button::new(REMOVE_COLLECTION))
+                .clicked()
+            {
+                state.remove_map_collection(map, *id);
             }
         });
+        let rows: Vec<_> = (card_rows(&state.doc.project, map, *id).into_iter())
+            .filter_map(|(l, dim)| Some((l, state.doc.layer(l)?.name.clone(), dim)))
+            .collect();
+        for (layer, name, dim) in rows {
+            ui.horizontal(|ui| {
+                ui.add_space(12.0);
+                if dim {
+                    ui.add_enabled(false, egui::Label::new(&name));
+                    return;
+                }
+                let mut shown = state.doc.switch_on(map, layer);
+                let check = ui.checkbox(&mut shown, &name);
+                if check.changed() {
+                    state.set_map_shown(map, layer, shown);
+                }
+                if state.doc.entry(layer).is_some() {
+                    check.context_menu(|ui| {
+                        if ui.button(super::table::OPEN_TABLE).clicked() {
+                            state.open_table(layer);
+                            ui.close();
+                        }
+                    });
+                }
+                if ui.selectable_label(open == Some(layer), "Style").clicked() {
+                    if open != Some(layer) {
+                        state.select_vector(layer);
+                    }
+                    state.atlas.layer = (open != Some(layer)).then_some((frame.id, layer));
+                }
+                if edited.contains(&layer) {
+                    ui.weak(EDITED);
+                }
+            });
+        }
     }
+    let others: Vec<_> = (state.doc.project.collections().iter())
+        .filter(|c| !stack.contains(&c.id))
+        .map(|c| (c.id, c.name.clone()))
+        .collect();
+    ui.menu_button(ADD_COLLECTION, |ui| {
+        if others.is_empty() {
+            ui.weak(ALL_COLLECTIONS);
+        }
+        for (id, name) in others {
+            if ui.button(name).clicked() {
+                state.add_map_collection(map, id);
+                ui.close();
+            }
+        }
+    });
     let Some(layer) = state.atlas.open_layer() else {
         return;
     };
