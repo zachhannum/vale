@@ -13970,6 +13970,7 @@ fn a_swipe_on_a_header_row_removes_the_collection_from_the_map_in_one_step() {
     h.state_mut().save_waiting().unwrap();
     h.run_steps(3);
     swipe_row(&mut h, &header_name("Coast"), -120.0);
+    screenshot::save(&mut h, "pad-atlas-swipe-collection");
     tap(&mut h, "Remove Coast");
     assert_eq!(map_stack(&h, inset), [world]);
     assert!(h.state().doc.project.collection(coast).is_some());
@@ -14025,4 +14026,21 @@ fn a_delete_of_a_collection_removes_it_from_each_map() {
     undo(&mut h);
     assert_eq!(map_stack(&h, main), [world, coast]);
     assert_eq!(map_stack(&h, inset), [coast]);
+}
+
+#[test]
+fn a_swipe_from_the_name_of_a_header_row_shows_remove() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    h.state_mut().add_map_collection(inset, coast);
+    h.run_steps(3);
+    for x in [0.25, 0.5] {
+        let row = control(&h, &header_name("Coast")).unwrap();
+        let from = pos2(row.left() + row.width() * x, row.center().y);
+        drag(&mut h, from, from - vec2(120.0, 0.0), Input::Finger);
+        h.run_steps(5);
+        assert!(control(&h, "Remove Coast").is_some(), "{x}");
+        // A tap on the row shuts it.
+        swipe_row(&mut h, &header_name("Coast"), 120.0);
+    }
 }
