@@ -3286,6 +3286,7 @@ fn load(conn: &Connection) -> Result<Project, StoreError> {
         globe_collections,
         map_stacks,
         collapsed_collections,
+        layer_target: None,
     };
     // A row of a removed layer stays in the file until the next write.
     project.prune_snap_targets();

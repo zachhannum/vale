@@ -37,6 +37,7 @@ pub mod cases;
 pub mod chip_popover;
 pub mod classify;
 pub mod collection;
+pub mod collection_choice;
 pub mod dock_ui;
 pub mod edge_labels;
 pub mod expression;
@@ -74,8 +75,8 @@ pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{
-    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, Rects, SELECT_CELLS, TOOLS, TOUCH,
-    VERTEX_CELLS, WidthClass,
+    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS,
+    TOUCH, VERTEX_CELLS, WidthClass,
 };
 use icons::Icon;
 use number::{Number, Scale};
@@ -344,6 +345,9 @@ const NEW_LAYERS: [(&str, GeometryKind); 3] = [
 ];
 /// The width of the menu of the new layers.
 const ADD_WIDTH: f32 = 220.0;
+/// The width of the menu of the new layers while it shows the picker of
+/// its Collection row.
+const PICK_WIDTH: f32 = 320.0;
 pub use list::{HOLD_SLOP, HOLD_TIME};
 
 /// A panel that a button of the layout opens.
@@ -479,6 +483,12 @@ pub struct PadState {
     pub layer: Option<LayerRef>,
     /// The menu of the new layers is open.
     pub add: bool,
+    /// The choice of the Collection row of the menu of the new layers.
+    pub add_collection: Option<crate::ui::collection_choice::CollectionChoice>,
+    /// The menu of the new layers shows the picker of its Collection row.
+    pub add_picking: bool,
+    /// The picker of the Collection row of a form.
+    pub collection_picker: collection_choice::Picker,
     /// The menu of the new layers in the last frame.
     pub add_rect: Option<Rect>,
     /// The button of this frame that opens the menu of the new layers.
@@ -2385,6 +2395,9 @@ pub(super) fn panel_title(
             state.pad.add_button = Some(add.rect);
             if add.clicked() {
                 state.pad.add = !state.pad.add;
+                // The menu opens on the default collection.
+                state.pad.add_collection = None;
+                state.pad.add_picking = false;
             }
         }
         None => {}
@@ -3485,9 +3498,16 @@ fn add_menu(
 ) {
     // A world with no height layer gets one from an import.
     let import = !state.doc.project.rasters().iter().any(is_height);
-    let rows = 3 + NEW_LAYERS.len() + usize::from(import);
-    let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
-    let size = vec2(ADD_WIDTH, height);
+    let mut size = if state.pad.add_picking {
+        let picker = collection_choice::picker_height(&state.doc.project);
+        let height = 10.0 + ROW + picker + 10.0;
+        let room = (rects.panel_bottom - rects.screen.top() - rects.bands.top).max(ROW * 3.0);
+        vec2(PICK_WIDTH, height.min(room))
+    } else {
+        let rows = 4 + NEW_LAYERS.len() + usize::from(import);
+        let height = 10.0 + 2.0 * MENU_HEADING + rows as f32 * PANEL_ROW + 10.0;
+        vec2(ADD_WIDTH, height)
+    };
     let pane = state.pad.panels.iter().find(|(p, _)| *p == Panel::Layers);
     let beside = pos2(
         rects.dock.left() - geometry::PANEL_GAP - size.x,
@@ -3496,10 +3516,20 @@ fn add_menu(
     let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
         beside
     } else {
-        let left = (button.right() - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
-        // A short screen moves the menu up, out of the bottom band.
-        let top = (rects.panel_bottom - size.y).min(button.bottom() + PAD);
-        pos2(left, top.max(rects.screen.top() + rects.bands.top))
+        // A short screen moves the menu up, out of the bottom band. A menu
+        // that then covers its button goes to the left of the button.
+        let below = button.bottom() + PAD;
+        let top = (rects.panel_bottom - size.y).min(below);
+        let top = top.max(rects.screen.top() + rects.bands.top);
+        let right = if top < below {
+            button.left() - PAD
+        } else {
+            button.right()
+        };
+        let left = (right - size.x).max(rects.screen.left() + geometry::PANEL_GAP);
+        // A screen that is still too short scrolls the rows.
+        size.y = size.y.min(rects.panel_bottom - top);
+        pos2(left, top)
     };
     let rect = geometry::off_fold(
         Rect::from_min_size(min, size),
@@ -3528,52 +3558,109 @@ fn add_menu(
         radius,
         button.center().clamp(rect.min, rect.max),
         |ui| {
+            // A sheet below the menu does not show through it.
+            if rects.sheet.is_some() {
+                let fill = theme::card(false).to_opaque();
+                ui.painter().rect_filled(rect, radius, fill);
+            }
             let inner = rect.shrink2(vec2(BODY_PAD, 10.0));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
             let ui = &mut ui;
             ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            menu_heading(ui, NEW_SECTION);
-            for (name, kind) in NEW_LAYERS {
-                if widgets::text_row(ui, controls, name, 0.0, false, true).clicked() {
-                    let id = state.doc.add_layer(kind);
-                    state.select(Some(LayerRef::Vector(id)));
-                    state.pad.layer = Some(LayerRef::Vector(id));
-                    state.pad.add = false;
-                    state.touch();
-                }
+            if state.pad.add_picking {
+                add_menu_picker(ui, state, controls);
+                return;
             }
-            // The arrow tells that the row opens a form.
-            let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
-            let arrow = Rect::from_center_size(
-                pos2(raster.rect.right() - 10.0, raster.rect.center().y),
-                vec2(18.0, 18.0),
-            );
-            icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
-            if raster.clicked() {
-                state.raster_form = Some(RasterForm::open(state));
-                state.pad.add = false;
-            }
-            menu_heading(ui, IMPORT_SECTION);
-            let free = state.image_import.is_none();
-            if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
-                state.actions.push(Action::ImageLayerDialog);
-                state.pad.add = false;
-            }
-            if widgets::text_row(ui, controls, NEW_GEOJSON, 0.0, false, true).clicked() {
-                state.actions.push(Action::GeoJsonDialog);
-                state.pad.add = false;
-            }
-            if import {
-                let enabled = !state.globe.busy();
-                let row = widgets::text_row(ui, controls, NEW_HEIGHTMAP, 0.0, false, enabled);
-                if row.clicked() {
-                    state.actions.push(Action::ImportHeightmapDialog);
-                    state.pad.add = false;
-                }
-            }
+            egui::ScrollArea::vertical()
+                .id_salt("pad-add-layer-rows")
+                .show(ui, |ui| add_menu_rows(ui, state, controls, import));
         },
     );
+}
+
+/// The rows of the menu of the new layers: the Collection row, the rows of
+/// the new layers, and the rows of the imports.
+fn add_menu_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, import: bool) {
+    let choice = state.pad.add_collection.clone();
+    if collection_choice::row(ui, state, controls, choice.as_ref()) {
+        state.pad.add_picking = true;
+    }
+    let valid = state.collection_choice_is_valid(choice.as_ref());
+    menu_heading(ui, NEW_SECTION);
+    for (name, kind) in NEW_LAYERS {
+        if widgets::text_row(ui, controls, name, 0.0, false, valid).clicked() {
+            state.add_vector_layer(kind, choice.as_ref());
+            state.pad.add = false;
+        }
+    }
+    // The arrow tells that the row opens a form.
+    let raster = widgets::text_row(ui, controls, NEW_RASTER, 0.0, false, true);
+    let arrow = Rect::from_center_size(
+        pos2(raster.rect.right() - 10.0, raster.rect.center().y),
+        vec2(18.0, 18.0),
+    );
+    icons::paint(ui.painter(), arrow, Icon::Open, 18.0, theme::MUTE);
+    if raster.clicked() {
+        let mut form = RasterForm::open(state);
+        form.collection = choice.clone();
+        state.raster_form = Some(form);
+        state.pad.add = false;
+    }
+    menu_heading(ui, IMPORT_SECTION);
+    let free = state.image_import.is_none() && valid;
+    if widgets::text_row(ui, controls, NEW_IMAGE, 0.0, false, free).clicked() {
+        state.import_collection = choice.clone();
+        state.actions.push(Action::ImageLayerDialog);
+        state.pad.add = false;
+    }
+    if widgets::text_row(ui, controls, NEW_GEOJSON, 0.0, false, valid).clicked() {
+        state.import_collection = choice.clone();
+        state.actions.push(Action::GeoJsonDialog);
+        state.pad.add = false;
+    }
+    if import {
+        let enabled = !state.globe.busy() && valid;
+        let row = widgets::text_row(ui, controls, NEW_HEIGHTMAP, 0.0, false, enabled);
+        if row.clicked() {
+            state.import_collection = choice.clone();
+            state.actions.push(Action::ImportHeightmapDialog);
+            state.pad.add = false;
+        }
+    }
+}
+
+/// The picker of the Collection row of the menu of the new layers. The
+/// list scrolls if the menu is too short for it.
+fn add_menu_picker(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let title = widgets::title_row(
+        ui,
+        controls,
+        collection_choice::COLLECTION,
+        Some(ADD_LAYER),
+        false,
+    );
+    if title.close {
+        state.pad.add = false;
+    }
+    let default = state.default_layer_collection();
+    let mut picked = false;
+    egui::ScrollArea::vertical()
+        .id_salt("pad-add-collection")
+        .show(ui, |ui| {
+            let pad = &mut state.pad;
+            picked = collection_choice::picker(
+                ui,
+                &state.doc.project,
+                default,
+                controls,
+                &mut pad.collection_picker,
+                &mut pad.add_collection,
+            );
+        });
+    if title.back || picked {
+        state.pad.add_picking = false;
+    }
 }
 
 /// The heading of a section of the menu of the new layers.

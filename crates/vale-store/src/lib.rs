@@ -834,6 +834,9 @@ pub struct Project {
     map_stacks: BTreeMap<MapId, Vec<CollectionId>>,
     /// The collections that the Layers panel shows as a header row alone.
     collapsed_collections: BTreeSet<CollectionId>,
+    /// The collection that new layers join in place of the default. The
+    /// file does not keep it.
+    layer_target: Option<CollectionId>,
 }
 
 /// What a layer snaps to in one target layer. A vector target reads
@@ -898,6 +901,7 @@ impl Project {
             globe_collections: vec![CollectionId(0)],
             map_stacks: BTreeMap::new(),
             collapsed_collections: BTreeSet::new(),
+            layer_target: None,
         }
     }
 

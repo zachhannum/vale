@@ -3419,3 +3419,50 @@ fn the_desktop_style_editor_shows_the_height_layer_of_flow_with_one_height_layer
     h.run_steps(2);
     assert!(h.query_all_by_label(&heights[0]).next().is_some());
 }
+
+#[test]
+fn the_desktop_forms_have_a_collection_combo_box() {
+    use egui::accesskit::Role;
+    use vale_app::ui::pad::collection_choice::{NEW_COLLECTION_NAME, NEW_COLLECTION_ROW};
+    use vale_app::ui::raster_form::{self, RasterForm};
+    let mut h = globe_harness();
+    let state = h.state_mut();
+    state.add_collection("Coast");
+    state.form_face_size = Some(64);
+    state.raster_form = Some(RasterForm::open(state));
+    // The modal takes clicks after it fades in.
+    h.run_steps(10);
+    let combo = |h: &Harness<'static, AppState>| {
+        let combos = h.query_all(egui_kittest::kittest::by().role(Role::ComboBox));
+        let combos: Vec<_> = combos.collect();
+        assert_eq!(combos.len(), 1);
+        combos[0]
+            .accesskit_node()
+            .value()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    assert_eq!(combo(&h), "Coast");
+    h.query_all(egui_kittest::kittest::by().role(Role::ComboBox))
+        .next()
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    h.get_by_label(NEW_COLLECTION_ROW).click();
+    h.run_steps(2);
+    let field = h.query_all_by_label(NEW_COLLECTION_NAME);
+    let field = field
+        .into_iter()
+        .find(|n| n.accesskit_node().role() == Role::TextInput);
+    field.unwrap().click();
+    h.run_steps(1);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(1);
+    h.event(egui::Event::Text("Vesperan".to_owned()));
+    h.run_steps(2);
+    h.get_by_label(raster_form::ADD).click();
+    h.run_steps(2);
+    let project = &h.state().doc.project;
+    let vesperan = project.collections().iter().find(|c| c.name == "Vesperan");
+    assert_eq!(vesperan.unwrap().layers.len(), 1);
+}
