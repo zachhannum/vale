@@ -115,7 +115,11 @@ const CHROMA: f32 = 0.05;
 const EDGE_HIGHLIGHT: f32 = 0.05;
 const FRESNEL: f32 = 1.0;
 const DISTORTION: f32 = 0.05;
-const BRIGHTNESS: f32 = -0.65;
+// The glass maps the canvas into a band of grey from `FLOOR` to `FLOOR +
+// RANGE`, so that a dark canvas gets a little lighter and a light canvas
+// gets much darker.
+const FLOOR: f32 = 0.16;
+const RANGE: f32 = 0.24;
 // The radius of the curve of the rim, in points.
 const Z_RADIUS: f32 = 40.0;
 const INDEX: f32 = 1.5;
@@ -203,7 +207,7 @@ fn glass(pos: vec2<f32>, place: vec2<f32>, card: vec2<f32>, radii: vec4<f32>, pi
         textureSampleLevel(clear, bilinear, at, 0.0).g,
         textureSampleLevel(clear, bilinear, at - fringe * scale, 0.0).b,
     );
-    color *= (1.0 + BRIGHTNESS) * (1.0 + 0.06 * depth);
+    color = (FLOOR + RANGE * color) * (1.0 + 0.06 * depth);
 
     // The light on the glass: a reflection that grows where the surface is
     // steep, a thin line inside the edge that is brighter at the top, and

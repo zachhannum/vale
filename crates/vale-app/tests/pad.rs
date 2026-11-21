@@ -3769,39 +3769,38 @@ fn each_card_shows_the_blurred_canvas_and_the_blur_follows_the_globe() {
     }
 }
 
+/// The mean red value of the bottom row of each card, over a canvas of
+/// `level`.
+fn glass_rows(glass: bool, level: impl Fn(f64) -> u16) -> (Pad, Vec<Vec<i32>>) {
+    let mut h = blur_pad(level);
+    h.state_mut().globe.glass = glass;
+    h.run_steps(2);
+    let image = h.render().unwrap();
+    let rows = cards(&h).iter().map(|&c| card_row(&image, c)).collect();
+    (h, rows)
+}
+
+fn mean(row: &[i32]) -> i32 {
+    row.iter().sum::<i32>() / row.len() as i32
+}
+
 #[test]
 #[ignore = "gpu"]
-fn a_glass_card_has_no_fill_and_shows_more_of_the_canvas() {
+fn a_glass_card_maps_the_canvas_into_a_band_of_grey() {
     let _gpu = one_gpu_test();
-    let mean = |row: &[i32]| row.iter().sum::<i32>() / row.len() as i32;
-    // The rows of each card over a white and over a black canvas.
-    let rows = |glass: bool, level: u16| {
-        let mut h = blur_pad(|_| level);
-        h.state_mut().globe.glass = glass;
-        h.run_steps(2);
-        let image = h.render().unwrap();
-        if glass && level == u16::MAX {
-            std::fs::create_dir_all("../../target/app").unwrap();
-            image.save("../../target/app/test-pad-glass.png").unwrap();
-        }
-        let means: Vec<i32> = cards(&h)
-            .iter()
-            .map(|&c| mean(&card_row(&image, c)))
-            .collect();
-        means
-    };
-    let frosted: Vec<i32> = rows(false, u16::MAX)
-        .iter()
-        .zip(rows(false, 0))
-        .map(|(white, black)| white - black)
-        .collect();
-    let glass: Vec<i32> = rows(true, u16::MAX)
-        .iter()
-        .zip(rows(true, 0))
-        .map(|(white, black)| white - black)
-        .collect();
-    for (frosted, glass) in frosted.iter().zip(&glass) {
-        assert!(glass > &(frosted + 20), "{glass} over {frosted}");
+    let (_, frosted_black) = glass_rows(false, |_| 0);
+    let (_, glass_black) = glass_rows(true, |_| 0);
+    let (_, glass_white) = glass_rows(true, |_| u16::MAX);
+    for i in 0..glass_black.len() {
+        let (frosted_black, black, white) = (
+            mean(&frosted_black[i]),
+            mean(&glass_black[i]),
+            mean(&glass_white[i]),
+        );
+        // A dark canvas gets lighter, as the glass has no dark fill. A
+        // white canvas stays a mid grey.
+        assert!(black > frosted_black + 10, "{black} over {frosted_black}");
+        assert!(white > black + 40 && white < 140, "{white} over {black}");
     }
 }
 
@@ -3809,24 +3808,31 @@ fn a_glass_card_has_no_fill_and_shows_more_of_the_canvas() {
 #[ignore = "gpu"]
 fn a_glass_card_shows_the_canvas_sharper_than_the_blur() {
     let _gpu = one_gpu_test();
-    let mut h = blur_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
+    let stripes = |lon: f64| match (lon / 6.0).floor().rem_euclid(2.0) {
         0.0 => u16::MAX,
         _ => 0,
-    });
-    h.state_mut().globe.glass = true;
-    h.run_steps(2);
-    let glass = h.render().unwrap();
-    let cards = cards(&h);
-    let mut sharp = 0;
-    for &card in &cards {
-        let row = card_row(&glass, card);
+    };
+    // The largest step between two pixels, as a part of the range of the
+    // row.
+    let sharpness = |row: &Vec<i32>| {
         let step = row.windows(2).map(|w| (w[0] - w[1]).abs()).max().unwrap();
-        if step > 8 {
-            sharp += 1;
-        }
-    }
+        let range = row.iter().max().unwrap() - row.iter().min().unwrap();
+        step as f32 / (range + 1) as f32
+    };
+    let (_, frosted) = glass_rows(false, stripes);
+    let (mut h, glass) = glass_rows(true, stripes);
+    std::fs::create_dir_all("../../target/app").unwrap();
+    h.render()
+        .unwrap()
+        .save("../../target/app/test-pad-glass.png")
+        .unwrap();
+    let sharper = frosted
+        .iter()
+        .zip(&glass)
+        .filter(|(frosted, glass)| sharpness(glass) > 2.0 * sharpness(frosted))
+        .count();
     // A card can be too small for an edge of a stripe below its rim.
-    assert!(sharp * 2 > cards.len(), "{sharp} of {}", cards.len());
+    assert!(sharper * 2 > glass.len(), "{sharper} of {}", glass.len());
 }
 
 #[test]
