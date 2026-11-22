@@ -24,8 +24,8 @@
 45	Montevideo	BottomRight	689.3	680.2
 47	Tunis	Top	944.7	206.9
 49	Ashgabat	BottomRight	1188.5	219.4
-50	Lusaka	Right	1062.3	550.7
-51	Harare	BottomRight	1073.0	574.6
+50	Lusaka	BottomLeft	1011.1	558.8
+51	Harare	TopRight	1073.0	558.2
 52	Dili	TopLeft	1497.5	497.8
 53	Port Vila	TopRight	1733.3	557.4
 55	Georgetown	TopRight	657.9	398.6
@@ -100,14 +100,14 @@
 137	Valletta	BottomLeft	937.6	229.8
 138	Malé	TopRight	1277.6	414.1
 140	Praia	TopRight	806.0	344.1
-141	Nassau	BottomRight	565.1	295.8
+141	Nassau	TopRight	565.1	279.5
 143	Wellington	TopRight	1687.1	702.3
 144	Hanoi	TopLeft	1379.4	304.8
 145	Ankara	TopRight	1067.0	190.1
 147	Sanaa	TopRight	1134.3	341.3
 148	Bucharest	Right	1046.0	173.2
 150	Lisbon	BottomLeft	836.5	213.4
-151	Khartoum	Left	1020.6	347.7
+151	Khartoum	TopLeft	1022.1	339.6
 152	Oslo	TopRight	957.0	88.1
 154	Pyongyang	BottomLeft	1410.6	213.5
 155	Dar es Salaam	BottomRight	1138.5	502.7
@@ -130,7 +130,7 @@
 175	San Francisco	TopRight	397.2	204.4
 176	Denver	TopRight	464.6	193.3
 177	Houston	TopLeft	440.6	252.4
-178	Miami	TopRight	544.1	276.7
+178	Miami	TopLeft	509.3	276.7
 179	Atlanta	TopRight	540.3	228.1
 180	Chicago	BottomRight	546.5	195.1
 181	Caracas	BottomLeft	548.2	389.2
@@ -190,7 +190,7 @@
 240	Sydney	TopRight	1598.4	660.7
 241	Singapore	BottomRight	1442.3	451.1
 242	Hong Kong	TopRight	1467.5	299.8
-1000001	Mekong	LineAbove	1413.8	355.7
+1000001	Mekong	LineAbove	1412.4	353.1
 1000002	Ob	LineAbove	1191.5	110.8
 1000003	Peace	LineAbove	462.3	98.1
 1000005	Paraná	LineAbove	620.3	615.3
@@ -204,21 +204,21 @@
 2000005	KAZAKHSTAN	Curved	1170.0	152.1
 2000009	ARGENTINA	Curved	605.9	678.9
 2000014	SUDAN	Horizontal	1034.9	360.6
-2000015	CHAD	Horizontal	994.1	335.2
+2000015	CHAD	Horizontal	988.6	354.5
 2000018	RUSSIA	Curved	1226.7	90.3
 2000022	GREENLAND	Curved	775.2	56.1
-2000027	MEXICO	Curved	407.6	278.3
+2000027	MEXICO	Curved	408.2	280.3
 2000029	BRAZIL	Horizontal	662.1	518.6
 2000031	PERU	Curved	546.1	529.3
 2000052	MALI	Horizontal	892.3	328.1
 2000055	NIGER	Horizontal	946.8	337.6
-2000074	ANGOLA	Curved	982.6	526.5
+2000074	ANGOLA	Curved	980.1	521.0
 2000082	ALGERIA	Horizontal	899.7	271.1
 2000098	INDIA	Horizontal	1265.2	308.1
 2000137	AUSTRALIA	Horizontal	1529.4	606.7
-2000139	CHINA	Curved	1310.6	219.7
+2000139	CHINA	Curved	1330.9	226.1
 2000159	ANTARCTICA	Curved	1121.8	858.1
-2000163	EGYPT	Curved	1039.4	278.8
+2000163	EGYPT	Curved	1040.3	279.5
 2000164	LIBYA	Horizontal	980.4	275.4
 3000000	ARCTIC OCEAN	Curved	438.5	36.8
 3000001	SOUTHERN OCEAN	Curved	951.8	823.1
