@@ -13942,18 +13942,10 @@ fn the_collection_popover_of_a_map_checks_its_collections_in_one_step() {
     h.run_steps(2);
     assert_eq!(map_stack(&h, inset), [world]);
 
-    // "New collection…" puts a new collection on top of the map, and the
-    // checks of the globe stay.
+    // A map makes no collection.
     tap(&mut h, COLLECTION_MENU);
-    tap(&mut h, NEW_COLLECTION);
-    let stack = map_stack(&h, inset);
-    assert_eq!(stack.len(), 2);
-    assert_ne!(stack[1], coast);
+    assert!(control(&h, NEW_COLLECTION).is_none());
     assert_eq!(h.state().doc.project.globe_collections(), globe);
-    h.state_mut().save_waiting().unwrap();
-    undo(&mut h);
-    h.run_steps(2);
-    assert_eq!(map_stack(&h, inset), [world]);
 }
 
 #[test]
@@ -13981,9 +13973,17 @@ fn a_swipe_on_a_header_row_removes_the_collection_from_the_map_in_one_step() {
     use vale_app::ui::pad::collection::header_name;
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
-    // The last collection of a map has no Remove.
+    // The swipe opens the row of the last collection of a map, and its
+    // Remove is dim and does nothing.
     swipe_row(&mut h, &header_name("World"), -120.0);
-    assert!(control(&h, "Remove World").is_none());
+    let heads = &h.state().atlas.map_cards.heads;
+    assert!(heads.get(&world).is_some_and(|l| l.open.is_some()));
+    screenshot::save(&mut h, "pad-atlas-dim-remove");
+    if control(&h, "Remove World").is_some() {
+        tap(&mut h, "Remove World");
+    }
+    assert_eq!(map_stack(&h, inset), [world]);
+    swipe_row(&mut h, &header_name("World"), 120.0);
 
     h.state_mut().add_map_collection(inset, coast);
     h.state_mut().save_waiting().unwrap();

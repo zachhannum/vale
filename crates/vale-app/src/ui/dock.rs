@@ -599,10 +599,10 @@ fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::
 }
 
 /// The collection menu of a map: a check box for each collection, with
-/// the collections of the map from the top of its stack first, and "New
-/// collection…". The check box of the last collection of the map is off.
+/// the collections of the map from the top of its stack first. The check
+/// box of the last collection of the map is off.
 fn map_collection_menu(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
-    use super::pad::collection::{COLLECTION_MENU, NEW_COLLECTION};
+    use super::pad::collection::COLLECTION_MENU;
     let project = &state.doc.project;
     let stack = project.map_stack(map);
     let mut order: Vec<(vale_store::CollectionId, bool)> =
@@ -629,11 +629,6 @@ fn map_collection_menu(ui: &mut egui::Ui, state: &mut AppState, map: vale_store:
                     false => state.remove_map_collection(map, id),
                 };
             }
-        }
-        ui.separator();
-        if ui.button(NEW_COLLECTION).clicked() {
-            let name = state.doc.project.free_collection_name();
-            state.add_collection_to_map(map, &name);
         }
     });
 }

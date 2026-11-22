@@ -226,10 +226,10 @@ pub(super) fn popover(
     }
 }
 
-/// The contents of the collection popover: the Collections | Maps switch
-/// of the globe, the collections, "New collection…", and on the globe
-/// "Manage collections". In a map, a check puts a collection in the map,
-/// and the check of the last collection of the map does not change.
+/// The contents of the collection popover: the collections, and on the
+/// globe the Collections | Maps switch, "New collection…", and "Manage
+/// collections". In a map, a check puts a collection in the map, and the
+/// check of the last collection of the map does not change.
 fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: View) {
     ui.spacing_mut().item_spacing.y = 0.0;
     if view == View::Globe {
@@ -292,14 +292,10 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: 
         }
     }
 
-    if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
+    if view == View::Globe && widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
-        let id = match view {
-            View::Globe => state.add_collection(&name),
-            View::Map(map) => state.add_collection_to_map(map, &name),
-        };
-        if let Some(id) = id {
+        if let Some(id) = state.add_collection(&name) {
             let list = &mut state.pad.collection_list;
             list.shut();
             list.rename = Some((id, name));
@@ -577,8 +573,8 @@ const CHEVRON: &str = "chevron";
 /// The header row of a collection: the chevron and the name. A tap on the
 /// row or the chevron collapses the collection or opens it, and a hold
 /// lifts it. A swipe to the left shows Remove, which takes the collection
-/// out of the view: off the globe, or out of the map. The last collection
-/// of a map has no Remove.
+/// out of the view: off the globe, or out of the map. Remove is dim on the
+/// last collection of a map.
 fn header(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -596,7 +592,8 @@ fn header(
     );
     let rows = [list::Row {
         label: header_name(name),
-        actions: if removable { &[list::REMOVE] } else { &[] },
+        actions: &[list::REMOVE],
+        actions_off: !removable,
         select: false,
         leading: TOUCH,
         ..list::Row::new(id, name.to_owned())
@@ -652,7 +649,7 @@ fn header(
                 });
                 ui.ctx().request_repaint();
             }
-            list::Event::Action(_, list::REMOVE) => {
+            list::Event::Action(_, list::REMOVE) if removable => {
                 match view {
                     View::Globe => state.check_collection(id, false),
                     View::Map(map) => state.remove_map_collection(map, id),
