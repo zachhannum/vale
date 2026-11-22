@@ -1948,6 +1948,33 @@ pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::
     if let Some(rect) = canvas_input(ui, state, background) {
         paint_canvas(ui, state, rect, background);
         held_buttons(ui, state, rect);
+        map_card(ui, state, rect);
+    }
+}
+
+/// The name of the map on the globe and its Close map button, at the top
+/// of the canvas.
+fn map_card(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
+    use super::pad::map_card::CLOSE_MAP;
+    let Some(map) = state.map_on_globe() else {
+        return;
+    };
+    let name = (state.doc.project.atlas.map(map)).map_or_else(String::new, |m| m.name.clone());
+    let mut close = false;
+    egui::Area::new(egui::Id::new("map-card"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(rect.center_top() + egui::vec2(0.0, 8.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&name);
+                    close = ui.button(CLOSE_MAP).clicked();
+                });
+            });
+        });
+    if close {
+        state.close_map_on_globe();
     }
 }
 

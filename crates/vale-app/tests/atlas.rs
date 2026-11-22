@@ -14212,3 +14212,38 @@ fn a_swipe_from_the_name_of_a_header_row_shows_remove() {
         swipe_row(&mut h, &header_name("Coast"), 120.0);
     }
 }
+
+#[test]
+fn edit_on_globe_opens_the_globe_with_the_map_and_its_collections() {
+    use vale_app::ui::pad::atlas::EDIT_ON_GLOBE;
+    use vale_app::ui::pad::map_card::CLOSE_MAP;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = inset_pad(size);
+        let inset = frame(&h, 1);
+        let state = h.state_mut();
+        let project = &mut state.doc.project;
+        let travel = project.add_collection("Travel").unwrap();
+        let world = project.world_collection();
+        assert!(project.set_map_stack(inset.map, vec![travel, world]));
+        assert!(project.set_globe_collections(vec![world]));
+        state.atlas.selection = AtlasSelection::Frame(inset.id);
+        state.atlas.tab = FrameTab::Frame;
+        h.run_steps(3);
+        merge_frame_tabs(&mut h);
+        scroll_to(&mut h, EDIT_ON_GLOBE);
+        let row = control(&h, EDIT_ON_GLOBE).unwrap_or_else(|| panic!("{what}: no row"));
+        assert!(row.height() >= 44.0, "{what}");
+        tap(&mut h, EDIT_ON_GLOBE);
+        let state = h.state();
+        assert_eq!(state.workspace, Workspace::Globe, "{what}");
+        assert_eq!(state.globe_map, Some(inset.map), "{what}");
+        assert_eq!(
+            state.doc.project.globe_collections(),
+            [travel, world],
+            "{what}"
+        );
+        assert!(state.globe.extent.is_some(), "{what}");
+        assert!(control(&h, CLOSE_MAP).is_some(), "{what}: no card");
+    }
+}

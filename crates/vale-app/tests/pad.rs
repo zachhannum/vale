@@ -613,6 +613,8 @@ fn in_collection_menu(h: &Pad, name: &str) -> bool {
     ]
     .contains(&name)
         || names.iter().any(|n| n == name)
+        || (h.state().doc.project.atlas.maps.iter())
+            .any(|m| vale_app::ui::pad::collection::map_row(&m.name) == name)
 }
 
 /// The controls of the View popover.
@@ -21174,7 +21176,7 @@ fn the_collection_popover_checks_and_clears_collections() {
             assert!(row.height() >= 44.0 && menu.contains_rect(row), "{what}");
         }
         assert!(!disabled(&h, COLLECTIONS_SIDE), "{what}");
-        assert!(disabled(&h, MAPS_SIDE), "{what}");
+        assert!(!disabled(&h, MAPS_SIDE), "{what}");
         // A new collection is checked on top of the stack.
         let ids = ["World", "Travel", "Water"].map(|n| collection_id(&h, n));
         let stack = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
@@ -21901,6 +21903,8 @@ fn the_collection_row_starts_on_the_top_collection_of_the_map_on_the_globe() {
     assert_eq!(state.collection_choice_name(None), "World");
     assert!(state.doc.project.set_map_stack(map, vec![world, roads]));
     assert_eq!(state.collection_choice_name(None), "Roads");
+    // The map on the globe checks its collections, so it stays.
+    state.show_map_on_globe(map);
     open_add_menu(&mut h);
     tap(&mut h, "Lines");
     let id = shown_vector(&h);
@@ -22318,4 +22322,108 @@ fn a_long_collection_name_stops_before_the_label() {
         .find(|(t, r)| t == long && (r.center().y - label.center().y).abs() < 4.0)
         .unwrap();
     assert!(value.left() > label.right(), "{label:?} {value:?}");
+}
+
+/// Gives the first map of a pad one regional frame, and adds a second map,
+/// "Isles", with the collection "Travel" as its stack.
+fn maps_pad(size: (f32, f32)) -> (Pad, [vale_store::MapId; 2]) {
+    let mut h = pad(size);
+    let state = h.state_mut();
+    let first = state.doc.first_map();
+    let spec = state.doc.projection(first);
+    let projection = vale_sphere::Projection::new(spec, 6_371_000.0).unwrap();
+    let project = &mut state.doc.project;
+    let travel = project.add_collection("Travel").unwrap();
+    let atlas = &mut project.atlas;
+    let mut frame = vale_app::atlas::new_frame(&atlas.pages[0], &atlas.maps[0], &projection);
+    frame.shape = vale_store::FrameShape::Rectangle([20.0, 20.0, 180.0, 120.0]);
+    frame.center = [10.0, 45.0];
+    frame.scale = 20_000_000.0;
+    atlas.pages[0].frames = vec![frame];
+    let isles = atlas.add_map();
+    atlas.map_mut(isles).unwrap().name = "Isles".to_owned();
+    assert!(project.set_map_stack(isles, vec![travel]));
+    h.run_steps(2);
+    (h, [first, isles])
+}
+
+#[test]
+fn the_maps_side_lists_each_map_and_shows_a_map_on_the_globe() {
+    use vale_app::ui::pad::collection::{MAPS_SIDE, map_row};
+    use vale_app::ui::pad::map_card::CLOSE_MAP;
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let (mut h, [first, isles]) = maps_pad(size);
+        open_panel(&mut h, "Layers");
+        open_collection_menu(&mut h);
+        tap(&mut h, MAPS_SIDE);
+        check_controls(&h, &format!("{what} on the Maps side"));
+        if size == BOARDS[0] {
+            screenshot::save(&mut h, "pad-maps-side");
+        }
+        let menu = h.state().pad.collections_rect.unwrap();
+        let names: Vec<String> = (h.state().doc.project.atlas.maps.iter())
+            .map(|m| m.name.clone())
+            .collect();
+        for name in &names {
+            let row = control(&h, &map_row(name)).unwrap_or_else(|| panic!("{what}: {name}"));
+            assert!(
+                row.height() >= 44.0 && menu.contains_rect(row),
+                "{what}: {name}"
+            );
+        }
+        assert!(control(&h, CLOSE_MAP).is_none(), "{what}");
+
+        tap(&mut h, &map_row("Isles"));
+        assert_eq!(h.state().globe_map, Some(isles), "{what}");
+        let travel = collection_id(&h, "Travel");
+        let stack = h.state().doc.project.globe_collections().to_vec();
+        assert_eq!(stack.last(), Some(&travel), "{what}");
+        // The card shows the name of the map and a close button.
+        h.get_by_label("Isles");
+        let close = control(&h, CLOSE_MAP).unwrap_or_else(|| panic!("{what}: no close"));
+        assert!(close.width() >= 44.0 && close.height() >= 44.0, "{what}");
+
+        tap(&mut h, &map_row(&names[0]));
+        assert_eq!(h.state().globe_map, Some(first), "{what}");
+        assert!(h.state().globe.extent.is_some(), "{what}");
+    }
+}
+
+#[test]
+fn the_close_button_of_the_map_card_keeps_the_checks() {
+    use vale_app::ui::pad::map_card::CLOSE_MAP;
+    for size in [BOARDS[0], BOARDS[3], (393.0, 852.0)] {
+        let what = format!("{size:?}");
+        let (mut h, [_, isles]) = maps_pad(size);
+        h.state_mut().show_map_on_globe(isles);
+        h.run_steps(2);
+        check_controls(&h, &format!("{what} with the map card"));
+        screenshot::save(&mut h, &format!("pad-map-card-{}", size.0));
+        let card = h.state().pad.map_card.unwrap();
+        let rects = h.state().pad.rects.unwrap();
+        assert!(
+            card.top() >= rects.column_top && card.left() >= 0.0,
+            "{what}"
+        );
+        assert!(card.right() <= size.0, "{what}");
+        let stack = h.state().doc.project.globe_collections().to_vec();
+        tap(&mut h, CLOSE_MAP);
+        assert_eq!(h.state().globe_map, None, "{what}");
+        assert!(h.state().pad.map_card.is_none(), "{what}");
+        assert_eq!(h.state().doc.project.globe_collections(), stack, "{what}");
+    }
+}
+
+#[test]
+fn a_clear_of_a_check_of_the_map_removes_the_card() {
+    use vale_app::ui::pad::map_card::CLOSE_MAP;
+    let (mut h, [_, isles]) = maps_pad(BOARDS[0]);
+    h.state_mut().show_map_on_globe(isles);
+    h.run_steps(2);
+    assert!(control(&h, CLOSE_MAP).is_some());
+    open_panel(&mut h, "Layers");
+    toggle_collection(&mut h, "Travel");
+    assert_eq!(h.state().globe_map, None);
+    assert!(control(&h, CLOSE_MAP).is_none());
 }

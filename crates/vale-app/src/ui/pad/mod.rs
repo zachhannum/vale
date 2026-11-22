@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use eframe::egui::{self, Order, Rect, pos2, vec2};
 use vale_sphere::LonLat;
-use vale_store::{CollectionId, GeometryKind, ImageId, Layer, LayerId, LayerKind, RasterId};
+use vale_store::{CollectionId, GeometryKind, ImageId, Layer, LayerId, LayerKind, MapId, RasterId};
 use vale_terrain::Mode;
 
 pub use super::LayerRef;
@@ -55,6 +55,7 @@ pub mod label_text;
 pub mod labels;
 pub mod list;
 pub mod manage;
+pub mod map_card;
 pub mod motion;
 pub mod number;
 pub mod panels_menu;
@@ -511,6 +512,10 @@ pub struct PadState {
     pub collections_rect: Option<Rect>,
     /// The gestures of the list of the collections in the collection menu.
     pub collection_list: list::ListState<CollectionId>,
+    /// The Maps side of the collection menu shows.
+    pub maps_side: bool,
+    /// The gestures of the list of the maps in the collection menu.
+    pub map_list: list::ListState<MapId>,
     /// The gestures of the list of the Collections page of a layer.
     pub layer_collections: list::ListState<CollectionId>,
     /// The text of the search field of the Collections page of a layer.
@@ -548,6 +553,8 @@ pub struct PadState {
     /// The banner of the last frame: a save that failed, or a raster layer
     /// that does not fit in the memory.
     pub banner: Option<Rect>,
+    /// The card of the map on the globe in the last frame.
+    pub map_card: Option<Rect>,
     /// The label at the end of the scale bar of the readout in the last
     /// frame.
     pub readout_scale: Option<String>,
@@ -845,6 +852,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     crate::ui::export_form::pad(&ctx, state, &mut controls, &rects);
     super::region::pad(&ctx, state, &mut controls, &rects);
     readout::banner(&ctx, state, &rects);
+    map_card::show(&ctx, state, &mut controls, &rects);
     dock_ui::handle(&ctx, state, &mut controls, &rects);
     if let Some(rect) = canvas.inner {
         globe::paint_canvas(ui, state, rect, theme::CANVAS);
