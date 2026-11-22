@@ -352,22 +352,22 @@ pub fn stroke_shapes(
     let shapes = match stroke.kind {
         StrokeKind::Solid => lines(plain()),
         StrokeKind::Dashed(p) => {
-            let dashes = stroke::dash(&plain(), &p.scaled(stroke.width));
-            if p.round {
-                let r = width / 2.0;
-                let mut shapes = Vec::new();
-                for d in dashes {
-                    let (a, b) = (d[0], d[d.len() - 1]);
-                    shapes.push(egui::Shape::circle_filled(pos(a), r, color));
-                    if a.distance(b) > 2.0 * stroke::DOT {
-                        shapes.push(egui::Shape::circle_filled(pos(b), r, color));
-                        shapes.extend(lines(vec![d]));
-                    }
+            let r = width / 2.0;
+            let mut shapes = Vec::new();
+            for d in stroke::dash(&plain(), &p.cut(stroke.width)) {
+                let (a, b) = (d[0], d[d.len() - 1]);
+                // A dot is round with either end.
+                if crate::pipeline::is_dot(&d) {
+                    shapes.push(egui::Shape::circle_filled(pos(a.midpoint(b)), r, color));
+                    continue;
                 }
-                shapes
-            } else {
-                lines(dashes)
+                if p.round {
+                    shapes.push(egui::Shape::circle_filled(pos(a), r, color));
+                    shapes.push(egui::Shape::circle_filled(pos(b), r, color));
+                }
+                shapes.extend(lines(vec![d]));
             }
+            shapes
         }
         StrokeKind::Taper { start } => pieces(stroke::taper_measured(
             parts,

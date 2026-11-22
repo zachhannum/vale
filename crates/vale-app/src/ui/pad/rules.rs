@@ -60,7 +60,6 @@ pub const DASH_DOT_DOT: &str = "Dash-dot-dot";
 pub const CUSTOM: &str = "Custom";
 /// The field of the dash and gap lengths of a pattern.
 pub const LENGTHS: &str = "Lengths";
-pub const LENGTHS_HINT: &str = "Dash and gap lengths in line widths, where a dash of 0 is a dot.";
 /// The ends of the dashes.
 pub const ENDS: &str = "Ends";
 pub const FLAT: &str = "Flat";
@@ -1814,7 +1813,7 @@ pub fn pattern_name(p: DashPattern) -> &'static str {
     }
 }
 
-/// The field of the lengths of a dash pattern, with a hint below it. `shown` is the text of
+/// The field of the lengths of a dash pattern. `shown` is the text of
 /// the lengths, or empty when the selected patterns differ. While the field has the focus, it
 /// keeps the typed text. Returns the pattern of the text when the user types a valid text.
 fn lengths_field(ui: &mut egui::Ui, controls: &mut Controls, shown: String) -> Option<DashPattern> {
@@ -1829,7 +1828,6 @@ fn lengths_field(ui: &mut egui::Ui, controls: &mut Controls, shown: String) -> O
     } else {
         ui.data_mut(|d| d.remove::<String>(id));
     }
-    widgets::form_hint(ui, LENGTHS_HINT, 20.0);
     parsed
 }
 

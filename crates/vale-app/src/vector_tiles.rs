@@ -57,12 +57,13 @@ pub struct TilePaints {
     pub pixels_per_point: f32,
 }
 
-/// True if tiles draw each paint of `batches`: fills, and strokes of the
-/// solid and the dashed kind.
+/// True if tiles draw each paint of `batches`: fills, and solid strokes.
+/// Each tile cuts its own pieces of a line, so a dash pattern would not
+/// continue from one tile to the next.
 pub(crate) fn tiles_draw(batches: &[Batch]) -> bool {
     batches.iter().all(|b| match &b.paint {
         Paint::Fill(_) => true,
-        Paint::Stroke(s) => matches!(s.kind, StrokeKind::Solid | StrokeKind::Dashed { .. }),
+        Paint::Stroke(s) => s.kind == StrokeKind::Solid,
         _ => false,
     })
 }
@@ -646,7 +647,7 @@ pub fn render_tile(snap: &Snapshot, paints: &TilePaints, key: TileKey) -> Vec<u8
     }
 }
 
-/// A plain paint with its widths in texels. A dash pattern follows the width.
+/// A plain paint with its widths in texels.
 fn in_pixels(plain: Plain, ppp: f64) -> Plain {
     match plain {
         Plain::Fill(color) => Plain::Fill(color),
@@ -859,5 +860,14 @@ mod tests {
             stroke: None,
         };
         assert!(!tiles_draw(&[batch(marker)]));
+        let stroke = |kind| {
+            Paint::Stroke(vale_style::Stroke {
+                color: vale_style::Color::rgb(0, 0, 0),
+                width: 1.0,
+                kind,
+            })
+        };
+        assert!(tiles_draw(&[batch(stroke(StrokeKind::Solid))]));
+        assert!(!tiles_draw(&[batch(stroke(StrokeKind::dashed()))]));
     }
 }

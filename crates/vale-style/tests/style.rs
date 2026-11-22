@@ -1312,4 +1312,11 @@ fn a_dash_pattern_knows_its_preset_and_keeps_valid() {
     assert_eq!(flat.lengths(), dash_dot.lengths());
     assert!(!flat.round);
     assert_eq!(DashPattern::DASH_DOT.scaled(2.0), vec![12.0, 5.0, 0.0, 5.0]);
+    // Round ends take one width from a dash and give it to the next gap. A dot keeps its gap.
+    assert_eq!(DashPattern::DASH_DOT.cut(2.0), vec![10.0, 7.0, 0.0, 5.0]);
+    let short = DashPattern::parse("0.5 2", true).unwrap();
+    assert_eq!(short.cut(2.0), vec![0.0, 5.0]);
+    assert_eq!(DashPattern::DASHED.cut(2.0), vec![8.0, 4.0], "flat ends");
+    assert!(DashPattern::DASH_DOT.has_dots());
+    assert!(!DashPattern::DASHED.has_dots());
 }

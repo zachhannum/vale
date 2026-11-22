@@ -1288,9 +1288,9 @@ fn a_dashed_curved_line_has_even_dashes() {
     }
 }
 
-/// The dashes of the one blue stroke of a line layer with the stroke kind `kind` at `width`,
-/// and whether the stroke has round ends.
-fn blue_dashes(kind: StrokeKind, width: f64) -> (Vec<Vec<Point>>, bool) {
+/// The blue strokes of a line layer with the stroke kind `kind` at `width`: the pieces of
+/// each stroke, and whether it has round ends.
+fn blue_strokes(kind: StrokeKind, width: f64) -> Vec<(Vec<Vec<Point>>, bool)> {
     let equator: Vec<[f64; 2]> = (0..=12)
         .map(|i| [-30.0 + 5.0 * f64::from(i), 0.0])
         .collect();
@@ -1300,16 +1300,21 @@ fn blue_dashes(kind: StrokeKind, width: f64) -> (Vec<Vec<Point>>, bool) {
         rules: vec![kind_rule("a", Color::rgb(0, 0, 200), width, kind)],
     };
     let composed = compose(&doc, &mut Pipeline::new());
-    let strokes: Vec<(&kurbo::BezPath, bool)> = (composed.list.items.iter())
+    (composed.list.items.iter())
         .filter_map(|i| match i {
             Item::Stroke {
                 path, round, color, ..
-            } if color.b == 200 => Some((path, *round)),
+            } if color.b == 200 => Some((subpaths(path), *round)),
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+/// The pieces of the one blue stroke of `blue_strokes`, and whether it has round ends.
+fn blue_dashes(kind: StrokeKind, width: f64) -> (Vec<Vec<Point>>, bool) {
+    let mut strokes = blue_strokes(kind, width);
     assert_eq!(strokes.len(), 1);
-    (subpaths(strokes[0].0), strokes[0].1)
+    strokes.remove(0)
 }
 
 #[test]
@@ -1320,15 +1325,34 @@ fn a_dash_dot_line_draws_round_dots() {
         .iter()
         .filter(|d| length(d) <= 2.0 * stroke::DOT + 1e-9)
         .count();
+    // A dash of 6 widths shows 12 pt with its round ends, so 10 pt of it is on the center.
     let dashes = pieces
         .iter()
-        .filter(|d| (length(d) - 12.0).abs() < 1e-6)
+        .filter(|d| (length(d) - 10.0).abs() < 1e-6)
         .count();
     assert!(dots > 3, "{dots} dots");
     assert!(
         dashes.abs_diff(dots) <= 1,
         "{dashes} dashes and {dots} dots"
     );
+}
+
+#[test]
+fn a_dot_is_round_with_flat_ends() {
+    let flat = DashPattern::parse("6 2.5 0 2.5", false).unwrap();
+    let strokes = blue_strokes(StrokeKind::Dashed(flat), 2.0);
+    assert_eq!(strokes.len(), 2);
+    let (dashes, round) = &strokes[0];
+    assert!(!round);
+    assert!(
+        dashes
+            .iter()
+            .all(|d| (length(d) - 12.0).abs() < 1e-6 || length(d) < 12.0)
+    );
+    let (dots, round) = &strokes[1];
+    assert!(round);
+    assert!(dots.iter().all(|d| length(d) <= 2.0 * stroke::DOT + 1e-9));
+    assert!(dots.len() > 3);
 }
 
 #[test]

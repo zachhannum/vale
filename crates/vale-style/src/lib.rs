@@ -108,6 +108,26 @@ impl DashPattern {
         self.lengths().iter().map(|l| l * k).collect()
     }
 
+    /// The lengths along the center of a stroke of width `width`, so that each dash and gap
+    /// shows its length. A round end reaches half the width past each end of a dash, so a dash
+    /// gets shorter by up to one width and the gap after it gets longer by the same length.
+    pub fn cut(&self, width: f64) -> Vec<f64> {
+        let mut out = self.scaled(width);
+        if self.round {
+            for pair in out.chunks_mut(2) {
+                let caps = pair[0].min(width);
+                pair[0] -= caps;
+                pair[1] += caps;
+            }
+        }
+        out
+    }
+
+    /// True if a dash of the pattern is a dot.
+    pub fn has_dots(&self) -> bool {
+        self.lengths().iter().step_by(2).any(|&l| l == 0.0)
+    }
+
     /// The preset with the same lengths and ends, if any.
     pub fn preset(&self) -> Option<DashPreset> {
         DashPreset::ALL.into_iter().find(|p| p.pattern() == *self)

@@ -876,6 +876,11 @@ impl Plain {
     }
 }
 
+/// True if a piece of `stroke::dash` is a dot.
+pub(crate) fn is_dot(piece: &[Point]) -> bool {
+    piece.len() == 2 && piece[0].distance(piece[1]) <= 1.5 * stroke::DOT
+}
+
 /// Draws a plain paint. `rings` gives the rings of each feature for a fill,
 /// and `lines` gives the lines of each feature for a stroke, in the units of
 /// `list`.
@@ -901,21 +906,31 @@ pub(crate) fn draw_plain<'a>(
             round,
             dash,
         } => {
-            let path = match dash {
-                Some(p) => {
-                    let pattern = p.scaled(width);
-                    let parts: Vec<_> = lines.flat_map(|l| stroke::dash(l, &pattern)).collect();
-                    polylines_path(&parts, false)
+            let mut push = |path: BezPath, round: bool| {
+                if !path.elements().is_empty() {
+                    list.push(Item::Stroke {
+                        path,
+                        color,
+                        width,
+                        round,
+                    });
                 }
-                None => polylines_path(lines.flatten(), false),
             };
-            if !path.elements().is_empty() {
-                list.push(Item::Stroke {
-                    path,
-                    color,
-                    width,
-                    round,
-                });
+            match dash {
+                // A dot is round with either end.
+                Some(p) if !round && p.has_dots() => {
+                    let pattern = p.cut(width);
+                    let parts = lines.flat_map(|l| stroke::dash(l, &pattern));
+                    let (dots, dashes): (Vec<_>, Vec<_>) = parts.partition(|d| is_dot(d));
+                    push(polylines_path(&dashes, false), false);
+                    push(polylines_path(&dots, false), true);
+                }
+                Some(p) => {
+                    let pattern = p.cut(width);
+                    let parts: Vec<_> = lines.flat_map(|l| stroke::dash(l, &pattern)).collect();
+                    push(polylines_path(&parts, false), round);
+                }
+                None => push(polylines_path(lines.flatten(), false), round),
             }
         }
     }

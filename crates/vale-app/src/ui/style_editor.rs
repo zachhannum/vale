@@ -22,9 +22,9 @@ use super::pad::furniture::{ANGLE, LINE_COLOR, LINE_WIDTH};
 use super::pad::raster::{DUPLICATE_RAMP, IMPORT_RAMP, NEW_RAMP};
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASHED, DELETE_RULE, DELETE_RULES, ENDS, EXPRESSION,
-    FILL, FILTER, FLAT, FLOW, FLOW_MIN, HEIGHT_LAYER, LENGTHS, LENGTHS_HINT, LINE, MAX_SCALE,
-    MIN_SCALE, MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, ROUND, SOLID, STROKE, STROKE_WIDTH, TAPER,
-    TAPER_START, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale, pattern_name, scale_text,
+    FILL, FILTER, FLAT, FLOW, FLOW_MIN, HEIGHT_LAYER, LENGTHS, LINE, MAX_SCALE, MIN_SCALE,
+    MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, ROUND, SOLID, STROKE, STROKE_WIDTH, TAPER, TAPER_START,
+    WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale, pattern_name, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -970,7 +970,6 @@ fn line_rows(ui: &mut egui::Ui, s: &mut Stroke, kind: GeometryKind, salt: egui::
                     ui.data_mut(|d| d.remove::<String>(id));
                 }
             });
-            ui.label(LENGTHS_HINT);
             ui.horizontal(|ui| {
                 ui.label(ENDS);
                 let menu = egui::ComboBox::from_id_salt(salt.with("ends"))
