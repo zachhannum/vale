@@ -2,7 +2,7 @@
 
 This is a copy of `winit` 0.30.13 from crates.io, with a small change. The root `Cargo.toml` uses it through `[patch.crates-io]`. The license is the license of winit: `Apache-2.0`.
 
-The change gives the iOS backend a scene delegate, as Apple recommends for iPhone Duo. A window takes its screen, its size, and its scale from its window scene.
+The change gives the iOS backend a scene delegate, as Apple recommends for iPhone Duo. A window takes its screen, its size, and its scale from its window scene. The Return key of the keyboard is the Enter key.
 
 ## The change
 
@@ -25,3 +25,4 @@ To upgrade winit, apply these changes to the new version:
    - `WinitView::new` takes the scale of the scene, and it sets the content scale factor to the scale of the attributes or else to the scale of the scene.
    - In `layoutSubviews`, if `scene_scale` is true and the display scale of the window scene is not the content scale factor, the view calls `setContentScaleFactor` with the display scale. That call sends the events of the new scale and size. Otherwise, the size of the `Resized` event uses the content scale factor, not the scale of the screen.
 6. In `view_controller.rs`, `WinitViewController` has the Objective-C method `setPreferredScreenEdgesDeferringSystemGestures:`. It sets the edges that `preferredScreenEdgesDeferringSystemGestures` returns, as `set_preferred_screen_edges_deferring_system_gestures` does. An app that gets the view controller from the raw window handle calls it.
+7. In `view.rs`, `handle_insert_text` sends a line break of `insertText:` as the Enter key: `NamedKey::Enter`, `KeyCode::Enter`, and the text `"\r"`. A single-line field of egui then loses the focus on Return, as on the other platforms.

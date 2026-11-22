@@ -574,7 +574,21 @@ impl WinitView {
         app_state::handle_nonuser_events(
             mtm,
             text.to_string().chars().flat_map(|c| {
-                let text = smol_str::SmolStr::from_iter([c]);
+                // The keyboard sends Return as a line break. It is the
+                // Enter key, as on the other platforms.
+                let enter = c == '\n' || c == '\r';
+                let text = smol_str::SmolStr::from_iter([if enter { '\r' } else { c }]);
+                let (logical_key, physical_key) = if enter {
+                    (
+                        Key::Named(NamedKey::Enter),
+                        PhysicalKey::Code(KeyCode::Enter),
+                    )
+                } else {
+                    (
+                        Key::Character(text.clone()),
+                        PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+                    )
+                };
                 // Emit both press and release events
                 [ElementState::Pressed, ElementState::Released].map(|state| {
                     EventWrapper::StaticEvent(Event::WindowEvent {
@@ -589,10 +603,8 @@ impl WinitView {
                                 state,
                                 location: KeyLocation::Standard,
                                 repeat: false,
-                                logical_key: Key::Character(text.clone()),
-                                physical_key: PhysicalKey::Unidentified(
-                                    NativeKeyCode::Unidentified,
-                                ),
+                                logical_key: logical_key.clone(),
+                                physical_key,
                                 platform_specific: KeyEventExtra {},
                             },
                             is_synthetic: false,
