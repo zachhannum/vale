@@ -543,9 +543,11 @@ Reshape redraws a part of the outline of a line or a polygon with a stroke of th
 - On a polygon, the stroke ends within 12 points of the same ring. The ring then has two possible shapes, one with each part of the old ring between the ends of the stroke. The shape with the larger area stays. A stroke that crosses itself or the outline gives the simple rings of the area, as in the polygon tool. A hole stays in the polygon that holds it. A stroke that ends away from the ring changes nothing.
 - On a line, a stroke that ends on the line takes the place of the part between its ends. A stroke that ends away from the line takes the place of the rest of the line, toward the end of the line that is nearer to the end of the stroke.
 
+The switch "Shared borders" of the polygon tool is on by default. While it is on, a reshape of a polygon also reshapes each polygon of the same layer that has the full replaced part of the outline on its own outline. That polygon then has the same new vertices, so the border has no gap and no overlap. A hole and the polygon in the hole, such as a lake and its island, change together in the same way. A polygon that has only some of the replaced part does not change. All the changes are one undo step.
+
 The stroke snaps and traces like the other strokes of the tool, but it does not snap to or trace the feature that it reshapes. While the stroke draws, the outline of the feature shows in the accent color, and the stroke of the polygon tool does not close. The stored vertices of the old outline outside the reshaped part do not change. The parts of a polygon on the two sides of the 180 degree meridian are one outline for the reshape. Each reshape is one undo step, and the feature keeps its attributes.
 
-On the iPad, the controls of the line tool and of the polygon tool have the Reshape button after the Snap button. The Brush panel has the Reshape switch. On the desktop, the tool bar has the Reshape check box. The switch is not saved in the project.
+On the iPad, the controls of the line tool and of the polygon tool have the Reshape button after the Snap button. The Brush panel has the Reshape switch, and for the polygon tool also the switch "Shared borders". On the desktop, the tool bar has the Reshape check box, and for the polygon tool also the check box "Shared borders". "Shared borders" works while Reshape is on. The app keeps both switches with the settings of the tools, and the project does not save them.
 
 ### Split
 
