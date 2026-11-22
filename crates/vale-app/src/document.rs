@@ -45,6 +45,9 @@ pub struct Document {
     pub project: Project,
     pub frame: MapFrame,
     symbols: SymbolLibrary,
+    /// The style that each layer got in place of a stored style that does
+    /// not parse. The stored text stays until the entry has another style.
+    unreadable: BTreeMap<LayerId, LayerStyle>,
 }
 
 /// The symbols that the styles can use: the symbols of the project.
@@ -80,12 +83,15 @@ impl SymbolLibrary {
 /// The largest SVG file that a project takes as a symbol, in bytes.
 pub const MAX_SYMBOL_BYTES: u64 = 1 << 20;
 
-/// The style that a layer holds. A style that does not parse is the default style.
-fn stored_style(layer: &Layer) -> Option<LayerStyle> {
-    let text = layer.style.as_deref()?;
+/// The style that a layer holds. `Err` means a style that does not parse,
+/// for example one that a newer build wrote.
+fn stored_style(layer: &Layer) -> Result<Option<LayerStyle>, ()> {
+    let Some(text) = layer.style.as_deref() else {
+        return Ok(None);
+    };
     LayerStyle::from_json(text)
-        .inspect_err(|e| eprintln!("The style of layer {:?} is not valid: {e}", layer.name))
-        .ok()
+        .map(Some)
+        .map_err(|e| log::warn!("The style of layer {:?} is not valid: {e}", layer.name))
 }
 
 fn rank(kind: GeometryKind) -> u8 {
@@ -115,6 +121,7 @@ impl Document {
                 labels: true,
                 style: MapStyle::default(),
             },
+            unreadable: BTreeMap::new(),
         }
     }
 
@@ -249,20 +256,31 @@ impl Document {
             let ordinal = &mut counts[rank(kind) as usize];
             let entry = match old.iter().position(|e| e.layer == layer.id) {
                 Some(i) => old.swap_remove(i),
-                None => LayerEntry {
-                    layer: layer.id,
-                    style: stored_style(layer).unwrap_or_else(|| {
+                None => {
+                    let stored = stored_style(layer);
+                    let style = stored.clone().ok().flatten().unwrap_or_else(|| {
                         LayerStyle::default_for(kind, *ordinal, &layer.field_names())
-                    }),
-                },
+                    });
+                    if stored.is_err() {
+                        self.unreadable.insert(layer.id, style.clone());
+                    }
+                    LayerEntry {
+                        layer: layer.id,
+                        style,
+                    }
+                }
             };
             *ordinal += 1;
             self.frame.entries.push(entry);
         }
+        let entries = &self.frame.entries;
+        self.unreadable
+            .retain(|id, _| entries.iter().any(|e| e.layer == *id));
     }
 
     /// Replaces the project. An entry stays if the new project has a layer
-    /// with its ID and its kind. Each other layer gets a new entry.
+    /// with its ID and its kind, and the stored style of the layer parses.
+    /// Each other layer gets a new entry.
     pub fn set_project(&mut self, project: Project) {
         let projection = self.projection(self.first_map());
         let old = std::mem::replace(&mut self.project, project);
@@ -273,22 +291,24 @@ impl Document {
         }
         let kind = |p: &Project, id| p.layer(id).map(|l| l.kind);
         let new = &self.project;
+        self.unreadable.clear();
         self.frame
             .entries
             .retain(|e| kind(new, e.layer).is_some() && kind(new, e.layer) == kind(&old, e.layer));
-        for entry in &mut self.frame.entries {
+        self.frame.entries.retain_mut(|entry| {
             let Some(layer) = new.layer(entry.layer) else {
-                continue;
+                return true;
             };
-            if layer
-                .style
-                .as_ref()
-                .is_some_and(|t| *t != entry.style.to_json())
-                && let Some(style) = stored_style(layer)
-            {
-                entry.style = style;
+            if !(layer.style.as_ref()).is_some_and(|t| *t != entry.style.to_json()) {
+                return true;
             }
-        }
+            match stored_style(layer) {
+                Ok(Some(style)) => entry.style = style,
+                Ok(None) => {}
+                Err(()) => return false,
+            }
+            true
+        });
         self.sync_entries();
         self.sync_symbols();
     }
@@ -352,10 +372,13 @@ impl Document {
     }
 
     /// The style of each vector layer whose project layer does not hold it, as JSON.
+    /// A layer whose stored style does not parse keeps it until its entry has
+    /// another style.
     pub fn changed_styles(&self) -> Vec<(LayerId, String)> {
         self.frame
             .entries
             .iter()
+            .filter(|e| self.unreadable.get(&e.layer) != Some(&e.style))
             .filter_map(|e| {
                 let stored = self.project.layer(e.layer)?.style.as_deref();
                 let json = e.style.to_json();
@@ -367,6 +390,7 @@ impl Document {
     /// Writes each changed style into the project.
     pub fn store_styles(&mut self) {
         for (id, json) in self.changed_styles() {
+            self.unreadable.remove(&id);
             self.project.set_layer_style(id, Some(json));
         }
     }
@@ -502,6 +526,10 @@ impl Document {
         (self.frame.entries.iter_mut())
             .filter(|e| wanted(&e.layer))
             .for_each(|e| style(&mut e.style));
+        // The stored text of a style that does not parse stays.
+        (self.unreadable.iter_mut())
+            .filter(|(id, _)| wanted(id))
+            .for_each(|(_, s)| style(s));
         let atlas = &mut self.project.atlas;
         let maps = atlas
             .maps
@@ -772,7 +800,7 @@ impl Document {
     fn parsed_style(&self, target: Target, layer: LayerId) -> Option<LayerStyle> {
         let text = self.style_text(target, layer)?;
         LayerStyle::from_json(text)
-            .inspect_err(|e| eprintln!("The style of layer {layer:?} in a map is not valid: {e}"))
+            .inspect_err(|e| log::warn!("The style of layer {layer:?} in a map is not valid: {e}"))
             .ok()
     }
 
@@ -781,7 +809,7 @@ impl Document {
     pub fn layer_style(&self, layer: LayerId) -> Option<LayerStyle> {
         match self.entry(layer) {
             Some(entry) => Some(entry.style.clone()),
-            None => stored_style(self.project.layer(layer)?),
+            None => stored_style(self.project.layer(layer)?).ok().flatten(),
         }
     }
 
@@ -1191,6 +1219,32 @@ mod tests {
         assert_eq!(before, after);
         assert!(!after[0].0 && after[1].0 && !after[2].0);
         assert!(after[2].2.is_empty());
+    }
+
+    #[test]
+    fn a_style_that_does_not_parse_stays_until_the_layer_gets_another_style() {
+        const NEWER: &str = r#"{"version":99,"rules":[],"label":{}}"#;
+        let mut doc = Document::sample();
+        let id = doc.frame.entries[0].layer;
+        let mut project = doc.project.clone();
+        project.set_layer_style(id, Some(NEWER.into()));
+        doc.set_project(project);
+        let stored = |doc: &Document| doc.layer(id).and_then(|l| l.style.clone());
+        doc.store_styles();
+        assert_eq!(stored(&doc).as_deref(), Some(NEWER));
+
+        // An undo step puts the same project back.
+        doc.set_project(doc.project.clone());
+        doc.store_styles();
+        assert_eq!(stored(&doc).as_deref(), Some(NEWER));
+
+        doc.entry_mut(id).unwrap().style.label.size += 1.0;
+        doc.store_styles();
+        let text = stored(&doc).unwrap();
+        assert_eq!(
+            LayerStyle::from_json(&text).unwrap(),
+            doc.entry(id).unwrap().style
+        );
     }
 
     /// A sample with a second map, both maps linked to one map style.
