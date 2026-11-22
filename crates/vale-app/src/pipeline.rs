@@ -916,21 +916,20 @@ pub(crate) fn draw_plain<'a>(
                     });
                 }
             };
-            match dash {
+            let Some(p) = dash else {
+                push(polylines_path(lines.flatten(), false), round);
+                return;
+            };
+            // The features share one pattern, so an edge of two features draws one time.
+            let all: Vec<Vec<Point>> = lines.flatten().cloned().collect();
+            let parts = stroke::dash(&stroke::join_shared(&all), &p.cut(width));
+            if !round && p.has_dots() {
                 // A dot is round with either end.
-                Some(p) if !round && p.has_dots() => {
-                    let pattern = p.cut(width);
-                    let parts = lines.flat_map(|l| stroke::dash(l, &pattern));
-                    let (dots, dashes): (Vec<_>, Vec<_>) = parts.partition(|d| is_dot(d));
-                    push(polylines_path(&dashes, false), false);
-                    push(polylines_path(&dots, false), true);
-                }
-                Some(p) => {
-                    let pattern = p.cut(width);
-                    let parts: Vec<_> = lines.flat_map(|l| stroke::dash(l, &pattern)).collect();
-                    push(polylines_path(&parts, false), round);
-                }
-                None => push(polylines_path(lines.flatten(), false), round),
+                let (dots, dashes): (Vec<_>, Vec<_>) = parts.into_iter().partition(|d| is_dot(d));
+                push(polylines_path(&dashes, false), false);
+                push(polylines_path(&dots, false), true);
+            } else {
+                push(polylines_path(&parts, false), round);
             }
         }
     }

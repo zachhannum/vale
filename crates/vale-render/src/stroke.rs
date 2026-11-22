@@ -91,6 +91,85 @@ pub fn dash(parts: &[Vec<Point>], pattern: &[f64]) -> Vec<Vec<Point>> {
     out
 }
 
+/// Points on the same cell of a grid with this many cells to the unit are one point for
+/// `join_shared`.
+const JOIN_GRID: f64 = 1024.0;
+
+/// The segments of `parts` joined into chains, with each segment that two parts share only
+/// one time. A chain ends where one segment or more than two segments meet. A dash pattern
+/// along the chains does not draw a shared segment two times with different dashes.
+///
+/// A chain starts at the first segment that no chain has yet, in the order of `parts`, so a
+/// line that shares nothing keeps its direction and its start.
+pub fn join_shared(parts: &[Vec<Point>]) -> Vec<Vec<Point>> {
+    use std::collections::{HashMap, HashSet};
+    let mut ids: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut points: Vec<Point> = Vec::new();
+    let mut id = |p: Point| {
+        let key = (
+            (p.x * JOIN_GRID).round() as i64,
+            (p.y * JOIN_GRID).round() as i64,
+        );
+        *ids.entry(key).or_insert_with(|| {
+            points.push(p);
+            points.len() - 1
+        })
+    };
+    let mut seen = HashSet::new();
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    for part in parts {
+        for w in part.windows(2) {
+            let (a, b) = (id(w[0]), id(w[1]));
+            if a != b && seen.insert((a.min(b), a.max(b))) {
+                segments.push((a, b));
+            }
+        }
+    }
+    let mut at: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for (i, &(a, b)) in segments.iter().enumerate() {
+        at[a].push(i);
+        at[b].push(i);
+    }
+    let mut used = vec![false; segments.len()];
+    // The node past `node` on the chain, if `node` joins two segments and the other is free.
+    let step = |node: usize, from: usize, used: &mut [bool]| -> Option<(usize, usize)> {
+        let [x, y] = at[node][..] else {
+            return None;
+        };
+        let next = if x == from { y } else { x };
+        if used[next] {
+            return None;
+        }
+        used[next] = true;
+        let (a, b) = segments[next];
+        Some((if a == node { b } else { a }, next))
+    };
+    let mut out = Vec::new();
+    for s in 0..segments.len() {
+        if used[s] {
+            continue;
+        }
+        used[s] = true;
+        let (a, b) = segments[s];
+        let mut chain = vec![a, b];
+        let (mut node, mut from) = (b, s);
+        while let Some((next, seg)) = step(node, from, &mut used) {
+            chain.push(next);
+            (node, from) = (next, seg);
+        }
+        let mut back = Vec::new();
+        let (mut node, mut from) = (a, s);
+        while let Some((next, seg)) = step(node, from, &mut used) {
+            back.push(next);
+            (node, from) = (next, seg);
+        }
+        back.reverse();
+        back.extend(chain);
+        out.push(back.into_iter().map(|i| points[i]).collect());
+    }
+    out
+}
+
 fn push_new(v: &mut Vec<Point>, p: Point) {
     if v.last() != Some(&p) {
         v.push(p);

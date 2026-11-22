@@ -1337,6 +1337,55 @@ fn a_dash_dot_line_draws_round_dots() {
     );
 }
 
+/// The total length of the dashes of the outlines of `squares`, each from (x, 0) to
+/// (x + 10, 10) in degrees, with one dashed rule.
+fn dashed_outline_length(squares: &[f64]) -> f64 {
+    let features: Vec<String> = (squares.iter())
+        .map(|x| {
+            let (a, b) = (x, x + 10.0);
+            format!(
+                r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[{a},0],[{b},0],[{b},10],[{a},10],[{a},0]]]}}}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let id = doc.add_imported(
+        vale_import::geojson::read_str("squares", &text).unwrap(),
+        None,
+    )[0];
+    let style = &mut doc.entry_mut(id).unwrap().style;
+    style.set_fill(None);
+    style.set_stroke(Some(vale_style::Stroke {
+        color: Color::rgb(0, 0, 200),
+        width: 1.0,
+        kind: StrokeKind::Dashed(DashPattern::parse("1 1", false).unwrap()),
+    }));
+    let composed = compose(&doc, &mut Pipeline::new());
+    (composed.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke { path, color, .. } if color.b == 200 => Some(subpaths(path)),
+            _ => None,
+        })
+        .flatten()
+        .map(|d| length(&d))
+        .sum()
+}
+
+#[test]
+fn an_edge_of_two_features_draws_its_dashes_one_time() {
+    let apart = dashed_outline_length(&[0.0]) + dashed_outline_length(&[10.0]);
+    let shared = dashed_outline_length(&[0.0, 10.0]);
+    // Seven edges of the same length, in place of eight.
+    let ratio = shared / apart;
+    assert!((ratio - 7.0 / 8.0).abs() < 0.03, "{ratio}");
+}
+
 #[test]
 fn a_dot_is_round_with_flat_ends() {
     let flat = DashPattern::parse("6 2.5 0 2.5", false).unwrap();

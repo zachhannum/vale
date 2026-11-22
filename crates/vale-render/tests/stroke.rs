@@ -1,7 +1,8 @@
 use kurbo::BezPath;
 use vale_render::stroke::DOT;
 use vale_render::stroke::{
-    Dab, TaperPiece, brush_dabs, dash, sampled, taper, taper_measured, taper_path, varying,
+    Dab, TaperPiece, brush_dabs, dash, join_shared, sampled, taper, taper_measured, taper_path,
+    varying,
 };
 use vale_render::{Color, DisplayList, Item, Point, render_rgba};
 
@@ -309,4 +310,57 @@ fn sampled_cuts_long_segments_and_takes_the_nearest_width() {
     // With no samples, the width is 0.
     let none = sampled(&[vec![Point::new(0.0, 0.0), Point::new(1.0, 0.0)]], &[]);
     assert!(none[0].iter().all(|&(_, w)| w == 0.0));
+}
+
+#[test]
+fn a_line_that_shares_nothing_keeps_its_points() {
+    let line = vec![
+        Point::new(0.0, 0.0),
+        Point::new(5.0, 0.0),
+        Point::new(5.0, 5.0),
+    ];
+    assert_eq!(join_shared(std::slice::from_ref(&line)), vec![line]);
+}
+
+#[test]
+fn a_shared_edge_is_one_chain() {
+    // Two squares share the edge from (10, 0) to (10, 10), in opposite directions, with a
+    // point that differs in the last bits.
+    let p = |x: f64, y: f64| Point::new(x, y);
+    let left = vec![
+        p(0.0, 0.0),
+        p(10.0, 0.0),
+        p(10.0, 5.0),
+        p(10.0, 10.0),
+        p(0.0, 10.0),
+        p(0.0, 0.0),
+    ];
+    let right = vec![
+        p(10.0, 0.0),
+        p(20.0, 0.0),
+        p(20.0, 10.0),
+        p(10.0, 10.0),
+        p(10.0, 5.0 + 1e-12),
+        p(10.0, 0.0),
+    ];
+    let chains = join_shared(&[left, right]);
+    let length = |c: &Vec<Point>| c.windows(2).map(|w| w[0].distance(w[1])).sum::<f64>();
+    let total: f64 = chains.iter().map(length).sum();
+    assert!((total - 70.0).abs() < 1e-9, "{total}");
+    // The shared edge meets two other edges at each end, so it is a chain of its own.
+    assert_eq!(chains.len(), 3, "{chains:?}");
+}
+
+#[test]
+fn a_ring_is_one_closed_chain() {
+    let p = |x: f64, y: f64| Point::new(x, y);
+    let ring = vec![
+        p(0.0, 0.0),
+        p(4.0, 0.0),
+        p(4.0, 4.0),
+        p(0.0, 4.0),
+        p(0.0, 0.0),
+    ];
+    let chains = join_shared(std::slice::from_ref(&ring));
+    assert_eq!(chains, vec![ring]);
 }

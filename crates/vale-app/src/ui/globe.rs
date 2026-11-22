@@ -1409,6 +1409,13 @@ pub fn vector_layer_cut(
                 Some((dirs, screens)) if on_whole(batch) => (dirs, screens),
                 _ => (dirs, &mut *screens),
             };
+            // A dashed stroke draws the lines of all features of the batch at
+            // the end, so that an edge of two features draws one time.
+            let dashed = match paint {
+                StylePaint::Stroke(s) if matches!(s.kind, StrokeKind::Dashed(_)) => Some(*s),
+                _ => None,
+            };
+            let mut joined: Vec<Vec<(kurbo::Point, f64)>> = Vec::new();
             for &index in &batch.features {
                 let feature = &features[index];
                 if !view_key.shows(&dirs[index].cap) {
@@ -1443,6 +1450,9 @@ pub fn vector_layer_cut(
                             }
                         }
                     }
+                    (OnScreen::Lines(parts), StylePaint::Stroke(_)) if dashed.is_some() => {
+                        joined.extend(parts.iter().cloned());
+                    }
                     (OnScreen::Lines(parts), StylePaint::Stroke(stroke)) if !parts.is_empty() => {
                         let flow = flows.widths(index, stroke, |ll| {
                             let v = view.rot.mul_vec(lonlat_to_dir(ll[0], ll[1]));
@@ -1476,6 +1486,16 @@ pub fn vector_layer_cut(
                         // A polygon outline has no start and no end to taper.
                         if stroke.kind.along_line() {
                             stroke.kind = StrokeKind::Solid;
+                        }
+                        if dashed.is_some() {
+                            match outlines {
+                                Some(outlines) => joined.extend(outlines.iter().cloned()),
+                                None => joined.extend(clipped.iter().flat_map(|part| {
+                                    (part.outlines.iter())
+                                        .map(|o| o.iter().map(|p| (point(p), 0.0)).collect())
+                                })),
+                            }
+                            continue;
                         }
                         if let Some(outlines) = outlines {
                             let shapes = vector::stroke_shapes(outlines, &stroke, seed, None);
@@ -1519,6 +1539,17 @@ pub fn vector_layer_cut(
                     }
                     _ => {}
                 }
+            }
+            if let Some(stroke) = dashed.filter(|_| !joined.is_empty()) {
+                let plain: Vec<Vec<kurbo::Point>> = (joined.iter())
+                    .map(|part| part.iter().map(|(p, _)| *p).collect())
+                    .collect();
+                let chains: Vec<Vec<(kurbo::Point, f64)>> =
+                    (vale_render::stroke::join_shared(&plain))
+                        .into_iter()
+                        .map(|chain| chain.into_iter().map(|p| (p, 0.0)).collect())
+                        .collect();
+                sink.stroke(stroke, vector::stroke_shapes(&chains, &stroke, 0, None));
             }
             // The markers of a paint draw as on the page: the fills of all
             // points, then their hatches, then their strokes.
