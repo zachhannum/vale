@@ -1260,3 +1260,93 @@ fn a_frame_draws_the_collections_of_its_map_in_their_stacking_order() {
     let top = pixel(&mut h, middle);
     assert!(close(top, RED), "{top:?}");
 }
+
+/// A second height layer on top of the first, filled with `level` and
+/// shown in grey. The brush paints it.
+fn add_grey(h: &mut App, level: u16) -> RasterId {
+    let state = h.state_mut();
+    let id = state.add_height();
+    state.set_raster_display(id, RasterDisplay::Grey);
+    state.globe.raster_map_mut(id).unwrap().fill(level);
+    state.touch();
+    h.run_steps(3);
+    id
+}
+
+/// The raster layers of the list of the globe, from the bottom.
+fn globe_rasters(h: &App) -> Vec<RasterId> {
+    use vale_app::globe::StackItem;
+    let stack = h.state().globe.stack().unwrap_or_default().iter();
+    (stack.filter_map(|item| match item {
+        StackItem::Raster { id, .. } => Some(*id),
+        _ => None,
+    }))
+    .collect()
+}
+
+fn is_grey(pixel: [u8; 3], level: u16) -> bool {
+    let [r, g, b] = pixel;
+    r.abs_diff(grey_of(level)) <= 3 && r == g && g == b
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_a_raster_of_a_collection_that_the_globe_does_not_show() {
+    let _gpu = one_gpu_test();
+    let (level, below) = (40000, 20000);
+    let (mut h, height) = atlas(level);
+    // The brush paints the other layer, so the frame reads the copy of
+    // `height`.
+    let other = add_grey(&mut h, below);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let x = state.add_collection_with("Rasters", layer).unwrap();
+    assert!(state.add_map_collection(frame.map, x));
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.check_collection(x, false));
+    h.run_steps(4);
+    assert_eq!(globe_rasters(&h), [other]);
+    assert!(!h.state().globe.draws_full(height));
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, level), "{top:?}");
+
+    // The switch of the map turns it off.
+    h.state_mut().set_map_shown(frame.map, layer, false);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, below), "{top:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_the_raster_layers_in_the_stacking_order_of_its_map() {
+    let _gpu = one_gpu_test();
+    let (lower_level, upper_level) = (40000, 20000);
+    let (mut h, lower) = atlas(lower_level);
+    let upper = add_grey(&mut h, upper_level);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, upper_level), "{top:?}");
+
+    // A collection on top of World in the map, and off on the globe, holds
+    // the lower layer.
+    let layer = h.state().doc.project.raster_layer(lower).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let x = state.add_collection_with("Top", layer).unwrap();
+    assert!(state.check_collection(x, false));
+    assert!(state.add_map_collection(frame.map, x));
+    assert_eq!(state.doc.project.map_stack(frame.map), [world, x]);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, lower_level), "{top:?}");
+    assert_eq!(globe_rasters(&h), [lower, upper]);
+
+    // World goes on top in the map.
+    assert!(h.state_mut().move_map_collection(frame.map, x, 0));
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, upper_level), "{top:?}");
+    assert_eq!(globe_rasters(&h), [lower, upper]);
+}
