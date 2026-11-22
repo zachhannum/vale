@@ -3,6 +3,7 @@
 mod images;
 mod lines;
 mod masked;
+mod screenshot;
 mod striped;
 
 use eframe::egui::{Pos2, pos2};
@@ -1349,4 +1350,98 @@ fn a_frame_draws_the_raster_layers_in_the_stacking_order_of_its_map() {
     let top = pixel(&mut h, middle);
     assert!(is_grey(top, upper_level), "{top:?}");
     assert_eq!(globe_rasters(&h), [lower, upper]);
+}
+
+/// `two_squares` with a grey height layer of `level` in a collection "Top"
+/// of its own, off on the globe and on top of World in the map of the
+/// frame. Returns the app, the height layer, and the collection.
+fn squares_under_grey(level: u16) -> (App, RasterId, vale_store::CollectionId) {
+    let (mut h, _) = two_squares();
+    let height = add_grey(&mut h, level);
+    let frame = open_frame(&h);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let top = state.add_collection_with("Top", layer).unwrap();
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.check_collection(top, false));
+    assert!(state.add_map_collection(frame.map, top));
+    assert_eq!(state.doc.project.map_stack(frame.map), [world, top]);
+    h.run_steps(4);
+    (h, height, top)
+}
+
+/// The pixel of an exported page at the page point `at`, in millimeters.
+fn export_pixel(image: &image::RgbaImage, at: Point) -> [u8; 3] {
+    let x = (at.x * EXPORT_PIXELS_PER_MM) as u32;
+    let y = (at.y * EXPORT_PIXELS_PER_MM) as u32;
+    let p = image.get_pixel(x, y);
+    [p[0], p[1], p[2]]
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_raster_in_a_higher_collection_of_the_map_covers_a_vector_below() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, _, top) = squares_under_grey(level);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let got = pixel(&mut h, middle);
+    assert!(is_grey(got, level), "{got:?}");
+    screenshot::save(&mut h, "frame_raster_over_vector");
+
+    // Top goes to the bottom of the map, below the squares.
+    assert!(h.state_mut().move_map_collection(frame.map, top, 0));
+    let got = pixel(&mut h, middle);
+    assert!(close(got, BLUE), "{got:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn an_export_draws_a_raster_in_a_higher_collection_of_the_map_over_a_vector_below() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, height, top) = squares_under_grey(level);
+    let frame = open_frame(&h);
+    let at = anchor(&frame.shape) + kurbo::Vec2::new(23.0, 17.0);
+    let dir = tempfile::tempdir().unwrap();
+    let image = export_png(&mut h, &dir.path().join("over.png"));
+    let got = export_pixel(&image, at);
+    assert!(is_grey(got, level), "{got:?}");
+    let one = images_in(&export_pdf(&mut h, &dir.path().join("one.pdf")));
+    assert!(one > 0, "the PDF has no raster image");
+
+    // A second raster layer at the bottom of the map, and a top raster
+    // layer that multiplies: two runs of raster layers, each an image.
+    let below = add_grey(&mut h, 20000);
+    let layer = h.state().doc.project.raster_layer(below).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let bottom = state.add_collection_with("Bottom", layer).unwrap();
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.add_map_collection(frame.map, bottom));
+    assert!(state.move_map_collection(frame.map, bottom, 0));
+    let layer = state.doc.project.raster_layer(height).unwrap().id;
+    let mut look = state.look(Some(frame.map), layer).unwrap();
+    look.blend = BlendMode::Multiply;
+    state.set_look(Some(frame.map), layer, look);
+    state.touch();
+    h.run_steps(4);
+    let two = images_in(&export_pdf(&mut h, &dir.path().join("two.pdf")));
+    assert_eq!(two, 2 * one);
+
+    // Top goes to the bottom of the map, below the squares.
+    let state = h.state_mut();
+    assert!(state.move_map_collection(frame.map, top, 0));
+    let image = export_png(&mut h, &dir.path().join("under.png"));
+    let got = export_pixel(&image, at);
+    assert!(close(got, BLUE), "{got:?}");
+}
+
+/// The number of raster images in a PDF file.
+fn images_in(pdf: &[u8]) -> usize {
+    String::from_utf8_lossy(pdf)
+        .matches("/Subtype/Image")
+        .count()
 }
