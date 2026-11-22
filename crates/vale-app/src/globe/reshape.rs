@@ -926,13 +926,15 @@ mod tests {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
     }
 
+    type Polygons = Vec<Vec<Vec<LonLat>>>;
+
     /// The polygons after a stroke reshapes `target` with shared borders,
     /// and the new polygons of `others`.
     fn reshaped_shared(
-        target: Vec<Vec<Vec<LonLat>>>,
-        others: &[Vec<Vec<Vec<LonLat>>>],
+        target: Polygons,
+        others: &[Polygons],
         way: &[LonLat],
-    ) -> (Vec<Vec<Vec<LonLat>>>, Vec<Option<Vec<Vec<Vec<LonLat>>>>>) {
+    ) -> (Polygons, Vec<Option<Polygons>>) {
         let others: Vec<Geometry> = others.iter().cloned().map(Geometry::Polygons).collect();
         let refs: Vec<&Geometry> = others.iter().collect();
         let target = Geometry::Polygons(target);
