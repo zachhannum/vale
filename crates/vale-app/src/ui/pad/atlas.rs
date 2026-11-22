@@ -1645,7 +1645,6 @@ fn layers_tab(
     }
     let view = super::collection::View::Map(map);
     let open = super::collection::cards(ui, state, controls, view);
-    super::map_cards::add_collection(ui, state, controls, map);
     if let Some(layer) = open {
         state.select_vector(layer);
         state.atlas.layer = Some((id, layer));
@@ -1653,6 +1652,16 @@ fn layers_tab(
         state.pad.rules = Default::default();
         state.pad.style = Default::default();
     }
+}
+
+/// The map of the selected frame while its Layers tab shows the
+/// collections of the map, and not the panel of a layer.
+pub(super) fn layers_map(state: &AppState) -> Option<vale_store::MapId> {
+    let id = state.atlas.frame()?;
+    if open_layer(state).is_some() {
+        return None;
+    }
+    state.doc.project.atlas.frame(id).map(|f| f.map)
 }
 
 /// The layer whose panel the Layers tab of the selected frame shows.

@@ -598,16 +598,56 @@ fn map_style_controls(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::
     });
 }
 
+/// The collection menu of a map: a check box for each collection, with
+/// the collections of the map from the top of its stack first, and "New
+/// collection…". The check box of the last collection of the map is off.
+fn map_collection_menu(ui: &mut egui::Ui, state: &mut AppState, map: vale_store::MapId) {
+    use super::pad::collection::{COLLECTION_MENU, NEW_COLLECTION};
+    let project = &state.doc.project;
+    let stack = project.map_stack(map);
+    let mut order: Vec<(vale_store::CollectionId, bool)> =
+        stack.iter().rev().map(|id| (*id, true)).collect();
+    order.extend(
+        (project.collections().iter())
+            .filter(|c| !stack.contains(&c.id))
+            .map(|c| (c.id, false)),
+    );
+    let rows: Vec<_> = (order.into_iter())
+        .filter_map(|(id, on)| Some((id, project.collection(id)?.name.clone(), on)))
+        .collect();
+    let last = stack.len() == 1;
+    ui.menu_button(COLLECTION_MENU, |ui| {
+        for (id, name, mut on) in rows {
+            let check = ui.add_enabled(!(on && last), egui::Checkbox::new(&mut on, &name));
+            let label = super::pad::collection::collection_row(&name);
+            check.widget_info(|| {
+                egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, &label)
+            });
+            if check.changed() {
+                match on {
+                    true => state.add_map_collection(map, id),
+                    false => state.remove_map_collection(map, id),
+                };
+            }
+        }
+        ui.separator();
+        if ui.button(NEW_COLLECTION).clicked() {
+            let name = state.doc.project.free_collection_name();
+            state.add_collection_to_map(map, &name);
+        }
+    });
+}
+
 /// The collections of the map of a frame, from the top of its stack, each
 /// with its layers from the top and the layer switches of the map.
 fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     use super::pad::collection::card_rows_in;
-    use super::pad::map_cards::{ADD_COLLECTION, ALL_COLLECTIONS, REMOVE_COLLECTION};
     let map = frame.map;
     let edited = state.doc.local_changes(map);
     if state.doc.project.layers().is_empty() {
         ui.weak(NO_LAYERS);
     }
+    map_collection_menu(ui, state, map);
     let stack = state.doc.project.map_stack(map);
     let open = state.atlas.open_layer();
     for (at, id) in stack.iter().enumerate().rev() {
@@ -624,12 +664,6 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             }
             if ui.add_enabled(at > 0, egui::Button::new("▼")).clicked() {
                 state.move_map_collection(map, *id, at - 1);
-            }
-            if ui
-                .add_enabled(stack.len() > 1, egui::Button::new(REMOVE_COLLECTION))
-                .clicked()
-            {
-                state.remove_map_collection(map, *id);
             }
         });
         let rows: Vec<_> = (card_rows_in(&state.doc.project, &stack, *id).into_iter())
@@ -667,21 +701,6 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
             });
         }
     }
-    let others: Vec<_> = (state.doc.project.collections().iter())
-        .filter(|c| !stack.contains(&c.id))
-        .map(|c| (c.id, c.name.clone()))
-        .collect();
-    ui.menu_button(ADD_COLLECTION, |ui| {
-        if others.is_empty() {
-            ui.weak(ALL_COLLECTIONS);
-        }
-        for (id, name) in others {
-            if ui.button(name).clicked() {
-                state.add_map_collection(map, id);
-                ui.close();
-            }
-        }
-    });
     let Some(layer) = state.atlas.open_layer() else {
         return;
     };

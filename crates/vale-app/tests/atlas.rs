@@ -13913,18 +13913,24 @@ fn the_layers_tab_shows_the_collections_of_the_map_as_in_the_layers_panel() {
 }
 
 #[test]
-fn add_collection_adds_a_collection_to_the_map_in_one_step() {
-    use vale_app::ui::pad::collection::collection_row;
-    use vale_app::ui::pad::map_cards::ADD_COLLECTION;
+fn the_collection_popover_of_a_map_checks_its_collections_in_one_step() {
+    use vale_app::ui::pad::collection::{
+        COLLECTION_MENU, COLLECTIONS_SIDE, NEW_COLLECTION, collection_row,
+    };
+    use vale_app::ui::pad::manage::MANAGE_COLLECTIONS;
     let (_dir, mut h, inset, coast) = collection_pad();
     let world = h.state().doc.project.world_collection();
-    tap(&mut h, ADD_COLLECTION);
+    let globe = h.state().doc.project.globe_collections().to_vec();
+    tap(&mut h, COLLECTION_MENU);
+    // The popover of a map has no switch of the globe and no management.
+    assert!(control(&h, COLLECTIONS_SIDE).is_none());
+    assert!(control(&h, MANAGE_COLLECTIONS).is_none());
     // The last collection of the map does not change.
     tap(&mut h, &collection_row("World"));
     assert_eq!(map_stack(&h, inset), [world]);
     tap(&mut h, &collection_row("Coast"));
     assert_eq!(map_stack(&h, inset), [world, coast]);
-    screenshot::save(&mut h, "pad-atlas-add-collection");
+    screenshot::save(&mut h, "pad-atlas-collection-popover");
     h.state_mut().save_waiting().unwrap();
     // A second tap takes the collection out of the map.
     tap(&mut h, &collection_row("Coast"));
@@ -13932,6 +13938,19 @@ fn add_collection_adds_a_collection_to_the_map_in_one_step() {
     undo(&mut h);
     h.run_steps(2);
     assert_eq!(map_stack(&h, inset), [world, coast]);
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world]);
+
+    // "New collection…" puts a new collection on top of the map, and the
+    // checks of the globe stay.
+    tap(&mut h, COLLECTION_MENU);
+    tap(&mut h, NEW_COLLECTION);
+    let stack = map_stack(&h, inset);
+    assert_eq!(stack.len(), 2);
+    assert_ne!(stack[1], coast);
+    assert_eq!(h.state().doc.project.globe_collections(), globe);
+    h.state_mut().save_waiting().unwrap();
     undo(&mut h);
     h.run_steps(2);
     assert_eq!(map_stack(&h, inset), [world]);

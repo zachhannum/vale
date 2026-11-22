@@ -129,8 +129,6 @@ pub struct Cards {
     pub stack: list::ListState<CollectionId>,
     /// The swipe of the header row of each collection of a map.
     pub heads: HashMap<CollectionId, list::ListState<CollectionId>>,
-    /// The popover of "Add collection…" of a map is open.
-    pub adding: bool,
 }
 
 impl Cards {
@@ -198,16 +196,28 @@ pub fn live_rows(project: &Project) -> Vec<(CollectionId, Vec<LayerId>)> {
         .collect()
 }
 
-/// The collection popover, below the collection button `button`. A tap
-/// outside closes it.
+/// The collections of a view from the top of its stack, then the others
+/// in the order of creation, each with true if the view shows it.
+fn popover_order_in(project: &Project, view: View) -> Vec<(CollectionId, bool)> {
+    let stack = view.stack(project);
+    let top_first = stack.iter().rev().map(|id| (*id, true));
+    let others = (project.collections().iter())
+        .filter(|c| !stack.contains(&c.id))
+        .map(|c| (c.id, false));
+    top_first.chain(others).collect()
+}
+
+/// The collection popover of a view, below the collection button
+/// `button`. A tap outside closes it.
 pub(super) fn popover(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     button: Rect,
+    view: View,
 ) {
     let shown = popover::show(ui.ctx(), "pad-collections", button, MENU_WIDTH, |ui| {
-        menu(ui, state, controls);
+        menu(ui, state, controls, view);
     });
     state.pad.collections_rect = Some(shown.rect);
     // A tap outside closes the popover, but not while a name field is open.
@@ -216,18 +226,23 @@ pub(super) fn popover(
     }
 }
 
-/// The contents of the collection popover: the Collections | Maps
-/// switch, the collections, and "New collection…".
-fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+/// The contents of the collection popover: the Collections | Maps switch
+/// of the globe, the collections, "New collection…", and on the globe
+/// "Manage collections". In a map, a check puts a collection in the map,
+/// and the check of the last collection of the map does not change.
+fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: View) {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
-    let sides = [COLLECTIONS_SIDE, MAPS_SIDE];
-    widgets::segmented_at(ui, controls, field, &sides, Some(0), |i| i == 0);
-    ui.add_space(6.0);
+    if view == View::Globe {
+        let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
+        let sides = [COLLECTIONS_SIDE, MAPS_SIDE];
+        widgets::segmented_at(ui, controls, field, &sides, Some(0), |i| i == 0);
+        ui.add_space(6.0);
+    }
 
     let project = &state.doc.project;
     let world = project.world_collection();
-    let order = popover_order(project);
+    let order = popover_order_in(project, view);
+    let last = matches!(view, View::Map(_)) && order.iter().filter(|(_, on)| *on).count() == 1;
     let rows: Vec<list::Row<CollectionId>> = (order.iter())
         .filter_map(|(id, _)| {
             let c = project.collection(*id)?;
@@ -248,9 +263,11 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         ..list::Spec::default()
     };
     let events = list::show(ui, controls, list, spec, &rows, |ui, controls, cell, i| {
+        let on = order.iter().any(|(id, on)| *on && *id == rows[i].key);
         let look = list::Look {
             text: &rows[i].name,
-            check: Some(order.iter().any(|(id, on)| *on && *id == rows[i].key)),
+            check: Some(on),
+            dim: on && last,
             ..list::Look::default()
         };
         list::draw(ui, controls, cell, &look)
@@ -259,7 +276,11 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         match event {
             list::Event::Tap(id) => {
                 let on = order.iter().any(|(key, on)| *on && *key == id);
-                state.check_collection(id, !on);
+                match view {
+                    View::Globe => state.check_collection(id, !on),
+                    View::Map(map) if on => state.remove_map_collection(map, id),
+                    View::Map(map) => state.add_map_collection(map, id),
+                };
             }
             list::Event::Rename(id, name) => {
                 state.rename_collection(id, &name);
@@ -274,13 +295,19 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if widgets::button_row(ui, controls, NEW_COLLECTION, true).clicked() {
         // The row of the new collection is its name field.
         let name = state.doc.project.free_collection_name();
-        if let Some(id) = state.add_collection(&name) {
+        let id = match view {
+            View::Globe => state.add_collection(&name),
+            View::Map(map) => state.add_collection_to_map(map, &name),
+        };
+        if let Some(id) = id {
             let list = &mut state.pad.collection_list;
             list.shut();
             list.rename = Some((id, name));
         }
     }
-    if widgets::open_row(ui, controls, super::manage::MANAGE_COLLECTIONS, "").clicked() {
+    if view == View::Globe
+        && widgets::open_row(ui, controls, super::manage::MANAGE_COLLECTIONS, "").clicked()
+    {
         state.pad.collections_menu = false;
         state.pad.collection_list = list::ListState::default();
         state.pad.manage.open(super::manage::ManagePage::Manage);

@@ -3469,7 +3469,7 @@ fn the_desktop_forms_have_a_collection_combo_box() {
 
 #[test]
 fn the_desktop_layers_tab_adds_restacks_and_removes_the_collections_of_a_map() {
-    use vale_app::ui::pad::map_cards::{ADD_COLLECTION, REMOVE_COLLECTION};
+    use vale_app::ui::pad::collection::{COLLECTION_MENU, collection_row};
     let mut h = harness();
     h.run_steps(3);
     let s = h.state_mut();
@@ -3488,19 +3488,18 @@ fn the_desktop_layers_tab_adds_restacks_and_removes_the_collections_of_a_map() {
     s.atlas.tab = vale_app::ui::atlas::FrameTab::Layers;
     h.run_steps(3);
     let stack = |h: &Harness<'static, AppState>| h.state().doc.project.map_stack(frame.map);
-    h.get_by_label(ADD_COLLECTION).click();
+    h.get_by_label(COLLECTION_MENU).click();
     h.run_steps(2);
-    h.get_by_label("Coast").click();
+    h.get_by_label(&collection_row("Coast")).click();
     h.run_steps(3);
     assert_eq!(stack(&h), [world, coast]);
     // The groups are from the top, so the first arrow down is of Coast.
     h.get_all_by_label("▼").next().unwrap().click();
     h.run_steps(3);
     assert_eq!(stack(&h), [coast, world]);
-    h.get_all_by_label(REMOVE_COLLECTION)
-        .next()
-        .unwrap()
-        .click();
+    h.get_by_label(COLLECTION_MENU).click();
+    h.run_steps(2);
+    h.get_by_label(&collection_row("World")).click();
     h.run_steps(3);
     assert_eq!(stack(&h), [coast]);
 }

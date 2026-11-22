@@ -1072,6 +1072,7 @@ fn contents(
             Some(top) => top(ui, state, controls),
             None => panel_top(ui, state, controls, head),
         }
+        super::map_collections(ui, state, controls, head);
     });
     let fixed = ui.cursor().top() - top_start;
     let most = (bottom - ui.cursor().top()).max(0.0);
@@ -1166,7 +1167,10 @@ fn header_row(
         panel_title(state, head, false, Some(&resp));
     }
     let list = head.panel == Panel::Layers && head.layer.is_none() && head.page.is_none();
-    if list && state.workspace == crate::ui::Workspace::Globe {
+    let map_list = head.panel == Panel::Layers
+        && state.workspace == crate::ui::Workspace::Atlas
+        && super::atlas::layers_map(state).is_some();
+    if (list && state.workspace == crate::ui::Workspace::Globe) || map_list {
         let at = button(left_of - TOUCH);
         left_of = at.left();
         let open = state.pad.collections_menu;

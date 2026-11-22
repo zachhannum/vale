@@ -3563,6 +3563,21 @@ impl AppState {
         changed
     }
 
+    /// Adds an empty collection on top of the stack of a map, as one undo
+    /// step. The checks of the globe do not change.
+    pub fn add_collection_to_map(&mut self, map: MapId, name: &str) -> Option<CollectionId> {
+        self.save_edit();
+        let id = self.doc.project.add_collection(name);
+        if let Some(id) = id {
+            let mut stack = self.doc.project.map_stack(map);
+            stack.push(id);
+            self.doc.project.set_map_stack(map, stack);
+        }
+        self.redraw_collections(id.is_some());
+        self.save_edit();
+        id
+    }
+
     /// Puts a collection on top of the stack of a map, as one undo step.
     pub fn add_map_collection(&mut self, map: MapId, id: CollectionId) -> bool {
         let mut stack = self.doc.project.map_stack(map);

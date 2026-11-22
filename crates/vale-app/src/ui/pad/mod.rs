@@ -54,7 +54,6 @@ pub mod label_text;
 pub mod labels;
 pub mod list;
 pub mod manage;
-pub mod map_cards;
 pub mod motion;
 pub mod number;
 pub mod panels_menu;
@@ -2428,6 +2427,31 @@ pub(super) fn panel_title(
     }
 }
 
+/// The collection popover of the map of the Layers tab in the Atlas
+/// workspace, while it is open.
+pub(super) fn map_collections(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    head: &Head,
+) {
+    if head.panel != Panel::Layers || state.workspace != Workspace::Atlas {
+        return;
+    }
+    let map = atlas::layers_map(state);
+    match (
+        state.pad.collections_menu,
+        state.pad.collections_button,
+        map,
+    ) {
+        (true, Some(button), Some(map)) => {
+            let view = collection::View::Map(map);
+            collection::popover(ui, state, controls, button, view);
+        }
+        _ => state.pad.collections_menu = false,
+    }
+}
+
 /// The rows of a panel between its title and its body, which do not
 /// scroll. The table fills the page, and its rows have their own scroll.
 pub(super) fn panel_top(
@@ -2446,7 +2470,9 @@ pub(super) fn panel_top(
         && state.workspace == Workspace::Globe
     {
         match (state.pad.collections_menu, state.pad.collections_button) {
-            (true, Some(button)) => collection::popover(ui, state, controls, button),
+            (true, Some(button)) => {
+                collection::popover(ui, state, controls, button, collection::View::Globe);
+            }
             _ => state.pad.collections_menu = false,
         }
     }
