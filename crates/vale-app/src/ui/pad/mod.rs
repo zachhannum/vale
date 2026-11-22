@@ -729,6 +729,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 
     let class = WidthClass::of(screen.width());
+    keep_one_panel(state, class);
     let mut input = Input {
         screen,
         bands,
@@ -781,6 +782,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         tool_column(&ctx, state, &mut controls, &rects);
     }
     // A button above can open or close a panel. The panels use the new state.
+    keep_one_panel(state, class);
     input.panel = has_sheet(state, class);
     input.cells = card_cells(&state.globe);
     input.column = column_input(state);
@@ -848,6 +850,14 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
+}
+
+/// A compact screen shows one panel at a time, in the sheet. A panel that
+/// opens takes the place of the panel of the sheet.
+pub(super) fn keep_one_panel(state: &mut AppState, class: WidthClass) {
+    if class == WidthClass::Compact {
+        state.pad.dock_mut().keep_focus();
+    }
 }
 
 /// True if a panel is open. On a compact screen, a panel is a sheet, and

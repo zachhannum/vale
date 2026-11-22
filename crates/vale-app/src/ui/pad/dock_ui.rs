@@ -32,6 +32,9 @@ pub const COLLAPSE_DRAG: f32 = 40.0;
 const GLASS_HANDLE: (f32, f32) = (20.0, 80.0);
 /// The extra space at each side of the content of a glass sheet.
 const SHEET_GLASS_PAD: f32 = 12.0;
+/// The space below the content of the sheet, which keeps the last row clear
+/// of the round corners.
+const SHEET_FOOT: f32 = 12.0;
 /// The tab at the right edge that shows a collapsed dock.
 pub const SHOW_DOCK: &str = "Show dock";
 /// The text of a drag of the width handle that collapses the dock.
@@ -885,18 +888,8 @@ fn show_sheet(
     };
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
-    let r = theme::CARD_RADIUS as u8;
-    // A glass sheet floats clear of the edges of the screen, with corners
-    // that follow the round corners of the display.
-    let radius = match widgets::is_glass(ctx) {
-        true => egui::CornerRadius::same(theme::SHEET_GLASS_RADIUS as u8),
-        false => egui::CornerRadius {
-            nw: r,
-            ne: r,
-            sw: 0,
-            se: 0,
-        },
-    };
+    // The sheet is a card above the rows of the tools.
+    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
     let backdrop = state.globe.backdrop();
     let inner = geometry::edge_content(rect, rects.screen, rects.bands);
     // The header and the rows of a glass sheet keep clear of its round
@@ -932,10 +925,8 @@ fn show_sheet(
                     .max_rect(inner)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            let body = Rect::from_min_max(
-                inner.min,
-                pos2(inner.right(), rect.bottom() - rects.bands.bottom),
-            );
+            let body =
+                Rect::from_min_max(inner.min, pos2(inner.right(), rect.bottom() - SHEET_FOOT));
             out = Some(pane_in_sheet(
                 &mut child, state, controls, rects, i, &mut head, body,
             ));

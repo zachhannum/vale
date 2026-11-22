@@ -440,6 +440,30 @@ impl Dock {
         self.focus = None;
     }
 
+    /// Keeps only the panel that a compact screen shows: the open tab of
+    /// the pane of the focus, or else of the last pane. It is the one tab
+    /// of the one pane. A selection can open the other panels again.
+    pub fn keep_focus(&mut self) {
+        let focus = (self.focus)
+            .and_then(|f| self.find(f))
+            .map(|(i, _)| i)
+            .or_else(|| self.panes.len().checked_sub(1));
+        let Some(i) = focus else {
+            return;
+        };
+        let pane = &self.panes[i];
+        if self.panes.len() == 1 && pane.tabs.len() == 1 && pane.joined.is_empty() {
+            return;
+        }
+        let panel = pane.panel();
+        let folded = pane.folded;
+        self.panes = vec![Pane {
+            folded,
+            ..Pane::new(panel)
+        }];
+        self.focus = Some(panel);
+    }
+
     /// Closes a panel that shows, shows an open panel that is a tab
     /// behind another, and opens a closed panel.
     pub fn toggle(&mut self, panel: Panel) {
@@ -1272,6 +1296,28 @@ mod tests {
         assert!(d.collapsed && d.is_open(Panel::Attributes));
         d.open(Panel::Labels);
         assert!(!d.collapsed);
+    }
+
+    #[test]
+    fn a_compact_screen_keeps_one_panel() {
+        let mut d = Dock::world();
+        d.open_tabs(&[Panel::Layers, Panel::Toolbox]);
+        d.open_new(Panel::Brush);
+        d.focus(0, 1);
+        d.keep_focus();
+        assert_eq!(tabs(&d), vec![vec![Panel::Toolbox]]);
+        assert_eq!(d.focus, Some(Panel::Toolbox));
+        // A panel that opens takes the place of the panel of the sheet, and
+        // a close leaves no panel behind it.
+        d.open(Panel::Snap);
+        d.keep_focus();
+        assert_eq!(tabs(&d), vec![vec![Panel::Snap]]);
+        d.close(Panel::Snap);
+        assert!(d.panes.is_empty());
+        // The other panels are not closed by the user, so a selection opens
+        // them.
+        d.follow(Panel::Attributes);
+        assert!(d.is_open(Panel::Attributes));
     }
 
     #[test]

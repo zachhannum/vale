@@ -207,6 +207,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let class = WidthClass::of(screen.width());
     let measuring = state.measuring();
     follow_selection(state);
+    super::keep_one_panel(state, class);
     // On a compact screen, the tool strip and the context strip are rows at
     // the bottom, as in the globe workspace.
     let row = class == WidthClass::Compact;
@@ -264,6 +265,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     // A button above can open or close a panel. The panels use the new
     // state.
+    super::keep_one_panel(state, class);
     input.panel = !state.pad.dock().panes.is_empty();
     input.sheet_offset = state.pad.sheet_offset;
     input.column = column_input(state, state.measuring());

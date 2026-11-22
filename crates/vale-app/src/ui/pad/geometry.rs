@@ -200,8 +200,6 @@ pub enum BrushCard {
     Bare(f32),
     /// The Brush button alone. The Brush panel holds the two sliders.
     Button,
-    /// An open sheet covers the place of the card.
-    Hidden,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -515,6 +513,18 @@ pub fn layout(input: &Input) -> Rects {
         }
     }
 
+    let row = input.row && class == WidthClass::Compact;
+    // The rows of the row layout stay at the bottom, and an open sheet is
+    // above them.
+    let rows = row.then(|| {
+        Rows {
+            input,
+            left,
+            right,
+            bottom,
+        }
+        .layout()
+    });
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
         let open = if screen.height() < SHORT_SCREEN {
@@ -524,33 +534,34 @@ pub fn layout(input: &Input) -> Rects {
         };
         let height = open.min(full);
         let grabber = if input.glass { GRABBER_SPACE } else { 0.0 };
-        let travel = (height - bands.bottom - grabber - ROW).max(0.0);
-        let rise = full - height;
+        let (floor, foot) = match rows {
+            Some((tools, _, _, brush, _, _)) => (brush.unwrap_or(tools).top() - ROW_GAP, 0.0),
+            None => (screen.bottom(), bands.bottom),
+        };
+        // Above the rows, the sheet opens at least at half the room.
+        let open_top = (screen.bottom() - height).min((column_top + floor) / 2.0);
+        let travel = (floor - open_top - foot - grabber - ROW).max(0.0);
+        let rise = open_top - column_top;
         let offset = input.sheet_offset.clamp(-rise, travel);
-        let sheet_top = screen.bottom() - height + offset;
-        let rect = Rect::from_min_max(pos2(screen.left(), sheet_top), screen.max);
-        let rect = match input.glass {
-            true => Rect::from_min_max(
+        let rect = Rect::from_min_max(
+            pos2(screen.left(), open_top + offset),
+            pos2(screen.right(), floor),
+        );
+        let rect = match (input.glass, rows.is_some()) {
+            (true, true) => rect.shrink2(vec2(SHEET_INSET, 0.0)),
+            (true, false) => Rect::from_min_max(
                 rect.min + vec2(SHEET_INSET, 0.0),
                 rect.max - vec2(SHEET_INSET, SHEET_INSET),
             ),
-            false => rect,
+            (false, _) => rect,
         };
         (input.panel.then_some(rect), travel, rise)
     } else {
         (None, 0.0, 0.0)
     };
-    let row = input.row && class == WidthClass::Compact;
-    if row {
-        let rows = Rows {
-            input,
-            left,
-            right,
-            bottom,
-            sheet,
-            title_row: input.sheet_offset >= sheet_travel,
-        };
-        let (tools, tool_cells, brush_card, brush, card_cells, readout) = rows.layout();
+    if let Some((tools, tool_cells, brush_card, brush, card_cells, readout)) = rows {
+        // An open sheet covers the readout.
+        let readout = readout.filter(|_| sheet.is_none());
         return Rects {
             class,
             screen,
@@ -723,9 +734,6 @@ struct Rows<'a> {
     left: f32,
     right: f32,
     bottom: f32,
-    sheet: Option<Rect>,
-    /// The sheet shows its title row only.
-    title_row: bool,
 }
 
 type RowPlaces = (Rect, usize, BrushCard, Option<Rect>, usize, Option<Rect>);
@@ -742,16 +750,7 @@ impl Rows<'_> {
         };
         let center = (self.left + self.right) / 2.0;
         let height = strip_height(1);
-        // An open sheet covers the rows. A sheet at its title row has the
-        // rows above it.
-        let floor = match self.sheet {
-            Some(sheet) if self.title_row => sheet.top() - ROW_GAP,
-            Some(_) => {
-                let none = Rect::from_center_size(pos2(center, self.bottom), vec2(0.0, 0.0));
-                return (none, 0, BrushCard::Hidden, None, 0, None);
-            }
-            None => self.bottom - ROW_GAP,
-        };
+        let floor = self.bottom - ROW_GAP;
         let tool_cells = fit(input.tools);
         let width = strip_width(tool_cells);
         let tools = Rect::from_min_size(
@@ -789,12 +788,10 @@ impl Rows<'_> {
             }
         };
         let above = brush.unwrap_or(tools).top() - ROW_GAP;
-        let readout = self.sheet.is_none().then(|| {
-            Rect::from_min_max(
-                pos2(self.left, above - ROW - READOUT_HEIGHT),
-                pos2(self.right, above),
-            )
-        });
+        let readout = Some(Rect::from_min_max(
+            pos2(self.left, above - ROW - READOUT_HEIGHT),
+            pos2(self.right, above),
+        ));
         (tools, tool_cells, brush_card, brush, card_cells, readout)
     }
 }
@@ -997,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn a_short_screen_opens_the_sheet_at_half_its_height() {
+    fn a_short_screen_opens_the_sheet_at_half_the_room_above_the_rows() {
         // Split View on the inner screen of iPhone Duo in landscape.
         let mut input = board(475.0, 669.0);
         input.bands.bottom = 34.0;
@@ -1005,7 +1002,13 @@ mod tests {
         input.panel = true;
         let r = layout(&input);
         assert_eq!(r.class, WidthClass::Compact);
-        assert_eq!(r.sheet, Some(rect(0.0, 334.5, 475.0, 334.5)));
+        // The sheet opens at half the room between the top row and the rows,
+        // which is higher than half the screen.
+        let sheet = r.sheet.unwrap();
+        let floor = r.brush.unwrap().top() - ROW_GAP;
+        assert_eq!(sheet.top(), (r.column_top + floor) / 2.0);
+        assert!(sheet.top() < 669.0 / 2.0);
+        assert_eq!(sheet.bottom(), floor);
     }
 
     #[test]
@@ -1025,12 +1028,13 @@ mod tests {
         let r = layout(&input);
         assert_eq!(r.workspace.left(), MARGIN);
         assert_eq!(r.actions.right(), 393.0 - MARGIN);
-        assert_eq!(r.sheet, Some(rect(8.0, 400.0, 377.0, 444.0)));
+        let floor = r.brush.unwrap().top() - ROW_GAP;
+        assert_eq!(r.sheet, Some(rect(8.0, 400.0, 377.0, floor - 400.0)));
         // At its title row, the grabber and the title row are above the
-        // bottom band.
+        // rows.
         input.sheet_offset = 1000.0;
         let low = layout(&input).sheet.unwrap();
-        assert_eq!(low.top(), 852.0 - 34.0 - GRABBER_SPACE - ROW);
+        assert_eq!(low.top(), floor - GRABBER_SPACE - ROW);
         // A tablet keeps the cards at the edges.
         let mut tablet = board(1194.0, 834.0);
         tablet.glass = true;
@@ -1043,24 +1047,35 @@ mod tests {
         let mut input = phone();
         input.panel = true;
         let r = layout(&input);
-        assert_eq!(r.sheet, Some(rect(0.0, 400.0, 393.0, 452.0)));
-        // The open sheet covers the rows and the readout.
-        assert_eq!((r.tool_cells, r.brush, r.readout), (0, None, None));
+        // The open sheet is above the rows, and it covers the readout.
+        assert_eq!(r.tool_cells, TOOLS);
+        assert_eq!(r.tools.bottom(), 852.0 - 34.0 - ROW_GAP);
+        let card = r.brush.unwrap();
+        assert_eq!(card.bottom(), r.tools.top() - ROW_GAP);
+        assert_eq!(
+            r.sheet,
+            Some(rect(0.0, 400.0, 393.0, card.top() - ROW_GAP - 400.0))
+        );
+        assert_eq!(r.readout, None);
         // At the full height, the sheet is below the top row.
         assert_eq!(r.sheet_rise, 273.0);
         input.sheet_offset = -1000.0;
         let r = layout(&input);
         assert_eq!(r.sheet.unwrap().top(), r.column_top);
         assert_eq!(r.column_top, 127.0);
-        // At its title row, the sheet has the rows above it.
+        // At its title row, the sheet is a row above the rows.
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        assert_eq!(sheet.top(), 852.0 - 34.0 - ROW);
-        assert_eq!(r.tool_cells, TOOLS);
-        assert_eq!(r.tools.bottom(), sheet.top() - ROW_GAP);
-        assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - ROW_GAP);
+        assert_eq!(sheet.height(), ROW);
+        assert_eq!(sheet.bottom(), card.top() - ROW_GAP);
+        assert_eq!(r.tools.bottom(), 852.0 - 34.0 - ROW_GAP);
         assert_eq!(r.readout, None);
+        // A tool with no card has the sheet above its strip.
+        input.strip = false;
+        let r = layout(&input);
+        assert_eq!(r.brush, None);
+        assert_eq!(r.sheet.unwrap().bottom(), r.tools.top() - ROW_GAP);
     }
 
     #[test]
@@ -1253,11 +1268,14 @@ mod tests {
     }
 
     #[test]
-    fn the_outer_screen_of_iphone_duo_opens_the_sheet_at_half_its_height() {
+    fn the_outer_screen_of_iphone_duo_opens_the_sheet_at_half_the_room_above_the_rows() {
         let mut input = duo_outer(true);
         input.panel = true;
         let r = layout(&input);
-        assert_eq!(r.sheet, Some(rect(0.0, 339.0, 466.0, 339.0)));
+        let sheet = r.sheet.unwrap();
+        let floor = r.brush.unwrap().top() - ROW_GAP;
+        assert_eq!(sheet.top(), (r.column_top + floor) / 2.0);
+        assert_eq!(sheet.bottom(), floor);
     }
 
     #[test]
