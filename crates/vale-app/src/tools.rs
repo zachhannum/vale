@@ -757,6 +757,8 @@ mod tests {
         globe.line.smoothing = 0.6;
         globe.line.polygon_mode = PolygonMode::New;
         globe.line.brush_size = 24.0;
+        assert!(globe.line.reshape_shared);
+        globe.line.reshape_shared = false;
         let mut snap = SnapSettings {
             distance: 20.0,
             ..SnapSettings::default()
@@ -794,6 +796,7 @@ mod tests {
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);
+        assert!(!next.line.reshape_shared);
         assert!(next.tools.focus_new);
         assert_eq!(next.tools.finger_paints, Some(false));
 

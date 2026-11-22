@@ -2167,6 +2167,44 @@ fn the_toolbar_has_the_terrain_fit_of_the_line_tool() {
 }
 
 #[test]
+fn the_toolbar_has_the_shared_borders_of_the_polygon_tool() {
+    use vale_app::ui::panels::{POLYGON_TOOL, RESHAPE, SHARED_BORDERS};
+    use vale_store::GeometryKind;
+    let mut state = AppState::new(Document::sample()).unwrap();
+    state.headless = true;
+    state.globe.set_face_size(64);
+    let layers = state.doc.project.layers();
+    let polygons = layers
+        .iter()
+        .find(|l| l.geometry() == Some(GeometryKind::Polygon))
+        .unwrap()
+        .id;
+    state.select(Some(LayerRef::Vector(polygons)));
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, SIZE.1 as f32))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    h.run_steps(3);
+    assert!(h.query_by_label(SHARED_BORDERS).is_none());
+    h.get_by_label(POLYGON_TOOL).click();
+    h.run_steps(3);
+    let disabled = |h: &Harness<'_, AppState>| {
+        h.get_by_label(SHARED_BORDERS)
+            .accesskit_node()
+            .is_disabled()
+    };
+    // The check box works while Reshape is on.
+    assert!(disabled(&h));
+    h.get_by_label(RESHAPE).click();
+    h.run_steps(3);
+    assert!(!disabled(&h));
+    assert!(h.state().globe.line.reshape_shared);
+    h.get_by_label(SHARED_BORDERS).click();
+    h.run_steps(3);
+    assert!(!h.state().globe.line.reshape_shared);
+}
+
+#[test]
 fn the_toolbar_and_the_keys_work_the_measure_tool() {
     use vale_app::ui::pad::CLEAR_PATH;
     use vale_app::ui::panels::{MEASURE_TOOL, SNAP, SNAP_OPTIONS};

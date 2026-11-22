@@ -13825,6 +13825,79 @@ fn a_stroke_from_an_outline_reshapes_the_polygon_in_one_undo_step() {
 }
 
 #[test]
+fn a_reshape_moves_a_shared_border_in_one_undo_step_while_shared_borders_is_on() {
+    use vale_app::ui::pad::{RESHAPE, SHARED_BORDERS_SWITCH};
+    use vale_store::{Feature, Geometry};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, picks) = select_pad(WorldView::Globe, dir.path());
+    // A neighbor south of the square shares its south side.
+    let south = vec![[-10.0, -35.0], [10.0, -35.0], [10.0, -25.0], [-10.0, -25.0]];
+    let feature = Feature::new(Geometry::Polygons(vec![vec![south]]), Default::default());
+    let neighbor = FeatureRef {
+        layer: picks.polygon.layer,
+        uuid: feature.uuid(),
+    };
+    assert!(
+        h.state_mut()
+            .doc
+            .project
+            .add_feature(neighbor.layer, feature)
+    );
+    select_layer(&mut h, picks.polygon.layer);
+    quick_tap(&mut h, VECTOR);
+    tap(&mut h, RESHAPE);
+    tap(&mut h, "Brush settings");
+    assert_eq!(toggled(&h, SHARED_BORDERS_SWITCH), Some(true));
+    assert!(!disabled(&h, SHARED_BORDERS_SWITCH));
+    tap(&mut h, "Brush settings");
+    h.state_mut().globe.snap.on = false;
+    step_and_save(&mut h, false);
+    h.state_mut().save_waiting().unwrap();
+    let before = (geometry_of(&h, picks.polygon), geometry_of(&h, neighbor));
+    let saved = saves(&h);
+
+    // A bump out of the south side, into the neighbor.
+    let bump = [[-4.0, -25.0], [-4.0, -29.0], [4.0, -29.0], [4.0, -25.0]];
+    pen_way(&mut h, &bump);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let after = (geometry_of(&h, picks.polygon), geometry_of(&h, neighbor));
+    assert!(inside_polygon(&after.0, 0.0, -27.0));
+    assert!(!inside_polygon(&after.1, 0.0, -27.0));
+    assert!(inside_polygon(&after.1, 0.0, -32.0));
+    assert!(inside_polygon(&after.1, -7.0, -26.0));
+    assert_eq!(saves(&h), saved + 1);
+    tap(&mut h, "Undo");
+    assert_eq!(
+        (geometry_of(&h, picks.polygon), geometry_of(&h, neighbor)),
+        before
+    );
+    tap(&mut h, "Redo");
+    assert_eq!(
+        (geometry_of(&h, picks.polygon), geometry_of(&h, neighbor)),
+        after
+    );
+
+    // With the switch off, only one of the two polygons changes. The
+    // stroke starts on the shared border, so either can change.
+    tap(&mut h, "Brush settings");
+    tap(&mut h, SHARED_BORDERS_SWITCH);
+    assert!(!h.state().globe.line.reshape_shared);
+    tap(&mut h, "Brush settings");
+    let bump = [[-8.0, -25.0], [-8.0, -27.0], [-6.0, -27.0], [-6.0, -25.0]];
+    pen_way(&mut h, &bump);
+    for _ in 0..3 {
+        step_and_save(&mut h, false);
+    }
+    let changed = [
+        geometry_of(&h, picks.polygon) != after.0,
+        geometry_of(&h, neighbor) != after.1,
+    ];
+    assert_eq!(changed.iter().filter(|&&c| c).count(), 1, "{changed:?}");
+}
+
+#[test]
 fn the_flyout_of_the_mode_cell_chooses_the_mode_of_the_polygon_tool_on_each_board() {
     use vale_app::globe::combine::PolygonMode;
     use vale_app::ui::pad::{POLYGON_MODE, POLYGON_MODES, RESHAPE};
