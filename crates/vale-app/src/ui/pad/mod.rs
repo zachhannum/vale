@@ -199,6 +199,9 @@ pub const POLYGON_MODES: [(&str, Icon, PolygonMode); 3] = [
 pub const DESELECT: &str = "Deselect";
 /// The name of the Reshape switch of the Brush panel.
 pub const RESHAPE_SWITCH: &str = "Reshape switch";
+/// The switch that makes a reshape of a polygon also reshape the polygons
+/// that share its border.
+pub const SHARED_BORDERS: &str = "Shared borders";
 /// The slider of the balance between the sketch and the terrain.
 pub const TERRAIN_BALANCE: &str = "Terrain fit balance";
 /// The cell of the tool strip that chooses the Measure tool.
@@ -2936,6 +2939,11 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         if line {
             let on = &mut state.globe.line.reshape;
             widgets::switch_row(ui, controls, RESHAPE_SWITCH, RESHAPE, on);
+        }
+        if state.globe.filling() {
+            let line = &mut state.globe.line;
+            let (on, enabled) = (&mut line.reshape_shared, line.reshape);
+            widgets::switch_row_enabled(ui, controls, SHARED_BORDERS, SHARED_BORDERS, on, enabled);
         }
         if state.globe.lining() {
             let terrain = state.globe.fit_layer.is_some();

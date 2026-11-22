@@ -40,6 +40,9 @@ pub struct LineSettings {
     pub terrain: f64,
     /// A stroke that starts on the outline of a feature reshapes it.
     pub reshape: bool,
+    /// A reshape of a polygon also reshapes the polygons of the layer that
+    /// share the replaced part of its outline.
+    pub reshape_shared: bool,
     /// How a stroke of the polygon tool changes the layer.
     pub polygon_mode: PolygonMode,
     /// The radius of the Polygon brush, in points.
@@ -53,6 +56,7 @@ impl Default for LineSettings {
             fit: false,
             terrain: 0.5,
             reshape: false,
+            reshape_shared: true,
             polygon_mode: PolygonMode::New,
             brush_size: super::sweep::DEFAULT_SIZE,
         }
@@ -387,7 +391,7 @@ fn push(parts: &mut [Vec<LonLat>], p: LonLat) {
 
 /// Longitude and latitude. A point on the 180 degree meridian has the
 /// longitude 180.
-fn lonlat(d: V3) -> LonLat {
+pub(super) fn lonlat(d: V3) -> LonLat {
     let (lon, lat) = dir_to_lonlat(d);
     [if lon == -180.0 { 180.0 } else { lon }, lat]
 }

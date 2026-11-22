@@ -375,6 +375,7 @@ impl Tools {
         lines.push(format!("terrain_fit {}", line.fit));
         lines.push(format!("terrain {}", line.terrain));
         lines.push(format!("reshape {}", line.reshape));
+        lines.push(format!("reshape_shared {}", line.reshape_shared));
         lines.push(format!("polygon_mode {}", mode_name(polygon_mode)));
         lines.push(format!("polygon_brush_size {}", line.brush_size));
         lines.push(format!("snap {}", snap.on));
@@ -476,6 +477,9 @@ impl Tools {
         }
         if let Some(v) = boolean("reshape") {
             line.reshape = v;
+        }
+        if let Some(v) = boolean("reshape_shared") {
+            line.reshape_shared = v;
         }
         let polygon_mode =
             value("polygon_mode").and_then(|name| POLYGON_MODES.iter().find(|(_, n)| *n == name));

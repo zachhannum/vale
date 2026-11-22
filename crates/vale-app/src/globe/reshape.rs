@@ -13,13 +13,13 @@
 
 use vale_store::{Geometry, LonLat};
 
-use super::line::{chains, to_parts_exact};
+use super::line::{chains, lonlat, to_parts_exact};
 use super::math::{V3, angle, lonlat_to_dir};
 use super::polygon::{
-    MIN_AREA, MIN_LENGTH, SAME, densify, dirs, flat_area, path, path_length, rings, signed_area,
-    to_polygons,
+    MIN_AREA, MIN_LENGTH, SAME, densify, densify_open, dirs, flat_area, path, path_length, rings,
+    signed_area, to_polygons,
 };
-use super::snap::{PathVertex, Run, append, project};
+use super::snap::{PathVertex, Run, append, project, slerp};
 use super::vector;
 
 /// The distance in points from the outline within which an end of a stroke
@@ -311,12 +311,30 @@ pub(super) fn outlines(polygons: &[Vec<Vec<LonLat>>]) -> Option<Vec<Outline>> {
     Some(out)
 }
 
-fn reshape_polygons(
+/// A reshape of one ring of a polygon feature.
+struct Cut {
+    outlines: Vec<Outline>,
+    /// The index of the outline that changes.
+    outline: usize,
+    /// The new outline, with the polygon on the left. For a hole, the inside
+    /// of the hole is on the left.
+    ring: Vec<PathVertex>,
+    /// The path of the stroke, from the old outline to the old outline.
+    way: Vec<PathVertex>,
+    /// The part of the old outline that the stroke replaces, forward.
+    gone: Vec<PathVertex>,
+}
+
+/// The reshape of a ring by a stroke. With `exact`, each vertex of the
+/// stroke is a stored position, so other outlines can get the same
+/// vertices.
+fn cut(
     polygons: &[Vec<Vec<LonLat>>],
     runs: &[Run],
     scale: f64,
     strength: f64,
-) -> Option<Vec<Vec<Vec<LonLat>>>> {
+    exact: bool,
+) -> Option<Cut> {
     let (p0, p1) = ends(runs)?;
     let reach = REACH / scale;
     let outlines = outlines(polygons)?;
@@ -330,30 +348,170 @@ fn reshape_polygons(
     if s0.dist > reach || s1.dist > reach {
         return None;
     }
-    let p = stroke(runs, s0.at, Some(s1.at), scale, strength)?;
-    // Both shapes have the polygon on the left.
-    let close = |mut c: Vec<PathVertex>| {
-        if c.len() > 1 && angle(c[0].dir(), c[c.len() - 1].dir()) < SAME {
-            c.pop();
-        }
-        c
-    };
+    let mut p = stroke(runs, s0.at, Some(s1.at), scale, strength)?;
+    if exact {
+        p = densify_open(&p)
+            .into_iter()
+            .map(|v| match v {
+                PathVertex::Free(d) => PathVertex::Exact(lonlat(d)),
+                v => v,
+            })
+            .collect();
+    }
     let mut a = p.clone();
     append(&mut a, slice(&outline.ring, &s1, &s0));
     let mut b = slice(&outline.ring, &s0, &s1);
     append(&mut b, reversed(&p));
     let (a, b) = (close(a), close(b));
-    let min_area = MIN_AREA / (scale * scale);
     // The larger shape stays. A hole compares the areas inside it.
     let area = |c: &[PathVertex]| signed_area(&dirs(&densify(c)));
-    if outline.hole {
-        let (a, b) = (reversed(&a), reversed(&b));
-        let ring = if area(&a) >= area(&b) { a } else { b };
-        hole(polygons, outline, &ring, min_area)
+    let (a, b) = if outline.hole {
+        (reversed(&a), reversed(&b))
     } else {
-        let ring = if area(&a) >= area(&b) { a } else { b };
-        outer(polygons, outline, &ring, min_area)
+        (a, b)
+    };
+    let (ring, gone) = if area(&a) >= area(&b) {
+        (a, slice(&outline.ring, &s0, &s1))
+    } else {
+        (b, slice(&outline.ring, &s1, &s0))
+    };
+    Some(Cut {
+        outlines,
+        outline: k,
+        ring,
+        way: p,
+        gone,
+    })
+}
+
+/// The ring without a last vertex at the place of the first.
+fn close(mut c: Vec<PathVertex>) -> Vec<PathVertex> {
+    if c.len() > 1 && angle(c[0].dir(), c[c.len() - 1].dir()) < SAME {
+        c.pop();
     }
+    c
+}
+
+/// The polygons after the change of one outline to `ring`.
+fn apply(
+    polygons: &[Vec<Vec<LonLat>>],
+    outline: &Outline,
+    ring: &[PathVertex],
+    min_area: f64,
+) -> Option<Vec<Vec<Vec<LonLat>>>> {
+    if outline.hole {
+        hole(polygons, outline, ring, min_area)
+    } else {
+        outer(polygons, outline, ring, min_area)
+    }
+}
+
+fn reshape_polygons(
+    polygons: &[Vec<Vec<LonLat>>],
+    runs: &[Run],
+    scale: f64,
+    strength: f64,
+) -> Option<Vec<Vec<Vec<LonLat>>>> {
+    let cut = cut(polygons, runs, scale, strength, false)?;
+    let min_area = MIN_AREA / (scale * scale);
+    apply(polygons, &cut.outlines[cut.outline], &cut.ring, min_area)
+}
+
+/// The geometry after a stroke reshapes a polygon feature, and the
+/// geometry of each of `others` after the reshape. A polygon of `others`
+/// changes when the full replaced part of the outline is on its outline,
+/// and the stroke then replaces that part of its outline too. The others
+/// of a line do not change.
+pub fn reshape_shared(
+    geometry: &Geometry,
+    others: &[&Geometry],
+    runs: &[Run],
+    scale: f64,
+    strength: f64,
+) -> Option<(Geometry, Vec<Option<Geometry>>)> {
+    let Geometry::Polygons(polygons) = geometry else {
+        let shape = reshape(geometry, runs, scale, strength)?;
+        return Some((shape, vec![None; others.len()]));
+    };
+    let cut = cut(polygons, runs, scale, strength, true)?;
+    let min_area = MIN_AREA / (scale * scale);
+    let shape = apply(polygons, &cut.outlines[cut.outline], &cut.ring, min_area)?;
+    let others = others
+        .iter()
+        .map(|g| match g {
+            Geometry::Polygons(p) => follow(p, &cut.way, &cut.gone, min_area),
+            _ => None,
+        })
+        .map(|p| p.map(Geometry::Polygons))
+        .collect();
+    Some((Geometry::Polygons(shape), others))
+}
+
+/// The polygons after `way` replaces the part `gone` of one of their
+/// outlines, or `None` when no outline has the part `gone`.
+fn follow(
+    polygons: &[Vec<Vec<LonLat>>],
+    way: &[PathVertex],
+    gone: &[PathVertex],
+    min_area: f64,
+) -> Option<Vec<Vec<Vec<LonLat>>>> {
+    let (&w0, &w1) = (way.first()?, way.last()?);
+    let length = path_length(gone);
+    if angle(w0.dir(), w1.dir()) < SAME || length < SAME || !touches(polygons, w0.dir()) {
+        return None;
+    }
+    let middle = middle(gone);
+    for outline in &outlines(polygons)? {
+        let ring = &outline.ring;
+        let on = |p: V3| locate(ring, true, p).filter(|s| s.dist < SAME);
+        let (Some(mut s0), Some(mut s1), Some(m)) = (on(w0.dir()), on(w1.dir()), on(middle)) else {
+            continue;
+        };
+        // The ends of the way are the same vertices on both outlines.
+        (s0.at, s1.at) = (w0, w1);
+        let forward = if s0.before(&s1) {
+            s0.before(&m) && m.before(&s1)
+        } else {
+            s0.before(&m) || m.before(&s1)
+        };
+        let (old, mut new) = if forward {
+            (slice(ring, &s0, &s1), slice(ring, &s1, &s0))
+        } else {
+            (slice(ring, &s1, &s0), slice(ring, &s0, &s1))
+        };
+        // The part of this outline goes along the full part `gone`.
+        if (path_length(&old) - length).abs() > SAME * (1.0 + length) {
+            continue;
+        }
+        append(&mut new, if forward { way.to_vec() } else { reversed(way) });
+        let new = close(new);
+        let new = if outline.hole { reversed(&new) } else { new };
+        return apply(polygons, outline, &new, min_area);
+    }
+    None
+}
+
+/// Whether an edge of the polygons is at `p`.
+fn touches(polygons: &[Vec<Vec<LonLat>>], p: V3) -> bool {
+    let dir = |q: &LonLat| lonlat_to_dir(q[0], q[1]);
+    polygons.iter().flatten().any(|ring| {
+        ring.windows(2)
+            .any(|w| project(p, dir(&w[0]), dir(&w[1])).2 < SAME)
+    })
+}
+
+/// The point halfway along a path.
+fn middle(path: &[PathVertex]) -> V3 {
+    let mut left = path_length(path) / 2.0;
+    for w in path.windows(2) {
+        let (a, b) = (w[0].dir(), w[1].dir());
+        let d = angle(a, b);
+        if d >= left && d > 0.0 {
+            return slerp(a, b, left / d);
+        }
+        left -= d;
+    }
+    path[path.len() - 1].dir()
 }
 
 /// The polygons after a reshape of an outer ring.
@@ -762,5 +920,102 @@ mod tests {
     #[test]
     fn a_stroke_away_from_a_line_changes_nothing() {
         assert!(reshaped_line(line(), &[[5.0, 5.0], [9.0, 0.0]]).is_none());
+    }
+
+    fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<LonLat> {
+        vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]]
+    }
+
+    /// The polygons after a stroke reshapes `target` with shared borders,
+    /// and the new polygons of `others`.
+    fn reshaped_shared(
+        target: Vec<Vec<Vec<LonLat>>>,
+        others: &[Vec<Vec<Vec<LonLat>>>],
+        way: &[LonLat],
+    ) -> (Vec<Vec<Vec<LonLat>>>, Vec<Option<Vec<Vec<Vec<LonLat>>>>>) {
+        let others: Vec<Geometry> = others.iter().cloned().map(Geometry::Polygons).collect();
+        let refs: Vec<&Geometry> = others.iter().collect();
+        let target = Geometry::Polygons(target);
+        let (g, shared) =
+            reshape_shared(&target, &refs, &free(way), SCALE, 0.0).expect("a reshape");
+        let shared = shared
+            .iter()
+            .map(|g| g.as_ref().map(|g| polygons(g).clone()));
+        (polygons(&g).clone(), shared.collect())
+    }
+
+    /// Each vertex of `a` off the old border at x = 10 is a vertex of `b`.
+    fn same_border(a: &[Vec<Vec<LonLat>>], b: &[Vec<Vec<LonLat>>]) {
+        let vertices: Vec<LonLat> = b.iter().flatten().flatten().copied().collect();
+        let new: Vec<&LonLat> = a
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|v| v[0] != 0.0 && v[0] != 10.0 && v[1] != 0.0 && v[1] != 10.0)
+            .collect();
+        assert!(!new.is_empty());
+        for v in new {
+            assert!(
+                vertices.contains(v),
+                "{v:?} is not a vertex of the neighbor"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reshape_into_a_neighbor_moves_the_shared_border() {
+        let a = vec![vec![rect(0.0, 0.0, 10.0, 10.0)]];
+        let b = vec![vec![rect(10.0, 0.0, 20.0, 10.0)]];
+        let way = [[10.0, 3.0], [13.0, 3.0], [13.0, 7.0], [10.0, 7.0]];
+        let (a, shared) = reshaped_shared(a, &[b], &way);
+        let b = shared[0].clone().expect("the neighbor changes");
+        assert_valid(&a);
+        assert_valid(&b);
+        assert!(inside(&a, [12.0, 5.0]));
+        assert!(!inside(&b, [12.0, 5.0]));
+        assert!(inside(&b, [15.0, 5.0]));
+        assert!(inside(&b, [11.0, 1.0]));
+        same_border(&a, &b);
+    }
+
+    #[test]
+    fn a_reshape_away_from_a_neighbor_gives_it_the_area() {
+        let a = vec![vec![rect(0.0, 0.0, 10.0, 10.0)]];
+        let b = vec![vec![rect(10.0, 0.0, 20.0, 10.0)]];
+        let way = [[10.0, 3.0], [7.0, 3.0], [7.0, 7.0], [10.0, 7.0]];
+        let (a, shared) = reshaped_shared(a, &[b], &way);
+        let b = shared[0].clone().expect("the neighbor changes");
+        assert_valid(&b);
+        assert!(!inside(&a, [8.0, 5.0]));
+        assert!(inside(&b, [8.0, 5.0]));
+        assert!(inside(&a, [3.0, 5.0]));
+        same_border(&a, &b);
+    }
+
+    #[test]
+    fn a_reshape_of_an_island_moves_the_shore_of_the_lake() {
+        let island = vec![vec![rect(5.0, 5.0, 15.0, 15.0)]];
+        let mut lake = rect(5.0, 5.0, 15.0, 15.0);
+        lake.reverse();
+        let land = vec![vec![rect(0.0, 0.0, 20.0, 20.0), lake]];
+        let way = [[15.0, 8.0], [17.0, 8.0], [17.0, 12.0], [15.0, 12.0]];
+        let (island, shared) = reshaped_shared(island, &[land], &way);
+        let land = shared[0].clone().expect("the land changes");
+        assert_valid(&land);
+        assert!(inside(&island, [16.0, 10.0]));
+        assert!(!inside(&land, [16.0, 10.0]));
+        assert!(inside(&land, [18.0, 10.0]));
+        assert!(!inside(&land, [10.0, 10.0]));
+    }
+
+    #[test]
+    fn a_polygon_with_a_part_of_the_replaced_border_does_not_change() {
+        let a = vec![vec![rect(0.0, 0.0, 10.0, 10.0)]];
+        let half = vec![vec![rect(10.0, 5.0, 20.0, 10.0)]];
+        let away = vec![vec![rect(30.0, 0.0, 40.0, 10.0)]];
+        let way = [[10.0, 3.0], [13.0, 3.0], [13.0, 7.0], [10.0, 7.0]];
+        let (a, shared) = reshaped_shared(a, &[half, away], &way);
+        assert!(inside(&a, [12.0, 5.0]));
+        assert!(shared.iter().all(Option::is_none));
     }
 }

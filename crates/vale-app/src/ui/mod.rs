@@ -3742,10 +3742,37 @@ impl AppState {
         if let Some(uuid) = stroke.reshape {
             // A stroke that does not end on the same ring of a polygon
             // changes nothing.
-            let feature = layer.features.iter().find(|f| f.uuid() == uuid);
-            let shape = feature
-                .and_then(|f| reshape::reshape(&f.geometry, &stroke.runs, stroke.scale, smoothing));
-            if shape.is_some_and(|g| self.doc.project.set_geometry(id, uuid, g)) {
+            // With shared borders, the polygons that share the replaced
+            // part of the outline change too.
+            let Some(feature) = layer.features.iter().find(|f| f.uuid() == uuid) else {
+                return;
+            };
+            let others: Vec<&Feature> = match settings.reshape_shared {
+                true => layer.features.iter().filter(|f| f.uuid() != uuid).collect(),
+                false => Vec::new(),
+            };
+            let geometries: Vec<&vale_store::Geometry> =
+                others.iter().map(|f| &f.geometry).collect();
+            let (runs, scale) = (&stroke.runs, stroke.scale);
+            let Some((shape, shared)) =
+                reshape::reshape_shared(&feature.geometry, &geometries, runs, scale, smoothing)
+            else {
+                return;
+            };
+            let changes: Vec<(vale_store::Uuid, vale_store::Geometry)> =
+                std::iter::once((uuid, shape))
+                    .chain(
+                        others
+                            .iter()
+                            .zip(shared)
+                            .filter_map(|(f, g)| Some((f.uuid(), g?))),
+                    )
+                    .collect();
+            let mut changed = false;
+            for (uuid, g) in changes {
+                changed |= self.doc.project.set_geometry(id, uuid, g);
+            }
+            if changed {
                 self.line_edits += 1;
                 self.pipeline.forget(id);
                 self.touch();
