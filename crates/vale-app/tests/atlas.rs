@@ -23,11 +23,11 @@ use vale_app::ui::export_form::{self, ExportForm, PagesMode, page_name};
 use vale_app::ui::map_texture::MapRenderer;
 use vale_app::ui::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, BORDER, BORDER_DISTANCE, BORDER_STROKE, BORDER_STYLES,
-    BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_PAGE, DELETE_PROJECTION,
-    FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL, GRATICULE_COLOR, GRATICULE_WIDTH, HEIGHT, INTERVAL,
-    LABEL_FORMATS, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE, OBLIQUE,
-    PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION, SCALE,
-    SECOND_COLOR, SIZE, STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH,
+    BORDER_WIDTH, CENTER_ON_FRAME, COPY_GLOBE_STYLE, COPY_TO_GLOBE_STYLE, DELETE_PAGE,
+    DELETE_PROJECTION, FIRST_PARALLEL, FRAME_TABS, FRAME_TOOL, GRATICULE_COLOR, GRATICULE_WIDTH,
+    HEIGHT, INTERVAL, LABEL_FORMATS, MAP_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NEXT_PAGE,
+    OBLIQUE, PAPER_COLOR, POLYGON, PREVIOUS_PAGE, PROJECTION, REFERENCE_GRID, SAVE_PROJECTION,
+    SCALE, SECOND_COLOR, SIZE, STROKE_COLOR, STROKE_WIDTH as BORDER_STROKE_WIDTH, VERTEX, WIDTH,
     custom_row, page_title, readout_text,
 };
 use vale_app::ui::pad::atlas::{
@@ -3636,6 +3636,76 @@ fn a_change_of_the_globe_style_does_not_change_a_map() {
 }
 
 #[test]
+fn copy_to_globe_style_makes_the_style_of_a_map_the_globe_style() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = state();
+    s.session = Some(Session::open(&dir.path().join("p.gpkg"), &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
+    let before = rivers_width(&h, None);
+    open_rivers_rule(&mut h);
+    widen(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let width = rivers_width(&h, Some(inset));
+    assert_ne!(width, before);
+    tap(&mut h, "Back to Rivers");
+    scroll_to(&mut h, COPY_TO_GLOBE_STYLE);
+    tap(&mut h, COPY_TO_GLOBE_STYLE);
+    assert_eq!(rivers_width(&h, None), width);
+    assert_eq!(rivers_width(&h, Some(inset)), width);
+    assert_eq!(rivers_width(&h, Some(main)), before);
+    // The styles are the same, so the row is off.
+    assert!(control(&h, COPY_TO_GLOBE_STYLE).is_none());
+    assert!(control(&h, COPY_GLOBE_STYLE).is_none());
+
+    // The copy is one undo step.
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(rivers_width(&h, None), before);
+    assert_eq!(rivers_width(&h, Some(inset)), width);
+}
+
+#[test]
+fn copy_to_globe_style_gives_a_raster_layer_the_look_of_the_map() {
+    use vale_app::ui::atlas::add_frame;
+    use vale_store::{BlendMode, RasterDisplay};
+    let dir = tempfile::tempdir().unwrap();
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.session = Some(Session::open(&dir.path().join("p.gpkg"), &mut state.doc).unwrap());
+    state.headless = true;
+    state.workspace = Workspace::Atlas;
+    add_frame(&mut state).expect("a page takes a frame");
+    let map = atlas::open_page(&state).frames[0].map;
+    state.globe.set_face_size(16);
+    let height = state.add_height();
+    state.save_waiting().unwrap();
+    let layer = state.doc.project.raster_layer(height).unwrap().id;
+    let mut look = state.look(Some(map), layer).unwrap();
+    look.opacity = 0.25;
+    look.blend = BlendMode::Screen;
+    look.display = RasterDisplay::Grey;
+    state.set_look(Some(map), layer, look);
+    assert_ne!(state.look(None, layer), Some(look));
+
+    state.copy_to_globe_style(map, layer);
+    assert_eq!(state.look(None, layer), Some(look));
+    let record = state.doc.project.raster(height).unwrap();
+    assert_eq!(record.opacity, 0.25);
+    assert_eq!(record.blend, BlendMode::Screen);
+    assert_eq!(record.display, RasterDisplay::Grey);
+    assert!(!state.differs_from_globe(map, layer));
+
+    state.save_waiting().unwrap();
+    state.undo();
+    assert_eq!(state.doc.project.raster(height).unwrap().opacity, 1.0);
+    assert_eq!(state.look(Some(map), layer), Some(look));
+}
+
+#[test]
 fn the_panel_of_a_layer_in_a_frame_changes_only_its_map() {
     let mut h = inset_pad(BOARDS[0]);
     let (main, inset) = (frame(&h, 0).map, frame(&h, 1).map);
@@ -3702,9 +3772,11 @@ fn the_style_controls_of_a_frame_work_with_a_finger() {
         scroll_to(&mut h, COPY_GLOBE_STYLE);
         assert!(control(&h, RESET_TO_MAP_STYLE).is_none(), "{what}");
         assert!(control(&h, COPY_GLOBE_STYLE).is_none(), "{what}");
+        assert!(control(&h, COPY_TO_GLOBE_STYLE).is_none(), "{what}");
 
         // Two new rules, and the page of the middle rule.
         for _ in 0..2 {
+            nudge_up_to(&mut h, ADD_RULE);
             scroll_to(&mut h, ADD_RULE);
             check_controls(&h, &format!("{what}: add rule"));
             tap(&mut h, ADD_RULE);
