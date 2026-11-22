@@ -9695,8 +9695,9 @@ fn delete_backspace_and_esc_in_the_vertex_tool() {
 }
 
 /// A frame of 500 by 500 pixels on the middle of face 0, at about one
-/// texel of `striped::FACE` in each pixel.
-fn zoomed_draw(id: u32, raster: vale_store::RasterId) -> vale_app::globe::FrameDraw {
+/// texel of `striped::FACE` in each pixel. The raster layer has the look
+/// of its record.
+fn zoomed_draw(id: u32, raster: &vale_store::Raster) -> vale_app::globe::FrameDraw {
     use vale_app::globe::flat::{DEFAULT_SPEC, FlatMesh};
     let projection = vale_sphere::Projection::new(DEFAULT_SPEC, 1.0).unwrap();
     vale_app::globe::FrameDraw {
@@ -9712,10 +9713,21 @@ fn zoomed_draw(id: u32, raster: vale_store::RasterId) -> vale_app::globe::FrameD
         rect: [0, 0, 500, 500],
         mesh: std::sync::Arc::new(FlatMesh::new(&projection)),
         mask: None,
-        shown: vec![raster],
-        images: Vec::new(),
-        raster_looks: Vec::new(),
-        image_looks: Vec::new(),
+        layers: vec![vale_app::globe::FrameItem::Raster(
+            raster.id,
+            vale_app::globe::RasterLook {
+                look: vale_app::globe::Look {
+                    opacity: raster.opacity,
+                    blend: raster.blend,
+                    display: raster.display,
+                },
+                lines: raster.lines,
+                smoothing: raster.smoothing,
+                hillshade: raster.hillshade,
+                bands: None,
+            },
+        )],
+        mask_looks: Vec::new(),
     }
 }
 
@@ -9726,7 +9738,7 @@ fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
     // A thread reads the tiles.
     state.headless = false;
     state.sync_globe();
-    let draw = zoomed_draw(1, height);
+    let draw = zoomed_draw(1, state.doc.project.raster(height).unwrap());
     state.want_frames(vec![draw.clone()]);
     let globe = &state.globe;
     assert!(globe.raster_map(height).is_none(), "in the main memory");

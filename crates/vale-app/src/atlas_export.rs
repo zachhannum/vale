@@ -11,13 +11,13 @@ use vale_labeler::Fonts;
 use vale_render::Rgba;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, ImageId, LayerId, PageId, PageRecord, RasterId};
+use vale_store::{FrameRecord, LayerId, PageId, PageRecord};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
-use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::globe::{FrameDraw, FrameItem, FramePlace, RasterMask};
 use crate::mask::frame::{cover_mask, frame_raster_masks};
 use crate::pipeline::{FrameDetail, Pipeline, Quality, paper_color};
 use crate::raster_style;
@@ -331,16 +331,6 @@ impl PdfExport {
         list
     }
 
-    fn shown_rasters(&self, frame: &FrameRecord) -> Vec<RasterId> {
-        self.doc
-            .project
-            .layers()
-            .iter()
-            .filter(|layer| self.doc.shown(frame.map, layer.id))
-            .filter_map(|layer| layer.raster())
-            .collect()
-    }
-
     /// The pixels in one point of the raster images of the page that the
     /// export draws.
     pub fn pixel_ratio(&self) -> f64 {
@@ -353,16 +343,6 @@ impl PdfExport {
             Some(Output::Images { ratio, .. }) => *ratio,
             _ => pixel_ratio(page.dpi),
         }
-    }
-
-    fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
-        self.doc
-            .project
-            .layers()
-            .iter()
-            .filter(|layer| self.doc.shown(frame.map, layer.id))
-            .filter_map(|layer| layer.image())
-            .collect()
     }
 
     fn capture(
@@ -414,10 +394,8 @@ impl PdfExport {
                 .map(|pixel| pixel[3])
                 .collect(),
         });
-        let shown = self.shown_rasters(frame);
-        let images = self.shown_images(frame);
-        let layered = !shown.is_empty() || !images.is_empty();
-        let (raster_looks, image_looks) = raster_style::map_looks(&self.doc, frame.map);
+        let layers = raster_style::frame_items(&self.doc, frame.map);
+        let layered = layers.iter().any(|item| *item != FrameItem::Cut);
         let draw = FrameDraw {
             id: next_draw_id(),
             place: FramePlace {
@@ -434,10 +412,8 @@ impl PdfExport {
             rect: [0, 0, size[0], size[1]],
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
             mask: Some(mask),
-            shown,
-            images,
-            raster_looks,
-            image_looks,
+            layers,
+            mask_looks: raster_style::hidden_looks(&self.doc, frame.map),
         };
         let pixel_count = size[0] as usize * size[1] as usize;
         let masks = match self.gpu {
@@ -630,8 +606,9 @@ impl PdfExport {
                 let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
                 let layered = self.layers
                     && !self.vector_pages.contains(&self.page)
-                    && (!self.shown_rasters(frame).is_empty()
-                        || !self.shown_images(frame).is_empty()
+                    && (raster_style::frame_items(&self.doc, frame.map)
+                        .iter()
+                        .any(|item| *item != FrameItem::Cut)
                         || masked);
                 if !layered || !raster_area {
                     let target = FrameTarget {

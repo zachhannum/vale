@@ -4254,9 +4254,15 @@ impl AppState {
         self.globe.set_frame_mask_rasters(all);
     }
 
+    /// The GPU keeps a copy of each raster layer and each image layer
+    /// that the frames draw.
     fn want_with_export(&mut self, screen: &[crate::globe::FrameDraw]) {
         let mut frames = screen.to_vec();
         frames.extend(self.export_frame.clone());
+        let rasters = frames.iter().flat_map(|f| f.rasters().map(|(id, _)| id));
+        let images = frames.iter().flat_map(|f| f.images());
+        self.globe
+            .set_map_rasters(rasters.collect(), images.collect());
         self.globe.want_frames(&frames);
     }
 
@@ -5130,9 +5136,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_measure();
     state.check_new_feature();
     state.atlas.every_tab = state.layout == Layout::Pad;
-    // A switch to the World workspace exits the entered frame.
+    // A switch to the World workspace exits the entered frame, and frees
+    // the copies of the layers that only the frames draw.
     if state.workspace == Workspace::Globe {
         state.atlas.entered = None;
+        if state.export_frame.is_none() {
+            state.globe.set_map_rasters(Vec::new(), Vec::new());
+        }
     }
     if state.layout == Layout::Pad {
         match state.workspace {

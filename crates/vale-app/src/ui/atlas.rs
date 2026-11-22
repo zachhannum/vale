@@ -29,7 +29,7 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::select::Pointer;
-use crate::globe::{FrameDraw, FramePlace, RasterLook, RasterMask};
+use crate::globe::{FrameDraw, FrameItem, FramePlace, RasterLook, RasterMask};
 use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
 use crate::pipeline::{FrameDetail, Pipeline, Quality};
@@ -2744,23 +2744,17 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
     };
 }
 
-/// The raster layers that a map shows and that the globe draws, from the
-/// bottom.
-fn map_rasters(state: &AppState, map: MapId) -> Vec<RasterId> {
-    let layers = state.doc.project.layers().iter();
-    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
-    on.filter_map(|layer| layer.raster())
-        .filter(|id| state.globe.draws(*id))
-        .collect()
-}
-
-/// The image layers that a map shows, from the bottom.
-fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
-    let layers = state.doc.project.layers().iter();
-    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
-    on.filter_map(|layer| layer.image())
-        .filter(|id| state.globe.holds_image(*id))
-        .collect()
+/// The layers that a map draws, from the bottom, as
+/// `raster_style::frame_items` gives them, with only the raster layers and
+/// the image layers that the globe holds.
+fn map_items(state: &AppState, map: MapId) -> Vec<FrameItem> {
+    let mut items = crate::raster_style::frame_items(&state.doc, map);
+    items.retain(|item| match item {
+        FrameItem::Raster(id, _) => state.globe.holds(*id),
+        FrameItem::Image(id, _) => state.globe.holds_image(*id),
+        FrameItem::Cut => true,
+    });
+    items
 }
 
 /// A rectangle grown to whole physical pixels. A texture on whole pixels
@@ -2943,10 +2937,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
         };
-        let rasters = map_rasters(state, frame.map);
-        let images = map_images(state, frame.map);
-        let (raster_looks, image_looks) = crate::raster_style::map_looks(&state.doc, frame.map);
-        let layered = !rasters.is_empty() || !images.is_empty();
+        let layers = map_items(state, frame.map);
+        let layered = layers.iter().any(|item| *item != FrameItem::Cut);
         let masks: Vec<_> = (frame_raster_masks(&state.doc, frame).into_iter())
             .filter(|(_, mask)| state.globe.holds(mask.raster))
             .collect();
@@ -3025,7 +3017,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         };
         if let Some(mesh) = mesh {
             if !masks.is_empty() {
-                let looks = (rasters.clone(), raster_looks.clone());
+                let hidden = crate::raster_style::hidden_looks(&state.doc, frame.map);
+                let looks = (layers.clone(), hidden);
                 let needed = place.pixels_per_page_point(ppp);
                 let capture = mask_capture(state, frame, in_page, mesh.clone(), looks, needed);
                 let masks = (masks.into_iter())
@@ -3062,10 +3055,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     rect,
                     mesh,
                     mask,
-                    shown: rasters,
-                    images,
-                    raster_looks,
-                    image_looks,
+                    layers,
+                    mask_looks: Vec::new(),
                 });
             }
         }
@@ -3260,7 +3251,7 @@ fn mask_capture(
     frame: &FrameRecord,
     vt: ViewTransform,
     mesh: Arc<FlatMesh>,
-    (shown, raster_looks): (Vec<RasterId>, Vec<(RasterId, RasterLook)>),
+    (layers, mask_looks): (Vec<FrameItem>, Vec<(RasterId, RasterLook)>),
     needed: f32,
 ) -> MaskCapture {
     let b = math::shape_bbox(&frame.shape);
@@ -3294,10 +3285,10 @@ fn mask_capture(
         rect: [0, 0, (x1 - x0) as u32, (y1 - y0) as u32],
         mesh,
         mask: None,
-        shown,
-        images: Vec::new(),
-        raster_looks,
-        image_looks: Vec::new(),
+        layers: (layers.into_iter())
+            .filter(|item| !matches!(item, FrameItem::Image(..)))
+            .collect(),
+        mask_looks,
     };
     MaskCapture {
         draw,

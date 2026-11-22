@@ -1157,7 +1157,9 @@ mod tests {
     use eframe::egui;
 
     use super::super::view::GlobeView;
-    use super::super::{FrameDraw, FramePlace, Globe, StackItem, WorldView};
+    use super::super::{
+        FrameDraw, FrameItem, FramePlace, Globe, Look, RasterLook, StackItem, WorldView,
+    };
     use super::*;
 
     const RASTER: RasterId = RasterId(7);
@@ -1191,6 +1193,24 @@ mod tests {
         globe
     }
 
+    /// The look of the raster layer, as the globe draws it.
+    fn raster_look() -> RasterLook {
+        RasterLook {
+            look: Look {
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                display: RasterDisplay::Grey,
+            },
+            lines: false,
+            smoothing: Smoothing {
+                on: false,
+                ..Smoothing::default()
+            },
+            hillshade: Hillshade::default(),
+            bands: None,
+        }
+    }
+
     /// A frame of `size` pixels with `pixels_per_radian` pixels in one unit
     /// of the projection, centered on the point `map_center` of the map.
     fn frame(id: u32, size: u32, pixels_per_radian: f32, map_center: [f32; 2]) -> FrameDraw {
@@ -1208,10 +1228,8 @@ mod tests {
             rect: [0, 0, size, size],
             mesh: Arc::new(FlatMesh::new(&projection)),
             mask: None,
-            shown: vec![RASTER],
-            images: Vec::new(),
-            raster_looks: Vec::new(),
-            image_looks: Vec::new(),
+            layers: vec![FrameItem::Raster(RASTER, raster_look())],
+            mask_looks: Vec::new(),
         }
     }
 
