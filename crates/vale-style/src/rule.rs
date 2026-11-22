@@ -94,6 +94,8 @@ pub struct StrokeSymbolizer {
 }
 
 /// An instruction that draws a feature.
+// The dash pattern makes a stroke large. A style has few symbolizers.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum Symbolizer {
     /// Fills polygons. With `apply_mask`, the style mask cuts the fill.

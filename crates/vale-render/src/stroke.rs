@@ -8,49 +8,164 @@ use kurbo::{BezPath, Circle, Point, Shape, Vec2};
 /// The most dabs that one feature gets from `brush_dabs`.
 pub const MAX_DABS: usize = 20_000;
 
-/// Cuts the parts into dashes of length `dash` with gaps of length `gap`, along the arc length.
+/// The length of the piece that stands for a dot. A stroke with round caps draws it as a disk.
+pub const DOT: f64 = 0.01;
+
+/// The most lengths in a dash pattern.
+pub const MAX_PATTERN: usize = 16;
+
+/// Whether `pattern` is a valid dash pattern: an even count of lengths from 2 to
+/// `MAX_PATTERN`, with each dash finite and not negative, and each gap finite and positive.
+pub fn valid_pattern(pattern: &[f64]) -> bool {
+    pattern.len() >= 2
+        && pattern.len() <= MAX_PATTERN
+        && pattern.len().is_multiple_of(2)
+        && pattern.iter().enumerate().all(|(i, &l)| {
+            l.is_finite()
+                && if i.is_multiple_of(2) {
+                    l >= 0.0
+                } else {
+                    l > 0.0
+                }
+        })
+}
+
+/// Cuts the parts into dashes along the arc length. `pattern` alternates dash and gap
+/// lengths, and it starts with a dash.
 ///
 /// A dash includes the vertices that it crosses. The phase runs on across vertices and parts.
-/// If `dash` or `gap` is not a positive number, the parts come back unchanged.
-pub fn dash(parts: &[Vec<Point>], dash: f64, gap: f64) -> Vec<Vec<Point>> {
-    if !(dash > 0.0 && gap > 0.0 && dash.is_finite() && gap.is_finite()) {
+/// A dash of length 0 is a dot: a piece of length `DOT` along the line, centered on the place
+/// of the dot. If `pattern` is not valid, the parts come back unchanged.
+pub fn dash(parts: &[Vec<Point>], pattern: &[f64]) -> Vec<Vec<Point>> {
+    if !valid_pattern(pattern) {
         return parts.to_vec();
     }
     let mut out = Vec::new();
-    let mut on = true;
-    let mut left = dash;
+    let mut i: usize = 0;
+    let mut left = pattern[0];
     for part in parts {
         if part.len() < 2 {
             continue;
         }
-        let mut cur: Vec<Point> = if on { vec![part[0]] } else { Vec::new() };
+        let mut cur: Vec<Point> = if i.is_multiple_of(2) {
+            vec![part[0]]
+        } else {
+            Vec::new()
+        };
         for w in part.windows(2) {
             let (a, b) = (w[0], w[1]);
             let len = a.distance(b);
+            if len == 0.0 {
+                continue;
+            }
             let mut t = 0.0;
-            while len > 0.0 && len - t >= left {
+            while len - t >= left {
                 t += left;
                 let p = a.lerp(b, t / len);
-                if on {
-                    push_new(&mut cur, p);
-                    if cur.len() >= 2 {
-                        out.push(std::mem::take(&mut cur));
+                if i.is_multiple_of(2) {
+                    if pattern[i] == 0.0 {
+                        let d = (b - a) * (DOT / 2.0 / len);
+                        out.push(vec![p - d, p + d]);
+                    } else {
+                        push_new(&mut cur, p);
+                        if cur.len() >= 2 {
+                            out.push(std::mem::take(&mut cur));
+                        }
                     }
                     cur.clear();
                 } else {
                     cur = vec![p];
                 }
-                on = !on;
-                left = if on { dash } else { gap };
+                i = (i + 1) % pattern.len();
+                left = pattern[i];
             }
             left -= len - t;
-            if on {
+            if i.is_multiple_of(2) {
                 push_new(&mut cur, b);
             }
         }
-        if on && cur.len() >= 2 {
+        if i.is_multiple_of(2) && cur.len() >= 2 {
             out.push(cur);
         }
+    }
+    out
+}
+
+/// Points on the same cell of a grid with this many cells to the unit are one point for
+/// `join_shared`.
+const JOIN_GRID: f64 = 1024.0;
+
+/// The segments of `parts` joined into chains, with each segment that two parts share only
+/// one time. A chain ends where one segment or more than two segments meet. A dash pattern
+/// along the chains does not draw a shared segment two times with different dashes.
+///
+/// A chain starts at the first segment that no chain has yet, in the order of `parts`, so a
+/// line that shares nothing keeps its direction and its start.
+pub fn join_shared(parts: &[Vec<Point>]) -> Vec<Vec<Point>> {
+    use std::collections::{HashMap, HashSet};
+    let mut ids: HashMap<(i64, i64), usize> = HashMap::new();
+    let mut points: Vec<Point> = Vec::new();
+    let mut id = |p: Point| {
+        let key = (
+            (p.x * JOIN_GRID).round() as i64,
+            (p.y * JOIN_GRID).round() as i64,
+        );
+        *ids.entry(key).or_insert_with(|| {
+            points.push(p);
+            points.len() - 1
+        })
+    };
+    let mut seen = HashSet::new();
+    let mut segments: Vec<(usize, usize)> = Vec::new();
+    for part in parts {
+        for w in part.windows(2) {
+            let (a, b) = (id(w[0]), id(w[1]));
+            if a != b && seen.insert((a.min(b), a.max(b))) {
+                segments.push((a, b));
+            }
+        }
+    }
+    let mut at: Vec<Vec<usize>> = vec![Vec::new(); points.len()];
+    for (i, &(a, b)) in segments.iter().enumerate() {
+        at[a].push(i);
+        at[b].push(i);
+    }
+    let mut used = vec![false; segments.len()];
+    // The node past `node` on the chain, if `node` joins two segments and the other is free.
+    let step = |node: usize, from: usize, used: &mut [bool]| -> Option<(usize, usize)> {
+        let [x, y] = at[node][..] else {
+            return None;
+        };
+        let next = if x == from { y } else { x };
+        if used[next] {
+            return None;
+        }
+        used[next] = true;
+        let (a, b) = segments[next];
+        Some((if a == node { b } else { a }, next))
+    };
+    let mut out = Vec::new();
+    for s in 0..segments.len() {
+        if used[s] {
+            continue;
+        }
+        used[s] = true;
+        let (a, b) = segments[s];
+        let mut chain = vec![a, b];
+        let (mut node, mut from) = (b, s);
+        while let Some((next, seg)) = step(node, from, &mut used) {
+            chain.push(next);
+            (node, from) = (next, seg);
+        }
+        let mut back = Vec::new();
+        let (mut node, mut from) = (a, s);
+        while let Some((next, seg)) = step(node, from, &mut used) {
+            back.push(next);
+            (node, from) = (next, seg);
+        }
+        back.reverse();
+        back.extend(chain);
+        out.push(back.into_iter().map(|i| points[i]).collect());
     }
     out
 }

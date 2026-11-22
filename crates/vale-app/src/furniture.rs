@@ -713,7 +713,7 @@ fn placeholder(rect: Rect, unit: f64) -> Vec<Item> {
         Point::new(rect.x0, rect.y0),
     ];
     let mut path = BezPath::new();
-    for part in vale_render::stroke::dash(&[ring], 3.0 * unit, 2.0 * unit) {
+    for part in vale_render::stroke::dash(&[ring], &[3.0 * unit, 2.0 * unit]) {
         let mut points = part.iter();
         if let Some(first) = points.next() {
             path.move_to(*first);

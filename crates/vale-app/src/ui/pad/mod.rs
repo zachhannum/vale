@@ -446,6 +446,8 @@ pub enum Page {
     /// The height layer of the Flow lines of the layer, from the rule with
     /// this index, or from the selected rules.
     FlowHeight(Option<usize>),
+    /// The dash pattern of the rule with this index, or of the selected rules.
+    DashPattern(Option<usize>),
     /// The collections of the layer.
     Collections,
 }
@@ -2102,12 +2104,15 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             | Page::Symbols(i)
             | Page::MarkerShape(i)
             | Page::MarkerFill(i)
-            | Page::FlowHeight(Some(i)),
+            | Page::FlowHeight(Some(i))
+            | Page::DashPattern(Some(i)),
         ) => rules.and_then(|r| r.get(i)).map(|r| r.name.clone()),
-        Some(Page::Rules | Page::FlowHeight(None)) => match state.pad.layer {
-            Some(LayerRef::Vector(id)) => Some(rules::selection_title(state, id)),
-            _ => None,
-        },
+        Some(Page::Rules | Page::FlowHeight(None) | Page::DashPattern(None)) => {
+            match state.pad.layer {
+                Some(LayerRef::Vector(id)) => Some(rules::selection_title(state, id)),
+                _ => None,
+            }
+        }
         _ => None,
     };
     if name.is_none() {
@@ -2143,10 +2148,14 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
             Some(LayerRef::Vector(_)),
             Some(Page::Rule(i) | Page::Symbols(i) | Page::MarkerShape(i) | Page::MarkerFill(i)),
         ) => i < rule_count,
-        (Some(LayerRef::Vector(id)), Some(Page::Rules | Page::FlowHeight(None))) => {
-            !state.pad.rules.picked(id).is_empty()
-        }
-        (Some(LayerRef::Vector(_)), Some(Page::FlowHeight(Some(i)))) => i < rule_count,
+        (
+            Some(LayerRef::Vector(id)),
+            Some(Page::Rules | Page::FlowHeight(None) | Page::DashPattern(None)),
+        ) => !state.pad.rules.picked(id).is_empty(),
+        (
+            Some(LayerRef::Vector(_)),
+            Some(Page::FlowHeight(Some(i)) | Page::DashPattern(Some(i))),
+        ) => i < rule_count,
         (Some(LayerRef::Raster(_) | LayerRef::Vector(_)), Some(Page::RampEditor)) => {
             state.ramp_draft.is_some()
         }
@@ -2228,6 +2237,11 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if matches!(page, Some(Page::FlowHeight(_))) => {
             ("pad-flow-height", rules::HEIGHT_LAYER, rule_name.as_deref())
+        }
+        (Panel::Layers, Some(LayerRef::Vector(_)))
+            if matches!(page, Some(Page::DashPattern(_))) =>
+        {
+            ("pad-dash-pattern", rules::PATTERN, rule_name.as_deref())
         }
         (Panel::Layers, Some(LayerRef::Vector(_))) if page == Some(Page::LabelText) => {
             ("pad-label-text", label_text::LABEL_TEXT, Some(name))
@@ -2415,7 +2429,7 @@ pub(super) fn panel_title(
         (back, page)
     {
         state.pad.page = Some(Page::Rule(i));
-    } else if let (true, Some(Page::FlowHeight(rule))) = (back, page) {
+    } else if let (true, Some(Page::FlowHeight(rule) | Page::DashPattern(rule))) = (back, page) {
         state.pad.page = Some(rule.map_or(Page::Rules, Page::Rule));
     } else if back && page.is_some() {
         state.pad.page = None;
@@ -2533,6 +2547,9 @@ pub(super) fn panel_body(
             Some(Page::RampEditor) => ramp_editor::body(ui, state, controls),
             Some(Page::Mask) => rules::mask_body(ui, state, controls, id),
             Some(Page::FlowHeight(_)) => rules::flow_height_body(ui, state, controls, id),
+            Some(Page::DashPattern(rule)) => {
+                rules::dash_pattern_body(ui, state, controls, id, rule);
+            }
             Some(Page::LabelText) => fonts::text_body(ui, state, controls, id),
             Some(Page::Table) => {}
             _ => vector_body(ui, state, controls, id),

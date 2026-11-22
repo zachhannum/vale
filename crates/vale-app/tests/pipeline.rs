@@ -14,7 +14,7 @@ use vale_app::furniture::{self, Purpose};
 use vale_app::headless::{export, map_png, probe};
 use vale_app::pipeline::{PAPER, Pipeline, Quality, fonts};
 use vale_app::scale_bar;
-use vale_render::{FillRule, Item, render_pixmap, render_rgba};
+use vale_render::{FillRule, Item, render_pixmap, render_rgba, stroke};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::{
     ColorKeyItem, CoordFormat, EdgeOrientation, FrameId, FrameShape, Furniture, FurnitureId,
@@ -24,8 +24,8 @@ use vale_store::{
 };
 use vale_style::expr::{Filter, Property};
 use vale_style::{
-    Color, Hatch, MarkerShape, Mask, PointSymbolizer, Rule, ScatterSymbolizer, Stroke, StrokeKind,
-    StrokeSymbolizer, Style, Symbolizer,
+    Color, DashPattern, Hatch, MarkerShape, Mask, PointSymbolizer, Rule, ScatterSymbolizer, Stroke,
+    StrokeKind, StrokeSymbolizer, Style, Symbolizer,
 };
 
 const SIZE: (f64, f64) = (1280.0, 800.0);
@@ -1249,6 +1249,7 @@ fn a_dashed_curved_line_has_even_dashes() {
         doc.first_map(),
         ProjectionSpec::new(ProjectionKind::Orthographic, 0.0, 60.0),
     );
+    // The default pattern is 4 widths of dash and 2 widths of gap.
     let (dash, gap) = (6.0, 3.0);
     doc.entry_mut(id).unwrap().style.style = Style {
         mask: None,
@@ -1256,7 +1257,7 @@ fn a_dashed_curved_line_has_even_dashes() {
             "a",
             Color::rgb(0, 0, 200),
             1.5,
-            StrokeKind::Dashed { dash, gap },
+            StrokeKind::dashed(),
         )],
     };
     let composed = compose(&doc, &mut Pipeline::new());
@@ -1285,6 +1286,132 @@ fn a_dashed_curved_line_has_even_dashes() {
         let g = w[0][w[0].len() - 1].distance(w[1][0]);
         assert!(g <= gap + 1e-6 && g > gap * 0.95, "a gap of {g}");
     }
+}
+
+/// The blue strokes of a line layer with the stroke kind `kind` at `width`: the pieces of
+/// each stroke, and whether it has round ends.
+fn blue_strokes(kind: StrokeKind, width: f64) -> Vec<(Vec<Vec<Point>>, bool)> {
+    let equator: Vec<[f64; 2]> = (0..=12)
+        .map(|i| [-30.0 + 5.0 * f64::from(i), 0.0])
+        .collect();
+    let (mut doc, id) = lines_at(&[("a", &equator)]);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![kind_rule("a", Color::rgb(0, 0, 200), width, kind)],
+    };
+    let composed = compose(&doc, &mut Pipeline::new());
+    (composed.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke {
+                path, round, color, ..
+            } if color.b == 200 => Some((subpaths(path), *round)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The pieces of the one blue stroke of `blue_strokes`, and whether it has round ends.
+fn blue_dashes(kind: StrokeKind, width: f64) -> (Vec<Vec<Point>>, bool) {
+    let mut strokes = blue_strokes(kind, width);
+    assert_eq!(strokes.len(), 1);
+    strokes.remove(0)
+}
+
+#[test]
+fn a_dash_dot_line_draws_round_dots() {
+    let (pieces, round) = blue_dashes(StrokeKind::Dashed(DashPattern::DASH_DOT), 2.0);
+    assert!(round);
+    let dots = pieces
+        .iter()
+        .filter(|d| length(d) <= 2.0 * stroke::DOT + 1e-9)
+        .count();
+    // A dash of 6 widths shows 12 pt with its round ends, so 10 pt of it is on the center.
+    let dashes = pieces
+        .iter()
+        .filter(|d| (length(d) - 10.0).abs() < 1e-6)
+        .count();
+    assert!(dots > 3, "{dots} dots");
+    assert!(
+        dashes.abs_diff(dots) <= 1,
+        "{dashes} dashes and {dots} dots"
+    );
+}
+
+/// The total length of the dashes of the outlines of `squares`, each from (x, 0) to
+/// (x + 10, 10) in degrees, with one dashed rule.
+fn dashed_outline_length(squares: &[f64]) -> f64 {
+    let features: Vec<String> = (squares.iter())
+        .map(|x| {
+            let (a, b) = (x, x + 10.0);
+            format!(
+                r#"{{"type":"Feature","properties":{{}},"geometry":{{"type":"Polygon","coordinates":[[[{a},0],[{b},0],[{b},10],[{a},10],[{a},0]]]}}}}"#
+            )
+        })
+        .collect();
+    let text = format!(
+        r#"{{"type":"FeatureCollection","features":[{}]}}"#,
+        features.join(",")
+    );
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let id = doc.add_imported(
+        vale_import::geojson::read_str("squares", &text).unwrap(),
+        None,
+    )[0];
+    let style = &mut doc.entry_mut(id).unwrap().style;
+    style.set_fill(None);
+    style.set_stroke(Some(vale_style::Stroke {
+        color: Color::rgb(0, 0, 200),
+        width: 1.0,
+        kind: StrokeKind::Dashed(DashPattern::parse("1 1", false).unwrap()),
+    }));
+    let composed = compose(&doc, &mut Pipeline::new());
+    (composed.list.items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke { path, color, .. } if color.b == 200 => Some(subpaths(path)),
+            _ => None,
+        })
+        .flatten()
+        .map(|d| length(&d))
+        .sum()
+}
+
+#[test]
+fn an_edge_of_two_features_draws_its_dashes_one_time() {
+    let apart = dashed_outline_length(&[0.0]) + dashed_outline_length(&[10.0]);
+    let shared = dashed_outline_length(&[0.0, 10.0]);
+    // Seven edges of the same length, in place of eight.
+    let ratio = shared / apart;
+    assert!((ratio - 7.0 / 8.0).abs() < 0.03, "{ratio}");
+}
+
+#[test]
+fn a_dot_is_round_with_flat_ends() {
+    let flat = DashPattern::parse("6 2.5 0 2.5", false).unwrap();
+    let strokes = blue_strokes(StrokeKind::Dashed(flat), 2.0);
+    assert_eq!(strokes.len(), 2);
+    let (dashes, round) = &strokes[0];
+    assert!(!round);
+    assert!(
+        dashes
+            .iter()
+            .all(|d| (length(d) - 12.0).abs() < 1e-6 || length(d) < 12.0)
+    );
+    let (dots, round) = &strokes[1];
+    assert!(round);
+    assert!(dots.iter().all(|d| length(d) <= 2.0 * stroke::DOT + 1e-9));
+    assert!(dots.len() > 3);
+}
+
+#[test]
+fn a_dash_pattern_scales_with_the_width() {
+    let (thin, round) = blue_dashes(StrokeKind::dashed(), 1.0);
+    assert!(!round);
+    let (thick, _) = blue_dashes(StrokeKind::dashed(), 2.0);
+    assert!((length(&thin[0]) - 4.0).abs() < 1e-6);
+    assert!((length(&thick[0]) - 8.0).abs() < 1e-6);
+    assert!(thin.len() > thick.len());
 }
 
 /// The pixels of a row, between `x0` and `x1`, that are mostly `red`.

@@ -527,10 +527,16 @@ impl<'a> Encoder<'a> {
     }
 
     fn stroke(&mut self, path: &BezPath, color: Color, width: f64, round: bool) {
-        let mut stroke = Stroke::new(width);
-        if round {
-            stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
-        }
+        // A kurbo stroke has round joins and caps by default.
+        let stroke = if round {
+            Stroke::new(width)
+                .with_join(Join::Round)
+                .with_caps(Cap::Round)
+        } else {
+            Stroke::new(width)
+                .with_join(Join::Miter)
+                .with_caps(Cap::Butt)
+        };
         self.scene
             .stroke(&stroke, self.base, paint(color), None, path);
         let half = width / 2.0;

@@ -351,7 +351,24 @@ pub fn stroke_shapes(
     };
     let shapes = match stroke.kind {
         StrokeKind::Solid => lines(plain()),
-        StrokeKind::Dashed { dash, gap } => lines(stroke::dash(&plain(), dash, gap)),
+        StrokeKind::Dashed(p) => {
+            let r = width / 2.0;
+            let mut shapes = Vec::new();
+            for d in stroke::dash(&plain(), &p.cut(stroke.width)) {
+                let (a, b) = (d[0], d[d.len() - 1]);
+                // A dot is round with either end.
+                if crate::pipeline::is_dot(&d) {
+                    shapes.push(egui::Shape::circle_filled(pos(a.midpoint(b)), r, color));
+                    continue;
+                }
+                if p.round {
+                    shapes.push(egui::Shape::circle_filled(pos(a), r, color));
+                    shapes.push(egui::Shape::circle_filled(pos(b), r, color));
+                }
+                shapes.extend(lines(vec![d]));
+            }
+            shapes
+        }
         StrokeKind::Taper { start } => pieces(stroke::taper_measured(
             parts,
             start * stroke.width,
@@ -968,12 +985,22 @@ mod tests {
         let solid = shapes(StrokeKind::Solid);
         assert_eq!(solid.len(), 1);
         assert!(matches!(&solid[0], Shape::Path(p) if p.points.len() == 41));
-        let dashed = shapes(StrokeKind::Dashed {
-            dash: 5.0,
-            gap: 3.0,
-        });
+        let dashed = shapes(StrokeKind::Dashed(
+            vale_style::DashPattern::new(&[1.25, 0.75], false).unwrap(),
+        ));
         assert!(dashed.len() > 20, "{} dashes", dashed.len());
         assert!(dashed.iter().all(|s| matches!(s, Shape::Path(_))));
+        // Each dot of a round pattern is one disk with the radius of half the width.
+        let dotted = shapes(StrokeKind::Dashed(vale_style::DashPattern::DOTTED));
+        assert!(dotted.len() > 5, "{} dots", dotted.len());
+        assert!(
+            dotted
+                .iter()
+                .all(|s| matches!(s, Shape::Circle(c) if c.radius == 2.0))
+        );
+        let dash_dot = shapes(StrokeKind::Dashed(vale_style::DashPattern::DASH_DOT));
+        assert!(dash_dot.iter().any(|s| matches!(s, Shape::Path(_))));
+        assert!(dash_dot.iter().any(|s| matches!(s, Shape::Circle(_))));
         let taper = shapes(StrokeKind::taper());
         assert!(taper.iter().any(|s| matches!(s, Shape::Circle(_))));
         assert!(
@@ -1024,10 +1051,8 @@ mod tests {
         };
         for kind in [
             StrokeKind::Solid,
-            StrokeKind::Dashed {
-                dash: 5.0,
-                gap: 3.0,
-            },
+            StrokeKind::Dashed(vale_style::DashPattern::new(&[1.25, 0.75], false).unwrap()),
+            StrokeKind::Dashed(vale_style::DashPattern::DASH_DOT),
             StrokeKind::taper(),
         ] {
             let (translucent, alpha) = shapes(128, kind);

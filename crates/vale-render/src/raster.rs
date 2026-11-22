@@ -53,10 +53,16 @@ fn fill(ctx: &mut RenderContext, path: &BezPath, color: Color, rule: FillRule) {
 }
 
 fn stroke(ctx: &mut RenderContext, path: &BezPath, color: Color, width: f64, round: bool) {
-    let mut stroke = Stroke::new(width);
-    if round {
-        stroke = stroke.with_join(Join::Round).with_caps(Cap::Round);
-    }
+    // A kurbo stroke has round joins and caps by default.
+    let stroke = if round {
+        Stroke::new(width)
+            .with_join(Join::Round)
+            .with_caps(Cap::Round)
+    } else {
+        Stroke::new(width)
+            .with_join(Join::Miter)
+            .with_caps(Cap::Butt)
+    };
     ctx.set_stroke(stroke);
     ctx.set_paint(paint(color));
     ctx.stroke_path(path);

@@ -8,8 +8,8 @@ use vale_render::Symbols;
 use vale_store::{Field, FieldType, FillKind, GeometryKind, LayerId};
 use vale_style::expr::{Filter, Property, field_ref};
 use vale_style::{
-    Color, Hatch, LayerStyle, MarkerShape, Mask, PointSymbolizer, Rule, ScatterSymbolizer, Stroke,
-    StrokeKind, Symbolizer,
+    Color, DashPattern, DashPreset, Hatch, LayerStyle, MarkerShape, Mask, PointSymbolizer, Rule,
+    ScatterSymbolizer, Stroke, StrokeKind, Symbolizer,
 };
 
 use super::classify::CLASSIFY;
@@ -51,8 +51,19 @@ pub const SOLID: &str = "Solid";
 pub const DASHED: &str = "Dashed";
 pub const BRUSH: &str = "Brush";
 pub const TAPER: &str = "Taper";
-pub const DASH: &str = "Dash";
-pub const GAP: &str = "Gap";
+/// The row of the dash pattern, which opens its page.
+pub const PATTERN: &str = "Pattern";
+pub const DOTTED: &str = "Dotted";
+pub const DASH_DOT: &str = "Dash-dot";
+pub const DASH_DOT_DOT: &str = "Dash-dot-dot";
+/// The value of the Pattern row when the lengths match no preset.
+pub const CUSTOM: &str = "Custom";
+/// The field of the dash and gap lengths of a pattern.
+pub const LENGTHS: &str = "Lengths";
+/// The ends of the dashes.
+pub const ENDS: &str = "Ends";
+pub const FLAT: &str = "Flat";
+pub const ROUND: &str = "Round";
 pub const TAPER_START: &str = "Start width";
 /// The line type whose width follows the drainage of the height layer.
 pub const FLOW: &str = "Flow";
@@ -128,8 +139,6 @@ pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
 pub const MASK_HINT: &str = "A fill or a stroke with Apply mask on draws only inside the mask. A negative offset clears a line at its edge.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
-/// The range of the dash and gap sliders, in points. The sliders have a log scale.
-pub const DASHES: (f64, f64) = (0.1, 20.0);
 /// The range of the size of a shape, in points.
 pub const CIRCLE_SIZES: (f64, f64) = (0.1, 32.0);
 /// The range of the size of a point symbol, in points.
@@ -434,8 +443,11 @@ pub fn selection_body(
             changes.push(Change::StrokeWidth(w));
         }
         // A marker ignores the line type.
-        if kind != GeometryKind::Point {
-            selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes);
+        if kind != GeometryKind::Point
+            && selection_line_rows(ui, controls, kind, &rules, &paints, &mut changes)
+        {
+            state.pad.page = Some(Page::DashPattern(None));
+            state.pad.rules.picker = None;
         }
         let flow = |i: &usize| {
             matches!(
@@ -511,7 +523,8 @@ fn selection_line_rows(
     rules: &[Rule],
     paints: &[usize],
     changes: &mut Vec<Change>,
-) {
+) -> bool {
+    let mut open = false;
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
         kinds.extend([TAPER, FLOW]);
@@ -541,28 +554,28 @@ fn selection_line_rows(
     };
     match active {
         Some(1) => {
-            let dash = number(&|k| match k {
-                StrokeKind::Dashed { dash, .. } => Some(dash),
+            let pattern = |r: &Rule| match r.stroke().map(|s| s.kind) {
+                Some(StrokeKind::Dashed(p)) => Some(p),
                 _ => None,
-            });
-            let gap = number(&|k| match k {
-                StrokeKind::Dashed { gap, .. } => Some(gap),
-                _ => None,
-            });
-            for (name, value, make) in [
-                (DASH, dash, Change::Dash as fn(f64) -> Change),
-                (GAP, gap, Change::Gap),
-            ] {
-                let (v, mixed) = value.unwrap_or((StrokeKind::DASH, false));
-                let v = Number::new(name, v, DASHES.0..=DASHES.1)
-                    .nice()
-                    .step(0.05)
-                    .unit("pt")
-                    .mixed(mixed)
-                    .stepper(ui, controls);
-                if let Some(v) = v {
-                    changes.push(make(v));
-                }
+            };
+            let name = rule_edit::shared(rules, paints, |r| pattern(r).map(pattern_name));
+            let name = match name {
+                Some((_, true)) => crate::ui::select::MIXED,
+                Some((name, false)) => name,
+                None => "",
+            };
+            open = widgets::open_row(ui, controls, PATTERN, name).clicked();
+            let text = rule_edit::shared(rules, paints, |r| pattern(r).map(|p| p.text()));
+            let text = text.filter(|t| !t.1).map(|t| t.0).unwrap_or_default();
+            if let Some(q) = lengths_field(ui, controls, text) {
+                changes.push(Change::DashLengths(q));
+            }
+            let round = rule_edit::shared(rules, paints, |r| pattern(r).map(|p| p.round));
+            let active = round.filter(|r| !r.1).map(|r| usize::from(r.0));
+            if let Some(picked) = widgets::choice_row(ui, controls, ENDS, &[FLAT, ROUND], active)
+                && Some(picked) != active
+            {
+                changes.push(Change::DashRound(picked == 1));
             }
         }
         Some(3) => {
@@ -595,6 +608,7 @@ fn selection_line_rows(
         }
         _ => {}
     }
+    open
 }
 
 /// The row of a color of the selected rules and, while it is open, its
@@ -1049,7 +1063,10 @@ fn paint_rows(
         // A marker ignores the line type.
         if kind != GeometryKind::Point {
             let has_height = state.doc.project.rasters().iter().any(crate::ui::is_height);
-            line_rows(ui, controls, rule, stroke, (kind, has_height));
+            if line_rows(ui, controls, rule, stroke, (kind, has_height)) {
+                state.pad.page = Some(Page::DashPattern(Some(i)));
+                state.pad.rules.picker = None;
+            }
             if matches!(rule.stroke().map(|s| s.kind), Some(StrokeKind::Flow { .. })) {
                 flow_height_row(ui, state, controls, (id, Some(i)));
             }
@@ -1660,14 +1677,16 @@ pub fn with_field(property: &Property<f64>, field: Option<&str>) -> Property<f64
     }
 }
 
-/// The line type of a stroke, with its dash and gap or its start width.
+/// The line type of a stroke, with its dash pattern or its start width.
+/// Returns true if the user taps the Pattern row.
 fn line_rows(
     ui: &mut egui::Ui,
     controls: &mut Controls,
     rule: &mut Rule,
     mut stroke: Stroke,
     (kind, has_height): (GeometryKind, bool),
-) {
+) -> bool {
+    let mut open = false;
     let mut kinds = vec![SOLID, DASHED, BRUSH];
     if kind == GeometryKind::Line {
         kinds.extend([TAPER, FLOW]);
@@ -1692,20 +1711,25 @@ fn line_rows(
         rule.set_stroke(Some(stroke));
     }
     match stroke.kind {
-        StrokeKind::Dashed { dash, gap } => {
-            let points = |name, value| {
-                Number::new(name, value, DASHES.0..=DASHES.1)
-                    .nice()
-                    .step(0.05)
-                    .unit("pt")
+        StrokeKind::Dashed(p) => {
+            open = widgets::open_row(ui, controls, PATTERN, pattern_name(p)).clicked();
+            let mut set = |q: Option<DashPattern>| {
+                if let Some(q) = q {
+                    stroke.kind = StrokeKind::Dashed(q);
+                    rule.set_stroke(Some(stroke));
+                }
             };
-            if let Some(dash) = points(DASH, dash).stepper(ui, controls) {
-                stroke.kind = StrokeKind::Dashed { dash, gap };
-                rule.set_stroke(Some(stroke));
+            if let Some(q) = lengths_field(ui, controls, p.text()) {
+                set(Some(p.with_lengths(&q)));
             }
-            if let Some(gap) = points(GAP, gap).stepper(ui, controls) {
-                stroke.kind = StrokeKind::Dashed { dash, gap };
-                rule.set_stroke(Some(stroke));
+            let active = usize::from(p.round);
+            if let Some(picked) =
+                widgets::choice_row(ui, controls, ENDS, &[FLAT, ROUND], Some(active))
+                && picked != active
+            {
+                let mut q = p;
+                q.round = picked == 1;
+                set(Some(q));
             }
         }
         StrokeKind::Taper { start } => {
@@ -1731,6 +1755,7 @@ fn line_rows(
         }
         StrokeKind::Solid | StrokeKind::Brush => {}
     }
+    open
 }
 
 /// The names of the height layers of the project, in the order of the
@@ -1774,6 +1799,77 @@ fn flow_height_row(
     if widgets::open_row(ui, controls, HEIGHT_LAYER, &current).clicked() {
         state.pad.page = Some(Page::FlowHeight(rule));
         state.pad.rules.picker = None;
+    }
+}
+
+/// The name of the preset of `p`, or Custom.
+pub fn pattern_name(p: DashPattern) -> &'static str {
+    match p.preset() {
+        Some(DashPreset::Dashed) => DASHED,
+        Some(DashPreset::Dotted) => DOTTED,
+        Some(DashPreset::DashDot) => DASH_DOT,
+        Some(DashPreset::DashDotDot) => DASH_DOT_DOT,
+        None => CUSTOM,
+    }
+}
+
+/// The field of the lengths of a dash pattern. `shown` is the text of
+/// the lengths, or empty when the selected patterns differ. While the field has the focus, it
+/// keeps the typed text. Returns the pattern of the text when the user types a valid text.
+fn lengths_field(ui: &mut egui::Ui, controls: &mut Controls, shown: String) -> Option<DashPattern> {
+    let id = egui::Id::new("pad-dash-lengths");
+    let draft = ui.data(|d| d.get_temp::<String>(id));
+    let mut text = draft.clone().unwrap_or(shown);
+    let valid = draft.is_none() || DashPattern::parse(&text, false).is_some();
+    let field = widgets::text_field(ui, controls, LENGTHS, LENGTHS, None, &mut text, valid);
+    let parsed = DashPattern::parse(&text, false).filter(|_| field.changed());
+    if field.has_focus() {
+        ui.data_mut(|d| d.insert_temp(id, text));
+    } else {
+        ui.data_mut(|d| d.remove::<String>(id));
+    }
+    parsed
+}
+
+/// The page of the dash pattern of rule `rule` of layer `id`, or of the
+/// selected rules: a row for each preset.
+pub fn dash_pattern_body(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    rule: Option<usize>,
+) {
+    let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
+        return;
+    };
+    let Some(entry) = state.doc.entry(id) else {
+        return;
+    };
+    let rules = &entry.style.style.rules;
+    let indices = match rule {
+        Some(i) => vec![i],
+        None => state.pad.rules.picked(id),
+    };
+    let current = rule_edit::shared(rules, &indices, |r| match r.stroke().map(|s| s.kind) {
+        Some(StrokeKind::Dashed(p)) => Some(p.preset()),
+        _ => None,
+    });
+    let current = current.filter(|c| !c.1).and_then(|c| c.0);
+    ui.spacing_mut().item_spacing.y = 0.0;
+    ui.add_space(8.0);
+    for preset in DashPreset::ALL {
+        let name = pattern_name(preset.pattern());
+        let on = current == Some(preset);
+        if widgets::option_row(ui, controls, name, name, &[], on).clicked()
+            && !on
+            && let Some(entry) = state.doc.entry_mut(id)
+        {
+            let change = Change::DashPattern(preset.pattern());
+            if rule_edit::apply(&mut entry.style.style.rules, &indices, kind, change) {
+                state.touch();
+            }
+        }
     }
 }
 

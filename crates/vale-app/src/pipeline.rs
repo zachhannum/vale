@@ -17,7 +17,9 @@ use vale_store::{
     FrameId, FrameRecord, Geometry, GeometryKind, Layer, LayerId, MapId, PageRecord, Value,
 };
 use vale_style::expr::{Context, RasterValues};
-use vale_style::{Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, scale_denominator};
+use vale_style::{
+    DashPattern, Extent, Hatch, MarkerShape, Mask, Paint, Stroke, StrokeKind, scale_denominator,
+};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::{Document, LayerEntry};
@@ -548,7 +550,12 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
             let [c, w] = stroke(Some(s));
             let [k, a, b] = match s.kind {
                 StrokeKind::Solid => [0, 0, 0],
-                StrokeKind::Dashed { dash, gap } => [1, dash.to_bits(), gap.to_bits()],
+                StrokeKind::Dashed(p) => {
+                    let mut h = DefaultHasher::new();
+                    p.round.hash(&mut h);
+                    p.lengths().iter().for_each(|l| l.to_bits().hash(&mut h));
+                    [1, h.finish(), 0]
+                }
                 StrokeKind::Brush => [2, 0, 0],
                 StrokeKind::Taper { start } => [3, start.to_bits(), 0],
                 StrokeKind::Flow { min } => [4, min.to_bits(), 0],
@@ -833,13 +840,13 @@ pub(crate) enum Plain {
     /// One even-odd fill for each feature.
     Fill(vale_render::Color),
     /// One stroke of the lines of all features. `round` means round joins
-    /// and caps. A dashed stroke cuts the lines of each feature into dashes
-    /// of length `dash.0` with gaps of length `dash.1`.
+    /// and caps. A dashed stroke cuts the lines of each feature by the
+    /// pattern `dash`, in multiples of `width`.
     Stroke {
         color: vale_render::Color,
         width: f64,
         round: bool,
-        dash: Option<(f64, f64)>,
+        dash: Option<DashPattern>,
     },
 }
 
@@ -852,7 +859,7 @@ impl Plain {
             (GeometryKind::Polygon | GeometryKind::Line, Paint::Stroke(s)) => {
                 let line = kind == GeometryKind::Line;
                 let (round, dash) = match s.kind {
-                    StrokeKind::Dashed { dash, gap } => (false, Some((dash, gap))),
+                    StrokeKind::Dashed(p) => (p.round, Some(p)),
                     StrokeKind::Solid => (line, None),
                     StrokeKind::Taper { .. } | StrokeKind::Flow { .. } if !line => (false, None),
                     _ => return None,
@@ -867,6 +874,11 @@ impl Plain {
             _ => None,
         }
     }
+}
+
+/// True if a piece of `stroke::dash` is a dot.
+pub(crate) fn is_dot(piece: &[Point]) -> bool {
+    piece.len() == 2 && piece[0].distance(piece[1]) <= 1.5 * stroke::DOT
 }
 
 /// Draws a plain paint. `rings` gives the rings of each feature for a fill,
@@ -894,20 +906,30 @@ pub(crate) fn draw_plain<'a>(
             round,
             dash,
         } => {
-            let path = match dash {
-                Some((dash, gap)) => {
-                    let parts: Vec<_> = lines.flat_map(|l| stroke::dash(l, dash, gap)).collect();
-                    polylines_path(&parts, false)
+            let mut push = |path: BezPath, round: bool| {
+                if !path.elements().is_empty() {
+                    list.push(Item::Stroke {
+                        path,
+                        color,
+                        width,
+                        round,
+                    });
                 }
-                None => polylines_path(lines.flatten(), false),
             };
-            if !path.elements().is_empty() {
-                list.push(Item::Stroke {
-                    path,
-                    color,
-                    width,
-                    round,
-                });
+            let Some(p) = dash else {
+                push(polylines_path(lines.flatten(), false), round);
+                return;
+            };
+            // The features share one pattern, so an edge of two features draws one time.
+            let all: Vec<Vec<Point>> = lines.flatten().cloned().collect();
+            let parts = stroke::dash(&stroke::join_shared(&all), &p.cut(width));
+            if !round && p.has_dots() {
+                // A dot is round with either end.
+                let (dots, dashes): (Vec<_>, Vec<_>) = parts.into_iter().partition(|d| is_dot(d));
+                push(polylines_path(&dashes, false), false);
+                push(polylines_path(&dots, false), true);
+            } else {
+                push(polylines_path(&parts, false), round);
             }
         }
     }

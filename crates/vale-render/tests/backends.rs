@@ -157,6 +157,32 @@ fn round_stroke() {
 }
 
 #[test]
+fn a_stroke_has_flat_or_round_ends() {
+    for round in [false, true] {
+        let mut list = DisplayList::new(100.0, 50.0);
+        page_fill(&mut list, WHITE);
+        let mut p = BezPath::new();
+        p.move_to((20.0, 25.0));
+        p.line_to((80.0, 25.0));
+        list.push(Item::Stroke {
+            path: p,
+            color: BLUE,
+            width: 10.0,
+            round,
+        });
+        let pm = render_pixmap(&list, 1.0).unwrap();
+        assert_eq!(px(&pm, 50, 25), [0, 0, 255, 255]);
+        // A round cap reaches half the width past the end.
+        let past = px(&pm, 83, 25);
+        if round {
+            assert_eq!(past, [0, 0, 255, 255]);
+        } else {
+            assert_eq!(past, [255, 255, 255, 255]);
+        }
+    }
+}
+
+#[test]
 fn glyph_run_draws_dark_pixels() {
     let (run, bounds) = tokyo();
     assert!(!glyph_run_outline(&run).elements().is_empty());
