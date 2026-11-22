@@ -122,8 +122,9 @@ const HEADING: f32 = 40.0;
 const CARD_WIDTH: f32 = 300.0;
 /// The space between the card of the selected band and the panel.
 const GAP: f32 = 14.0;
-/// The size of the point of the card of the selected band.
-const POINT: f32 = 10.0;
+/// The least space between the place that the card of the selected band
+/// grows from and a corner of the card.
+const ORIGIN_INSET: f32 = 20.0;
 /// The space around the contents of the card of the selected band.
 const CARD_PAD: f32 = 12.0;
 
@@ -943,8 +944,8 @@ pub fn note(ui: &mut egui::Ui, text: &str) {
 
 /// The card of the selected band: its color, and the value and the line of
 /// its lower edge, with the button that removes that stop. The lowest band
-/// has only its color. The card is at the left of the panel and points at
-/// the row of the band. Above a sheet, the card is above the list. A touch
+/// has only its color. The card is at the left of the panel, next to the
+/// row of the band. Above a sheet, the card is above the list. A touch
 /// outside the card, the histogram, and the list closes the card. The card
 /// hides during a drag on the value of a stop.
 pub fn band_card(
@@ -981,7 +982,7 @@ pub fn band_card(
     let guess = PANEL_ROW * rows + 196.0 + 16.0;
     let height = state.pad.style.height.unwrap_or(guess) + 2.0 * CARD_PAD;
 
-    let (rect, point) = place(rects, panel, at, gradient, height);
+    let (rect, origin) = place(rects, panel, at, gradient, height);
     let key = "pad-stop";
     let fits = state
         .pad
@@ -1005,9 +1006,9 @@ pub fn band_card(
     };
     let mut removed = false;
     let radius = theme::CARD_RADIUS.into();
-    // The card grows from the tip of its point.
+    // The card grows from the edge next to its row.
     let order = Order::Foreground;
-    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, origin, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1100,7 +1101,6 @@ pub fn band_card(
             style.height = Some(ui.cursor().top() - start);
         });
     });
-    paint_point(ctx, key, point);
     if removed {
         state.globe.preview.selected = None;
         state.pad.style.side = None;
@@ -1144,11 +1144,11 @@ fn line_controls(ui: &mut egui::Ui, controls: &mut Controls, line: &mut StopLine
     changed
 }
 
-/// The place of a card next to the panel, and the point of the card. The
-/// card is at the left of the panel and points at `at`. Above a sheet, or
-/// with no room at the left, the card is above `avoid`, or below it if no
-/// room is above.
-fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, [Pos2; 3]) {
+/// The place of a card next to the panel, and the place on its edge that
+/// it grows from. The card is at the left of the panel, next to `at`. Above
+/// a sheet, or with no room at the left, the card is above `avoid`, or
+/// below it if no room is above.
+fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rect, Pos2) {
     let screen = rects.screen;
     // On a partially folded device, the card is in the part of its row.
     let part = super::geometry::fold_part(Rect::from_pos(at), rects.fold, screen);
@@ -1165,14 +1165,8 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
     if rects.sheet.is_none() && room >= screen.left() && !crosses(side(height)) {
         let rect = side(height);
         let y =
-            at.y.clamp(rect.top() + 2.0 * POINT, rect.bottom() - 2.0 * POINT);
-        let base = rect.right();
-        let point = [
-            pos2(base, y - POINT),
-            pos2(base + POINT, y),
-            pos2(base, y + POINT),
-        ];
-        return (rect, point);
+            at.y.clamp(rect.top() + ORIGIN_INSET, rect.bottom() - ORIGIN_INSET);
+        return (rect, pos2(rect.right(), y));
     }
     let left = (screen.left() + rects.bands.left + PAD).max(part.left());
     let right = (screen.right() - rects.bands.right - PAD).min(part.right());
@@ -1186,25 +1180,13 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
         .max(0.0);
     let size = vec2(CARD_WIDTH, height);
     let above = avoid.top() - GAP - height;
-    let x_point = at.x.clamp(x + 2.0 * POINT, x + CARD_WIDTH - 2.0 * POINT);
+    let x_origin = at.x.clamp(x + ORIGIN_INSET, x + CARD_WIDTH - ORIGIN_INSET);
     if up {
         let rect = Rect::from_min_size(pos2(x, above), size);
-        let base = rect.bottom();
-        let point = [
-            pos2(x_point - POINT, base),
-            pos2(x_point, base + POINT),
-            pos2(x_point + POINT, base),
-        ];
-        (rect, point)
+        (rect, pos2(x_origin, rect.bottom()))
     } else {
         let rect = Rect::from_min_size(pos2(x, avoid.bottom() + GAP), size);
-        let base = rect.top();
-        let point = [
-            pos2(x_point + POINT, base),
-            pos2(x_point, base - POINT),
-            pos2(x_point - POINT, base),
-        ];
-        (rect, point)
+        (rect, pos2(x_origin, rect.top()))
     }
 }
 
@@ -1219,18 +1201,8 @@ fn pressed_outside(ctx: &egui::Context, rect: Rect, keep: Rect) -> bool {
     pressed.is_some_and(|pos| !rect.contains(pos) && !keep.contains(pos))
 }
 
-/// Paints the point of a card on the layer of the card.
-fn paint_point(ctx: &egui::Context, key: &str, point: [Pos2; 3]) {
-    ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new(key)))
-        .add(egui::Shape::convex_polygon(
-            point.to_vec(),
-            widgets::point_fill(ctx),
-            egui::Stroke::NONE,
-        ));
-}
-
-/// The card that asks before the reset of the color stops. It points at
-/// the reset row. A touch outside the card and the row closes it.
+/// The card that asks before the reset of the color stops, next to the
+/// reset row. A touch outside the card and the row closes it.
 pub fn reset_card(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -1256,7 +1228,7 @@ pub fn reset_card(
     let text = ctx.fonts_mut(|f| f.layout(RESET_TEXT.to_owned(), font, theme::MUTE, wrap));
     let size = text.size().y + 12.0 + PANEL_ROW + 2.0 * CARD_PAD;
     let at = pos2(row.left() + 40.0, row.center().y);
-    let (rect, point) = place(rects, panel, at, row, size);
+    let (rect, origin) = place(rects, panel, at, row, size);
     if pressed_outside(ctx, rect, row) {
         state.pad.style.reset = None;
         return;
@@ -1266,9 +1238,9 @@ pub fn reset_card(
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-reset-stops";
     let backdrop = state.globe.backdrop();
-    // The card grows from the tip of its point.
+    // The card grows from the edge next to its row.
     let order = Order::Foreground;
-    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, origin, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1279,7 +1251,6 @@ pub fn reset_card(
         ui.add_space(12.0);
         reset = widgets::button_row_in(ui, controls, RESET, true, theme::WARN).clicked();
     });
-    paint_point(ctx, key, point);
     if !reset {
         return;
     }
@@ -1402,7 +1373,7 @@ pub fn ramp_card(
     let rows = 1 + usize::from(other.is_some()) + usize::from(count.is_some());
     let size = text.size().y + 12.0 + choice + rows as f32 * PANEL_ROW + 2.0 * CARD_PAD;
     let at = pos2(row.left() + 40.0, row.center().y);
-    let (rect, point) = place(rects, panel, at, row, size);
+    let (rect, origin) = place(rects, panel, at, row, size);
     let on_keypad = ctx
         .input(|i| i.pointer.interact_pos())
         .and_then(|pos| ctx.layer_id_at(pos))
@@ -1420,9 +1391,9 @@ pub fn ramp_card(
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     let backdrop = state.globe.backdrop();
-    // The card grows from the tip of its point.
+    // The card grows from the edge next to its row.
     let order = Order::Foreground;
-    widgets::card_from(ctx, backdrop, key, rect, order, radius, point[1], |ui| {
+    widgets::card_from(ctx, backdrop, key, rect, order, radius, origin, |ui| {
         let inner = rect.shrink(CARD_PAD);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1471,7 +1442,6 @@ pub fn ramp_card(
             chosen = Some(choice);
         }
     });
-    paint_point(ctx, key, point);
     if new_part.is_some() {
         state.pad.style.ramp_part = new_part;
     }

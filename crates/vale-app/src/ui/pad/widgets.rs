@@ -2190,14 +2190,6 @@ pub fn paint_lifted(painter: &egui::Painter, rect: Rect, radius: impl Into<Corne
     );
 }
 
-/// The fill of a shape that joins a card, such as the point of a card.
-pub fn point_fill(ctx: &egui::Context) -> Color32 {
-    match is_glass(ctx) {
-        true => theme::glass_tone(),
-        false => theme::card(),
-    }
-}
-
 /// The texture format of the glass, as `set_backdrop` keeps it.
 pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
     ctx.data(|data| data.get_temp(backdrop_id())).flatten()
