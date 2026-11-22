@@ -21,6 +21,9 @@ const FRAME_SAMPLES: f64 = 1024.0;
 /// The steps of a bisection at the end of a run.
 const BISECT: usize = 30;
 
+/// The outline of an extent, as open runs of points on the sphere.
+pub type Outline = Arc<Vec<Vec<V3>>>;
+
 /// One frame of a map: its view and its rings, in page millimeters.
 struct Place {
     view: ViewTransform,
@@ -323,7 +326,7 @@ pub struct GpuExtent {
 #[derive(Default)]
 pub struct ExtentCache {
     /// The map, the frame data of the outline, and the outline.
-    outline: Option<(MapId, Vec<[f32; 4]>, Arc<Vec<Vec<V3>>>)>,
+    outline: Option<(MapId, Vec<[f32; 4]>, Outline)>,
     table: Option<Arc<Table>>,
     pending: Option<(ProjectionSpec, mpsc::Receiver<Option<Table>>)>,
 }
@@ -338,7 +341,7 @@ impl ExtentCache {
         map: MapId,
         projection: &Projection,
         wait: bool,
-    ) -> (Arc<Vec<Vec<V3>>>, Option<GpuExtent>) {
+    ) -> (Outline, Option<GpuExtent>) {
         let frames = Frames::new(project, map, projection);
         let data = frames.gpu_data();
         let outline = match &self.outline {

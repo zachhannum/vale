@@ -57,6 +57,7 @@ pub mod frame_tiles;
 pub mod globe;
 pub mod gradient;
 pub mod inspector;
+pub mod map_on_globe;
 pub mod map_texture;
 pub mod new_feature;
 pub mod number;
@@ -656,6 +657,8 @@ pub struct AppState {
     /// The map that the globe shows, or `None` for the checked collections
     /// of the globe.
     pub globe_map: Option<MapId>,
+    /// The extent of `globe_map`.
+    pub extent: crate::extent::ExtentCache,
     /// The text of the last import of an image layer, and its layer.
     /// `None` for the layer: the import failed. A GeoJSON import that
     /// fails also puts its text here.
@@ -874,6 +877,7 @@ impl AppState {
             import_collection: None,
             image_collection: None,
             globe_map: None,
+            extent: Default::default(),
             image_note: None,
             toolbox_note: None,
             orient: orient::OrientInputs::default(),
