@@ -219,7 +219,7 @@ fn places_row(
         pos2(row.right() - 124.0, row.center().y - 18.0),
         vec2(124.0, 36.0),
     );
-    painter.rect_filled(track, theme::capsule(track), Color32::from_black_alpha(77));
+    painter.rect_filled(track, theme::capsule(track), theme::track());
     let value = places.map_or("–".to_owned(), |p| p.to_string());
     painter.text(
         track.center(),

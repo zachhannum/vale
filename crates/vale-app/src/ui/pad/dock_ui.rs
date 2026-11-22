@@ -720,7 +720,9 @@ fn paint_drop(
         None => {}
     }
     let ghost = Rect::from_min_size(pos - vec2(40.0, ROW / 2.0), vec2(220.0, ROW));
-    painter.rect_filled(ghost, theme::CARD_RADIUS, theme::card().gamma_multiply(0.9));
+    let identity = egui::emath::TSTransform::IDENTITY;
+    let radius = theme::capsule(ghost);
+    widgets::paint_card(&painter, Order::Foreground, ghost, radius, identity);
     let icon_rect = Rect::from_center_size(
         pos2(ghost.left() + BODY_PAD + ICON / 2.0, ghost.center().y),
         vec2(ICON, ICON),
@@ -830,8 +832,9 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
                         pos2(rect.left() - 8.0 - size.x, rect.center().y - size.y / 2.0),
                         size,
                     );
-                    let fill = theme::card().to_opaque();
-                    painter.rect_filled(label, theme::capsule(label), fill);
+                    let identity = egui::emath::TSTransform::IDENTITY;
+                    let radius = theme::capsule(label);
+                    widgets::paint_card(&painter, Order::Foreground, label, radius, identity);
                     painter.galley(label.center() - galley.size() / 2.0, galley, theme::TEXT);
                 }
                 ctx.request_repaint();

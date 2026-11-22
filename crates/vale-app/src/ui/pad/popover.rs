@@ -1,7 +1,7 @@
-//! A popover: a card under a control, with an arrow that points at the
-//! control. A press outside the popover and its control closes it.
+//! A popover: a card under a control, which grows out of the control. A
+//! press outside the popover and its control closes it.
 
-use eframe::egui::{self, Color32, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
+use eframe::egui::{self, Color32, Pos2, Rect, Sense, Stroke, pos2, vec2};
 
 use super::geometry::{self, Bands};
 use super::{theme, widgets};
@@ -9,16 +9,15 @@ use crate::ui::token_field;
 
 /// The fill of a popover.
 pub const FILL: Color32 = Color32::from_rgb(31, 34, 38);
-/// The size of the arrow, from the card to its tip.
-const ARROW: f32 = 9.0;
-/// The least space between the point of the arrow and a side of the card,
-/// so that the arrow stays clear of the round corners.
-const ARROW_EDGE: f32 = theme::CARD_RADIUS + ARROW;
+/// The space between the popover and its control.
+const GAP: f32 = 9.0;
+/// The least space between the place that the card grows from and a side
+/// of the card.
+const ORIGIN_EDGE: f32 = theme::CARD_RADIUS + GAP;
 /// The space between the popover and the edge of the screen.
 const MARGIN: f32 = 8.0;
-/// The distance from the left of the card to the arrow, as the arrow
-/// points at the middle of the control.
-const ARROW_LEFT: f32 = 52.0;
+/// The distance from the left of the card to the middle of the control.
+const CONTROL_LEFT: f32 = 52.0;
 
 /// What a popover did in one frame.
 pub struct Shown {
@@ -74,18 +73,18 @@ pub fn place(
     (top, bottom): (f32, f32),
 ) -> (Rect, bool) {
     let (top, bottom) = (top + MARGIN, (bottom - MARGIN).max(top + MARGIN));
-    let room_below = bottom - (anchor.bottom() + ARROW);
-    let room_above = anchor.top() - ARROW - top;
+    let room_below = bottom - (anchor.bottom() + GAP);
+    let room_above = anchor.top() - GAP - top;
     let below = room_below >= size.y || (room_above < size.y && room_below >= room_above);
     let height = size.y.min(bottom - top);
-    let x = (anchor.center().x - ARROW_LEFT).clamp(
+    let x = (anchor.center().x - CONTROL_LEFT).clamp(
         screen.left() + MARGIN,
         (screen.right() - MARGIN - size.x).max(screen.left()),
     );
     let y = if below {
-        anchor.bottom() + ARROW
+        anchor.bottom() + GAP
     } else {
-        anchor.top() - ARROW - height
+        anchor.top() - GAP - height
     };
     // A popover that does not fit covers its control, and not the floor.
     let y = y.min(bottom - height).max(top);
@@ -120,12 +119,12 @@ pub fn show(
     let pass = ctx.cumulative_pass_nr();
     ctx.data_mut(|d| d.insert_temp(rect_id(), (pass, rect)));
 
-    // The card grows from the tip of its arrow.
+    // The card grows from the edge next to its control.
     let tip = pos2(
         anchor
             .center()
             .x
-            .clamp(rect.left() + ARROW_EDGE, rect.right() - ARROW_EDGE),
+            .clamp(rect.left() + ORIGIN_EDGE, rect.right() - ORIGIN_EDGE),
         if below { rect.top() } else { rect.bottom() },
     );
     let grow = widgets::grow(ctx, egui::LayerId::new(egui::Order::Tooltip, id), tip);
@@ -140,28 +139,8 @@ pub fn show(
             let radius = theme::CARD_RADIUS.min(theme::capsule(card));
             ui.multiply_opacity(grow.opacity);
             let painter = ui.painter();
-            painter.add(theme::shadow().as_shape(card, radius));
-            painter.rect_filled(card, radius, FILL);
-            let tip_x = anchor
-                .center()
-                .x
-                .clamp(card.left() + ARROW_EDGE, card.right() - ARROW_EDGE);
-            let arrow = if below {
-                let base = card.top() + 1.0;
-                [
-                    pos2(tip_x - ARROW, base),
-                    pos2(tip_x, base - ARROW),
-                    pos2(tip_x + ARROW, base),
-                ]
-            } else {
-                let base = card.bottom() - 1.0;
-                [
-                    pos2(tip_x - ARROW, base),
-                    pos2(tip_x + ARROW, base),
-                    pos2(tip_x, base + ARROW),
-                ]
-            };
-            painter.add(Shape::convex_polygon(arrow.to_vec(), FILL, Stroke::NONE));
+            let order = egui::Order::Tooltip;
+            widgets::paint_card(painter, order, card, radius, grow.transform);
             let layout = egui::Layout::top_down(egui::Align::Min);
             let rows = card.shrink2(vec2(PAD, 0.0));
             let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rows).layout(layout));

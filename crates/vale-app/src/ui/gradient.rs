@@ -406,8 +406,8 @@ fn value_bubble(ui: &egui::Ui, id: egui::Id, at: Pos2, align: Align2, text: &str
     let rect = align.anchor_size(at, size);
     let left = rect.left().clamp(screen.left(), screen.right() - size.x);
     let rect = Rect::from_min_size(pos2(left, rect.top()), size);
-    painter.add(theme::shadow().as_shape(rect, theme::capsule(rect)));
-    painter.rect_filled(rect, theme::capsule(rect), theme::card().to_opaque());
+    let identity = egui::emath::TSTransform::IDENTITY;
+    widgets::paint_card(&painter, layer.order, rect, theme::capsule(rect), identity);
     painter.galley(rect.center() - galley.size() / 2.0, galley, theme::TEXT);
 }
 

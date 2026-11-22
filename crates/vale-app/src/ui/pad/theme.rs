@@ -55,8 +55,7 @@ pub fn card() -> Color32 {
     Color32::from_rgba_unmultiplied(26, 29, 33, 228)
 }
 
-/// A color near the look of a glass card, for a shape that joins a card,
-/// such as the point of a card.
+/// A color near the look of a glass card.
 pub fn glass_tone() -> Color32 {
     Color32::from_rgba_unmultiplied(58, 60, 64, 236)
 }

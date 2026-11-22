@@ -305,19 +305,17 @@ pub fn tooltip(
             .max(screen.left());
         Rect::from_min_size(pos2(left, y), size)
     };
-    // `above`: the point is at the bottom of the tooltip. `below`: it is at
-    // the top.
-    let (rect, point) = match tip.place {
-        Place::Strip if rects.row => (centered(rects.tools.top() - TIP_GAP - size.y), Side::Down),
+    let rect = match tip.place {
+        Place::Strip if rects.row => centered(rects.tools.top() - TIP_GAP - size.y),
         Place::Strip => {
             let min = pos2(
                 rects.tools.right() + TIP_GAP,
                 tip.cell.center().y - size.y / 2.0,
             );
-            (Rect::from_min_size(min, size), Side::Left)
+            Rect::from_min_size(min, size)
         }
-        Place::Above => (centered(tip.cell.top() - TIP_GAP - size.y), Side::Down),
-        Place::Below => (centered(tip.cell.bottom() + TIP_GAP), Side::Up),
+        Place::Above => centered(tip.cell.top() - TIP_GAP - size.y),
+        Place::Below => centered(tip.cell.bottom() + TIP_GAP),
     };
     let rect = geometry::off_fold(rect, tip.cell, rects.fold, rects.screen);
     flyouts.tip_rect = Some(rect);
@@ -331,37 +329,6 @@ pub fn tooltip(
         radius,
         |ui| {
             let painter = ui.painter();
-            // A small point toward the cell.
-            let x = tip
-                .cell
-                .center()
-                .x
-                .clamp(rect.left() + 12.0, rect.right() - 12.0);
-            let point = match point {
-                Side::Down => vec![
-                    pos2(x - 6.0, rect.bottom()),
-                    pos2(x + 6.0, rect.bottom()),
-                    pos2(x, rect.bottom() + 6.0),
-                ],
-                Side::Up => vec![
-                    pos2(x + 6.0, rect.top()),
-                    pos2(x - 6.0, rect.top()),
-                    pos2(x, rect.top() - 6.0),
-                ],
-                Side::Left => {
-                    let y = rect.center().y;
-                    vec![
-                        pos2(rect.left(), y - 6.0),
-                        pos2(rect.left(), y + 6.0),
-                        pos2(rect.left() - 6.0, y),
-                    ]
-                }
-            };
-            let fill = match backdrop {
-                Some(_) => theme::glass_tone(),
-                None => theme::card(),
-            };
-            painter.add(egui::Shape::convex_polygon(point, fill, egui::Stroke::NONE));
             let at = pos2(rect.left() + 14.0, rect.center().y);
             painter.text(
                 at,
@@ -382,14 +349,6 @@ pub fn tooltip(
             }
         },
     );
-}
-
-/// The side of a tooltip with its point.
-#[derive(Clone, Copy)]
-enum Side {
-    Down,
-    Up,
-    Left,
 }
 
 /// The mark in the corner of a cell with a flyout. On glass cards, the

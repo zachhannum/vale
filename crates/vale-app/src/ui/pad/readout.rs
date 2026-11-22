@@ -35,7 +35,6 @@ pub const SAVE_FAILED: &str = "Could not save. Changes are kept and saved again.
 /// The side of the warning sign of the banner.
 const WARNING: f32 = 14.0;
 /// The fill of the banner of a save that failed, and its warning sign.
-const BANNER: Color32 = Color32::from_rgb(70, 30, 30);
 const ALERT: Color32 = Color32::from_rgb(238, 116, 100);
 
 /// True if the place shows above the readout. It shows while a touch is
@@ -499,8 +498,8 @@ pub(super) fn banner(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
         .fade_in(false)
         .show(ctx, |ui| {
             let painter = ui.painter();
-            painter.add(theme::shadow().as_shape(rect, radius));
-            painter.rect_filled(rect, radius, BANNER);
+            let identity = egui::emath::TSTransform::IDENTITY;
+            widgets::paint_card(painter, Order::Foreground, rect, radius, identity);
             let y = rect.center().y;
             let sign = Rect::from_center_size(
                 pos2(rect.left() + side + WARNING / 2.0, y),
