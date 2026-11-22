@@ -536,13 +536,8 @@ fn card(
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let closed = collapsed || shown < 0.5;
     let head = Rect::from_min_size(rect.min, vec2(rect.width(), PANEL_ROW));
-    match view {
-        View::Globe => header(ui, state, controls, id, head, &name, collapsed),
-        View::Map(map) => {
-            let removable = stack.len() > 1;
-            map_header(ui, state, controls, (map, id), head, &name, removable);
-        }
-    }
+    let removable = view == View::Globe || stack.len() > 1;
+    header(ui, state, controls, view, (id, removable), head, &name);
     if closed {
         return None;
     }
@@ -576,72 +571,22 @@ fn card(
     }
 }
 
-/// The header row of a card: the chevron and the name. A tap on the row
-/// collapses the card or opens it, and a hold of the row lifts the card.
+/// The name of the chevron of a header row in [`list::Trail::Control`].
+const CHEVRON: &str = "chevron";
+
+/// The header row of a collection: the chevron and the name. A tap on the
+/// row or the chevron collapses the collection or opens it, and a hold
+/// lifts it. A swipe to the left shows Remove, which takes the collection
+/// out of the view: off the globe, or out of the map. The last collection
+/// of a map has no Remove.
 fn header(
     ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
-    id: CollectionId,
+    view: View,
+    (id, removable): (CollectionId, bool),
     head: Rect,
     name: &str,
-    collapsed: bool,
-) {
-    let chevron = Rect::from_center_size(chevron_center(head), vec2(TOUCH, TOUCH));
-    let icon = if collapsed { Icon::Open } else { Icon::Down };
-    let chevron_text = chevron_name(name, collapsed);
-    let tap = widgets::icon_button_at(ui, controls, chevron, &chevron_text, icon, false, true);
-    // The rest of the row, at the right of the chevron.
-    let rest = Rect::from_min_max(
-        pos2(chevron.right(), chevron.top()),
-        pos2(head.right() - 4.0, chevron.bottom()),
-    );
-    let row = widgets::hit(
-        ui,
-        controls,
-        rest,
-        &header_name(name),
-        Sense::click(),
-        true,
-        None,
-    );
-    paint_name(ui.painter(), head, name, theme::heading(ui.ctx()));
-    if tap.clicked() || row.clicked() {
-        state.set_collapsed(id, !collapsed);
-    }
-    if state.pad.cards.lifted() {
-        return;
-    }
-    if held(ui, &row) {
-        ui.ctx().set_dragged_id(row.id);
-        let origin = ui
-            .input(|i| i.pointer.interact_pos())
-            .unwrap_or(head.center());
-        let grab = origin.y - head.top();
-        state.pad.cards.lift = Some(CardLift {
-            id,
-            grab,
-            origin,
-            moved: false,
-            offset: None,
-        });
-        state.pad.cards.shut();
-        ui.ctx().request_repaint();
-    }
-}
-
-/// The header row of a collection of a map: the chevron and the name. A
-/// tap collapses the collection or opens it, a hold lifts it, and a swipe
-/// to the left shows Remove, which takes the collection out of the map.
-/// The last collection of a map has no Remove.
-fn map_header(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    controls: &mut Controls,
-    (map, id): (MapId, CollectionId),
-    head: Rect,
-    name: &str,
-    removable: bool,
 ) {
     let collapsed = state.doc.project.is_collapsed(id);
     let mut child = ui.new_child(
@@ -653,6 +598,7 @@ fn map_header(
         label: header_name(name),
         actions: if removable { &[list::REMOVE] } else { &[] },
         select: false,
+        leading: TOUCH,
         ..list::Row::new(id, name.to_owned())
     }];
     let spec = list::Spec {
@@ -661,22 +607,42 @@ fn map_header(
         ..list::Spec::default()
     };
     let font = theme::heading(ui.ctx());
-    let list = state.atlas.map_cards.heads.entry(id).or_default();
-    let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, _| {
-        let row = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
-        let chevron = Rect::from_center_size(chevron_center(row), vec2(18.0, 18.0));
-        let icon = if collapsed { Icon::Open } else { Icon::Down };
-        icons::paint(&cell.painter, chevron, icon, 18.0, theme::MUTE);
-        paint_name(&cell.painter, row, name, font.clone());
-        None
-    });
+    let chevron_text = chevron_name(name, collapsed);
+    let lifted = cards_of(state, view).lifted();
+    let list = cards_of(state, view).heads.entry(id).or_default();
+    let events = list::show(
+        &mut child,
+        controls,
+        list,
+        spec,
+        &rows,
+        |ui, controls, cell, _| {
+            let row = cell.rect.translate(vec2(cell.shift.max(0.0), 0.0));
+            let chevron = Rect::from_center_size(chevron_center(row), vec2(TOUCH, TOUCH));
+            let icon = if collapsed { Icon::Open } else { Icon::Down };
+            paint_name(&cell.painter, row, name, font.clone());
+            let tap = widgets::icon_button_at(
+                ui,
+                controls,
+                chevron,
+                &chevron_text,
+                icon,
+                false,
+                cell.live,
+            );
+            tap.clicked().then_some(list::Trail::Control(CHEVRON))
+        },
+    );
     for event in events {
         match event {
-            list::Event::Tap(_) => state.set_collapsed(id, !collapsed),
-            list::Event::Lift(_) => {
+            list::Event::Tap(_) | list::Event::Control(_, CHEVRON) => {
+                state.set_collapsed(id, !collapsed);
+            }
+            list::Event::Lift(_) if !lifted => {
                 let origin = (ui.input(|i| i.pointer.interact_pos())).unwrap_or(head.center());
-                let cards = &mut state.atlas.map_cards;
+                let cards = cards_of(state, view);
                 cards.heads.remove(&id);
+                cards.shut();
                 cards.lift = Some(CardLift {
                     id,
                     grab: origin.y - head.top(),
@@ -687,7 +653,10 @@ fn map_header(
                 ui.ctx().request_repaint();
             }
             list::Event::Action(_, list::REMOVE) => {
-                state.remove_map_collection(map, id);
+                match view {
+                    View::Globe => state.check_collection(id, false),
+                    View::Map(map) => state.remove_map_collection(map, id),
+                };
             }
             _ => {}
         }
@@ -801,27 +770,6 @@ fn paint_name(painter: &egui::Painter, head: Rect, name: &str, font: egui::FontI
             font,
             theme::TEXT,
         );
-}
-
-/// True when a press on `row` became a hold of `HOLD_TIME` in place.
-fn held(ui: &egui::Ui, row: &egui::Response) -> bool {
-    if !row.is_pointer_button_down_on() || row.dragged() {
-        return false;
-    }
-    let press = ui.input(|i| {
-        let (start, origin) = (i.pointer.press_start_time()?, i.pointer.press_origin()?);
-        let pos = i.pointer.interact_pos()?;
-        Some((i.time - start, origin.distance(pos)))
-    });
-    match press {
-        Some((time, moved)) if moved <= list::HOLD_SLOP && time >= list::HOLD_TIME => true,
-        Some((time, moved)) if moved <= list::HOLD_SLOP => {
-            let wait = std::time::Duration::from_secs_f64(list::HOLD_TIME - time);
-            ui.ctx().request_repaint_after(wait);
-            false
-        }
-        _ => false,
-    }
 }
 
 /// The rows of the layers of an open card, from the top. A row that a

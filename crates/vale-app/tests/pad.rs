@@ -21420,3 +21420,25 @@ fn the_collection_row_and_its_picker_have_touch_size_controls() {
         check_controls(&h, &format!("{what} with the picker of the raster form"));
     }
 }
+
+#[test]
+fn a_swipe_on_a_header_row_takes_the_collection_off_the_globe_in_one_step() {
+    use vale_app::ui::pad::collection::header_name;
+    use vale_app::ui::pad::list::REMOVE;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    three_cards(&mut h);
+    step_and_save(&mut h, false);
+    let stack = |h: &Pad| h.state().doc.project.globe_collections().to_vec();
+    let ids = ["World", "Travel", "Water"].map(|n| collection_id(&h, n));
+    assert_eq!(stack(&h), ids);
+    swipe_row(&mut h, &header_name("Travel"));
+    h.run_steps(5);
+    tap(&mut h, &format!("{REMOVE} Travel"));
+    assert_eq!(stack(&h), [ids[0], ids[2]]);
+    assert!(h.state().doc.project.collection(ids[1]).is_some());
+    step_and_save(&mut h, false);
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(stack(&h), ids);
+}

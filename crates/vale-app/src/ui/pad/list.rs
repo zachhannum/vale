@@ -176,6 +176,9 @@ pub struct Row<K> {
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
+    /// The width at the left of the row that a control of the caller
+    /// takes, such as a chevron.
+    pub leading: f32,
     /// The rows of a list with [`Spec::reorder`] all have one height.
     pub height: f32,
 }
@@ -196,6 +199,7 @@ impl<K> Row<K> {
             lift: true,
             enabled: true,
             trailing: 0.0,
+            leading: 0.0,
             height: PANEL_ROW,
         }
     }
@@ -881,7 +885,8 @@ fn paint_row<K>(
     let right = body_right
         .min(edge + shift.min(0.0))
         .max(rect.left() + TOUCH);
-    let body_rect = Rect::from_min_max(rect.min, pos2(right, rect.bottom()));
+    let left = (rect.left() + row.leading).min(right - TOUCH);
+    let body_rect = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
     let body = widgets::hit(
         ui,
         controls,
