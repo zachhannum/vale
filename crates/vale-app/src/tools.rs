@@ -375,6 +375,7 @@ impl Tools {
         lines.push(format!("terrain_fit {}", line.fit));
         lines.push(format!("terrain {}", line.terrain));
         lines.push(format!("reshape {}", line.reshape));
+        lines.push(format!("reshape_shared {}", line.reshape_shared));
         lines.push(format!("polygon_mode {}", mode_name(polygon_mode)));
         lines.push(format!("polygon_brush_size {}", line.brush_size));
         lines.push(format!("snap {}", snap.on));
@@ -476,6 +477,9 @@ impl Tools {
         }
         if let Some(v) = boolean("reshape") {
             line.reshape = v;
+        }
+        if let Some(v) = boolean("reshape_shared") {
+            line.reshape_shared = v;
         }
         let polygon_mode =
             value("polygon_mode").and_then(|name| POLYGON_MODES.iter().find(|(_, n)| *n == name));
@@ -753,6 +757,8 @@ mod tests {
         globe.line.smoothing = 0.6;
         globe.line.polygon_mode = PolygonMode::New;
         globe.line.brush_size = 24.0;
+        assert!(globe.line.reshape_shared);
+        globe.line.reshape_shared = false;
         let mut snap = SnapSettings {
             distance: 20.0,
             ..SnapSettings::default()
@@ -790,6 +796,7 @@ mod tests {
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);
+        assert!(!next.line.reshape_shared);
         assert!(next.tools.focus_new);
         assert_eq!(next.tools.finger_paints, Some(false));
 

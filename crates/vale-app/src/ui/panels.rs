@@ -102,6 +102,9 @@ pub const SMOOTHING: &str = "Smoothing";
 pub const TERRAIN_FIT: &str = "Terrain fit";
 /// The switch that makes a stroke from an outline reshape the feature.
 pub const RESHAPE: &str = "Reshape";
+/// The check box that makes a reshape of a polygon also reshape the
+/// polygons that share its border.
+pub const SHARED_BORDERS: &str = "Shared borders";
 /// The slider of the balance between the sketch and the terrain.
 pub const BALANCE: &str = "Balance";
 /// The check box that turns all snapping on and off.
@@ -226,6 +229,12 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                     if globe.drawing() {
                         let new = !globe.filling() || globe.line.polygon_mode == PolygonMode::New;
                         ui.add_enabled(new, egui::Checkbox::new(&mut globe.line.reshape, RESHAPE));
+                        if globe.filling() {
+                            let line = &mut globe.line;
+                            let shared =
+                                egui::Checkbox::new(&mut line.reshape_shared, SHARED_BORDERS);
+                            ui.add_enabled(new && line.reshape, shared);
+                        }
                     }
                     if globe.lining() {
                         let terrain = globe.fit_layer.is_some();
