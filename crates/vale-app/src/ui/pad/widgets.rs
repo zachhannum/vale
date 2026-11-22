@@ -647,7 +647,7 @@ pub fn small_segments_named(
     active: usize,
 ) -> Option<usize> {
     let painter = ui.painter();
-    painter.rect_filled(rect, theme::capsule(rect), Color32::from_black_alpha(77));
+    painter.rect_filled(rect, theme::capsule(rect), theme::track());
     let inner = rect.shrink(SMALL_TRACK_PAD);
     let total: f32 = labels
         .iter()
@@ -2174,6 +2174,20 @@ pub fn paint_card(
         painter.add(callback);
     }
     painter.rect_filled(rect, radius, card_fill(backdrop.is_some()));
+}
+
+/// Paints a lifted row at `rect` as a glass card on the layer of
+/// `painter`. It hides the rows below it.
+pub fn paint_lifted(painter: &egui::Painter, rect: Rect, radius: impl Into<CornerRadius>) {
+    let layer = painter.layer_id();
+    let transform = painter.ctx().layer_transform_to_global(layer);
+    paint_card(
+        painter,
+        layer.order,
+        rect,
+        radius,
+        transform.unwrap_or_default(),
+    );
 }
 
 /// The fill of a shape that joins a card, such as the point of a card.

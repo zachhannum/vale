@@ -3805,6 +3805,30 @@ fn a_form_and_the_banner_show_the_canvas_through_their_glass() {
     assert!(difference(&row, &card_row(&form_plain, form)) > width * 2);
 }
 
+/// The count of the paint callbacks in the last frame. Each glass card has
+/// two: its marker and its glass.
+fn glass_shapes(h: &Pad) -> usize {
+    let shapes = &h.output().shapes;
+    let callback = |s: &&egui::epaint::ClippedShape| matches!(s.shape, egui::Shape::Callback(_));
+    shapes.iter().filter(callback).count()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_lifted_row_is_glass() {
+    let _gpu = one_gpu_test();
+    let mut h = glass_pad(|_| u16::MAX);
+    h.run_steps(30);
+    let still = glass_shapes(&h);
+    let at = hold(&mut h, "Layer Land");
+    assert!(layer_list(&h).lift.is_some());
+    h.step();
+    // The lifted row adds a marker and its glass.
+    assert_eq!(glass_shapes(&h), still + 2);
+    touch(&mut h, egui::TouchPhase::End, at, None);
+    h.run_steps(3);
+}
+
 /// The red values of the bottom row of each card, over a canvas of
 /// `level`. `glass`: the cards are glass, else they have a plain fill.
 fn glass_rows(glass: bool, level: impl Fn(f64) -> u16) -> (Pad, Vec<Vec<i32>>) {

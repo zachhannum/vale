@@ -470,7 +470,7 @@ fn paint_still<K: Copy + PartialEq>(
     if !spec.plain {
         let corners = shape.corners(false);
         if lifted {
-            painter.rect_filled(highlight, corners, theme::card().to_opaque());
+            widgets::paint_lifted(&painter, highlight, corners);
         }
         paint_back(&painter, highlight, corners, picked, row.on || lifted);
     }

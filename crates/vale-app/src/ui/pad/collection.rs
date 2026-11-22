@@ -470,15 +470,14 @@ fn restack(
         .collect();
     let list = &mut cards_of(state, view).stack;
     let events = list::show(&mut child, controls, list, spec, &rows, |_, _, cell, i| {
-        // A header row at its full height. Only the lifted row has a fill,
+        // A header row at its full height. Only the lifted row has glass,
         // as a lifted layer row does.
         let pill = Rect::from_min_size(
             cell.rect.min - vec2(8.0, 0.0),
             vec2(cell.rect.width() + 16.0, PANEL_ROW),
         );
         if cell.lifted {
-            let fill = theme::card().to_opaque();
-            cell.painter.rect_filled(pill, theme::ROW_RADIUS, fill);
+            widgets::paint_lifted(&cell.painter, pill, theme::ROW_RADIUS);
             cell.painter
                 .rect_filled(pill, theme::ROW_RADIUS, theme::raise());
         }
