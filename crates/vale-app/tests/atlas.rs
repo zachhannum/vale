@@ -262,12 +262,12 @@ fn double_tap(h: &mut Pad, pos: Pos2, input: Input) {
     h.run_steps(3);
 }
 
-/// Pulls an open sheet of the row layout down to its title row, so the
-/// tool strip and the context strip show above it.
-fn lower_sheet(h: &mut Pad) {
+/// Pulls an open sheet of the row layout up to its full height, so more of
+/// its panel shows.
+fn raise_sheet(h: &mut Pad) {
     let rects = h.state().pad.rects.unwrap();
     if rects.row && rects.sheet.is_some() {
-        h.state_mut().pad.sheet_offset = rects.sheet_travel;
+        h.state_mut().pad.sheet_offset = -rects.sheet_rise;
         h.run_steps(2);
     }
 }
@@ -278,12 +278,12 @@ fn open_panel(h: &mut Pad, name: &str) {
     tap(h, name);
 }
 
-/// A tap of a finger on the middle of a control. If an open sheet covers
-/// the control, the sheet goes down to its title row first, as a user
+/// A tap of a finger on the middle of a control. If the control is below
+/// an open sheet, the sheet goes up to its full height first, as a user
 /// pulls it.
 fn tap(h: &mut Pad, name: &str) {
     if control(h, name).is_none() {
-        lower_sheet(h);
+        raise_sheet(h);
     }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     tap_with(h, rect.center(), Input::Finger);
@@ -293,7 +293,7 @@ fn tap(h: &mut Pad, name: &str) {
 /// touch in one frame. A `tap` lasts as long as a long press on a tab.
 fn quick_tap(h: &mut Pad, name: &str) {
     if control(h, name).is_none() {
-        lower_sheet(h);
+        raise_sheet(h);
     }
     let pos = control(h, name)
         .unwrap_or_else(|| panic!("no control `{name}`"))
@@ -308,6 +308,16 @@ fn show_tab(h: &mut Pad, name: &str) {
     use vale_app::ui::pad::panes::FRAME_PANELS;
     let i = FRAME_TABS.iter().position(|t| *t == name);
     let panel = FRAME_PANELS[i.unwrap_or_else(|| panic!("no frame tab `{name}`"))];
+    // The Frame tab of the desktop is the Properties tab of the iPad.
+    let name = if i == Some(0) { PROPERTIES } else { name };
+    // The sheet of a compact screen shows one panel, and its tile opens
+    // another.
+    if h.state().pad.rects.is_some_and(|r| r.row) {
+        if !h.state().pad.dock().shows(panel) {
+            open_panel(h, name);
+        }
+        return;
+    }
     let dock = h.state().pad.dock();
     let tab = dock
         .find(panel)
@@ -320,8 +330,6 @@ fn show_tab(h: &mut Pad, name: &str) {
     if h.state().pad.dock().shows(panel) {
         return;
     }
-    // The Frame tab of the desktop is the Properties tab of the iPad.
-    let name = if i == Some(0) { PROPERTIES } else { name };
     quick_tap(h, &tab_name(name));
 }
 
@@ -1539,7 +1547,6 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
         h.state_mut().atlas.tab = FrameTab::Frame;
         h.run_steps(3);
-        lower_sheet(&mut h);
         assert!(control(&h, DELETE_SELECTION).is_some(), "{size:?}");
         check_controls(&h, "context strip of the frame");
     }
@@ -2021,7 +2028,8 @@ fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
 
 #[test]
 fn each_tab_of_a_frame_takes_a_finger_and_the_open_tab_shows_its_name() {
-    for size in BOARDS {
+    // The sheet of a compact screen has no tabs.
+    for size in BOARDS.into_iter().filter(|(w, _)| *w >= 600.0) {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         let names = [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]];
@@ -9183,8 +9191,7 @@ fn snap_shows_with_no_selection_in_the_frame_and_vertex_tools() {
             tap(&mut h, tool);
             h.state_mut().atlas.selection = AtlasSelection::None;
             h.run_steps(3);
-            // The panes of the frame stay, and a sheet goes down.
-            lower_sheet(&mut h);
+            // The panes of the frame stay, and the strips show below a sheet.
             scroll_column_to(&mut h, SNAP_TO_LAYOUT);
             assert!(control(&h, SNAP_TO_LAYOUT).is_some(), "{what}: {tool}");
             for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
@@ -9308,8 +9315,7 @@ fn the_grid_cell_is_in_the_context_strip_of_the_frame_item_and_vertex_tools() {
             h.run_steps(2);
         }
         add_frame(&mut h);
-        // On a compact screen, the sheet of the frame covers the strips.
-        lower_sheet(&mut h);
+        // On a compact screen, the strips show below the sheet of the frame.
         let tools = [
             AtlasTool::Frame,
             AtlasTool::Vertex,
@@ -12093,8 +12099,8 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     assert!(next.bottom() < tools[0].top());
     check_controls(&h, "iphone");
 
-    // A selected frame shows its Frame panel as a sheet. The tabs of
-    // merged frame panels fit in the sheet.
+    // A selected frame shows its Frame panel as a sheet, above the tools.
+    // The sheet shows one panel, with no tabs.
     add_frame(&mut h);
     assert!(matches!(
         h.state().atlas.selection,
@@ -12102,13 +12108,19 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     ));
     assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Properties));
     merge_frame_tabs(&mut h);
-    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+    let rects = h.state().pad.rects.unwrap();
+    let sheet = rects.sheet.unwrap();
     assert_eq!((sheet.left(), sheet.right()), (0.0, width));
     assert_eq!(h.state().atlas.panel_rect, Some(sheet));
-    for tab in [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]] {
-        let rect = control(&h, &tab_name(tab)).unwrap();
-        assert!(sheet.contains_rect(rect), "{tab}");
-    }
+    assert_eq!(h.state().pad.dock().panes.len(), 1);
+    assert_eq!(h.state().pad.dock().panes[0].tabs.len(), 1);
+    assert!(sheet.bottom() < rects.tools.top());
+    assert!(control(&h, &tab_name(FRAME_TABS[1])).is_none());
+    // A tile opens another panel in place of the panel of the sheet.
+    open_panel(&mut h, FRAME_TABS[2]);
+    let dock = h.state().pad.dock();
+    assert_eq!(dock.panes.len(), 1);
+    assert!(dock.shows(vale_app::ui::pad::panes::FRAME_PANELS[2]));
     check_controls(&h, "iphone sheet");
 }
 

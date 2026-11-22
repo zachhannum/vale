@@ -239,6 +239,9 @@ pub struct Input {
     /// The cards are glass. On a compact screen, the cards of the top row
     /// and the sheet then float clear of the edges of the screen.
     pub glass: bool,
+    /// A field has the keyboard of the system. On a compact screen, the
+    /// keyboard covers the rows, and the sheet reaches the bottom.
+    pub keyboard: bool,
 }
 
 /// The space at the top of a glass sheet that holds its grabber, above the
@@ -525,6 +528,13 @@ pub fn layout(input: &Input) -> Rects {
         }
         .layout()
     });
+    let rows = rows.map(|r| match input.keyboard && input.panel {
+        true => {
+            let none = Rect::from_center_size(pos2((left + right) / 2.0, bottom), vec2(0.0, 0.0));
+            (none, 0, BrushCard::Button, None, 0, None)
+        }
+        false => r,
+    });
     let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
         let full = screen.bottom() - column_top;
         let open = if screen.height() < SHORT_SCREEN {
@@ -535,8 +545,10 @@ pub fn layout(input: &Input) -> Rects {
         let height = open.min(full);
         let grabber = if input.glass { GRABBER_SPACE } else { 0.0 };
         let (floor, foot) = match rows {
-            Some((tools, _, _, brush, _, _)) => (brush.unwrap_or(tools).top() - ROW_GAP, 0.0),
-            None => (screen.bottom(), bands.bottom),
+            Some((tools, cells, _, brush, _, _)) if cells > 0 => {
+                (brush.unwrap_or(tools).top() - ROW_GAP, 0.0)
+            }
+            _ => (screen.bottom(), bands.bottom),
         };
         // Above the rows, the sheet opens at least at half the room.
         let open_top = (screen.bottom() - height).min((column_top + floor) / 2.0);
@@ -547,7 +559,8 @@ pub fn layout(input: &Input) -> Rects {
             pos2(screen.left(), open_top + offset),
             pos2(screen.right(), floor),
         );
-        let rect = match (input.glass, rows.is_some()) {
+        let above = rows.is_some_and(|r| r.1 > 0);
+        let rect = match (input.glass, above) {
             (true, true) => rect.shrink2(vec2(SHEET_INSET, 0.0)),
             (true, false) => Rect::from_min_max(
                 rect.min + vec2(SHEET_INSET, 0.0),
@@ -828,6 +841,7 @@ mod tests {
             camera: None,
             fold: None,
             glass: false,
+            keyboard: false,
         }
     }
 

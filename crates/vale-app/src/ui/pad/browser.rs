@@ -142,6 +142,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         camera: state.pad.camera,
         fold: state.pad.fold,
         glass: false,
+        keyboard: false,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;

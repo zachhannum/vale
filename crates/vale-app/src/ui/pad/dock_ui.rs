@@ -904,6 +904,12 @@ fn show_sheet(
         true => Rect::from_min_max(inner.min + vec2(0.0, geometry::GRABBER_SPACE), inner.max),
         false => inner,
     };
+    // A sheet at the bottom of the screen, above the keyboard, keeps its
+    // rows out of the bottom band.
+    let foot = match rect.bottom() > rects.screen.bottom() - geometry::SHEET_INSET - 1.0 {
+        true => rects.bands.bottom.max(SHEET_FOOT),
+        false => SHEET_FOOT,
+    };
     let mut out = None;
     widgets::card(
         ctx,
@@ -925,8 +931,7 @@ fn show_sheet(
                     .max_rect(inner)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            let body =
-                Rect::from_min_max(inner.min, pos2(inner.right(), rect.bottom() - SHEET_FOOT));
+            let body = Rect::from_min_max(inner.min, pos2(inner.right(), rect.bottom() - foot));
             out = Some(pane_in_sheet(
                 &mut child, state, controls, rects, i, &mut head, body,
             ));

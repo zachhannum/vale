@@ -235,6 +235,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         camera: state.pad.camera,
         fold: state.pad.fold,
         glass: state.globe.backdrop().is_some(),
+        keyboard: ctx.egui_wants_keyboard_input(),
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
