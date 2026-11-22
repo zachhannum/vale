@@ -165,7 +165,7 @@ pub fn form_card(
     };
     any_card(
         ctx,
-        None,
+        backdrop(ctx),
         id,
         rect,
         None,
@@ -1648,14 +1648,13 @@ pub fn choice_field(
     );
     card_from(
         &ctx,
-        None,
+        backdrop(&ctx),
         &id,
         rect,
         egui::Order::Tooltip,
         radius,
         origin,
         |ui| {
-            ui.painter().rect_filled(rect, radius, theme::menu());
             let inner = rect.shrink2(menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
@@ -1926,13 +1925,12 @@ pub fn edit_menu_items(
     let radius = theme::CARD_RADIUS.into();
     card(
         ctx,
-        None,
+        backdrop(ctx),
         "pad-edit-menu",
         rect,
         egui::Order::Tooltip,
         radius,
         |ui| {
-            ui.painter().rect_filled(rect, radius, theme::menu());
             for i in 1..items.len() {
                 let x = rect.left() + i as f32 * EDIT_ITEM;
                 let divider = [pos2(x, rect.top() + 10.0), pos2(x, rect.bottom() - 10.0)];
@@ -2148,6 +2146,40 @@ pub fn card_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
 pub fn card_fill(backdrop: bool) -> Color32 {
     match backdrop {
         true => theme::glass(),
+        false => theme::card(),
+    }
+}
+
+/// Paints a card at `rect` with `painter`, whose layer has `order`: the
+/// shadow, the glass if the cards are glass, and the fill. It is for a card
+/// with no area of its own, such as a bubble. `transform`: the transform of
+/// the layer, which the glass follows.
+pub fn paint_card(
+    painter: &egui::Painter,
+    order: egui::Order,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    transform: egui::emath::TSTransform,
+) {
+    let radius = radius.into();
+    let backdrop = backdrop(painter.ctx());
+    if backdrop.is_some() {
+        painter.add(marker(order, rect));
+    }
+    painter.add(theme::shadow().as_shape(rect, radius));
+    if let Some(format) = backdrop {
+        let pixels = painter.ctx().pixels_per_point();
+        let mut callback = card_shape(format, transform * rect, radius, pixels, None);
+        callback.rect = rect;
+        painter.add(callback);
+    }
+    painter.rect_filled(rect, radius, card_fill(backdrop.is_some()));
+}
+
+/// The fill of a shape that joins a card, such as the point of a card.
+pub fn point_fill(ctx: &egui::Context) -> Color32 {
+    match is_glass(ctx) {
+        true => theme::glass_tone(),
         false => theme::card(),
     }
 }

@@ -140,8 +140,9 @@ pub fn show(
             let radius = theme::CARD_RADIUS.min(theme::capsule(card));
             ui.multiply_opacity(grow.opacity);
             let painter = ui.painter();
-            painter.add(theme::shadow().as_shape(card, radius));
-            painter.rect_filled(card, radius, FILL);
+            let order = egui::Order::Tooltip;
+            widgets::paint_card(painter, order, card, radius, grow.transform);
+            let fill = widgets::point_fill(ctx);
             let tip_x = anchor
                 .center()
                 .x
@@ -161,7 +162,7 @@ pub fn show(
                     pos2(tip_x, base + ARROW),
                 ]
             };
-            painter.add(Shape::convex_polygon(arrow.to_vec(), FILL, Stroke::NONE));
+            painter.add(Shape::convex_polygon(arrow.to_vec(), fill, Stroke::NONE));
             let layout = egui::Layout::top_down(egui::Align::Min);
             let rows = card.shrink2(vec2(PAD, 0.0));
             let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rows).layout(layout));

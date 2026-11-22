@@ -3766,6 +3766,45 @@ fn each_card_shows_the_canvas_through_its_glass_and_follows_the_globe() {
     }
 }
 
+#[test]
+#[ignore = "gpu"]
+fn a_form_and_the_banner_show_the_canvas_through_their_glass() {
+    let _gpu = one_gpu_test();
+    let mut h = glass_pad(|lon| match (lon / 6.0).floor().rem_euclid(2.0) {
+        0.0 => u16::MAX,
+        _ => 0,
+    });
+    let text = "Not enough memory to paint Height".to_string();
+    h.state_mut().memory_note = Some((RasterId(0), text));
+    h.run_steps(2);
+    let banner = h.state().pad.banner.expect("a banner");
+    let glass = h.render().unwrap();
+    h.state_mut().world_form = Some(WorldForm::properties(&World::default()));
+    h.run_steps(3);
+    let form = h.ctx.memory(|m| m.area_rect(egui::Id::new("world-form")));
+    let form = form.expect("the form");
+    let form_glass = h.render().unwrap();
+    h.state_mut().globe.glass = false;
+    h.run_steps(2);
+    let form_plain = h.render().unwrap();
+    h.state_mut().world_form = None;
+    h.run_steps(3);
+    let plain = h.render().unwrap();
+    h.state_mut().globe.glass = true;
+    h.state_mut().globe.view = GlobeView::centered(3.0, 0.0);
+    h.state_mut().globe.view.zoom = 3.0;
+    h.run_steps(2);
+    let turned = h.render().unwrap();
+
+    let row = card_row(&glass, banner);
+    let width = row.len() as i32;
+    assert!(difference(&row, &card_row(&plain, banner)) > width * 2);
+    assert!(difference(&row, &card_row(&turned, banner)) > width * 2);
+    let row = card_row(&form_glass, form);
+    let width = row.len() as i32;
+    assert!(difference(&row, &card_row(&form_plain, form)) > width * 2);
+}
+
 /// The red values of the bottom row of each card, over a canvas of
 /// `level`. `glass`: the cards are glass, else they have a plain fill.
 fn glass_rows(glass: bool, level: impl Fn(f64) -> u16) -> (Pad, Vec<Vec<i32>>) {

@@ -695,9 +695,8 @@ pub fn bar_area(ui: &egui::Ui, id: &str, add: impl FnOnce(&mut egui::Ui)) {
             theme::apply(ui);
             let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click());
             let painter = ui.painter();
-            painter.rect_filled(rect, 0.0, Color32::from_rgb(28, 31, 35));
-            let top = [rect.left_top(), rect.right_top()];
-            painter.line_segment(top, Stroke::new(1.0, Color32::from_rgb(42, 46, 51)));
+            let identity = egui::emath::TSTransform::IDENTITY;
+            widgets::paint_card(painter, egui::Order::Foreground, rect, 0, identity);
             let inner = rect.shrink2(vec2(12.0, 0.0));
             let mut child = ui.new_child(
                 egui::UiBuilder::new()

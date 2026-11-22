@@ -576,8 +576,6 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     let mut did = Did::Nothing;
     let mut stop = false;
     widgets::form_card(ctx, CARD, screen, rect, radius, compact, |ui| {
-        ui.painter()
-            .rect_filled(rect, radius, theme::card().to_opaque());
         ui.spacing_mut().item_spacing.y = 0.0;
         let ready = form.can_export() && !busy;
         let bar = widgets::form_bar(ui, controls, TITLE, CANCEL, EXPORT, ready);

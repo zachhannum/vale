@@ -1224,7 +1224,7 @@ fn paint_point(ctx: &egui::Context, key: &str, point: [Pos2; 3]) {
     ctx.layer_painter(egui::LayerId::new(Order::Foreground, egui::Id::new(key)))
         .add(egui::Shape::convex_polygon(
             point.to_vec(),
-            theme::glass_tone(),
+            widgets::point_fill(ctx),
             egui::Stroke::NONE,
         ));
 }

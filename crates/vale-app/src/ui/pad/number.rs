@@ -8,7 +8,6 @@ use eframe::egui::{self, Align2, Color32, Order, Pos2, Rect, Sense, pos2, vec2};
 use super::geometry::{CELL, PAD, TOUCH};
 use super::theme;
 use super::widgets::{self, Controls, KEYPAD, KeyEdit, Keys, PANEL_ROW, TICK_NAMES, fade, hit};
-use crate::globe::backdrop::{card_shape, marker};
 
 /// The height of a track, of a value box, and of a stepper.
 const HEIGHT: f32 = 36.0;
@@ -950,22 +949,9 @@ impl<'a> Number<'a> {
         );
         let top = anchor.center().y - size.y / 2.0;
         let rect = place(ctx, anchor, ui.clip_rect(), size, top, None);
-        let backdrop = widgets::backdrop(ctx);
         let corner = widgets::card_radius(rect, egui::CornerRadius::from(theme::CARD_RADIUS));
-        if backdrop.is_some() {
-            painter.add(marker(Order::Tooltip, rect));
-        }
-        painter.add(theme::shadow().as_shape(rect, corner));
-        if let Some(format) = backdrop {
-            painter.add(card_shape(
-                format,
-                rect,
-                corner,
-                ctx.pixels_per_point(),
-                None,
-            ));
-        }
-        painter.rect_filled(rect, corner, widgets::card_fill(backdrop.is_some()));
+        let identity = egui::emath::TSTransform::IDENTITY;
+        widgets::paint_card(&painter, Order::Tooltip, rect, corner, identity);
         let x = rect.center().x;
         let y = rect.top() + 8.0;
         let below = y + text.size().y + 2.0;
