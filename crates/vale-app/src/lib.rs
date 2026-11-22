@@ -11,6 +11,7 @@ pub mod color_key;
 pub mod distortion;
 pub mod document;
 pub mod edge_labels;
+pub mod extent;
 pub mod files;
 #[cfg(target_os = "ios")]
 pub mod font_picker;
