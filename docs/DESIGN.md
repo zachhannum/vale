@@ -155,7 +155,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | Layer | Name, type (raster, image, points, lines, or polygons), visibility, attribute schema (fields with a name, a type, and a default value), link to a source, to a raster, to an image, or to an in-app table |
 | Feature | Geometry in longitude and latitude, attributes, a stable ID |
 | Collection | A unique name and its layers in order, from the bottom to the top. The collections are in the order of creation, and World is first. The project also keeps the checked collections of the globe in their stacking order, and each map keeps its stack of collections. |
-| Style | Ordered rules of one layer, stored as JSON. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
+| Style | Ordered rules of one layer, stored as JSON. The style of a vector layer also holds its opacity and its blend mode. The style of a raster layer holds its colors: the color stops with their lines, the band colors, the display, the opacity, and the blend mode. |
 | Label class | Name, layer, text expression, filter, font family, weight, italic, size, case, letter spacing, color, halo color and width, placement, priority, fallbacks. The map holds its classes as JSON for each layer. |
 | Map | Name, projection preset and center, map style, the layers that are off or on in the map, layer styles, label classes |
 | Map style | Name, the layers that are off, layer styles, label classes |
@@ -290,9 +290,15 @@ This removes the main pain of the old workflow. You no longer paint on an equire
 
 ### Draw order
 
-The globe and the flat view draw the checked collections of the globe workspace from the bottom of the stack to the top. Each collection draws its layers in its own order. A layer in two checked collections draws once, at its place in the topmost collection that holds it. A collection that is not checked does not draw, and a hidden layer does not draw. The raster layers and the image layers blend in this order, by their opacity and blend mode.
+The globe and the flat view draw the checked collections of the globe workspace from the bottom of the stack to the top. Each collection draws its layers in its own order. A layer in two checked collections draws once, at its place in the topmost collection that holds it. A collection that is not checked does not draw, and a hidden layer does not draw.
 
-Pick on the globe, the rows of the Snap panel, the raster layer of the readout, and the layer budget use the same order. A map frame draws in the order of the stack of its map, on the screen and in each export. The water is at the bottom. The labels, the graticule, the outline, and the decorations are on top. A run is a sequence of raster layers and image layers with no vector layer between them. Each run draws on its own and then goes over the layers below it. A blend mode mixes a layer with the layers below it in its run only, not with the vector layers or the water. An opaque raster layer with the blend mode Normal hides the raster layers and the image layers below it, in its run and in the runs below it.
+Pick on the globe, the rows of the Snap panel, the raster layer of the readout, and the layer budget use the same order. A map frame draws in the order of the stack of its map, on the screen and in each export. The water and the ground are at the bottom.
+
+Each layer has an opacity from 0 to 100 percent and a blend mode, one of the 12 modes of a raster layer. The defaults are 100 percent and Normal. They are part of the style of the layer, so a map can set them for a layer in that map. The views composite the stack from the bottom to the top. Each layer mixes with all that is drawn below it, by its opacity and its blend mode. This includes the vector layers, the raster layers, the image layers, the water, and the ground. An opaque layer with the blend mode Normal hides the layers below it where it draws.
+
+A vector layer draws as one group. Its features first draw over each other as normal, and then the group mixes with the layers below it. Thus two features of one layer at 50 percent do not get darker where they overlap.
+
+The labels, the graticule, the outline, and the decorations draw on top, as normal.
 
 ### Levels of a vector layer
 

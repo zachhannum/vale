@@ -23,7 +23,7 @@ pub use rule::{
     scale_denominator,
 };
 pub use vale_render::Color;
-use vale_store::GeometryKind;
+use vale_store::{BlendMode, GeometryKind};
 
 use expr::Property;
 
@@ -269,6 +269,10 @@ pub struct LayerStyle {
     pub flow_height: Option<String>,
     /// How much the labels of the map avoid the features of the layer.
     pub weights: Weights,
+    /// The opacity of a vector layer, from 0 to 1. The layer draws as one group, and the group mixes with the layers below it. A raster layer and an image layer keep their opacity in their symbolizer.
+    pub opacity: f32,
+    /// How a vector layer mixes with the layers below it.
+    pub blend: BlendMode,
 }
 
 /// The weight that forbids labels over a feature. A weight is from 0, free, to this.
@@ -422,6 +426,8 @@ impl LayerStyle {
             label,
             flow_height: None,
             weights: Weights::default(),
+            opacity: 1.0,
+            blend: BlendMode::Normal,
         }
     }
 
@@ -448,6 +454,8 @@ impl LayerStyle {
             },
             flow_height: None,
             weights: Weights::default(),
+            opacity: 1.0,
+            blend: BlendMode::Normal,
         }
     }
 
@@ -769,6 +777,8 @@ mod tests {
             label: l.label.clone(),
             flow_height: None,
             weights: Weights::default(),
+            opacity: 1.0,
+            blend: BlendMode::Normal,
         };
         empty.add_rule(GeometryKind::Polygon);
         assert!(empty.fill().is_some());
