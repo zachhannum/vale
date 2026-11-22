@@ -1,6 +1,6 @@
 //! The JSON form of a layer style.
 //!
-//! A constant property is a bare value: hex text for a color, a number for a size. A property that is an expression is an object with `expr` and `fallback`. The reader ignores unknown keys.
+//! A constant property is a bare value: hex text for a color, a number for a size. A property that is an expression is an object with `expr` and `fallback`. The reader ignores unknown keys, and a style keeps its unknown top-level keys for the next write.
 
 use std::fmt;
 
@@ -16,6 +16,16 @@ use crate::{
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
 pub const STYLE_VERSION: u64 = 8;
+
+/// The top-level keys that this build reads.
+const KEYS: [&str; 6] = [
+    "version",
+    "rules",
+    "label",
+    "mask",
+    "flow_height",
+    "weights",
+];
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,7 +71,10 @@ impl LayerStyle {
             "italic": l.italic,
             "font": l.font,
         });
-        let mut root = json!({ "version": STYLE_VERSION, "rules": rules, "label": label });
+        let mut root = Json::Object(self.extra.clone());
+        root["version"] = json!(STYLE_VERSION);
+        root["rules"] = json!(rules);
+        root["label"] = label;
         if let Some(mask) = &self.style.mask {
             root["mask"] = mask_json(mask);
         }
@@ -102,6 +115,10 @@ impl LayerStyle {
             label,
             flow_height,
             weights: read_weights(root.get("weights")),
+            extra: (root.iter())
+                .filter(|(k, _)| !KEYS.contains(&k.as_str()))
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
         })
     }
 }

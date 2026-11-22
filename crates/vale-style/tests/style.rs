@@ -175,6 +175,18 @@ fn the_json_has_a_version() {
 }
 
 #[test]
+fn unknown_top_level_keys_survive_json() {
+    let mut root: serde_json::Value =
+        serde_json::from_str(&LayerStyle::default_for(GeometryKind::Polygon, 0, &[]).to_json())
+            .unwrap();
+    root["halo"] = serde_json::json!({ "width": 2, "color": "#ffffff" });
+    let style = LayerStyle::from_json(&root.to_string()).unwrap();
+    assert_eq!(style.extra.len(), 1);
+    let back: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    assert_eq!(back, root);
+}
+
+#[test]
 fn json_round_trips() {
     let fields = vec!["name".to_string()];
     let mut styles: Vec<LayerStyle> = [

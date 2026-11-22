@@ -132,6 +132,8 @@ pub struct LayerStyle {
     pub flow_height: Option<String>,
     /// How much the labels of the map avoid the features of the layer.
     pub weights: Weights,
+    /// The top-level keys of the JSON that this build does not know, as a newer build wrote them.
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// The weight that forbids labels over a feature. A weight is from 0, free, to this.
@@ -285,6 +287,7 @@ impl LayerStyle {
             label,
             flow_height: None,
             weights: Weights::default(),
+            extra: Default::default(),
         }
     }
 
@@ -311,6 +314,7 @@ impl LayerStyle {
             },
             flow_height: None,
             weights: Weights::default(),
+            extra: Default::default(),
         }
     }
 
@@ -632,6 +636,7 @@ mod tests {
             label: l.label.clone(),
             flow_height: None,
             weights: Weights::default(),
+            extra: Default::default(),
         };
         empty.add_rule(GeometryKind::Polygon);
         assert!(empty.fill().is_some());
