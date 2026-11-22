@@ -171,6 +171,41 @@ pub struct Composed {
     /// edge labels, the neatline, and the border. They do not move with the
     /// map.
     pub decor: usize,
+    /// The index of the item at the start of each run of raster layers and
+    /// image layers of a map frame, from `raster_style::frame_cuts`. At a
+    /// cut, only the clip to the shape of the frame is open.
+    pub cuts: Vec<usize>,
+}
+
+impl Composed {
+    /// The items of a map frame below `decor`, cut at the cuts: one list
+    /// below each run of raster layers and image layers, and one list on
+    /// top. Each list has the clip to the shape of the frame. The labels,
+    /// the graticule, and the outline are in the top list.
+    pub fn vector_groups(&self) -> Vec<DisplayList> {
+        let items = &self.list.items;
+        let shape = items.first().filter(|i| matches!(i, Item::PushClip { .. }));
+        let (Some(shape), Some(end)) = (shape, self.decor.checked_sub(1)) else {
+            return vec![DisplayList {
+                items: items[..self.decor].to_vec(),
+                ..self.list.clone()
+            }];
+        };
+        let bounds = std::iter::once(1).chain(self.cuts.iter().copied());
+        let ends = self.cuts.iter().copied().chain(std::iter::once(end));
+        (bounds.zip(ends))
+            .map(|(from, to)| {
+                let mut group = Vec::with_capacity(to.saturating_sub(from) + 2);
+                group.push(shape.clone());
+                group.extend_from_slice(&items[from..to.max(from)]);
+                group.push(Item::PopClip);
+                DisplayList {
+                    items: group,
+                    ..self.list.clone()
+                }
+            })
+            .collect()
+    }
 }
 
 /// The geometry of one feature in projected meters.
@@ -1323,11 +1358,13 @@ impl Cache {
     }
 }
 
-/// The layers that `draw_map` drew, its symbols, and the ground size of one point.
+/// The layers that `draw_map` drew, its symbols, the ground size of one
+/// point, and the item of the list at each cut.
 struct DrawnMap<'a> {
     layers: Vec<PageLayer<'a>>,
     symbols: Vec<PlacedSymbol>,
     km_per_point: f64,
+    cuts: Vec<usize>,
 }
 
 /// The scale of the symbols of a map.
@@ -1340,7 +1377,9 @@ struct SymbolScale {
 }
 
 /// Draws a map in `area`: the background if it has one, the water, the
-/// layers, the graticule, and the outline.
+/// layers, the graticule, and the outline. Each cut `i` marks the place
+/// before the layer `ids[i]`, or after the layers for an `i` past the end.
+/// At a cut, the list has no clip of its own open.
 #[allow(clippy::too_many_arguments)]
 fn draw_map<'a>(
     list: &mut DisplayList,
@@ -1351,7 +1390,7 @@ fn draw_map<'a>(
     area: Rect,
     background: bool,
     water: bool,
-    ids: &[LayerId],
+    (ids, cuts): (&[LayerId], &[usize]),
     graticule: Option<(&[Vec<Point>], Stroke)>,
     scatter: &mut ScatterCache,
     rasters: &'a RasterCache,
@@ -1395,7 +1434,16 @@ fn draw_map<'a>(
         layer_count: 0,
         placed: Vec::new(),
     };
+    let mut cut_items = Vec::new();
+    let mut cut_at = cuts.iter().peekable();
     for pl in &page_layers {
+        let index = ids.iter().position(|id| *id == pl.layer.id);
+        while cut_at
+            .next_if(|&&c| index.is_some_and(|i| c <= i))
+            .is_some()
+        {
+            cut_items.push(list.items.len());
+        }
         sd.layer_count = 0;
         // The page mask clips the masked batches of a line or polygon layer.
         // A layer whose page mask is not ready draws none of them.
@@ -1424,6 +1472,7 @@ fn draw_map<'a>(
         }
         close_clip(list, open);
     }
+    cut_items.extend(cut_at.map(|_| list.items.len()));
     let symbols = sd.placed;
 
     // 4: graticule.
@@ -1461,6 +1510,7 @@ fn draw_map<'a>(
         layers: page_layers,
         symbols,
         km_per_point,
+        cuts: cut_items,
     }
 }
 
@@ -1892,7 +1942,7 @@ impl Pipeline {
             page,
             true,
             true,
-            &ids,
+            (&ids, &[]),
             graticule,
             &mut self.scatter,
             &self.rasters,
@@ -1932,6 +1982,7 @@ impl Pipeline {
             km_per_point: drawn.km_per_point,
             graticule_step: step,
             decor,
+            cuts: drawn.cuts,
         })
     }
 
@@ -2082,7 +2133,7 @@ impl Pipeline {
             part,
             false,
             true,
-            &ids,
+            (&ids, &[]),
             graticule,
             &mut self.scatter,
             &self.rasters,
@@ -2138,6 +2189,11 @@ impl Pipeline {
         water: bool,
     ) -> anyhow::Result<Composed> {
         let ids = drawn_layers(doc, Some(frame.map));
+        // The list with the water has no raster layers.
+        let cuts = match water {
+            true => Vec::new(),
+            false => crate::raster_style::frame_cuts(doc, frame.map),
+        };
         let masks = self.frame_masks(doc, frame, &ids);
         let pixel = self.frame_pixel(doc, frame, target, detail)?;
         let cache = self.ensure(doc, frame.map, Some(frame.map), &ids, pixel)?;
@@ -2171,7 +2227,7 @@ impl Pipeline {
             area,
             false,
             water,
-            &ids,
+            (&ids, &cuts),
             graticule,
             &mut self.scatter,
             &self.rasters,
@@ -2198,7 +2254,7 @@ impl Pipeline {
                     full,
                     false,
                     false,
-                    &ids,
+                    (&ids, &[]),
                     None,
                     &mut self.scatter,
                     &self.rasters,
@@ -2257,6 +2313,7 @@ impl Pipeline {
             km_per_point: drawn.km_per_point,
             graticule_step: step,
             decor,
+            cuts: drawn.cuts,
         })
     }
 

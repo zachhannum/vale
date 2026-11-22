@@ -4394,48 +4394,62 @@ impl Globe {
         })
     }
 
-    /// The passes of the layers that a map frame shows, and `true` if one
-    /// reads the full heightmap. The layers below the top raster layer that
-    /// hides them do not show. A layer that the GPU does not have does not
-    /// show.
-    fn frame_passes(&self, canvas: Canvas, frame: &FrameDraw, clip: [f32; 4]) -> (Vec<Draw>, bool) {
+    /// The passes of the layers that a map frame shows, one list for each
+    /// run of `FrameDraw::runs`, and `true` if one reads the full heightmap.
+    /// The layers below the top raster layer that hides them do not show,
+    /// in its run and in the runs below it. A layer that the GPU does not
+    /// have does not show.
+    fn frame_passes(
+        &self,
+        canvas: Canvas,
+        frame: &FrameDraw,
+        clip: [f32; 4],
+    ) -> (Vec<Vec<Draw>>, bool) {
         let mut smooth_full = false;
-        let mut shown = Vec::new();
-        for item in &frame.layers {
-            match item {
-                FrameItem::Raster(id, look) => {
-                    let source = self.source(*id).zip(self.display_map(*id));
-                    let Some((key, map)) = source else { continue };
-                    smooth_full |= Some(key) == self.full;
-                    let layer = LayerDraw {
-                        key: self.details.source(frame.id, *id).unwrap_or(key),
-                        bands: look.bands.as_ref().unwrap_or(&map.bands),
-                        opacity: look.look.opacity.clamp(0.0, 1.0),
-                        display: look.look.display,
-                        smoothing: look.smoothing,
-                        hillshade: look.hillshade,
-                        rivers: None,
-                        window: false,
-                        lines: look.lines,
-                        blend: look.look.blend,
-                    };
-                    shown.push(FrameLayer::Raster(layer));
-                }
-                FrameItem::Image(id, look) => {
-                    if let Some(key) = self.image_source(*id) {
-                        shown.push(FrameLayer::Image(ImageDraw {
-                            key,
-                            opacity: look.opacity.clamp(0.0, 1.0),
-                            blend: look.blend,
-                        }));
+        let mut runs: Vec<Vec<FrameLayer>> = Vec::new();
+        for run in frame.runs() {
+            let mut shown = Vec::new();
+            for item in run {
+                match item {
+                    FrameItem::Raster(id, look) => {
+                        let source = self.source(*id).zip(self.display_map(*id));
+                        let Some((key, map)) = source else { continue };
+                        smooth_full |= Some(key) == self.full;
+                        let layer = LayerDraw {
+                            key: self.details.source(frame.id, *id).unwrap_or(key),
+                            bands: look.bands.as_ref().unwrap_or(&map.bands),
+                            opacity: look.look.opacity.clamp(0.0, 1.0),
+                            display: look.look.display,
+                            smoothing: look.smoothing,
+                            hillshade: look.hillshade,
+                            rivers: None,
+                            window: false,
+                            lines: look.lines,
+                            blend: look.look.blend,
+                        };
+                        shown.push(FrameLayer::Raster(layer));
                     }
+                    FrameItem::Image(id, look) => {
+                        if let Some(key) = self.image_source(*id) {
+                            shown.push(FrameLayer::Image(ImageDraw {
+                                key,
+                                opacity: look.opacity.clamp(0.0, 1.0),
+                                blend: look.blend,
+                            }));
+                        }
+                    }
+                    FrameItem::Cut => {}
                 }
-                // The vector layers draw over all the raster layers.
-                FrameItem::Cut => {}
             }
+            runs.push(shown);
         }
         let hides = |layer: &FrameLayer| matches!(layer, FrameLayer::Raster(l) if l.opacity >= 1.0 && l.blend == BlendMode::Normal);
-        let start = shown.iter().rposition(hides).unwrap_or(0);
+        let top = (runs.iter().enumerate().rev())
+            .find_map(|(k, run)| Some((k, run.iter().rposition(hides)?)));
+        if let Some((k, start)) = top {
+            runs[..k].iter_mut().for_each(Vec::clear);
+            runs[k].drain(..start);
+        }
         let place = Some(&frame.place);
         let pass = |layer: &FrameLayer| match layer {
             FrameLayer::Raster(layer) => Draw {
@@ -4451,7 +4465,8 @@ impl Globe {
             },
             FrameLayer::Image(image) => self.image_pass(canvas, image, clip, place),
         };
-        (shown[start..].iter().map(pass).collect(), smooth_full)
+        let passes = runs.iter().map(|run| run.iter().map(pass).collect());
+        (passes.collect(), smooth_full)
     }
 
     /// The pass of an image layer.
@@ -4479,15 +4494,17 @@ impl Globe {
     }
 
     /// The callbacks that draw the raster layers and the image layers in the
-    /// map frames of a page, one for each frame, or `None` with no wgpu
-    /// renderer. A frame draws its layers in the flat map of its
-    /// projection, in a target of its own. It draws no rivers. `pixel_grid` is the `Group::pixel_grid` of each frame.
+    /// map frames of a page, for each frame one for each run of
+    /// `FrameDraw::runs`, or `None` with no wgpu renderer. A run with nothing
+    /// to draw has no callback. A run draws its layers in the flat map of the
+    /// projection of its frame, in a target of its own. It draws no rivers.
+    /// `pixel_grid` is the `Group::pixel_grid` of each frame.
     pub fn paint_frames(
         &mut self,
         canvas: Canvas,
         frames: Vec<FrameDraw>,
         pixel_grid: [f32; 3],
-    ) -> Option<Vec<(u32, GlobeCallback)>> {
+    ) -> Option<Vec<(u32, Vec<Option<GlobeCallback>>)>> {
         let format = self.format?;
         self.queue_changes();
         let river_layers = self.send_rivers();
@@ -4496,74 +4513,76 @@ impl Globe {
         for frame in frames {
             let [x, y, w, h] = frame.rect;
             let clip = [0.0, 0.0, w as f32, h as f32];
-            let (group, full) = self.frame_passes(canvas, &frame, clip);
+            let (runs, full) = self.frame_passes(canvas, &frame, clip);
             smooth_full |= full;
-            draws.push((
-                frame.id,
-                Group {
-                    target: FRAME_TARGET + u64::from(frame.id),
+            let groups = (runs.into_iter().enumerate()).map(|(k, passes)| {
+                (!passes.is_empty()).then(|| Group {
+                    target: run_target(FRAME_TARGET, frame.id, k),
                     place: Some([x, y, w, h]),
-                    mesh: Some(frame.mesh),
-                    mask: frame.mask,
-                    draws: group,
+                    mesh: Some(frame.mesh.clone()),
+                    mask: frame.mask.clone(),
+                    draws: passes,
                     capture: None,
                     vector: None,
                     cover: None,
                     cover_offset: 0.0,
                     pixel_grid,
-                },
-            ));
+                })
+            });
+            draws.push((frame.id, groups.collect::<Vec<_>>()));
         }
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
-        Some(
-            draws
-                .into_iter()
-                .map(|(id, group)| {
-                    let job = GpuJob::Group(Box::new(group));
-                    (
-                        id,
-                        GlobeCallback {
-                            frame: gpu.clone(),
-                            job,
-                        },
-                    )
-                })
-                .collect(),
-        )
+        let callback = |group: Group| GlobeCallback {
+            frame: gpu.clone(),
+            job: GpuJob::Group(Box::new(group)),
+        };
+        let frames = draws.into_iter().map(|(id, groups)| {
+            let callbacks = groups.into_iter().map(|g| g.map(callback));
+            (id, callbacks.collect())
+        });
+        Some(frames.collect())
     }
 
-    /// Makes a callback that draws and returns the raster layers and the
-    /// image layers of one map frame. The callback does not paint on the
-    /// screen.
+    /// Makes the callbacks that draw and return the raster layers and the
+    /// image layers of one map frame, one for each run of
+    /// `FrameDraw::runs`. A run with nothing to draw has no callback. The
+    /// callbacks do not paint on the screen. `None` with no wgpu renderer.
+    #[allow(clippy::type_complexity)]
     pub fn capture_frame(
         &mut self,
         canvas: Canvas,
         frame: FrameDraw,
-    ) -> Option<(GlobeCallback, mpsc::Receiver<Result<Captured, String>>)> {
+    ) -> Option<Vec<Option<(GlobeCallback, mpsc::Receiver<Result<Captured, String>>)>>> {
         let format = self.format?;
         self.queue_changes();
         let river_layers = self.send_rivers();
         let clip = [0.0, 0.0, frame.rect[2] as f32, frame.rect[3] as f32];
-        let (draws, smooth_full) = self.frame_passes(canvas, &frame, clip);
-        let (capture, receiver) = Capture::new();
-        let group = Group {
-            target: CAPTURE_TARGET + u64::from(frame.id),
-            place: Some([0, 0, frame.rect[2], frame.rect[3]]),
-            mesh: Some(frame.mesh),
-            mask: frame.mask,
-            draws,
-            capture: Some(capture),
-            vector: None,
-            cover: None,
-            cover_offset: 0.0,
-            pixel_grid: [0.0; 3],
-        };
+        let (runs, smooth_full) = self.frame_passes(canvas, &frame, clip);
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
-        let callback = GlobeCallback {
-            frame: gpu,
-            job: GpuJob::Group(Box::new(group)),
-        };
-        Some((callback, receiver))
+        let captures = (runs.into_iter().enumerate()).map(|(k, draws)| {
+            if draws.is_empty() {
+                return None;
+            }
+            let (capture, receiver) = Capture::new();
+            let group = Group {
+                target: run_target(CAPTURE_TARGET, frame.id, k),
+                place: Some([0, 0, frame.rect[2], frame.rect[3]]),
+                mesh: Some(frame.mesh.clone()),
+                mask: frame.mask.clone(),
+                draws,
+                capture: Some(capture),
+                vector: None,
+                cover: None,
+                cover_offset: 0.0,
+                pixel_grid: [0.0; 3],
+            };
+            let callback = GlobeCallback {
+                frame: gpu.clone(),
+                job: GpuJob::Group(Box::new(group)),
+            };
+            Some((callback, receiver))
+        });
+        Some(captures.collect())
     }
 
     /// True if the GPU has all that the mask of `mask` in a map frame
@@ -5335,6 +5354,15 @@ fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>) -> f32 {
 /// the groups of the canvas.
 pub const FRAME_TARGET: TargetId = 1 << 32;
 const CAPTURE_TARGET: TargetId = 1 << 48;
+/// The most runs of raster layers and image layers in a map frame. Each run
+/// has a target of its own.
+pub const MAX_RUNS: usize = 64;
+
+/// The target of run `run` of the frame `frame`, from the first number
+/// `base`. The run is in the bits from 33, below `MASK_TARGET`.
+fn run_target(base: TargetId, frame: u32, run: usize) -> TargetId {
+    base + u64::from(frame) + ((run.min(MAX_RUNS - 1) as u64) << 33)
+}
 /// The first target of the captures of the raster masks of the map frames.
 const MASK_CAPTURE_TARGET: TargetId = 1 << 52;
 /// The first target of the vector layers with a raster mask.
@@ -5374,6 +5402,21 @@ impl FrameDraw {
             FrameItem::Image(id, _) => Some(*id),
             _ => None,
         })
+    }
+
+    /// The runs of raster layers and image layers between the runs of
+    /// vector layers, from the bottom. The runs above the first `MAX_RUNS`
+    /// join the last run.
+    pub fn runs(&self) -> Vec<Vec<&FrameItem>> {
+        let mut runs: Vec<Vec<&FrameItem>> = Vec::new();
+        let split = self.layers.split(|item| *item == FrameItem::Cut);
+        for run in split.filter(|run| !run.is_empty()) {
+            match runs.len() {
+                MAX_RUNS => runs[MAX_RUNS - 1].extend(run),
+                _ => runs.push(run.iter().collect()),
+            }
+        }
+        runs
     }
 
     /// The look of a raster layer that the frame draws.

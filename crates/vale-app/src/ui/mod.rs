@@ -4615,11 +4615,18 @@ impl AppState {
                 receiver
             }));
         }
-        let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
+        let Some(runs) = self.globe.capture_frame(canvas, draw) else {
             return CaptureResult::Failed("The GPU is not ready for raster export".to_string());
         };
-        callbacks.push(callback);
-        job.set_capture_receiver(receiver, covers);
+        let runs = (runs.into_iter())
+            .map(|run| {
+                run.map(|(callback, receiver)| {
+                    callbacks.push(callback);
+                    receiver
+                })
+            })
+            .collect();
+        job.set_capture_receiver(runs, covers);
         for callback in callbacks {
             ui.painter()
                 .add(eframe::egui_wgpu::Callback::new_paint_callback(

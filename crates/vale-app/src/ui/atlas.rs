@@ -2745,16 +2745,16 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
 }
 
 /// The layers that a map draws, from the bottom, as
-/// `raster_style::frame_items` gives them, with only the raster layers and
-/// the image layers that the globe holds.
-fn map_items(state: &AppState, map: MapId) -> Vec<FrameItem> {
-    let mut items = crate::raster_style::frame_items(&state.doc, map);
-    items.retain(|item| match item {
+/// `raster_style::frame_items` gives them, and `true` if the globe holds
+/// one of its raster layers or image layers.
+fn map_items(state: &AppState, map: MapId) -> (Vec<FrameItem>, bool) {
+    let items = crate::raster_style::frame_items(&state.doc, map);
+    let held = items.iter().any(|item| match item {
         FrameItem::Raster(id, _) => state.globe.holds(*id),
         FrameItem::Image(id, _) => state.globe.holds_image(*id),
-        FrameItem::Cut => true,
+        FrameItem::Cut => false,
     });
-    items
+    (items, held)
 }
 
 /// A rectangle grown to whole physical pixels. A texture on whole pixels
@@ -2937,8 +2937,11 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
         };
-        let layers = map_items(state, frame.map);
-        let layered = layers.iter().any(|item| *item != FrameItem::Cut);
+        let (layers, layered) = map_items(state, frame.map);
+        let cuts = match layered {
+            true => crate::raster_style::frame_cuts(&state.doc, frame.map),
+            false => Vec::new(),
+        };
         let masks: Vec<_> = (frame_raster_masks(&state.doc, frame).into_iter())
             .filter(|(_, mask)| state.globe.holds(mask.raster))
             .collect();
@@ -2951,7 +2954,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             &frame.border,
             page.paper,
             ppp.to_bits(),
-            layered,
+            (layered, &cuts),
             state.atlas.raster_masks.number(frame.id),
             state.pipeline.lod().arrived(),
             state.pipeline.rasters().arrived(),
@@ -3116,7 +3119,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     if state.globe.details_loading() {
         ctx.request_repaint();
     }
-    let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
+    let mut callbacks: HashMap<u32, Vec<_>> = if draws.is_empty() {
         HashMap::new()
     } else {
         // With the pixel preview, the squares of the pixels of the page.
@@ -3134,12 +3137,19 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     for s in &placed {
         let clipped = painter.with_clip_rect(s.shown);
         tiles.paint(&clipped, screen, s, &[Layer::Under], true);
-        if let Some(callback) = callbacks.remove(&s.id.0) {
-            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
-                area, callback,
-            ));
+        // Each run of raster layers goes over the vector group below it.
+        tiles.paint(&clipped, screen, s, &[Layer::Map(0)], false);
+        let runs = callbacks.remove(&s.id.0).unwrap_or_default();
+        for (k, callback) in runs.into_iter().enumerate() {
+            if let Some(callback) = callback {
+                painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                    area, callback,
+                ));
+            }
+            let above = Layer::Map(u8::try_from(k + 1).unwrap_or(u8::MAX));
+            tiles.paint(&clipped, screen, s, &[above], false);
         }
-        tiles.paint(&clipped, screen, s, &[Layer::Map, Layer::Decor], false);
+        tiles.paint(&clipped, screen, s, &[Layer::Decor], false);
         tiles.finish(s.id);
     }
     tiles.evict(state.atlas.tile_cap, screen.scale);
@@ -3197,19 +3207,22 @@ fn build_lists(
     } else {
         None
     };
-    let mut map = composed.list.clone();
     let decor = vale_render::DisplayList {
-        items: map.items.split_off(composed.decor),
-        ..map.clone()
+        items: composed.list.items[composed.decor..].to_vec(),
+        ..composed.list.clone()
     };
-    let clips = |item: &vale_render::Item| {
-        matches!(
-            item,
-            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
-        )
+    let clips = |list: &vale_render::DisplayList| {
+        list.items.iter().all(|item| {
+            matches!(
+                item,
+                vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
+            )
+        })
     };
-    let decor = (!decor.items.iter().all(clips)).then_some(decor);
-    let lists = [under.as_ref(), Some(&map), decor.as_ref()];
+    let decor = (!clips(&decor)).then_some(decor);
+    let groups = composed.vector_groups();
+    let maps = groups.iter().map(|g| (!clips(g)).then_some(g)).collect();
+    let lists = (under.as_ref(), maps, decor.as_ref());
     match FrameLists::new(keys, lists, bounds, vt) {
         Ok(lists) => state.atlas.tiles.replace(frame.id, lists),
         Err(e) => state.status = e,

@@ -40,13 +40,17 @@ const OVERVIEW_SIDE: f64 = 1024.0;
 pub enum Layer {
     /// The water below the raster layers.
     Under,
-    /// The map over the raster layers.
-    Map,
+    /// The vector layers below run `k` of the raster layers, or on top of the last run.
+    Map(u8),
     /// The edge labels, the neatline, and the border. They do not move with the map.
     Decor,
 }
 
-const LAYERS: [Layer; 3] = [Layer::Under, Layer::Map, Layer::Decor];
+impl Layer {
+    fn is_map(self) -> bool {
+        matches!(self, Layer::Map(_))
+    }
+}
 
 /// A tile: a square of `TILE` pixels of a layer at a scale in pixels per page point. The tile
 /// `i`, `j` starts at the pixel `i * TILE`, `j * TILE` of the page at that scale.
@@ -105,7 +109,7 @@ fn count_over(scale: u32, rect: kurbo::Rect) -> usize {
 /// The squares of the tiles at `scale` that touch `region`, from the middle of the region out.
 fn slots(scale: f32, region: kurbo::Rect) -> Vec<kurbo::Rect> {
     let bits = scale.to_bits();
-    let mut slots: Vec<_> = keys_over(Layer::Map, bits, region)
+    let mut slots: Vec<_> = keys_over(Layer::Map(0), bits, region)
         .map(|k| k.rect())
         .collect();
     let c = region.center();
@@ -144,7 +148,8 @@ pub struct FrameLists {
     /// The key of the shape, the center, the scale, and the rotation of the frame.
     pub geometry: u64,
     under: Option<PreparedList>,
-    map: PreparedList,
+    /// The vector groups, from the bottom. A group with nothing in it has no list.
+    maps: Vec<Option<PreparedList>>,
     decor: Option<PreparedList>,
     /// The page points that the lists draw in.
     pub bounds: kurbo::Rect,
@@ -153,10 +158,15 @@ pub struct FrameLists {
 }
 
 impl FrameLists {
-    /// Prepares the lists. `vt` is the view of the map in page points.
+    /// Prepares the lists: the water, the vector groups from the bottom, and the decorations.
+    /// `vt` is the view of the map in page points.
     pub fn new(
         (content, geometry): (u64, u64),
-        [under, map, decor]: [Option<&DisplayList>; 3],
+        (under, maps, decor): (
+            Option<&DisplayList>,
+            Vec<Option<&DisplayList>>,
+            Option<&DisplayList>,
+        ),
         bounds: kurbo::Rect,
         vt: ViewTransform,
     ) -> Result<FrameLists, String> {
@@ -165,12 +175,14 @@ impl FrameLists {
                 .transpose()
                 .map_err(|e| e.to_string())
         };
-        let map = prepare(map)?.ok_or("the frame has no map")?;
+        if maps.len() > usize::from(u8::MAX) + 1 {
+            return Err("the frame has too many vector groups".into());
+        }
         Ok(FrameLists {
             content,
             geometry,
             under: prepare(under)?,
-            map,
+            maps: maps.into_iter().map(prepare).collect::<Result<_, _>>()?,
             decor: prepare(decor)?,
             bounds,
             vt,
@@ -180,9 +192,22 @@ impl FrameLists {
     fn list(&self, layer: Layer) -> Option<&PreparedList> {
         match layer {
             Layer::Under => self.under.as_ref(),
-            Layer::Map => Some(&self.map),
+            Layer::Map(k) => self.maps.get(usize::from(k))?.as_ref(),
             Layer::Decor => self.decor.as_ref(),
         }
+    }
+
+    /// The number of vector groups.
+    pub fn groups(&self) -> usize {
+        self.maps.len()
+    }
+
+    /// Each layer of the lists, from the bottom.
+    fn layers(&self) -> impl Iterator<Item = Layer> + use<> {
+        let maps = (0..self.maps.len()).map(|k| Layer::Map(k as u8));
+        std::iter::once(Layer::Under)
+            .chain(maps)
+            .chain(std::iter::once(Layer::Decor))
     }
 }
 
@@ -576,8 +601,11 @@ impl Tiles {
                 break;
             }
             for f in shown {
+                let layers: Vec<Layer> = (self.frames.get(&f.id))
+                    .map(|set| set.lists.layers().collect())
+                    .unwrap_or_default();
                 if !ring {
-                    for layer in LAYERS {
+                    for &layer in &layers {
                         if !self.overview(ctx, renderer.as_deref_mut(), f.id, layer, &mut budget)? {
                             more = true;
                         }
@@ -588,7 +616,7 @@ impl Tiles {
                 };
                 let mut wants: Vec<TileKey> = Vec::new();
                 let mut ready: Vec<TileKey> = Vec::new();
-                for layer in LAYERS {
+                for &layer in &layers {
                     if set.lists.list(layer).is_none() {
                         continue;
                     }
@@ -768,7 +796,7 @@ impl Tiles {
             return;
         };
         let record = self.painted.entry(f.id).or_default();
-        let at = set.placement(Layer::Map, &f.vt, screen);
+        let at = set.placement(Layer::Map(0), &f.vt, screen);
         if spill
             && let Some(sp) = &set.spill
             && at.moved.is_some()
@@ -852,7 +880,7 @@ impl Tiles {
                 for slot in &still {
                     add_quad(&mut mesh, &at, o.rect, *slot, inside);
                 }
-                if layer == Layer::Map {
+                if layer.is_map() {
                     union(
                         &mut record.map,
                         mesh.calc_bounds().intersect(painter.clip_rect()),
@@ -862,7 +890,7 @@ impl Tiles {
                 painter.add(mesh);
                 blank = 0;
             }
-            if layer == Layer::Map {
+            if layer.is_map() {
                 record.blank += blank;
             }
             paint_plan(set, layer, &plan, &at, f, painter, tick, record);
@@ -999,7 +1027,7 @@ fn paint_plan(
             let mesh =
                 (meshes.entry(key)).or_insert_with(|| egui::Mesh::with_texture(texture.id()));
             add_quad(mesh, at, key.rect(), *slot, inside);
-            if layer == Layer::Map {
+            if layer.is_map() {
                 let rest = key.rect().intersect(*slot);
                 let rest = Rect::from_two_pos(
                     at.screen.point(rest.origin()),
@@ -1019,7 +1047,7 @@ fn paint_plan(
         }
         let rect = mesh.calc_bounds().intersect(painter.clip_rect());
         match layer {
-            Layer::Map => union(&mut record.map, rect),
+            Layer::Map(_) => union(&mut record.map, rect),
             Layer::Decor => union(&mut record.decor, rect),
             Layer::Under => {}
         }

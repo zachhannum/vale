@@ -7,7 +7,7 @@ use vale_store::{ImageId, LayerId, LayerKind, MapId, Project, Raster, RasterDisp
 use vale_style::{ImageSymbolizer, LayerStyle, RasterSymbolizer, Symbolizer, style_version};
 
 use crate::document::Document;
-use crate::globe::{FrameItem, Look, RasterLook};
+use crate::globe::{FrameItem, Look, MAX_RUNS, RasterLook};
 use crate::session::{bands_of, put_bands, record_stops};
 
 /// The colors of a raster record.
@@ -219,31 +219,50 @@ fn image_look(doc: &Document, map: MapId, layer: LayerId, image: ImageId) -> Opt
     })
 }
 
+/// Each layer that a map draws, from the bottom, with its index in
+/// `Document::map_layers`. A raster layer and an image layer have their
+/// look in the map, and a vector layer is a `FrameItem::Cut`.
+fn indexed_items(doc: &Document, map: MapId) -> Vec<(usize, FrameItem)> {
+    let ids = doc.map_layers(map).into_iter().enumerate();
+    ids.filter_map(|(index, id)| {
+        let layer = doc.project.layer(id)?;
+        let item = match layer.kind {
+            LayerKind::Raster(r) => FrameItem::Raster(r, raster_look(doc, map, id, r)?),
+            LayerKind::Image(i) => FrameItem::Image(i, image_look(doc, map, id, i)?),
+            LayerKind::Vector(_) => FrameItem::Cut,
+        };
+        Some((index, item))
+    })
+    .collect()
+}
+
 /// The layers that a map draws, from the bottom, as `Document::map_layers`
 /// gives them. Each raster layer and image layer has its look in the map.
 /// Each run of vector layers is one `FrameItem::Cut`.
 pub fn frame_items(doc: &Document, map: MapId) -> Vec<FrameItem> {
-    let mut items = Vec::new();
-    for id in doc.map_layers(map) {
-        let Some(layer) = doc.project.layer(id) else {
-            continue;
-        };
-        let item = match layer.kind {
-            LayerKind::Raster(r) => {
-                raster_look(doc, map, id, r).map(|look| FrameItem::Raster(r, look))
-            }
-            LayerKind::Image(i) => {
-                image_look(doc, map, id, i).map(|look| FrameItem::Image(i, look))
-            }
-            LayerKind::Vector(_) => Some(FrameItem::Cut),
-        };
-        match item {
-            Some(FrameItem::Cut) if items.last() == Some(&FrameItem::Cut) => {}
-            Some(item) => items.push(item),
-            None => {}
+    let mut items: Vec<FrameItem> = Vec::new();
+    for (_, item) in indexed_items(doc, map) {
+        if item != FrameItem::Cut || items.last() != Some(&FrameItem::Cut) {
+            items.push(item);
         }
     }
     items
+}
+
+/// The start of each run of raster layers and image layers of a map, as
+/// an index in `Document::map_layers`, for at most `MAX_RUNS` runs. The
+/// runs are the runs of `FrameDraw::runs` for `frame_items`.
+pub fn frame_cuts(doc: &Document, map: MapId) -> Vec<usize> {
+    let mut cuts = Vec::new();
+    let mut picture = false;
+    for (index, item) in indexed_items(doc, map) {
+        let starts = item != FrameItem::Cut && !picture;
+        if starts && cuts.len() < MAX_RUNS {
+            cuts.push(index);
+        }
+        picture = item != FrameItem::Cut;
+    }
+    cuts
 }
 
 /// The looks in a map of the raster layers that the map does not draw.
@@ -263,7 +282,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_frame_items_follow_the_map_and_fold_each_run_of_vector_layers() {
+    fn the_frame_items_and_the_cuts_follow_the_map_and_fold_each_run_of_vector_layers() {
         let mut doc = Document::empty();
         let map = doc.project.atlas.add_map();
         let p = &mut doc.project;
@@ -303,11 +322,19 @@ mod tests {
         };
         let (n0, n1) = (format!("r{}", r0.0), format!("r{}", r1.0));
         // v2 is in both collections, at its place in B.
+        // The first layer of each run of raster layers and image layers.
+        let starts = |doc: &Document| -> Vec<LayerId> {
+            let ids = doc.map_layers(map);
+            frame_cuts(doc, map).iter().map(|&i| ids[i]).collect()
+        };
         assert_eq!(kinds(&doc), ["cut", n0.as_str(), "i", "cut", n1.as_str()]);
+        assert_eq!(starts(&doc), [l0, l1]);
         assert!(doc.project.set_map_stack(map, vec![b, a]));
         assert_eq!(kinds(&doc), ["i", n1.as_str(), "cut", n0.as_str(), "cut"]);
+        assert_eq!(starts(&doc), [li, l0]);
         assert!(doc.set_shown(map, l0, false));
         assert_eq!(kinds(&doc), ["i", n1.as_str(), "cut"]);
+        assert_eq!(starts(&doc), [li]);
         assert_eq!(hidden_looks(&doc, map).first().map(|(r, _)| *r), Some(r0));
     }
 }
