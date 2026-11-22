@@ -107,6 +107,35 @@ pub fn display_name(display: RasterDisplay) -> &'static str {
     DISPLAYS[index.unwrap_or(0)]
 }
 
+/// The menu that makes a copy of the style of a layer in a map or a map
+/// style the globe style.
+fn copy_style_menu(ui: &mut egui::Ui, state: &mut AppState, layer: LayerId) {
+    use crate::document::Target;
+    use pad::copy_style::{MAP_STYLES, MAPS, TITLE};
+    let atlas = &state.doc.project.atlas;
+    let maps: Vec<_> = (atlas.maps.iter())
+        .map(|m| (Target::Map(m.id), m.name.clone()))
+        .collect();
+    let styles: Vec<_> = (atlas.map_styles.iter())
+        .map(|s| (Target::Style(s.id), s.name.clone()))
+        .collect();
+    ui.menu_button(TITLE, |ui| {
+        for (heading, rows) in [(MAPS, maps), (MAP_STYLES, styles)] {
+            if rows.is_empty() {
+                continue;
+            }
+            ui.label(heading);
+            for (target, name) in rows {
+                let differs = state.differs_from_globe(target, layer);
+                if ui.add_enabled(differs, egui::Button::new(name)).clicked() {
+                    state.copy_to_globe_style(target, layer);
+                    ui.close();
+                }
+            }
+        }
+    });
+}
+
 /// The name and the rules of the style of a vector layer.
 fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let Some(layer) = state.doc.layer(id) else {
@@ -119,6 +148,7 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     if ui.button(super::table::OPEN_TABLE).clicked() {
         state.open_table(id);
     }
+    copy_style_menu(ui, state, id);
     let Some(layer) = state.doc.layer(id) else {
         return;
     };
@@ -199,6 +229,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState) {
     let layer = raster.as_ref().map(|raster| LayerRef::Raster(raster.id));
     let layer = layer.and_then(|layer| state.layer_of(layer));
     let name = layer.map_or(PANEL.to_string(), |layer| layer.name.clone());
+    let layer = layer.map(|layer| layer.id);
     ui.heading(name);
     let Some(raster) = raster else {
         let mut preview = state.globe.preview;
@@ -293,6 +324,9 @@ fn body(ui: &mut egui::Ui, state: &mut AppState) {
         ui.separator();
         ramp_menus(ui, state, id);
     });
+    if let Some(layer) = layer {
+        copy_style_menu(ui, state, layer);
+    }
     if let Some(note) = state.ramp_note.as_ref().filter(|n| n.layer == Some(id)) {
         let color = if note.warning {
             ui.visuals().warn_fg_color

@@ -18,15 +18,15 @@ use super::expr_help;
 use super::pad::atlas::{
     ADD_HOLE, ADD_PAGE, AUTO_INTERVAL, AZIMUTH, BORDER, BORDER_COLOR, BORDER_DISTANCE,
     BORDER_STROKE, BORDER_STYLE, BORDER_STYLES, BORDER_WIDTH, CENTER_LATITUDE, CENTER_LONGITUDE,
-    CENTER_ON_FRAME, COPY_GLOBE_STYLE, COPY_TO_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE,
-    DELETE_PROJECTION, DISTORTION, EDITED, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR,
-    GRATICULE_WIDTH, GRID_COLOR, GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS,
-    LATITUDE, LAYOUT_GRID, LONGITUDE, MAP_NAME, MAP_STYLE, MAP_STYLE_NAME, NEATLINE,
-    NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE, OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR,
-    PIXEL_PREVIEW, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, RESET_TO_MAP_STYLE,
-    RESOLUTION, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR, SECOND_PARALLEL,
-    SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, TISSOT_CIRCLES, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
-    custom_row, edited_value, length_text, unit_name,
+    CENTER_ON_FRAME, COPY_GLOBE_STYLE, DELETE_MAP_STYLE, DELETE_PAGE, DELETE_PROJECTION,
+    DISTORTION, EDITED, FIRST_PARALLEL, FRAME_TABS, GRATICULE_COLOR, GRATICULE_WIDTH, GRID_COLOR,
+    GRID_SPACING, HEIGHT, INTERVAL, LABEL_FORMAT, LABEL_FORMATS, LATITUDE, LAYOUT_GRID, LONGITUDE,
+    MAP_NAME, MAP_STYLE, MAP_STYLE_NAME, NEATLINE, NEATLINE_COLOR, NEATLINE_WIDTH, NO_MAP_STYLE,
+    OBLIQUE, ORIENTATIONS, PAGE_NAME, PAPER_COLOR, PIXEL_PREVIEW, POLYGON, PROJECTION_NAME,
+    RECTANGLE, REFERENCE_GRID, RESET_TO_MAP_STYLE, RESOLUTION, ROTATION, SAVE_AS_MAP_STYLE,
+    SAVE_PROJECTION, SCALE, SECOND_COLOR, SECOND_PARALLEL, SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH,
+    TISSOT_CIRCLES, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH, custom_row, edited_value, length_text,
+    unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
@@ -748,8 +748,7 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
 }
 
 /// The buttons that set the style of a layer in a map from its map style
-/// or from the globe style, and the button that copies it to the globe
-/// style.
+/// or from the globe style.
 fn style_source(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, layer: LayerId) {
     let edited = state.doc.local_changes(frame.map).contains(&layer);
     if edited && ui.button(RESET_TO_MAP_STYLE).clicked() {
@@ -761,12 +760,6 @@ fn style_source(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord, la
         .clicked()
     {
         state.copy_globe_style(frame.map, layer);
-    }
-    if ui
-        .add_enabled(differs, egui::Button::new(COPY_TO_GLOBE_STYLE))
-        .clicked()
-    {
-        state.copy_to_globe_style(frame.map, layer);
     }
 }
 

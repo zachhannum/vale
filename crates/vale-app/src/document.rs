@@ -886,11 +886,11 @@ impl Document {
         self.set_map_style(target, layer, &globe)
     }
 
-    /// Makes a copy of the style of a layer in a map the globe style of the
-    /// layer. The record of a raster layer or an image layer takes the
+    /// Makes a copy of the style of a layer in a target the globe style of
+    /// the layer. The record of a raster layer or an image layer takes the
     /// colors and the look of the style. Returns false if nothing changed.
-    pub fn copy_to_globe_style(&mut self, map: MapId, layer: LayerId) -> bool {
-        let Some(style) = self.map_style(Target::Map(map), layer) else {
+    pub fn copy_to_globe_style(&mut self, target: impl Into<Target>, layer: LayerId) -> bool {
+        let Some(style) = self.map_style(target, layer) else {
             return false;
         };
         if self.layer_style(layer).as_ref() == Some(&style) {

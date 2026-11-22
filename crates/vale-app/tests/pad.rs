@@ -21646,3 +21646,120 @@ fn selected_rules_take_one_dash_pattern() {
     assert_eq!(kinds(&h), [StrokeKind::Dashed(lengths); 2]);
     check_controls(&h, "selected dash patterns");
 }
+
+/// A layout of the sample world with a project file, so that each edit is an
+/// undo step, and the first map of the atlas.
+fn mapped_pad(dir: &std::path::Path) -> (Pad, vale_store::MapId) {
+    let mut s = state();
+    s.session = Some(Session::open(&dir.join("p.gpkg"), &mut s.doc).unwrap());
+    let map = s.doc.project.atlas.maps[0].id;
+    let mut h = Harness::builder()
+        .with_size(vec2(BOARDS[0].0, BOARDS[0].1))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), s);
+    h.run_steps(3);
+    h.state_mut().save_waiting().unwrap();
+    (h, map)
+}
+
+/// The width of the stroke of the first rule of Rivers: in the globe style,
+/// or in the style of a map or a map style.
+fn rivers_width_in(h: &Pad, target: Option<vale_app::document::Target>) -> f64 {
+    let doc = &h.state().doc;
+    let rivers = doc.project.layers().iter().find(|l| l.name == "Rivers");
+    let rivers = rivers.unwrap().id;
+    let style = match target {
+        Some(target) => doc.map_style(target, rivers).unwrap(),
+        None => doc.layer_style(rivers).unwrap(),
+    };
+    style.style.rules[0].stroke().unwrap().width
+}
+
+#[test]
+fn copy_style_from_makes_the_style_of_a_map_the_globe_style() {
+    use vale_app::document::Target;
+    use vale_app::ui::pad::copy_style::{COPY_STYLE_FROM, map_row, map_style_row};
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, map) = mapped_pad(dir.path());
+    let rivers = h
+        .state()
+        .doc
+        .project
+        .layers()
+        .iter()
+        .find(|l| l.name == "Rivers");
+    let rivers = rivers.unwrap().id;
+    let before = rivers_width_in(&h, None);
+
+    // The map style has the old width, and the map has a wider stroke.
+    let style = h.state_mut().save_as_map_style(map).unwrap();
+    let s = h.state_mut();
+    let mut wide = s.doc.map_style(map, rivers).unwrap();
+    let mut stroke = wide.style.rules[0].stroke().unwrap();
+    stroke.width = before + 1.5;
+    wide.style.rules[0].set_stroke(Some(stroke));
+    assert!(s.doc.set_map_style(map, rivers, &wide));
+    s.touch();
+    s.save_waiting().unwrap();
+    let (map_name, style_name) = {
+        let atlas = &h.state().doc.project.atlas;
+        (atlas.maps[0].name.clone(), atlas.map_styles[0].name.clone())
+    };
+
+    let s = h.state_mut();
+    s.pad.open(Panel::Layers);
+    s.pad.layer = Some(LayerRef::Vector(rivers));
+    h.run_steps(2);
+    scroll_to_control(&mut h, COPY_STYLE_FROM);
+    check_controls(&h, "copy style from");
+    tap(&mut h, COPY_STYLE_FROM);
+    assert_eq!(h.state().pad.page, Some(Page::CopyStyle));
+    check_controls(&h, "copy style page");
+    // The map style has the globe style, so its row has a check.
+    assert_eq!(toggled(&h, &map_row(&map_name)), Some(false));
+    assert_eq!(toggled(&h, &map_style_row(&style_name)), Some(true));
+
+    tap(&mut h, &map_row(&map_name));
+    assert_eq!(h.state().pad.page, None);
+    assert_eq!(rivers_width_in(&h, None), before + 1.5);
+    // The maps and the map styles keep their styles.
+    assert_eq!(rivers_width_in(&h, Some(Target::Map(map))), before + 1.5);
+    assert_eq!(rivers_width_in(&h, Some(Target::Style(style))), before);
+
+    // The copy is one undo step.
+    h.state_mut().save_waiting().unwrap();
+    h.state_mut().undo();
+    h.run_steps(2);
+    assert_eq!(rivers_width_in(&h, None), before);
+    assert_eq!(rivers_width_in(&h, Some(Target::Map(map))), before + 1.5);
+}
+
+#[test]
+fn copy_style_from_gives_a_raster_layer_the_look_of_the_map() {
+    use vale_store::BlendMode;
+    let dir = tempfile::tempdir().unwrap();
+    let (mut h, map) = mapped_pad(dir.path());
+    let s = h.state_mut();
+    let height = s.add_height();
+    s.save_waiting().unwrap();
+    let layer = s.doc.project.raster_layer(height).unwrap().id;
+    let mut look = s.look(Some(map), layer).unwrap();
+    look.opacity = 0.25;
+    look.blend = BlendMode::Screen;
+    look.display = RasterDisplay::Grey;
+    s.set_look(Some(map), layer, look);
+    assert_ne!(s.look(None, layer), Some(look));
+
+    s.copy_to_globe_style(vale_app::document::Target::Map(map), layer);
+    assert_eq!(s.look(None, layer), Some(look));
+    let record = s.doc.project.raster(height).unwrap();
+    assert_eq!(record.opacity, 0.25);
+    assert_eq!(record.blend, BlendMode::Screen);
+    assert_eq!(record.display, RasterDisplay::Grey);
+    assert!(!s.differs_from_globe(map, layer));
+
+    s.save_waiting().unwrap();
+    s.undo();
+    assert_eq!(s.doc.project.raster(height).unwrap().opacity, 1.0);
+    assert_eq!(s.look(Some(map), layer), Some(look));
+}

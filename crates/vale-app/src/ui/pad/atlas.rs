@@ -65,7 +65,6 @@ pub fn map_style_row(name: &str) -> String {
     format!("Map style {name}")
 }
 pub const COPY_GLOBE_STYLE: &str = "Copy globe style";
-pub const COPY_TO_GLOBE_STYLE: &str = "Copy to globe style";
 pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
@@ -1876,9 +1875,6 @@ fn style_source_rows(
     let differs = state.differs_from_globe(map, layer);
     if widgets::button_row(ui, controls, COPY_GLOBE_STYLE, differs).clicked() {
         state.copy_globe_style(map, layer);
-    }
-    if widgets::button_row(ui, controls, COPY_TO_GLOBE_STYLE, differs).clicked() {
-        state.copy_to_globe_style(map, layer);
     }
 }
 
