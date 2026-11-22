@@ -12,7 +12,11 @@ fn fonts() -> Fonts {
 }
 
 fn run(pp: PolygonPlacement, rings: Vec<Vec<Point>>, text: &str, bounds: Rect) -> Labeling {
-    let input = LabelInput {
+    place_labels(&mut fonts(), &run_input(pp, rings, text, bounds))
+}
+
+fn run_input(pp: PolygonPlacement, rings: Vec<Vec<Point>>, text: &str, bounds: Rect) -> LabelInput {
+    LabelInput {
         bounds,
         classes: vec![LabelClass {
             name: "area".into(),
@@ -36,8 +40,7 @@ fn run(pp: PolygonPlacement, rings: Vec<Vec<Point>>, text: &str, bounds: Rect) -
         obstacles: vec![],
         parallels: Vec::new(),
         options: Options::default(),
-    };
-    place_labels(&mut fonts(), &input)
+    }
 }
 
 /// A band that bends through 140 degrees, 60 units wide.
@@ -659,4 +662,85 @@ fn a_polygon_below_the_minimum_area_gets_no_label() {
         ..pp
     };
     assert_eq!(run_all(pp, vec![rings], "Land").placed.len(), 1);
+}
+
+/// The span of the curved label of the band at each spread limit.
+fn band_spans(spreads: &[f64]) -> Vec<f64> {
+    let bounds = Rect::new(-100.0, -100.0, 700.0, 500.0);
+    spreads
+        .iter()
+        .map(|&max_spread| {
+            let pp = PolygonPlacement {
+                mode: PolygonMode::Curved,
+                max_spread,
+                ..PolygonPlacement::default()
+            };
+            let out = run(pp, vec![band()], "Curved Sea", bounds);
+            assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+            assert_eq!(out.placed[0].kind, CandidateKind::Polygon { curved: true });
+            glyph_path(&out.placed[0])
+        })
+        .collect()
+}
+
+/// The length of the path through the origins of the glyphs.
+fn glyph_path(label: &PlacedLabel) -> f64 {
+    let points: Vec<Point> = (label.glyph_runs.iter())
+        .flat_map(|r| &r.glyphs)
+        .map(|g| g.transform.translation().to_point())
+        .collect();
+    points.windows(2).map(|w| w[0].distance(w[1])).sum()
+}
+
+#[test]
+fn a_higher_spread_limit_never_narrows_a_curved_label() {
+    let spans = band_spans(&[0.0, 0.5, 1.0, 2.0, 4.0, 8.0]);
+    for w in spans.windows(2) {
+        assert!(w[1] >= w[0] - 1.0, "the spans {spans:?} shrink");
+    }
+}
+
+#[test]
+fn a_curved_label_spreads_to_fill_the_axis() {
+    // The axis of the band is an arc of 140 degrees with a radius of 300.
+    let axis = 300.0 * 140f64.to_radians();
+    let span = band_spans(&[8.0])[0];
+    assert!(
+        span > 0.7 * axis,
+        "the label spans {span} of an axis of {axis}"
+    );
+}
+
+#[test]
+fn a_horizontal_label_spreads_less_beside_an_obstacle() {
+    // A wide rectangle, with an obstacle near its right end.
+    let ring = vec![
+        Point::new(100.0, 100.0),
+        Point::new(500.0, 100.0),
+        Point::new(500.0, 160.0),
+        Point::new(100.0, 160.0),
+    ];
+    let pp = PolygonPlacement {
+        mode: PolygonMode::Horizontal,
+        max_spread: 8.0,
+        ..PolygonPlacement::default()
+    };
+    let bounds = Rect::new(0.0, 0.0, 600.0, 300.0);
+    let free = glyph_span(&run(pp.clone(), vec![ring.clone()], "Wide", bounds).placed[0]);
+    let mut input = run_input(pp, vec![ring], "Wide", bounds);
+    input.obstacles.push(Obstacle::rect(
+        Rect::new(360.0, 105.0, 480.0, 155.0),
+        Weight::Forbidden,
+    ));
+    let out = place_labels(&mut fonts(), &input);
+    assert_eq!(out.placed.len(), 1, "{:?}", out.unplaced);
+    let blocked = glyph_span(&out.placed[0]);
+    let advance = fonts()
+        .measure("Wide", &TextStyle::new("Noto Sans", 14.0))
+        .advance;
+    assert!(free > 250.0, "the free label spans {free}");
+    assert!(
+        blocked < free && blocked > 2.0 * advance,
+        "the label beside the obstacle spans {blocked}, the free label {free}"
+    );
 }
