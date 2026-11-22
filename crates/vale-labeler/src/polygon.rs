@@ -10,6 +10,7 @@ use crate::collide::OrientedBox;
 use crate::engine::Candidate;
 use crate::geom::{Measured, smooth, wrap_angle};
 use crate::graticule::{Parallels, upright};
+use crate::interleave;
 use crate::line::{along, parallel};
 use crate::model::{
     CandidateKind, LabelClass, Leader, LeaderAnchor, PolygonMode, PolygonPlacement, UnplacedReason,
@@ -273,6 +274,7 @@ fn outside(
             boxes,
             bounds,
             leader: Some(Leader { anchor, end }),
+            slide: [0.0; 2],
         });
     }
 }
@@ -1122,7 +1124,22 @@ impl Grid {
         }
     }
 
-    /// A candidate with one box per glyph, or `None` if some ink leaves the shape.
+    /// True if the ink of each glyph keeps the distance `pad` from the edge.
+    fn holds_glyphs(&self, shaped: &ShapedText, transforms: &[Affine], pad: f64) -> bool {
+        shaped.glyphs().zip(transforms).all(|((_, g), tf)| {
+            let Some(bb) = g.bbox else { return true };
+            [0.0, 0.5, 1.0]
+                .into_iter()
+                .flat_map(|u| [0.0, 0.5, 1.0].map(|v| (u, v)))
+                .all(|(u, v)| {
+                    let p = *tf * Point::new(bb.x0 + u * bb.width(), bb.y0 + v * bb.height());
+                    self.holds_ink(p, pad)
+                })
+        })
+    }
+
+    /// A candidate with one box per glyph, or `None` if some ink leaves the shape. The
+    /// candidate can slide as far as its ink stays in the shape.
     fn candidate(
         &self,
         shaped: &ShapedText,
@@ -1130,18 +1147,10 @@ impl Grid {
         margin: f64,
         pad: f64,
     ) -> Option<Candidate> {
-        for ((_, g), tf) in shaped.glyphs().zip(&transforms) {
-            let Some(bb) = g.bbox else { continue };
-            for (u, v) in [0.0, 0.5, 1.0]
-                .into_iter()
-                .flat_map(|u| [0.0, 0.5, 1.0].map(|v| (u, v)))
-            {
-                let p = *tf * Point::new(bb.x0 + u * bb.width(), bb.y0 + v * bb.height());
-                if !self.holds_ink(p, pad) {
-                    return None;
-                }
-            }
+        if !self.holds_glyphs(shaped, &transforms, pad) {
+            return None;
         }
+        let slide = interleave::room(&transforms, |t| self.holds_glyphs(shaped, t, pad));
         let (boxes, bounds) = glyph_boxes(shaped, &transforms, margin);
         Some(Candidate {
             kind: CandidateKind::Polygon { curved: false },
@@ -1150,6 +1159,7 @@ impl Grid {
             boxes,
             bounds,
             leader: None,
+            slide,
         })
     }
 

@@ -265,6 +265,11 @@ fn slot_candidates(
     };
     let m = extend(slot.m, e);
 
+    let slides = lp.anchor == LineAnchor::Best
+        && matches!(
+            lp.orientation,
+            LineOrientation::Curved | LineOrientation::Straight
+        );
     let mut out: Vec<Candidate> = Vec::new();
     let mut curved = Curved::default();
     let mut rejected_for_turn = false;
@@ -300,8 +305,15 @@ fn slot_candidates(
                 Ok(None) => {}
                 Ok(Some((transforms, extra_cost))) => {
                     let (boxes, bounds) = glyph_boxes(shaped, &transforms, class.margin);
+                    // Text along the line can slide in the slot.
+                    let slide = if slides {
+                        [(s0 - lo).max(0.0), (hi - s0 - span).max(0.0)]
+                    } else {
+                        [0.0; 2]
+                    };
                     out.push(Candidate {
                         leader: None,
+                        slide,
                         kind: CandidateKind::Line { side, start: s0 },
                         cost: cost + extra_cost,
                         transforms,

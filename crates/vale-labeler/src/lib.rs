@@ -9,6 +9,7 @@ mod fallback;
 mod geom;
 mod graticule;
 mod improve;
+mod interleave;
 mod line;
 mod model;
 mod obstacle;

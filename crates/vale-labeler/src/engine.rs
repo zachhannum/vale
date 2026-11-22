@@ -5,7 +5,7 @@ use crate::graticule::Parallels;
 use crate::model::*;
 use crate::obstacle::Obstacles;
 use crate::text::{Fonts, ShapedText};
-use crate::{fallback, improve, line, point, polygon};
+use crate::{fallback, improve, interleave, line, point, polygon};
 use kurbo::{Affine, Point, Rect};
 use std::collections::HashMap;
 
@@ -20,6 +20,8 @@ pub(crate) struct Candidate {
     /// Union of the box AABBs.
     pub bounds: Rect,
     pub leader: Option<Leader>,
+    /// How far the glyphs can slide back and forward along their path, in page units.
+    pub slide: [f64; 2],
 }
 
 /// One label to place: a feature, or one repeat of a line or polygon feature.
@@ -126,6 +128,39 @@ impl State {
                 }
             }
         }
+    }
+
+    /// Pushes every placed instance other than `skip` with a glyph box that touches `boxes`,
+    /// background or not, once each.
+    pub fn letters(
+        &mut self,
+        instances: &[Instance],
+        boxes: &[OrientedBox],
+        skip: usize,
+        out: &mut Vec<usize>,
+    ) {
+        for b in boxes {
+            self.grid.query(b.aabb(), &mut self.scratch);
+            for &id in &self.scratch {
+                let id = id as usize;
+                if id == skip || out.contains(&id) || self.chosen[id].is_none() {
+                    continue;
+                }
+                if self.boxes(instances, id).iter().any(|o| o.intersects(b)) {
+                    out.push(id);
+                }
+            }
+        }
+    }
+
+    /// The candidate of a placed instance.
+    pub fn chosen_candidate<'a>(&self, instances: &'a [Instance], inst: usize) -> &'a Candidate {
+        &instances[inst].candidates[self.chosen[inst].expect("placed instance")]
+    }
+
+    /// The glyph boxes of a placed instance.
+    pub fn boxes<'a>(&self, instances: &'a [Instance], inst: usize) -> &'a [OrientedBox] {
+        &self.chosen_candidate(instances, inst).boxes
     }
 
     pub fn insert(&mut self, instances: &[Instance], inst: usize, cand: usize) {
@@ -324,7 +359,6 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
             .then_with(|| fa.id.cmp(&fb.id))
             .then_with(|| ia.repeat.cmp(&ib.repeat))
     });
-    let mut state = State::new(bounds, instances.len());
     let dup = improve::Dup::new(
         instances
             .iter()
@@ -336,25 +370,60 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
         &input.classes,
     );
     let mut conflict_buf: Vec<usize> = Vec::new();
-    for &i in &order {
-        let n = instances[i].candidates.len();
-        if let Some(ci) = first_free(&instances, &mut state, &dup, i, 0..n, &mut conflict_buf) {
-            state.insert(&instances, i, ci);
+    let mut state = place(&instances, &order, &dup, input);
+
+    // Step 4b: interleave. Labels slide so that their gaps hold the letters of the labels that
+    // cross them. A label pays for each of its letters on a letter of a label that it does not
+    // conflict with, because one of the two is a background label.
+    let shaped_of = |fi: usize| &valid.iter().find(|(v, _)| *v == fi).unwrap().1;
+    let texts: Vec<interleave::Text> = instances
+        .iter()
+        .map(|inst| {
+            let f = &input.features[inst.feature_index];
+            interleave::Text {
+                shaped: shaped_of(inst.feature_index),
+                margin: input.classes[f.class].margin,
+            }
+        })
+        .collect();
+    let mut aimed = interleave::aim(&instances, &mut state, &texts, |i, boxes| {
+        let inst = &instances[i];
+        scorer.obstacle_cost(inst.feature_index, inst.soft_margin, boxes)
+    });
+    let backgrounds = instances
+        .iter()
+        .enumerate()
+        .any(|(i, inst)| inst.background && state.chosen[i].is_some());
+    let mut changed = aimed.iter().any(|a| !a.is_empty());
+    for (i, new) in aimed.iter_mut().enumerate() {
+        instances[i].candidates.append(new);
+    }
+    if backgrounds {
+        for i in 0..instances.len() {
+            for ci in 0..instances[i].candidates.len() {
+                let boxes = &instances[i].candidates[ci].boxes;
+                let n = interleave::on_letters(&instances, &mut state, boxes, i);
+                if n > 0 {
+                    instances[i].candidates[ci].cost += interleave::ON_LETTER * n as f64;
+                    changed = true;
+                }
+            }
         }
     }
-
-    // Step 4: improve.
-    let pen = improve::penalties(&instances, &order);
-    if input.options.improve {
-        improve::improve(
-            &instances,
-            &mut state,
-            &order,
-            &dup,
-            &pen,
-            input.options.seed,
-        );
+    if changed {
+        for (i, inst) in instances.iter_mut().enumerate() {
+            let chosen = state.chosen[i];
+            let mut ranked: Vec<(usize, Candidate)> = std::mem::take(&mut inst.candidates)
+                .into_iter()
+                .enumerate()
+                .collect();
+            ranked.sort_by(|a, b| a.1.cost.total_cmp(&b.1.cost));
+            state.chosen[i] = chosen.and_then(|c| ranked.iter().position(|(k, _)| *k == c));
+            inst.candidates = ranked.into_iter().map(|(_, c)| c).collect();
+        }
+        interleave::settle(&instances, &mut state, &order, &dup);
     }
+    let pen = improve::penalties(&instances, &order);
 
     // Step 5: fall back.
     for &i in &order {
@@ -444,7 +513,6 @@ pub(crate) fn run(fonts: &mut Fonts, input: &LabelInput) -> Labeling {
     let total_cost = improve::energy(&instances, &state, &pen);
 
     // Step 6: output.
-    let shaped_of = |fi: usize| &valid.iter().find(|(v, _)| *v == fi).unwrap().1;
     let mut placed: Vec<PlacedLabel> = Vec::new();
     let mut rep_unplaced: Vec<UnplacedLabel> = Vec::new();
     for (i, inst) in instances.iter().enumerate() {
@@ -763,6 +831,23 @@ impl Generator<'_> {
 }
 
 /// The first candidate of `range` that no placed label blocks.
+/// Places the instances greedily in `order`, then improves the placement.
+fn place(instances: &[Instance], order: &[usize], dup: &improve::Dup, input: &LabelInput) -> State {
+    let mut state = State::new(input.bounds, instances.len());
+    let mut buf: Vec<usize> = Vec::new();
+    for &i in order {
+        let n = instances[i].candidates.len();
+        if let Some(ci) = first_free(instances, &mut state, dup, i, 0..n, &mut buf) {
+            state.insert(instances, i, ci);
+        }
+    }
+    if input.options.improve {
+        let pen = improve::penalties(instances, order);
+        improve::improve(instances, &mut state, order, dup, &pen, input.options.seed);
+    }
+    state
+}
+
 fn first_free(
     instances: &[Instance],
     state: &mut State,
@@ -785,6 +870,17 @@ struct Scorer<'a> {
 }
 
 impl Scorer<'_> {
+    /// The cost of the obstacles under `boxes` for feature `own`, or `None` if the boxes leave
+    /// the bounds or a forbidden obstacle blocks them.
+    fn obstacle_cost(&self, own: usize, soft_margin: f64, boxes: &[OrientedBox]) -> Option<f64> {
+        if !boxes.iter().all(|b| b.is_inside(self.bounds)) {
+            return None;
+        }
+        let text: Vec<OrientedBox> = boxes.iter().map(|b| b.inflate(-soft_margin)).collect();
+        self.obstacles
+            .cost(own, &text, &mut Vec::new(), &mut Vec::new())
+    }
+
     /// The kept candidates of feature `own`, sorted by cost, or the reason that none is kept,
     /// and the candidates that a forbidden obstacle blocks, sorted by cost. Only the text inside
     /// a soft margin of `soft_margin` avoids obstacles.

@@ -20,7 +20,7 @@
 84	Riga	TopLeft	907.7	380.3
 95	Zagreb	BottomLeft	780.5	795.2
 96	Tallinn	TopRight	942.0	292.9
-104	Beirut	TopRight	1420.1	1068.2
+104	Beirut	TopLeft	1375.8	1068.2
 105	Tbilisi	TopRight	1544.0	716.3
 112	Belgrade	BottomLeft	885.3	816.5
 118	Tirana	TopRight	938.5	919.6
@@ -34,7 +34,7 @@
 145	Ankara	TopRight	1284.0	891.6
 146	Budapest	TopRight	904.6	713.8
 148	Bucharest	TopLeft	1019.3	787.1
-149	Damascus	BottomRight	1459.2	1089.1
+149	Damascus	TopRight	1459.2	1072.8
 150	Lisbon	TopRight	174.6	959.5
 152	Oslo	TopRight	693.5	301.7
 153	Warsaw	TopRight	919.2	547.7
@@ -59,7 +59,7 @@
 223	Moscow	TopRight	1210.1	346.9
 226	Rome	TopRight	748.3	915.9
 235	Paris	TopRight	511.4	670.3
-1000004	Donau	LineAbove	881.3	762.1
+1000004	Donau	LineAbove	880.3	762.2
 2000005	KAZAKHSTAN	Curved	1522.8	417.0
 2000018	RUSSIA	Curved	1311.4	230.0
 2000021	NORWAY	Curved	642.9	267.3
@@ -90,7 +90,7 @@
 2000141	ITALY	Curved	653.2	832.5
 2000143	UNITED KINGDOM	Curved	415.2	560.0
 2000144	ICELAND	Curved	249.5	55.2
-2000146	GEORGIA	Curved	1485.9	720.5
+2000146	GEORGIA	Curved	1487.8	727.4
 2000151	FINLAND	Curved	920.8	191.9
 2000152	SLOVAKIA	Curved	889.7	668.3
 2000153	CZECHIA	Curved	784.8	652.1

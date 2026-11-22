@@ -74,6 +74,7 @@ pub(crate) fn candidates(
             let (boxes, bounds) = glyph_boxes(shaped, &transforms, class.margin);
             return Some(Candidate {
                 leader: None,
+                slide: [0.0; 2],
                 kind: CandidateKind::Point(pos),
                 cost,
                 transforms,
@@ -102,6 +103,7 @@ pub(crate) fn candidates(
         .inflate(class.margin);
         Some(Candidate {
             leader: None,
+            slide: [0.0; 2],
             kind: CandidateKind::Point(pos),
             cost,
             transforms,
