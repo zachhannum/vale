@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use vale_store::{GeometryKind, LayerId};
+use vale_store::{BlendMode, GeometryKind, LayerId};
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
     Color, DashPattern, DashPreset, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask,
@@ -171,7 +171,7 @@ fn the_json_has_a_version() {
     let json = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     let root: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(root["version"], STYLE_VERSION);
-    assert_eq!(STYLE_VERSION, 9);
+    assert_eq!(STYLE_VERSION, 10);
 }
 
 #[test]
@@ -274,11 +274,11 @@ fn json_errors() {
         root.to_string()
     };
     let newer = edit(&|m| {
-        m.insert("version".into(), 10.into());
+        m.insert("version".into(), 11.into());
     });
     assert_eq!(
         LayerStyle::from_json(&newer),
-        Err(StyleError::Version(Some(10)))
+        Err(StyleError::Version(Some(11)))
     );
     let none = edit(&|m| {
         m.remove("version");
@@ -556,7 +556,7 @@ fn solid_json_is_unchanged() {
     let json = line_with(StrokeKind::Solid).to_json();
     let expected = concat!(
         r##"{"label":{"color":"#2864a0","enabled":false,"font":null,"italic":true,"priority_field":null,"size":11.0,"text":""},"##,
-        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":9}"##,
+        r##""rules":[{"filter":"","name":"Default","symbolizers":[{"color":"#0000ff","type":"stroke","width":2.0}]}],"version":10}"##,
     );
     assert_eq!(json, expected);
 }
@@ -1086,7 +1086,7 @@ fn label_text_round_trips() {
     let mut s = LayerStyle::default_for(GeometryKind::Point, 0, &[]);
     s.label.text = "concat(name, ' (' || round(elevation) || ' m)')".to_owned();
     let json = s.to_json();
-    assert!(json.contains("\"version\":9"));
+    assert!(json.contains("\"version\":10"));
     assert_eq!(LayerStyle::from_json(&json).unwrap(), s);
 }
 
@@ -1319,4 +1319,46 @@ fn a_dash_pattern_knows_its_preset_and_keeps_valid() {
     assert_eq!(DashPattern::DASHED.cut(2.0), vec![8.0, 4.0], "flat ends");
     assert!(DashPattern::DASH_DOT.has_dots());
     assert!(!DashPattern::DASHED.has_dots());
+}
+
+#[test]
+fn the_opacity_and_the_blend_mode_of_a_vector_layer_round_trip() {
+    let mut style = LayerStyle::default_for(GeometryKind::Polygon, 0, &[]);
+    assert_eq!((style.opacity, style.blend), (1.0, BlendMode::Normal));
+    style.opacity = 0.5;
+    style.blend = BlendMode::Multiply;
+    let json: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    assert_eq!(
+        (json["opacity"].as_f64(), json["blend"].as_str()),
+        (Some(0.5), Some("multiply"))
+    );
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!((back.opacity, back.blend), (0.5, BlendMode::Multiply));
+    assert_eq!(back, style);
+
+    // A value out of range gets the nearest end, and an unknown mode is Normal.
+    let mut json = json;
+    json["opacity"] = 1.5.into();
+    json["blend"] = "plus".into();
+    let back = LayerStyle::from_json(&json.to_string()).unwrap();
+    assert_eq!((back.opacity, back.blend), (1.0, BlendMode::Normal));
+}
+
+#[test]
+fn a_style_with_no_opacity_and_no_blend_mode_reads_as_opaque_and_normal() {
+    let mut style = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    style.opacity = 0.25;
+    style.blend = BlendMode::Screen;
+    let mut json: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    // A style of version 9 has no opacity and no blend mode.
+    json["version"] = 9.into();
+    let root = json.as_object_mut().unwrap();
+    root.remove("opacity");
+    root.remove("blend");
+    let back = LayerStyle::from_json(&json.to_string()).unwrap();
+    assert_eq!((back.opacity, back.blend), (1.0, BlendMode::Normal));
+
+    // The defaults are not in the JSON.
+    let plain = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
+    assert!(!plain.contains("opacity") && !plain.contains("blend"));
 }

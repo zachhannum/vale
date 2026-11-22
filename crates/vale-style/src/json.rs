@@ -15,7 +15,7 @@ use crate::{
 };
 
 /// The version of the style JSON that this build writes. It reads this version and each earlier version.
-pub const STYLE_VERSION: u64 = 9;
+pub const STYLE_VERSION: u64 = 10;
 
 /// Why a style JSON did not load.
 #[derive(Clone, Debug, PartialEq)]
@@ -77,6 +77,12 @@ impl LayerStyle {
                 "outline": w.outline,
             });
         }
+        if self.opacity != 1.0 {
+            root["opacity"] = json!(f64::from(self.opacity));
+        }
+        if self.blend != BlendMode::Normal {
+            root["blend"] = json!(self.blend.id());
+        }
         root.to_string()
     }
 
@@ -97,11 +103,14 @@ impl LayerStyle {
         let label = read_label(object(root, "label")?)?;
         let mask = root.get("mask").and_then(read_mask);
         let flow_height = (root.get("flow_height").and_then(Json::as_str)).map(str::to_owned);
+        let (opacity, blend) = read_mix(root);
         Ok(LayerStyle {
             style: Style { rules, mask },
             label,
             flow_height,
             weights: read_weights(root.get("weights")),
+            opacity,
+            blend,
         })
     }
 }
@@ -644,7 +653,7 @@ fn read_line(j: Option<&Json>) -> Result<StopLine, StyleError> {
     })
 }
 
-/// The opacity and the blend mode of a raster or an image.
+/// The opacity and the blend mode of a layer. A missing value reads as 1 and Normal.
 fn read_mix(m: &Map<String, Json>) -> (f32, BlendMode) {
     let opacity = m.get("opacity").and_then(Json::as_f64).unwrap_or(1.0) as f32;
     let opacity = if opacity.is_nan() {
