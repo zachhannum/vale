@@ -4755,3 +4755,61 @@ fn a_flow_stroke_reads_the_height_layer_of_its_style() {
     doc.entry_mut(id).unwrap().style.flow_height = Some("Gone".into());
     assert_eq!(area(&doc, &mut pipeline), 0.0);
 }
+
+#[test]
+fn the_vector_groups_of_a_frame_split_at_its_raster_layers() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let map = doc.first_map();
+    let p = &mut doc.project;
+    let raster = p.add_raster("Height".into(), 64, "m".into(), 0.0, 1.0);
+    let layer = p.raster_layer(raster).unwrap().id;
+    let world = p.world_collection();
+    let top = p.add_collection("Top").unwrap();
+    assert!(p.set_in_collection(top, layer, true));
+    assert!(p.set_in_collection(world, layer, false));
+
+    let land = Color::rgb(244, 241, 232);
+    let groups = |doc: &Document, pipeline: &mut Pipeline| {
+        let atlas = &doc.project.atlas;
+        let frame = atlas.frame(id).unwrap();
+        let target = FrameTarget {
+            origin: Point::ZERO,
+            pts_per_mm: PT_PER_MM,
+        };
+        let part = kurbo::Rect::new(0.0, 0.0, 1e4, 1e4);
+        let mut f = fonts().unwrap();
+        let detail = vale_app::pipeline::FrameDetail::Full;
+        let composed =
+            (pipeline.compose_frame_over(doc, frame, target, part, &mut f, Quality::Final, detail))
+                .unwrap();
+        let groups = composed.vector_groups();
+        assert_eq!(groups.len(), composed.cuts.len() + 1);
+        for group in &groups {
+            assert!(matches!(group.items.first(), Some(Item::PushClip { .. })));
+            assert!(matches!(group.items.last(), Some(Item::PopClip)));
+        }
+        (groups.iter())
+            .map(|g| {
+                let fills = g.items.iter();
+                fills
+                    .filter(|i| matches!(i, Item::Fill { color, .. } if *color == land))
+                    .count()
+            })
+            .collect::<Vec<_>>()
+    };
+
+    // The raster layer is on top of the land: the land is below the cut.
+    assert!(doc.project.set_map_stack(map, vec![world, top]));
+    let fills = groups(&doc, &mut pipeline);
+    assert_eq!(fills.len(), 2);
+    assert!(fills[0] > 0 && fills[1] == 0, "{fills:?}");
+
+    // The raster layer is below all the layers: the first group is empty.
+    assert!(doc.project.set_map_stack(map, vec![top, world]));
+    let fills = groups(&doc, &mut pipeline);
+    assert_eq!(fills.len(), 2);
+    assert!(fills[0] == 0 && fills[1] > 0, "{fills:?}");
+}
