@@ -208,6 +208,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let measuring = state.measuring();
     follow_selection(state);
     super::keep_one_panel(state, class);
+    super::pin_sheet(&mut state.pad);
     // On a compact screen, the tool strip and the context strip are rows at
     // the bottom, as in the globe workspace.
     let row = class == WidthClass::Compact;

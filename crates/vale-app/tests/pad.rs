@@ -151,14 +151,44 @@ fn drag(h: &mut Pad, from: Pos2, to: Pos2, force: Option<f32>) {
     h.run_steps(3);
 }
 
-/// Pulls an open sheet that covers the tool strip down to its title row.
+/// Pulls an open sheet of the row layout down to its title row, above the
+/// tool strip.
 fn lower_sheet(h: &mut Pad) {
     let rects = h.state().pad.rects.unwrap();
-    if let Some(sheet) = rects.sheet.filter(|_| rects.row && rects.tool_cells == 0) {
+    if let Some(sheet) = rects.sheet.filter(|_| rects.row) {
         let bar = pos2(sheet.center().x, sheet.top() + 26.0);
         drag(h, bar, bar + vec2(0.0, sheet.height()), None);
-        assert!(h.state().pad.rects.unwrap().tool_cells > 0);
+        let rects = h.state().pad.rects.unwrap();
+        assert_eq!(h.state().pad.sheet_offset, rects.sheet_travel);
+        assert!(rects.tool_cells > 0);
     }
+}
+
+/// Puts an open sheet of the row layout at its full height, as a user
+/// pulls it up to show more of its panel.
+fn sheet_up(h: &mut Pad) {
+    let rects = h.state().pad.rects.unwrap();
+    if rects.row && rects.sheet.is_some() && h.state().pad.sheet_offset > -rects.sheet_rise {
+        h.state_mut().pad.sheet_offset = -rects.sheet_rise;
+        // The sheet moves to its place on a spring.
+        let mut last = None;
+        for _ in 0..60 {
+            h.step();
+            let sheet = h.state().pad.rects.unwrap().sheet;
+            if sheet == last {
+                break;
+            }
+            last = sheet;
+        }
+        h.run_steps(2);
+    }
+}
+
+/// Opens the Layers panel. A sheet goes up to its full height, so it shows
+/// each row of the list.
+fn open_layers(h: &mut Pad) {
+    open_panel(h, "Layers");
+    sheet_up(h);
 }
 
 /// Opens or closes the Toolbox panel.
@@ -176,8 +206,12 @@ fn open_panel(h: &mut Pad, name: &str) {
 const STRIP_SIZE: &str = "Strip size";
 const STRIP_STRENGTH: &str = "Strip strength";
 
-/// A tap of a finger on the middle of a control.
+/// A tap of a finger on the middle of a control. If the control is below
+/// an open sheet, the sheet goes up to its full height first.
 fn tap(h: &mut Pad, name: &str) {
+    if control(h, name).is_none() {
+        sheet_up(h);
+    }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     let pos = rect.center();
     touch(h, egui::TouchPhase::Start, pos, None);
@@ -240,6 +274,9 @@ fn quick_pen_tap(h: &mut Pad, name: &str) {
 
 /// A `quick_tap`. A force makes it a pen.
 fn quick_touch(h: &mut Pad, name: &str, force: Option<f32>) {
+    if control(h, name).is_none() {
+        sheet_up(h);
+    }
     let pos = control(h, name)
         .unwrap_or_else(|| panic!("no control `{name}`"))
         .center();
@@ -479,8 +516,10 @@ fn check_controls(h: &Pad, what: &str) {
                 let view = in_view && view_rows().contains(&name);
                 let add = add || view;
                 let add = add || in_collections && in_collection_menu(h, name);
-                let stop = in_stop
-                    && (name.starts_with(vale_app::ui::pad::raster::COLOR) || raster_stop(name));
+                // The row "Color ramps" of the panel is not a row of the card.
+                let color = name.starts_with(vale_app::ui::pad::raster::COLOR)
+                    && name != vale_app::ui::pad::raster::COLOR_RAMPS;
+                let stop = in_stop && (color || raster_stop(name));
                 menu || kind || modes || add || stop || (in_menu && name == "Projection")
             };
             // The edit menu and the menu of the values of a field cover the
@@ -604,11 +643,9 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
             "Brush settings",
         ] {
             let tile = name == "Layers" || name == select::ATTRIBUTES;
-            if !tile && control(&h, name).is_none() {
-                // The open sheets cover the Brush button.
-                assert_eq!(name, "Brush settings");
-                tap(&mut h, "Close Attributes");
-                tap(&mut h, "Close Layers");
+            // The Brush button shows below an open sheet.
+            if name == "Brush settings" {
+                assert!(control(&h, name).is_some(), "{size:?}");
             }
             if tile {
                 open_panel(&mut h, name);
@@ -649,6 +686,7 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         pad.layer = None;
         pad.open(Panel::Layers);
         h.run_steps(2);
+        sheet_up(&mut h);
         for name in [
             "Layer Height",
             "Layer Land",
@@ -775,6 +813,8 @@ fn the_layers_panel_adds_selects_and_hides_raster_layers() {
             ["Height", "Raster", "Land", "Rivers", "Places"],
             "{what}"
         );
+        // A sheet at its full height shows each row.
+        sheet_up(&mut h);
         check_controls(&h, &format!("{what} with two raster layers"));
         let top = |name: &str| control(&h, name).unwrap().top();
         let names = layer_names(&h);
@@ -1316,7 +1356,7 @@ fn layer_names(h: &Pad) -> Vec<String> {
 fn you_make_rename_hide_and_delete_a_layer() {
     for size in [BOARDS[0], BOARDS[3]] {
         let mut h = pad(size);
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         tap(&mut h, ADD_LAYER);
         assert!(h.state().pad.add);
         let (menu, layers) = (
@@ -1395,12 +1435,15 @@ fn a_press_outside_closes_the_menu_of_the_new_layers() {
 fn the_arrow_of_a_row_opens_the_panel_of_the_layer() {
     for size in BOARDS {
         let mut h = painted_pad(size);
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         let list = panel(&h, Panel::Layers).unwrap();
         let rivers = vector(&h, "Rivers");
         tap(&mut h, "Open Rivers");
         assert_eq!(h.state().pad.layer, Some(LayerRef::Vector(rivers)));
         assert_eq!(h.state().selected_layer, Some(LayerRef::Vector(rivers)));
+        // The rows of the tools of the layer change the room of a sheet,
+        // and a user pulls it up again.
+        sheet_up(&mut h);
         let open = panel(&h, Panel::Layers).unwrap();
         assert_eq!(open.left_top(), list.left_top(), "{size:?}");
         assert_eq!(open.width(), list.width(), "{size:?}");
@@ -1447,7 +1490,7 @@ fn hold(h: &mut Pad, name: &str) -> Pos2 {
 fn a_hold_and_a_drag_change_the_order() {
     for size in [BOARDS[0], BOARDS[3]] {
         let mut h = pad(size);
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         let land = vector(&h, "Land");
         let places = control(&h, "Layer Places").unwrap().center();
         let from = hold(&mut h, "Layer Land");
@@ -1462,6 +1505,9 @@ fn a_hold_and_a_drag_change_the_order() {
         touch(&mut h, egui::TouchPhase::End, places, None);
         h.run_steps(3);
         assert_eq!(layer_list(&h).lift, None);
+        // The rows of the tools of the layer change the room of a sheet,
+        // and a user pulls it up again.
+        sheet_up(&mut h);
         assert_eq!(
             layer_names(&h),
             ["Height", "Rivers", "Places", "Land"],
@@ -1523,7 +1569,7 @@ fn a_drag_moves_a_raster_row_past_a_vector_row_and_undo_puts_it_back() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         let before = ["Height", "Land", "Rivers", "Places"];
         assert_eq!(layer_names(&h), before, "{what}");
         let height = h.state().doc.project.rasters()[0].id;
@@ -1746,7 +1792,7 @@ fn a_swipe_shows_delete_a_tap_deletes_and_undo_brings_it_back() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         assert!(control(&h, "Delete Rivers").is_none(), "{what}");
         swipe(&mut h, "Rivers", -120.0);
         let rivers = vector(&h, "Rivers");
@@ -2844,6 +2890,8 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
             let names = SWITCHES.iter().chain(&FIELDS);
             names.filter(|name| control(h, name).is_some()).count()
         };
+        // A sheet goes up to its full height.
+        sheet_up(&mut h);
         let sheet = h.state().pad.rects.unwrap().sheet.is_some();
         if sheet {
             assert_eq!(shown(&h), 0, "{size:?}");
@@ -4813,11 +4861,18 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         tap(&mut h, "Globe");
         assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
-        // A panel is a sheet at the bottom, and one sheet shows at a time.
+        // A panel is a sheet above the card of the tool and the strip, and
+        // one sheet shows at a time. The sheet opens at half the room
+        // between the top row and the card.
         open_panel(&mut h, "Layers");
-        let sheet = Rect::from_min_size(pos2(0.0, 382.0), vec2(size.0, 452.0));
+        let r = h.state().pad.rects.unwrap();
+        let card = r.brush.unwrap();
+        assert_eq!(card.bottom(), r.tools.top() - 8.0);
+        assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
+        let floor = card.top() - 8.0;
+        let sheet = Rect::from_min_max(pos2(0.0, (92.0 + floor) / 2.0), pos2(size.0, floor));
         assert_eq!(panel(&h, Panel::Layers), Some(sheet));
-        assert_eq!(h.state().pad.rects.unwrap().readout, None);
+        assert_eq!(r.readout, None);
         toolbox(&mut h);
         assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
     }
@@ -4827,33 +4882,41 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
 fn you_pull_the_sheet_down_to_its_title_row() {
     let mut h = painted_pad(BOARDS[3]);
     open_panel(&mut h, "Layers");
-    assert!(control(&h, "Open Height").is_some());
-    let bar = pos2(150.0, 408.0);
+    // The sheet opens at half the room between the top row and the Brush
+    // card, and the card shows below it.
+    let floor = h.state().pad.rects.unwrap().brush.unwrap().top() - 8.0;
+    let open = (92.0 + floor) / 2.0;
+    let sheet = panel(&h, Panel::Layers).unwrap();
+    assert_eq!((sheet.top(), sheet.bottom()), (open, floor));
+    assert!(control(&h, "Layer Places").is_some());
+    assert!(control(&h, "Brush settings").is_some());
+    let bar = pos2(150.0, open + 26.0);
     drag(&mut h, bar, bar + vec2(0.0, 250.0), None);
     let sheet = panel(&h, Panel::Layers).unwrap();
-    assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
-    // The title row shows, and its close button is above the bottom band.
-    assert!(control(&h, "Open Height").is_none());
-    assert_eq!(
-        control(&h, "Close Layers").unwrap().bottom(),
-        834.0 - 20.0 - 4.0
-    );
-    // The Brush card has room again.
+    assert_eq!(sheet.top(), floor - 52.0);
+    // The title row shows, above the Brush card.
+    assert!(control(&h, "Layer Places").is_none());
+    assert_eq!(control(&h, "Close Layers").unwrap().bottom(), floor - 4.0);
     assert!(control(&h, "Brush settings").is_some());
 
     // A short pull does not close the sheet, and a pull up opens it.
-    let bar = pos2(150.0, 790.0);
-    drag(&mut h, bar, bar - vec2(0.0, 300.0), None);
-    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 382.0);
-    let bar = pos2(150.0, 408.0);
+    let bar = pos2(150.0, sheet.top() + 28.0);
+    drag(
+        &mut h,
+        bar,
+        bar - vec2(0.0, sheet.top() - open - 50.0),
+        None,
+    );
+    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), open);
+    let bar = pos2(150.0, open + 26.0);
     drag(&mut h, bar, bar + vec2(0.0, 60.0), None);
-    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 382.0);
+    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), open);
     // A pull up gives the sheet the full height, below the top row.
     drag(&mut h, bar, bar - vec2(0.0, 300.0), None);
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 92.0);
     let bar = pos2(150.0, 118.0);
     drag(&mut h, bar, bar + vec2(0.0, 200.0), None);
-    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 382.0);
+    assert_eq!(panel(&h, Panel::Layers).unwrap().top(), open);
 
     tap(&mut h, "Close Layers");
     assert!(h.state().pad.panels.is_empty());
@@ -4864,15 +4927,26 @@ fn the_layout_follows_the_turn_of_the_ipad() {
     let mut h = pad(BOARDS[0]);
     open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
-    for size in [BOARDS[1], BOARDS[3], BOARDS[0]] {
+    for size in [BOARDS[1], BOARDS[3]] {
         h.set_size(size.into());
         h.run_steps(3);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert_eq!(h.state().globe.rect, screen);
         check_controls(&h, &format!("turned to {size:?}"));
+        // A compact screen keeps one panel, the panel of the focus.
+        let compact = size.0 < 600.0;
+        assert!(h.state().pad.is_open(Panel::Brush), "{size:?}");
+        assert_eq!(h.state().pad.is_open(Panel::Layers), !compact, "{size:?}");
+        if compact {
+            assert_eq!(h.state().pad.dock().panes.len(), 1);
+        }
     }
+    // The panel of the sheet stays open when the screen is wide again.
+    h.set_size(BOARDS[0].into());
+    h.run_steps(3);
+    check_controls(&h, "turned back");
     assert!(h.state().pad.is_open(Panel::Brush));
-    assert!(h.state().pad.is_open(Panel::Layers));
+    assert!(!h.state().pad.is_open(Panel::Layers));
 }
 
 #[test]
@@ -5896,16 +5970,13 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
             "{what}"
         );
         check_controls(&h, &format!("{what} with a selected stop"));
-        let shade = format!("{COLOR} shade");
-        for name in [STOP_VALUE, &shade] {
-            assert!(control(&h, name).is_some(), "{what}: no {name}");
-        }
+        assert!(control(&h, STOP_VALUE).is_some(), "{what}: no {STOP_VALUE}");
         // Above a sheet, the card has less room and scrolls.
+        let shade = format!("{COLOR} shade");
         if h.state().pad.rects.unwrap().sheet.is_none() {
-            assert!(
-                control(&h, REMOVE_STOP).is_some(),
-                "{what}: no {REMOVE_STOP}"
-            );
+            for name in [&shade, REMOVE_STOP] {
+                assert!(control(&h, name).is_some(), "{what}: no {name}");
+            }
         }
         let stop = h.state().pad.style.card.unwrap();
         assert!(screen.contains_rect(stop), "{what}: {stop:?}");
@@ -5918,8 +5989,9 @@ fn the_panel_of_a_raster_layer_fits_the_ipad_layout() {
         tap_handle(&mut h, sea);
         assert_eq!(h.state().globe.preview.selected, Some((height, sea)));
         check_controls(&h, &format!("{what} with the stop at sea level"));
-        for name in [LINE, &shade] {
-            assert!(control(&h, name).is_some(), "{what}: no {name}");
+        assert!(control(&h, LINE).is_some(), "{what}: no {LINE}");
+        if h.state().pad.rects.unwrap().sheet.is_none() {
+            assert!(control(&h, &shade).is_some(), "{what}: no {shade}");
         }
         for name in [STOP_VALUE, REMOVE_STOP] {
             assert!(control(&h, name).is_none(), "{what}: {name}");
@@ -9052,6 +9124,7 @@ fn a_point_layer_has_a_points_snap_toggle_and_a_dim_one_for_a_raster_with_no_sto
         }
         h.run_steps(2);
         open_snap(&mut h);
+        sheet_up(&mut h);
         let project = &h.state().doc.project;
         let name = |id| project.layer(id).unwrap().name.clone();
         let (places, height_name) = (name(places), name(height));
@@ -11735,6 +11808,7 @@ fn a_finger_sets_the_shape_and_the_hatch_of_a_marker() {
         let places = vector(&h, "Places");
         let rule = |h: &Pad| rules(h, places)[0].clone();
         open_rule(&mut h, "Places", "Default");
+        sheet_up(&mut h);
         assert_eq!(rule(&h).marker_shape(), Some(MarkerShape::Circle), "{what}");
 
         scroll_to_control(&mut h, MARKER_SHAPE);
@@ -16161,11 +16235,16 @@ fn pull_sheet(h: &mut Pad, panel_kind: Panel, by: f32) {
 fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     let mut h = phone_pad();
     open_panel(&mut h, "Layers");
-    // The sheet opens at half height, and it covers the rows.
+    // The sheet opens at half height, above the rows. It covers the
+    // readout.
     let half = panel(&h, Panel::Layers).unwrap();
     assert_eq!(half.top(), 400.0);
-    assert!(control(&h, SCULPT).is_none());
-    assert!(h.state().pad.rects.unwrap().readout.is_none());
+    let rects = h.state().pad.rects.unwrap();
+    let card = rects.brush.unwrap();
+    assert_eq!(half.bottom(), card.top() - 8.0);
+    assert_eq!(card.bottom(), rects.tools.top() - 8.0);
+    assert!(control(&h, SCULPT).unwrap().top() >= half.bottom());
+    assert!(rects.readout.is_none());
     pull_sheet(&mut h, Panel::Layers, -200.0);
     let full = panel(&h, Panel::Layers).unwrap();
     assert_eq!(full.top(), 127.0);
@@ -16175,25 +16254,38 @@ fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     tap(&mut h, "Open Rivers");
     assert!(control(&h, "Back to Layers").is_some());
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 400.0);
-    // Down to the title row, the sheet has the rows above it.
+    // Down to the title row, the sheet stays above the rows.
     pull_sheet(&mut h, Panel::Layers, 300.0);
     let sheet = panel(&h, Panel::Layers).unwrap();
-    assert_eq!(sheet.top(), PHONE_BOTTOM - 52.0);
-    assert!(control(&h, "Pan").unwrap().bottom() <= sheet.top());
+    let rects = h.state().pad.rects.unwrap();
+    let floor = rects.brush.unwrap_or(rects.tools).top() - 8.0;
+    assert_eq!((sheet.top(), sheet.bottom()), (floor - 52.0, floor));
+    assert!(control(&h, "Pan").unwrap().top() >= sheet.bottom());
+    assert!(rects.tools.bottom() <= PHONE_BOTTOM);
 }
 
 #[test]
-fn on_an_iphone_one_sheet_shows_at_a_time() {
+fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
     tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
     open_panel(&mut h, "Layers");
-    // The Brush panel stays open behind the sheet of the Layers panel.
+    // The Layers panel takes the place of the Brush panel in the sheet,
+    // with no tabs.
     assert!(h.state().pad.is_open(Panel::Layers));
-    assert!(h.state().pad.is_open(Panel::Brush));
+    assert!(!h.state().pad.is_open(Panel::Brush));
+    let dock = h.state().pad.dock();
+    assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
     assert_eq!(h.state().pad.panels.len(), 1);
     assert_eq!(h.state().pad.panels[0].0, Panel::Layers);
+    assert!(control(&h, &vale_app::ui::pad::dock_ui::tab_name("Brush")).is_none());
+    // The Brush button below the sheet opens the Brush panel again in its
+    // place.
+    tap(&mut h, "Brush settings");
+    assert!(h.state().pad.is_open(Panel::Brush));
+    assert!(!h.state().pad.is_open(Panel::Layers));
+    assert_eq!(h.state().pad.panels.len(), 1);
 }
 
 #[test]
@@ -16808,10 +16900,16 @@ fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
         assert_eq!(open_tiles(&h), ["Layers"], "{size:?}");
         open_panel(&mut h, "Toolbox");
         assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
+        // On a compact screen, the panel takes the place of the panel of
+        // the sheet.
+        let compact = size.0 < 600.0;
+        assert_eq!(h.state().pad.is_open(Panel::Layers), !compact, "{size:?}");
         open_panel(&mut h, "Toolbox");
         assert!(!h.state().pad.is_open(Panel::Toolbox), "{size:?}");
-        assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
-        open_panel(&mut h, "Layers");
+        if !compact {
+            assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
+            open_panel(&mut h, "Layers");
+        }
         assert!(h.state().pad.dock().panes.is_empty(), "{size:?}");
 
         // With a brush, the Brush tile opens the Brush panel.
@@ -17414,7 +17512,7 @@ fn each_workspace_keeps_its_dock_after_a_restart() {
 }
 
 #[test]
-fn on_a_phone_a_panel_is_a_sheet_with_its_tabs() {
+fn on_a_phone_a_panel_is_a_sheet_with_no_tabs() {
     use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, close_name, tab_name};
     let mut h = phone_pad();
     h.state_mut()
@@ -17423,27 +17521,29 @@ fn on_a_phone_a_panel_is_a_sheet_with_its_tabs() {
         .world
         .open_tabs(&[Panel::Layers, Panel::Toolbox]);
     h.run_steps(3);
+    // The sheet keeps one of the panels, as the one tab of the one pane.
     let sheet = h.state().pad.rects.unwrap().sheet.expect("no sheet");
-    assert_eq!(panel(&h, Panel::Layers), Some(sheet));
+    let dock = h.state().pad.dock();
+    assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
+    let shown = dock.panes[0].panel();
+    assert!([Panel::Layers, Panel::Toolbox].contains(&shown));
+    assert_eq!(h.state().pad.panels, vec![(shown, sheet)]);
     for name in [tab_name("Layers"), tab_name(TOOLBOX)] {
-        assert!(control(&h, &name).is_some(), "{name}");
+        assert!(control(&h, &name).is_none(), "{name}");
     }
     assert!(control(&h, "Pin Layers").is_none());
     assert!(control(&h, DOCK_WIDTH).is_none());
-    quick_tap(&mut h, &tab_name(TOOLBOX));
-    assert_eq!(panel(&h, Panel::Toolbox), Some(sheet));
-    check_controls(&h, "the sheet of the Toolbox tab");
-    // A long press on a tab opens a menu with Close only.
-    long_press(&mut h, &tab_name("Layers"));
-    assert_eq!(
-        h.state().pad.pane_menu.map(|m| m.panel),
-        Some(Panel::Layers)
-    );
-    assert!(control(&h, vale_app::ui::pad::dock_ui::MOVE_TO_NEW_PANE).is_none());
-    tap(&mut h, &close_name("Layers"));
-    assert_eq!(dock_tabs(&h), [[Panel::Toolbox]]);
+    // A tile opens the other panel in place of the panel of the sheet.
+    let (name, other) = match shown {
+        Panel::Layers => (TOOLBOX, Panel::Toolbox),
+        _ => ("Layers", Panel::Layers),
+    };
+    open_panel(&mut h, name);
+    assert_eq!(dock_tabs(&h), [[other]]);
+    assert_eq!(panel(&h, other), Some(sheet));
+    check_controls(&h, &format!("the sheet of the {name} panel"));
     // The Close button of the sheet closes its pane.
-    tap(&mut h, &close_name(TOOLBOX));
+    tap(&mut h, &close_name(name));
     assert!(h.state().pad.docks.world.panes.is_empty());
     assert!(h.state().pad.rects.unwrap().sheet.is_none());
 }
@@ -17781,8 +17881,13 @@ fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
             assert!(panel(&h, open).is_some(), "{what}: {open:?}");
             if pose == "split" {
                 assert_eq!(rects.class, WidthClass::Compact, "{what}");
+                // The sheet opens at half the room between the top row and
+                // the rows of the tools, above the rows.
                 let sheet = rects.sheet.expect(&what);
-                assert_eq!(sheet.height(), size.1 / 2.0, "{what}");
+                let floor = rects.brush.unwrap_or(rects.tools).top() - 8.0;
+                assert!(rects.tool_cells > 0, "{what}");
+                assert_eq!(sheet.top(), (rects.column_top + floor) / 2.0, "{what}");
+                assert_eq!(sheet.bottom(), floor, "{what}");
             } else {
                 assert_eq!(rects.class, WidthClass::Medium, "{what}");
                 assert!(!rects.row, "{what}");
@@ -18209,9 +18314,13 @@ fn the_outer_screen_of_iphone_duo_keeps_the_controls_off_the_camera() {
                 // The card of the actions ends at the left of the camera.
                 assert_eq!(rects.actions.right(), camera.left() - ROW_GAP, "{what}");
                 assert_eq!(rects.workspace, before.workspace, "{what}");
-                // The sheet opens at half the height of the screen.
+                // The sheet opens at half the room between the top row and
+                // the rows of the tools, above the rows.
                 let sheet = rects.sheet.expect(&what);
-                assert_eq!(sheet.height(), size.1 / 2.0, "{what}");
+                let floor = rects.brush.unwrap_or(rects.tools).top() - ROW_GAP;
+                assert!(rects.tool_cells > 0, "{what}");
+                assert_eq!(sheet.top(), (rects.column_top + floor) / 2.0, "{what}");
+                assert_eq!(sheet.bottom(), floor, "{what}");
             } else {
                 assert_eq!(rects.class, WidthClass::Medium, "{what}");
                 // The card of the world menu starts at the right of the
@@ -18310,8 +18419,13 @@ fn on_the_outer_screen_of_iphone_duo_the_inspector_fits_with_the_keyboard_up() {
         quick_tap(&mut h, VECTOR);
         h.state_mut().globe.snap.on = false;
         open_panel(&mut h, select::ATTRIBUTES);
+        // The point goes above the sheet of the inspector.
         let center = h.state().globe.rect.center();
-        pen_tap_at(&mut h, center);
+        let rects = h.state().pad.rects.unwrap();
+        let at = (rects.sheet).map_or(center, |s| {
+            pos2(center.x, (rects.column_top + s.top()) / 2.0)
+        });
+        pen_tap_at(&mut h, at);
         // On a compact screen, the point has a card. Add makes the point
         // the selection of the inspector.
         if control(&h, vale_app::ui::pad::point_card::ADD).is_some() {
@@ -20351,7 +20465,7 @@ fn collection_id(h: &Pad, name: &str) -> vale_store::CollectionId {
 /// Three checked collections, from the bottom: World with each layer,
 /// Travel with Rivers and Places, and Water with Height and Rivers.
 fn three_cards(h: &mut Pad) {
-    open_panel(h, "Layers");
+    open_layers(h);
     new_collection(h, "Travel");
     new_collection(h, "Water");
     close_collection_menu(h);
@@ -20707,7 +20821,7 @@ fn the_collection_popover_checks_and_clears_collections() {
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = pad(size);
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
         check_controls(&h, &format!("{what} with the collection popover"));
@@ -20791,7 +20905,7 @@ fn the_collections_page_is_a_checklist_with_search_and_new_collection() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         for name in ["Water", "Climate", "Travel"] {
             new_collection(&mut h, name);
         }
@@ -21072,7 +21186,7 @@ fn the_page_of_a_collection_adds_and_removes_its_layers() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
         close_collection_menu(&mut h);
@@ -21233,7 +21347,7 @@ fn the_management_page_lists_the_collections() {
         let what = format!("{size:?}");
         let dir = tempfile::tempdir().unwrap();
         let mut h = saved_pad(size, dir.path());
-        open_panel(&mut h, "Layers");
+        open_layers(&mut h);
         new_collection(&mut h, "Travel");
         new_collection(&mut h, "Water");
         close_collection_menu(&mut h);

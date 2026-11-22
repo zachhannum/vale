@@ -494,6 +494,14 @@ fn on_an_iphone_the_table_is_a_sheet_that_scrolls_sideways_with_its_header() {
     let rects = h.state().pad.rects.unwrap();
     let sheet = rects.sheet.expect("no sheet");
     assert_eq!(table_rect(&h), sheet);
+    // The sheet is above the rows of the tools. A user pulls it up to its
+    // full height.
+    assert!(sheet.bottom() < rects.tools.top());
+    h.state_mut().pad.sheet_offset = -rects.sheet_rise;
+    h.run_steps(10);
+    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
+    assert_eq!(sheet.top(), rects.column_top);
+    assert_eq!(table_rect(&h), sheet);
 
     // The first column shows, and the last column is out of the sheet at
     // the right.

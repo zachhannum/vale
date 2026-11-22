@@ -730,6 +730,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     let class = WidthClass::of(screen.width());
     keep_one_panel(state, class);
+    pin_sheet(&mut state.pad);
     let mut input = Input {
         screen,
         bands,
@@ -851,6 +852,18 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     state.pad.controls = controls;
     state.pad.rects = Some(rects);
+}
+
+/// A sheet at its full height or at its title row stays there when the
+/// rows of the tools change, and with them the places of the sheet.
+pub(super) fn pin_sheet(pad: &mut PadState) {
+    if let Some(r) = pad.rects.filter(|r| r.sheet.is_some()) {
+        if pad.sheet_offset <= -r.sheet_rise + 0.5 {
+            pad.sheet_offset = f32::NEG_INFINITY;
+        } else if pad.sheet_offset >= r.sheet_travel - 0.5 {
+            pad.sheet_offset = f32::INFINITY;
+        }
+    }
 }
 
 /// A compact screen shows one panel at a time, in the sheet. A panel that

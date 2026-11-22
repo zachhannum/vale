@@ -581,16 +581,21 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
 }
 
 /// Scrolls the panel of the selection until a control is inside the card,
-/// with a drag up of a finger on the margin at the left of the rows.
+/// with a drag up of a finger on the margin at the left of the rows. A
+/// sheet goes up to its full height first, as a user pulls it.
 fn scroll_to(h: &mut Pad, name: &str) {
-    for _ in 0..8 {
+    raise_sheet(h);
+    for _ in 0..16 {
         let card = h.state().atlas.panel_rect.unwrap();
         let inside = |rect: Rect| visible(card).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
+        // A short sheet scrolls by less than its height, so no row skips
+        // past it.
+        let d = (visible(card).height() / 2.0).min(200.0);
         let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
-        drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
+        drag(h, from, from - vec2(0.0, d), Input::Finger);
     }
 }
 
@@ -614,16 +619,19 @@ fn nudge_up_to(h: &mut Pad, name: &str) {
     }
 }
 
-/// Scrolls the panel up until a control shows.
+/// Scrolls the panel up until a control shows. A sheet goes up to its
+/// full height first.
 fn scroll_up_to(h: &mut Pad, name: &str) {
+    raise_sheet(h);
     for _ in 0..8 {
         let card = h.state().atlas.panel_rect.unwrap();
         let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
-        // Below the header, the back row, and the rows that do not scroll.
-        let from = pos2(card.left() + 6.0, card.top() + 280.0);
+        // Below the header, the back row, and the rows that do not scroll,
+        // and in the upper half of a short sheet.
+        let from = pos2(card.left() + 6.0, (card.top() + 280.0).min(card.center().y));
         let to = pos2(from.x, card.bottom() - 20.0);
         drag(h, from, to, Input::Finger);
     }
@@ -1499,7 +1507,15 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         check_controls(&h, "frame tab");
-        assert!(control(&h, &tab_name(FRAME_TABS[3])).is_some());
+        if h.state().pad.rects.unwrap().row {
+            // The sheet of a compact screen shows one panel, with no tabs.
+            let dock = h.state().pad.dock();
+            assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
+            assert!(control(&h, &tab_name(FRAME_TABS[3])).is_none());
+            show_tab(&mut h, FRAME_TABS[0]);
+        } else {
+            assert!(control(&h, &tab_name(FRAME_TABS[3])).is_some());
+        }
         tap(&mut h, POLYGON);
         check_controls(&h, "polygon");
         scroll_to(&mut h, SCALE);
