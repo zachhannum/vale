@@ -9695,8 +9695,9 @@ fn delete_backspace_and_esc_in_the_vertex_tool() {
 }
 
 /// A frame of 500 by 500 pixels on the middle of face 0, at about one
-/// texel of `striped::FACE` in each pixel.
-fn zoomed_draw(id: u32, raster: vale_store::RasterId) -> vale_app::globe::FrameDraw {
+/// texel of `striped::FACE` in each pixel. The raster layer has the look
+/// of its record.
+fn zoomed_draw(id: u32, raster: &vale_store::Raster) -> vale_app::globe::FrameDraw {
     use vale_app::globe::flat::{DEFAULT_SPEC, FlatMesh};
     let projection = vale_sphere::Projection::new(DEFAULT_SPEC, 1.0).unwrap();
     vale_app::globe::FrameDraw {
@@ -9712,10 +9713,21 @@ fn zoomed_draw(id: u32, raster: vale_store::RasterId) -> vale_app::globe::FrameD
         rect: [0, 0, 500, 500],
         mesh: std::sync::Arc::new(FlatMesh::new(&projection)),
         mask: None,
-        shown: vec![raster],
-        images: Vec::new(),
-        raster_looks: Vec::new(),
-        image_looks: Vec::new(),
+        layers: vec![vale_app::globe::FrameItem::Raster(
+            raster.id,
+            vale_app::globe::RasterLook {
+                look: vale_app::globe::Look {
+                    opacity: raster.opacity,
+                    blend: raster.blend,
+                    display: raster.display,
+                },
+                lines: raster.lines,
+                smoothing: raster.smoothing,
+                hillshade: raster.hillshade,
+                bands: None,
+            },
+        )],
+        mask_looks: Vec::new(),
     }
 }
 
@@ -9726,7 +9738,7 @@ fn a_zoomed_frame_loads_the_tiles_of_a_layer_from_the_project_file() {
     // A thread reads the tiles.
     state.headless = false;
     state.sync_globe();
-    let draw = zoomed_draw(1, height);
+    let draw = zoomed_draw(1, state.doc.project.raster(height).unwrap());
     state.want_frames(vec![draw.clone()]);
     let globe = &state.globe;
     assert!(globe.raster_map(height).is_none(), "in the main memory");
@@ -12655,20 +12667,20 @@ fn a_drag_on_the_rows_scrolls_a_short_layers_pane() {
     }
     h.run_steps(3);
     // The pane is too short for its rows.
-    assert!(control(&h, "Layer Places").is_none());
+    assert!(control(&h, "Layer Land").is_none());
     let rect = (h.state().pad.panels.iter())
         .find(|(p, _)| *p == Panel::Layers)
         .unwrap()
         .1;
-    let land = control(&h, "Layer Land").unwrap();
+    let places = control(&h, "Layer Places").unwrap();
     drag(
         &mut h,
-        land.center(),
-        land.center() - vec2(0.0, 80.0),
+        places.center(),
+        places.center() - vec2(0.0, 80.0),
         Input::Finger,
     );
-    let places = control(&h, "Layer Places").expect("a row that scrolled into view");
-    assert!(rect.contains_rect(places), "{places:?}");
+    let land = control(&h, "Layer Land").expect("a row that scrolled into view");
+    assert!(rect.contains_rect(land), "{land:?}");
 }
 
 /// `towns_pad` with the inset exited and selected.
@@ -13869,4 +13881,197 @@ fn a_color_key_shows_the_bands_of_a_moved_frame_when_the_finger_lifts() {
     let after = rows(&h);
     assert_ne!(after, before);
     assert!(after[0] < before[0], "{before:?} {after:?}");
+}
+
+/// A pad with two frames of two maps and a session, on the Layers tab of
+/// the inset, with the collection "Coast" that holds Land.
+fn collection_pad() -> (tempfile::TempDir, Pad, MapId, vale_store::CollectionId) {
+    let (dir, s) = session_state();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let land = layer_id(&h, "Land");
+    let coast = h.state_mut().add_collection_with("Coast", land).unwrap();
+    show_tab(&mut h, FRAME_TABS[2]);
+    h.state_mut().save_waiting().unwrap();
+    let inset = frame(&h, 1).map;
+    (dir, h, inset, coast)
+}
+
+fn map_stack(h: &Pad, map: MapId) -> Vec<vale_store::CollectionId> {
+    h.state().doc.project.map_stack(map)
+}
+
+#[test]
+fn the_layers_tab_shows_the_collections_of_the_map_as_in_the_layers_panel() {
+    use vale_app::ui::pad::collection::{dim_row, header_name};
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    assert_eq!(map_stack(&h, inset), [world], "a new map has World");
+    assert!(control(&h, &header_name("World")).is_some());
+    assert!(control(&h, &header_name("Coast")).is_none());
+    assert!(control(&h, &eye_name("Rivers", true)).is_some());
+
+    assert!(h.state_mut().add_map_collection(inset, coast));
+    h.run_steps(3);
+    let top = control(&h, &header_name("Coast")).unwrap();
+    let below = control(&h, &header_name("World")).unwrap();
+    assert!(top.top() < below.top());
+    // Coast draws Land, so the row of Land in World is dim.
+    assert!(control(&h, &dim_row("Land", "World")).is_some());
+    assert!(control(&h, &eye_name("Land", true)).is_some());
+    screenshot::save(&mut h, "pad-atlas-map-collections");
+    check_controls(&h, "two collections");
+}
+
+#[test]
+fn the_collection_popover_of_a_map_checks_its_collections_in_one_step() {
+    use vale_app::ui::pad::collection::{
+        COLLECTION_MENU, COLLECTIONS_SIDE, NEW_COLLECTION, collection_row,
+    };
+    use vale_app::ui::pad::manage::MANAGE_COLLECTIONS;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    let globe = h.state().doc.project.globe_collections().to_vec();
+    tap(&mut h, COLLECTION_MENU);
+    // The popover of a map has no switch of the globe and no management.
+    assert!(control(&h, COLLECTIONS_SIDE).is_none());
+    assert!(control(&h, MANAGE_COLLECTIONS).is_none());
+    // The last collection of the map does not change.
+    tap(&mut h, &collection_row("World"));
+    assert_eq!(map_stack(&h, inset), [world]);
+    tap(&mut h, &collection_row("Coast"));
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+    screenshot::save(&mut h, "pad-atlas-collection-popover");
+    h.state_mut().save_waiting().unwrap();
+    // A second tap takes the collection out of the map.
+    tap(&mut h, &collection_row("Coast"));
+    assert_eq!(map_stack(&h, inset), [world]);
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world]);
+
+    // A map makes no collection.
+    tap(&mut h, COLLECTION_MENU);
+    assert!(control(&h, NEW_COLLECTION).is_none());
+    assert_eq!(h.state().doc.project.globe_collections(), globe);
+}
+
+#[test]
+fn a_drag_of_a_header_row_restacks_the_collections_of_the_map_in_one_step() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().add_map_collection(inset, coast);
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(3);
+    hold_and_drag(&mut h, &header_name("Coast"));
+    h.run_steps(3);
+    assert_eq!(map_stack(&h, inset), [coast, world]);
+    assert!(
+        control(&h, &eye_name("Rivers", true)).is_some(),
+        "the cards open"
+    );
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+}
+
+#[test]
+fn a_swipe_on_a_header_row_removes_the_collection_from_the_map_in_one_step() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let world = h.state().doc.project.world_collection();
+    // The swipe opens the row of the last collection of a map, and its
+    // Remove is dim and does nothing.
+    swipe_row(&mut h, &header_name("World"), -120.0);
+    let heads = &h.state().atlas.map_cards.heads;
+    assert!(heads.get(&world).is_some_and(|l| l.open.is_some()));
+    screenshot::save(&mut h, "pad-atlas-dim-remove");
+    if control(&h, "Remove World").is_some() {
+        tap(&mut h, "Remove World");
+    }
+    assert_eq!(map_stack(&h, inset), [world]);
+    swipe_row(&mut h, &header_name("World"), 120.0);
+
+    h.state_mut().add_map_collection(inset, coast);
+    h.state_mut().save_waiting().unwrap();
+    h.run_steps(3);
+    swipe_row(&mut h, &header_name("Coast"), -120.0);
+    screenshot::save(&mut h, "pad-atlas-swipe-collection");
+    tap(&mut h, "Remove Coast");
+    assert_eq!(map_stack(&h, inset), [world]);
+    assert!(h.state().doc.project.collection(coast).is_some());
+    undo(&mut h);
+    h.run_steps(2);
+    assert_eq!(map_stack(&h, inset), [world, coast]);
+}
+
+#[test]
+fn a_layer_that_joins_a_collection_shows_in_each_map_of_the_collection() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let main = frame(&h, 0).map;
+    let rivers = layer_id(&h, "Rivers");
+    for map in [main, inset] {
+        assert!(h.state_mut().set_map_stack(map, vec![coast]));
+        assert!(!shows(&h, map, "Rivers") && shows(&h, map, "Land"));
+    }
+    assert!(h.state_mut().set_in_collection(coast, rivers, true));
+    assert!(shows(&h, main, "Rivers") && shows(&h, inset, "Rivers"));
+    let drawn = h.state().doc.map_layers(inset);
+    assert_eq!(drawn.last(), Some(&rivers));
+}
+
+#[test]
+fn a_layer_switch_that_is_off_stays_off_while_the_layer_stays_in_the_collection() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    h.state_mut().add_map_collection(inset, coast);
+    h.run_steps(2);
+    tap(&mut h, &eye_name("Land", true));
+    assert!(!shows(&h, inset, "Land"));
+    let land = layer_id(&h, "Land");
+    let rivers = layer_id(&h, "Rivers");
+    h.state_mut().set_in_collection(coast, rivers, true);
+    h.state_mut().move_map_collection(inset, coast, 0);
+    h.run_steps(2);
+    assert!(!shows(&h, inset, "Land"));
+    assert!(control(&h, &eye_name("Land", false)).is_some());
+    let project = &h.state().doc.project;
+    assert!(project.collection(coast).unwrap().layers.contains(&land));
+    assert!(!h.state().doc.map_layers(inset).contains(&land));
+}
+
+#[test]
+fn a_delete_of_a_collection_removes_it_from_each_map() {
+    let (_dir, mut h, inset, coast) = collection_pad();
+    let main = frame(&h, 0).map;
+    let world = h.state().doc.project.world_collection();
+    h.state_mut().add_map_collection(main, coast);
+    h.state_mut().set_map_stack(inset, vec![coast]);
+    assert!(h.state_mut().delete_collection(coast));
+    assert_eq!(map_stack(&h, main), [world]);
+    assert_eq!(map_stack(&h, inset), [world]);
+    undo(&mut h);
+    assert_eq!(map_stack(&h, main), [world, coast]);
+    assert_eq!(map_stack(&h, inset), [coast]);
+}
+
+#[test]
+fn a_swipe_from_the_name_of_a_header_row_shows_remove() {
+    use vale_app::ui::pad::collection::header_name;
+    let (_dir, mut h, inset, coast) = collection_pad();
+    h.state_mut().add_map_collection(inset, coast);
+    h.run_steps(3);
+    for x in [0.25, 0.5] {
+        let row = control(&h, &header_name("Coast")).unwrap();
+        let from = pos2(row.left() + row.width() * x, row.center().y);
+        drag(&mut h, from, from - vec2(120.0, 0.0), Input::Finger);
+        h.run_steps(5);
+        assert!(control(&h, "Remove Coast").is_some(), "{x}");
+        // A tap on the row shuts it.
+        swipe_row(&mut h, &header_name("Coast"), 120.0);
+    }
 }

@@ -11,13 +11,13 @@ use vale_labeler::Fonts;
 use vale_render::Rgba;
 use vale_render::{DisplayList, FillRule, Item, PdfDocument};
 use vale_sphere::Projection;
-use vale_store::{FrameRecord, ImageId, LayerId, PageId, PageRecord, RasterId};
+use vale_store::{FrameRecord, LayerId, PageId, PageRecord};
 
 use crate::atlas::{self, FrameTarget, PT_PER_MM};
 use crate::document::Document;
 use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::{Captured, Mask};
-use crate::globe::{FrameDraw, FramePlace, RasterMask};
+use crate::globe::{FrameDraw, FrameItem, FramePlace, RasterMask};
 use crate::mask::frame::{cover_mask, frame_raster_masks};
 use crate::pipeline::{FrameDetail, Pipeline, Quality, paper_color};
 use crate::raster_style;
@@ -78,11 +78,10 @@ struct PendingCapture {
     col: u32,
     /// The most pixels on a side of a texture of the GPU.
     max_side: u32,
-    /// The premultiplied pixels of the whole frame, with the strips that
-    /// the GPU drew.
-    rgba: Vec<u8>,
-    /// The frame shows raster layers or image layers.
-    layered: bool,
+    /// The premultiplied pixels of the whole frame for each run of
+    /// `FrameDraw::runs`, with the strips that the GPU drew. A run gets its
+    /// pixels with its first strip.
+    rgba: Vec<Vec<u8>>,
     /// The layers with a raster mask, with the cover of the mask in the
     /// whole frame, one byte for each pixel.
     masks: Vec<(LayerId, RasterMask, Vec<u8>)>,
@@ -92,8 +91,9 @@ struct PendingCapture {
     image_rect: Rect,
     /// Page millimeters to the pixels of the raster image.
     pixels: FrameTarget,
-    /// The capture of the strip, then the capture of the cover of each
-    /// mask, with what arrived. `None` is a mask with no cover.
+    /// The capture of each run in the strip, then the capture of the cover
+    /// of each mask, with what arrived. `None` is a run with nothing to
+    /// draw, or a mask with no cover.
     receivers: Option<Vec<Receiver>>,
     /// The captures of the strip that egui dropped before the GPU drew
     /// them, as in a UI frame that egui ran and did not paint.
@@ -303,16 +303,19 @@ impl PdfExport {
         masks.map(|(_, mask, _)| *mask).collect()
     }
 
-    /// Gives the pending raster capture its result channel, and the channel
-    /// of the cover of each mask of `capture_masks`. A mask with no channel
-    /// has no cover, and its layer draws no fills and no strokes.
+    /// Gives the pending raster capture the result channel of each run of
+    /// `FrameDraw::runs`, and the channel of the cover of each mask of
+    /// `capture_masks`. A run with no channel draws nothing. A mask with no
+    /// channel has no cover, and its layer draws no fills and no strokes.
     pub fn set_capture_receiver(
         &mut self,
-        receiver: mpsc::Receiver<Result<Captured, String>>,
+        runs: Vec<Option<mpsc::Receiver<Result<Captured, String>>>>,
         masks: Vec<Option<mpsc::Receiver<Result<Captured, String>>>>,
     ) {
         if let Some(pending) = &mut self.pending {
-            let all = std::iter::once(Some(receiver)).chain(masks);
+            let count = pending.rgba.len();
+            let runs = runs.into_iter().chain(std::iter::repeat_with(|| None));
+            let all = runs.take(count).chain(masks);
             pending.receivers = Some(all.map(|r| r.map(|r| (r, None))).collect());
         }
     }
@@ -331,16 +334,6 @@ impl PdfExport {
         list
     }
 
-    fn shown_rasters(&self, frame: &FrameRecord) -> Vec<RasterId> {
-        self.doc
-            .project
-            .layers()
-            .iter()
-            .filter(|layer| self.doc.shown(frame.map, layer.id))
-            .filter_map(|layer| layer.raster())
-            .collect()
-    }
-
     /// The pixels in one point of the raster images of the page that the
     /// export draws.
     pub fn pixel_ratio(&self) -> f64 {
@@ -353,16 +346,6 @@ impl PdfExport {
             Some(Output::Images { ratio, .. }) => *ratio,
             _ => pixel_ratio(page.dpi),
         }
-    }
-
-    fn shown_images(&self, frame: &FrameRecord) -> Vec<ImageId> {
-        self.doc
-            .project
-            .layers()
-            .iter()
-            .filter(|layer| self.doc.shown(frame.map, layer.id))
-            .filter_map(|layer| layer.image())
-            .collect()
     }
 
     fn capture(
@@ -414,10 +397,7 @@ impl PdfExport {
                 .map(|pixel| pixel[3])
                 .collect(),
         });
-        let shown = self.shown_rasters(frame);
-        let images = self.shown_images(frame);
-        let layered = !shown.is_empty() || !images.is_empty();
-        let (raster_looks, image_looks) = raster_style::map_looks(&self.doc, frame.map);
+        let layers = raster_style::frame_items(&self.doc, frame.map);
         let draw = FrameDraw {
             id: next_draw_id(),
             place: FramePlace {
@@ -434,10 +414,8 @@ impl PdfExport {
             rect: [0, 0, size[0], size[1]],
             mesh: Arc::new(FlatMesh::new(&unit_projection)),
             mask: Some(mask),
-            shown,
-            images,
-            raster_looks,
-            image_looks,
+            layers,
+            mask_looks: raster_style::hidden_looks(&self.doc, frame.map),
         };
         let pixel_count = size[0] as usize * size[1] as usize;
         let masks = match self.gpu {
@@ -445,13 +423,12 @@ impl PdfExport {
             false => Vec::new(),
         };
         Ok(PendingCapture {
-            rgba: vec![0; pixel_count * 4],
+            rgba: vec![Vec::new(); draw.runs().len()],
             row: 0,
             col: 0,
             max_side: self.max_side,
             draw: strip(&draw, (0, 0), [self.max_side, self.max_side]),
             whole: draw,
-            layered,
             masks: (masks.into_iter())
                 .map(|(layer, mask)| (layer, mask, vec![0; pixel_count]))
                 .collect(),
@@ -477,7 +454,7 @@ impl PdfExport {
         let [.., cols, rows] = pending.draw.rect;
         let mut captured = captured.into_iter();
         let covers = pending.masks.iter_mut().map(|(_, _, cover)| (cover, 1));
-        let outs = std::iter::once((&mut pending.rgba, 4)).chain(covers);
+        let outs = pending.rgba.iter_mut().map(|run| (run, 4)).chain(covers);
         for (out, bytes) in outs {
             let Some(strip) = captured.next().flatten() else {
                 continue;
@@ -485,6 +462,7 @@ impl PdfExport {
             if strip.size != [cols, rows] || strip.rgba.len() != (cols * rows * bytes) as usize {
                 anyhow::bail!("the raster capture has the wrong size");
             }
+            out.resize(width as usize * height as usize * bytes as usize, 0);
             let line = (cols * bytes) as usize;
             for (r, src) in strip.rgba.chunks_exact(line).enumerate() {
                 let start = (((pending.row + r as u32) * width + pending.col) * bytes) as usize;
@@ -521,9 +499,6 @@ impl PdfExport {
             pending.image_rect,
         )?;
         self.list.as_mut().unwrap().items.extend(under.items);
-        if pending.layered {
-            self.push_image(&mut pending)?;
-        }
         let over = self.pipeline.compose_frame_over(
             &self.doc,
             &pending.frame,
@@ -533,16 +508,32 @@ impl PdfExport {
             Quality::Final,
             FrameDetail::Full,
         )?;
-        self.list.as_mut().unwrap().items.extend(over.list.items);
+        // Each run of raster layers goes over the vector group below it.
+        let mut groups = over.vector_groups().into_iter();
+        let runs = std::mem::take(&mut pending.rgba);
+        for rgba in runs {
+            if let Some(group) = groups.next() {
+                self.list.as_mut().unwrap().items.extend(group.items);
+            }
+            self.push_image(&pending, rgba)?;
+        }
+        for group in groups {
+            self.list.as_mut().unwrap().items.extend(group.items);
+        }
+        let decor = over.list.items.into_iter().skip(over.decor);
+        self.list.as_mut().unwrap().items.extend(decor);
         self.pipeline.clear_page_masks();
         self.frame += 1;
         Ok(())
     }
 
-    /// Puts the pixels of the raster layers of a frame on the page.
-    fn push_image(&mut self, pending: &mut PendingCapture) -> anyhow::Result<()> {
+    /// Puts the premultiplied pixels of a run of raster layers of a frame on
+    /// the page. A run with no pixels adds nothing.
+    fn push_image(&mut self, pending: &PendingCapture, mut rgba: Vec<u8>) -> anyhow::Result<()> {
+        if rgba.is_empty() || rgba.as_chunks::<4>().0.iter().all(|pixel| pixel[3] == 0) {
+            return Ok(());
+        }
         let [.., width, height] = pending.whole.rect;
-        let mut rgba = std::mem::take(&mut pending.rgba);
         for pixel in rgba.as_chunks_mut::<4>().0 {
             let alpha = u32::from(pixel[3]);
             for channel in &mut pixel[..3] {
@@ -630,8 +621,9 @@ impl PdfExport {
                 let masked = self.gpu && !frame_raster_masks(&self.doc, frame).is_empty();
                 let layered = self.layers
                     && !self.vector_pages.contains(&self.page)
-                    && (!self.shown_rasters(frame).is_empty()
-                        || !self.shown_images(frame).is_empty()
+                    && (raster_style::frame_items(&self.doc, frame.map)
+                        .iter()
+                        .any(|item| *item != FrameItem::Cut)
                         || masked);
                 if !layered || !raster_area {
                     let target = FrameTarget {

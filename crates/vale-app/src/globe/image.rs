@@ -99,12 +99,14 @@ impl Globe {
         self.images.iter().any(|layer| layer.id == id)
     }
 
-    /// True if the list of `set_stack` has the image.
-    fn image_visible(&self, id: ImageId) -> bool {
+    /// True if the list of `set_stack` has the image, or a map frame draws
+    /// it.
+    pub(super) fn image_visible(&self, id: ImageId) -> bool {
         let stack = self.stack.iter().flatten();
-        stack
+        let listed = stack
             .into_iter()
-            .any(|item| matches!(item, StackItem::Image { id: of, .. } if *of == id))
+            .any(|item| matches!(item, StackItem::Image { id: of, .. } if *of == id));
+        listed || self.map_rasters.1.contains(&id)
     }
 
     /// Gives each visible image a copy at the level of the cap, and takes

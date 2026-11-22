@@ -764,7 +764,7 @@ fn step_to_capture(export: &mut PdfExport) {
 fn drop_capture(export: &mut PdfExport) {
     let (sender, receiver) = std::sync::mpsc::channel();
     drop(sender);
-    export.set_capture_receiver(receiver, Vec::new());
+    export.set_capture_receiver(vec![Some(receiver)], Vec::new());
 }
 
 #[test]

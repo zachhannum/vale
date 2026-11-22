@@ -166,6 +166,8 @@ pub struct Row<K> {
     pub delete: bool,
     /// The names of more buttons behind the row, at the left of Rename.
     pub actions: &'static [&'static str],
+    /// The buttons of `actions` are dim and take no tap.
+    pub actions_off: bool,
     /// A swipe to the right selects the row, in a list with
     /// [`Spec::select`].
     pub select: bool,
@@ -176,6 +178,9 @@ pub struct Row<K> {
     /// The width at the right of the row that the controls of the caller
     /// take, from the right edge of the highlight.
     pub trailing: f32,
+    /// The width at the left of the row that a control of the caller
+    /// takes, such as a chevron.
+    pub leading: f32,
     /// The rows of a list with [`Spec::reorder`] all have one height.
     pub height: f32,
 }
@@ -192,10 +197,12 @@ impl<K> Row<K> {
             rename: false,
             delete: false,
             actions: &[],
+            actions_off: false,
             select: true,
             lift: true,
             enabled: true,
             trailing: 0.0,
+            leading: 0.0,
             height: PANEL_ROW,
         }
     }
@@ -881,7 +888,8 @@ fn paint_row<K>(
     let right = body_right
         .min(edge + shift.min(0.0))
         .max(rect.left() + TOUCH);
-    let body_rect = Rect::from_min_max(rect.min, pos2(right, rect.bottom()));
+    let left = (rect.left() + row.leading).min(right - TOUCH);
+    let body_rect = Rect::from_min_max(pos2(left, rect.top()), pos2(right, rect.bottom()));
     let body = widgets::hit(
         ui,
         controls,
@@ -900,20 +908,25 @@ fn paint_row<K>(
             let name = widgets::delete_name(&row.name);
             let last = slot + 1 == count;
             delete = behind(
-                ui, controls, rect, shift, slot, last, shape, "Delete", &name,
+                ui, controls, rect, shift, slot, last, shape, "Delete", &name, true,
             );
             slot += 1;
         }
         if row.rename {
             let name = format!("{RENAME} {}", row.name);
             let last = slot + 1 == count;
-            rename = behind(ui, controls, rect, shift, slot, last, shape, RENAME, &name);
+            rename = behind(
+                ui, controls, rect, shift, slot, last, shape, RENAME, &name, true,
+            );
             slot += 1;
         }
         for &text in row.actions {
             let name = format!("{text} {}", row.name);
             let last = slot + 1 == count;
-            if behind(ui, controls, rect, shift, slot, last, shape, text, &name) {
+            let on = !row.actions_off;
+            if behind(
+                ui, controls, rect, shift, slot, last, shape, text, &name, on,
+            ) {
                 action = Some(text);
             }
             slot += 1;
@@ -977,6 +990,7 @@ fn behind(
     shape: Shape,
     text: &str,
     name: &str,
+    enabled: bool,
 ) -> bool {
     let edge = rect.right() + 8.0;
     let right = edge - shape.margin - slot as f32 * DELETE_WIDTH;
@@ -998,6 +1012,10 @@ fn behind(
         RENAME => theme::MUTE,
         _ => theme::ACCENT,
     };
+    let color = match enabled {
+        true => color,
+        false => color.gamma_multiply(theme::OFF),
+    };
     painter.rect_filled(back, BUTTON_RADIUS, color);
     let at = pos2(right - (DELETE_WIDTH - BUTTON_GAP) / 2.0, rect.center().y);
     painter.text(
@@ -1014,7 +1032,7 @@ fn behind(
         pos2(right - DELETE_WIDTH, rect.center().y - TOUCH / 2.0),
         pos2(right, rect.center().y + TOUCH / 2.0),
     );
-    widgets::tap_area(ui, controls, area, name, true).clicked()
+    widgets::tap_area(ui, controls, area, name, enabled).clicked() && enabled
 }
 
 /// The content of a row that [`draw`] paints.

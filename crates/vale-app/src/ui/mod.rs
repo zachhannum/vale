@@ -3551,6 +3551,48 @@ impl AppState {
         removed
     }
 
+    /// Sets the stack of collections of a map, as one undo step.
+    pub fn set_map_stack(&mut self, map: MapId, ids: Vec<CollectionId>) -> bool {
+        if self.doc.project.map_stack(map) == ids {
+            return false;
+        }
+        self.save_edit();
+        let changed = self.doc.project.set_map_stack(map, ids);
+        self.redraw_collections(changed);
+        self.save_edit();
+        changed
+    }
+
+    /// Puts a collection on top of the stack of a map, as one undo step.
+    pub fn add_map_collection(&mut self, map: MapId, id: CollectionId) -> bool {
+        let mut stack = self.doc.project.map_stack(map);
+        if stack.contains(&id) {
+            return false;
+        }
+        stack.push(id);
+        self.set_map_stack(map, stack)
+    }
+
+    /// Moves a collection of a map to index `to` of its stack, as one undo
+    /// step. Index 0 is the bottom.
+    pub fn move_map_collection(&mut self, map: MapId, id: CollectionId, to: usize) -> bool {
+        let mut stack = self.doc.project.map_stack(map);
+        let Some(from) = stack.iter().position(|c| *c == id) else {
+            return false;
+        };
+        stack.remove(from);
+        stack.insert(to.min(stack.len()), id);
+        self.set_map_stack(map, stack)
+    }
+
+    /// Takes a collection out of the stack of a map, as one undo step. The
+    /// last collection of a map stays.
+    pub fn remove_map_collection(&mut self, map: MapId, id: CollectionId) -> bool {
+        let mut stack = self.doc.project.map_stack(map);
+        stack.retain(|c| *c != id);
+        self.set_map_stack(map, stack)
+    }
+
     /// Puts a layer in a collection or takes it out, as one undo step.
     pub fn set_in_collection(&mut self, id: CollectionId, layer: LayerId, on: bool) -> bool {
         self.save_edit();
@@ -4212,9 +4254,15 @@ impl AppState {
         self.globe.set_frame_mask_rasters(all);
     }
 
+    /// The GPU keeps a copy of each raster layer and each image layer
+    /// that the frames draw.
     fn want_with_export(&mut self, screen: &[crate::globe::FrameDraw]) {
         let mut frames = screen.to_vec();
         frames.extend(self.export_frame.clone());
+        let rasters = frames.iter().flat_map(|f| f.rasters().map(|(id, _)| id));
+        let images = frames.iter().flat_map(|f| f.images());
+        self.globe
+            .set_map_rasters(rasters.collect(), images.collect());
         self.globe.want_frames(&frames);
     }
 
@@ -4567,11 +4615,18 @@ impl AppState {
                 receiver
             }));
         }
-        let Some((callback, receiver)) = self.globe.capture_frame(canvas, draw) else {
+        let Some(runs) = self.globe.capture_frame(canvas, draw) else {
             return CaptureResult::Failed("The GPU is not ready for raster export".to_string());
         };
-        callbacks.push(callback);
-        job.set_capture_receiver(receiver, covers);
+        let runs = (runs.into_iter())
+            .map(|run| {
+                run.map(|(callback, receiver)| {
+                    callbacks.push(callback);
+                    receiver
+                })
+            })
+            .collect();
+        job.set_capture_receiver(runs, covers);
         for callback in callbacks {
             ui.painter()
                 .add(eframe::egui_wgpu::Callback::new_paint_callback(
@@ -5088,9 +5143,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     state.sync_measure();
     state.check_new_feature();
     state.atlas.every_tab = state.layout == Layout::Pad;
-    // A switch to the World workspace exits the entered frame.
+    // A switch to the World workspace exits the entered frame, and frees
+    // the copies of the layers that only the frames draw.
     if state.workspace == Workspace::Globe {
         state.atlas.entered = None;
+        if state.export_frame.is_none() {
+            state.globe.set_map_rasters(Vec::new(), Vec::new());
+        }
     }
     if state.layout == Layout::Pad {
         match state.workspace {

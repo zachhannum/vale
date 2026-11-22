@@ -29,7 +29,7 @@ use crate::globe::flat::FlatMesh;
 use crate::globe::gpu::Mask;
 use crate::globe::nav::Nav;
 use crate::globe::select::Pointer;
-use crate::globe::{FrameDraw, FramePlace, RasterLook, RasterMask};
+use crate::globe::{FrameDraw, FrameItem, FramePlace, RasterLook, RasterMask};
 use crate::mask::frame::frame_raster_masks;
 use crate::page_snap;
 use crate::pipeline::{FrameDetail, Pipeline, Quality};
@@ -653,6 +653,8 @@ pub struct AtlasState {
     /// The page of the color stops of `layer` shows all bands, not only
     /// the bands that the frame shows.
     pub stops_all: bool,
+    /// The cards of the Layers tab.
+    pub map_cards: super::pad::collection::Cards,
     /// The bands that the frame shows on the page of the color stops.
     pub stops_window: Option<super::pad::stops::FrameWindow>,
     /// The label class whose panel the Labels tab of this frame shows: its
@@ -897,6 +899,7 @@ impl Default for AtlasState {
             layer: None,
             layer_page: None,
             stops_all: false,
+            map_cards: Default::default(),
             stops_window: None,
             label: None,
             label_page: None,
@@ -2741,23 +2744,17 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
     };
 }
 
-/// The raster layers that a map shows and that the globe draws, from the
-/// bottom.
-fn map_rasters(state: &AppState, map: MapId) -> Vec<RasterId> {
-    let layers = state.doc.project.layers().iter();
-    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
-    on.filter_map(|layer| layer.raster())
-        .filter(|id| state.globe.draws(*id))
-        .collect()
-}
-
-/// The image layers that a map shows, from the bottom.
-fn map_images(state: &AppState, map: MapId) -> Vec<vale_store::ImageId> {
-    let layers = state.doc.project.layers().iter();
-    let on = layers.filter(|layer| state.doc.shown(map, layer.id));
-    on.filter_map(|layer| layer.image())
-        .filter(|id| state.globe.holds_image(*id))
-        .collect()
+/// The layers that a map draws, from the bottom, as
+/// `raster_style::frame_items` gives them, and `true` if the globe holds
+/// one of its raster layers or image layers.
+fn map_items(state: &AppState, map: MapId) -> (Vec<FrameItem>, bool) {
+    let items = crate::raster_style::frame_items(&state.doc, map);
+    let held = items.iter().any(|item| match item {
+        FrameItem::Raster(id, _) => state.globe.holds(*id),
+        FrameItem::Image(id, _) => state.globe.holds_image(*id),
+        FrameItem::Cut => false,
+    });
+    (items, held)
 }
 
 /// A rectangle grown to whole physical pixels. A texture on whole pixels
@@ -2940,10 +2937,11 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         let Some(map) = state.doc.project.atlas.map(frame.map) else {
             continue;
         };
-        let rasters = map_rasters(state, frame.map);
-        let images = map_images(state, frame.map);
-        let (raster_looks, image_looks) = crate::raster_style::map_looks(&state.doc, frame.map);
-        let layered = !rasters.is_empty() || !images.is_empty();
+        let (layers, layered) = map_items(state, frame.map);
+        let cuts = match layered {
+            true => crate::raster_style::frame_cuts(&state.doc, frame.map),
+            false => Vec::new(),
+        };
         let masks: Vec<_> = (frame_raster_masks(&state.doc, frame).into_iter())
             .filter(|(_, mask)| state.globe.holds(mask.raster))
             .collect();
@@ -2956,7 +2954,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             &frame.border,
             page.paper,
             ppp.to_bits(),
-            layered,
+            (layered, &cuts),
             state.atlas.raster_masks.number(frame.id),
             state.pipeline.lod().arrived(),
             state.pipeline.rasters().arrived(),
@@ -3022,7 +3020,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
         };
         if let Some(mesh) = mesh {
             if !masks.is_empty() {
-                let looks = (rasters.clone(), raster_looks.clone());
+                let hidden = crate::raster_style::hidden_looks(&state.doc, frame.map);
+                let looks = (layers.clone(), hidden);
                 let needed = place.pixels_per_page_point(ppp);
                 let capture = mask_capture(state, frame, in_page, mesh.clone(), looks, needed);
                 let masks = (masks.into_iter())
@@ -3059,10 +3058,8 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
                     rect,
                     mesh,
                     mask,
-                    shown: rasters,
-                    images,
-                    raster_looks,
-                    image_looks,
+                    layers,
+                    mask_looks: Vec::new(),
                 });
             }
         }
@@ -3122,7 +3119,7 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     if state.globe.details_loading() {
         ctx.request_repaint();
     }
-    let mut callbacks: HashMap<u32, _> = if draws.is_empty() {
+    let mut callbacks: HashMap<u32, Vec<_>> = if draws.is_empty() {
         HashMap::new()
     } else {
         // With the pixel preview, the squares of the pixels of the page.
@@ -3140,12 +3137,19 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
     for s in &placed {
         let clipped = painter.with_clip_rect(s.shown);
         tiles.paint(&clipped, screen, s, &[Layer::Under], true);
-        if let Some(callback) = callbacks.remove(&s.id.0) {
-            painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
-                area, callback,
-            ));
+        // Each run of raster layers goes over the vector group below it.
+        tiles.paint(&clipped, screen, s, &[Layer::Map(0)], false);
+        let runs = callbacks.remove(&s.id.0).unwrap_or_default();
+        for (k, callback) in runs.into_iter().enumerate() {
+            if let Some(callback) = callback {
+                painter.add(eframe::egui_wgpu::Callback::new_paint_callback(
+                    area, callback,
+                ));
+            }
+            let above = Layer::Map(u8::try_from(k + 1).unwrap_or(u8::MAX));
+            tiles.paint(&clipped, screen, s, &[above], false);
         }
-        tiles.paint(&clipped, screen, s, &[Layer::Map, Layer::Decor], false);
+        tiles.paint(&clipped, screen, s, &[Layer::Decor], false);
         tiles.finish(s.id);
     }
     tiles.evict(state.atlas.tile_cap, screen.scale);
@@ -3203,19 +3207,22 @@ fn build_lists(
     } else {
         None
     };
-    let mut map = composed.list.clone();
     let decor = vale_render::DisplayList {
-        items: map.items.split_off(composed.decor),
-        ..map.clone()
+        items: composed.list.items[composed.decor..].to_vec(),
+        ..composed.list.clone()
     };
-    let clips = |item: &vale_render::Item| {
-        matches!(
-            item,
-            vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
-        )
+    let clips = |list: &vale_render::DisplayList| {
+        list.items.iter().all(|item| {
+            matches!(
+                item,
+                vale_render::Item::PushClip { .. } | vale_render::Item::PopClip
+            )
+        })
     };
-    let decor = (!decor.items.iter().all(clips)).then_some(decor);
-    let lists = [under.as_ref(), Some(&map), decor.as_ref()];
+    let decor = (!clips(&decor)).then_some(decor);
+    let groups = composed.vector_groups();
+    let maps = groups.iter().map(|g| (!clips(g)).then_some(g)).collect();
+    let lists = (under.as_ref(), maps, decor.as_ref());
     match FrameLists::new(keys, lists, bounds, vt) {
         Ok(lists) => state.atlas.tiles.replace(frame.id, lists),
         Err(e) => state.status = e,
@@ -3257,7 +3264,7 @@ fn mask_capture(
     frame: &FrameRecord,
     vt: ViewTransform,
     mesh: Arc<FlatMesh>,
-    (shown, raster_looks): (Vec<RasterId>, Vec<(RasterId, RasterLook)>),
+    (layers, mask_looks): (Vec<FrameItem>, Vec<(RasterId, RasterLook)>),
     needed: f32,
 ) -> MaskCapture {
     let b = math::shape_bbox(&frame.shape);
@@ -3291,10 +3298,10 @@ fn mask_capture(
         rect: [0, 0, (x1 - x0) as u32, (y1 - y0) as u32],
         mesh,
         mask: None,
-        shown,
-        images: Vec::new(),
-        raster_looks,
-        image_looks: Vec::new(),
+        layers: (layers.into_iter())
+            .filter(|item| !matches!(item, FrameItem::Image(..)))
+            .collect(),
+        mask_looks,
     };
     MaskCapture {
         draw,

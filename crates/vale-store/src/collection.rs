@@ -93,7 +93,8 @@ impl Project {
 
     /// Removes a collection. Each of its layers that is in no other
     /// collection goes on top of World, in the order of the collection.
-    /// The globe and the maps lose the collection. False for World and for
+    /// The globe and the maps lose the collection, and a map with no other
+    /// collection gets World. False for World and for
     /// a missing collection.
     pub fn remove_collection(&mut self, id: CollectionId) -> bool {
         if id == self.world_collection {
@@ -107,8 +108,12 @@ impl Project {
             self.keep_in_a_collection(layer);
         }
         self.globe_collections.retain(|c| *c != id);
+        let world = self.world_collection;
         for stack in self.map_stacks.values_mut() {
             stack.retain(|c| *c != id);
+            if stack.is_empty() {
+                stack.push(world);
+            }
         }
         true
     }
@@ -242,7 +247,11 @@ impl Project {
     /// True if a checked collection of the globe above `id` holds the
     /// layer, so that the layer draws at its place there.
     pub fn drawn_above(&self, id: CollectionId, layer: LayerId) -> bool {
-        let stack = &self.globe_collections;
+        self.drawn_above_in(&self.globe_collections, id, layer)
+    }
+
+    /// True if a collection of `stack` above `id` holds the layer.
+    pub fn drawn_above_in(&self, stack: &[CollectionId], id: CollectionId, layer: LayerId) -> bool {
         let Some(at) = stack.iter().position(|c| *c == id) else {
             return false;
         };
@@ -261,9 +270,10 @@ impl Project {
     }
 
     /// Sets the collections of a map. False if the map or a collection is
-    /// missing, or if a collection is in the list twice.
+    /// missing, if a collection is in the list twice, or if the list is
+    /// empty.
     pub fn set_map_stack(&mut self, map: MapId, ids: Vec<CollectionId>) -> bool {
-        if self.atlas.map(map).is_none() || !self.is_stack(&ids) {
+        if self.atlas.map(map).is_none() || ids.is_empty() || !self.is_stack(&ids) {
             return false;
         }
         self.map_stacks.insert(map, ids);
@@ -283,9 +293,21 @@ impl Project {
     /// collections draws once, at its place in the top one. The visible
     /// flag of a layer does not count.
     pub fn drawn_layer_ids(&self) -> Vec<LayerId> {
+        self.stack_layer_ids(&self.globe_collections)
+    }
+
+    /// The layers that a map draws, as `drawn_layer_ids` does for the
+    /// globe, with the stack of the map.
+    pub fn map_layer_ids(&self, map: MapId) -> Vec<LayerId> {
+        self.stack_layer_ids(&self.map_stack(map))
+    }
+
+    /// The layers of a stack of collections, from the bottom to the top. A
+    /// layer in two collections is at its place in the top one.
+    pub fn stack_layer_ids(&self, stack: &[CollectionId]) -> Vec<LayerId> {
         let mut seen = BTreeSet::new();
         let mut top_first = Vec::new();
-        for c in (self.globe_collections.iter().rev()).filter_map(|id| self.collection(*id)) {
+        for c in (stack.iter().rev()).filter_map(|id| self.collection(*id)) {
             top_first.extend(c.layers.iter().rev().filter(|l| seen.insert(**l)));
         }
         top_first.reverse();
@@ -679,6 +701,25 @@ mod tests {
         assert!(p.set_map_stack(map, vec![world, x]));
         assert_eq!(p.map_stack(map), [world, x]);
         assert!(!p.set_map_stack(crate::MapId(99), vec![]));
+    }
+
+    #[test]
+    fn a_map_draws_a_layer_once_at_its_place_in_the_top_collection() {
+        let (mut p, [a, b, c]) = project();
+        let world = p.world_collection();
+        let map = p.atlas.add_map();
+        let x = p.add_collection("X").unwrap();
+        p.set_in_collection(x, a, true);
+        assert_eq!(p.map_layer_ids(map), [a, b, c]);
+        p.set_map_stack(map, vec![world, x]);
+        assert_eq!(p.map_layer_ids(map), [b, c, a]);
+        p.set_map_stack(map, vec![x]);
+        assert_eq!(p.map_layer_ids(map), [a]);
+        assert!(p.drawn_above_in(&[world, x], world, a));
+        assert!(!p.drawn_above_in(&[world, x], world, b));
+        assert!(!p.set_map_stack(map, vec![]));
+        p.remove_collection(x);
+        assert_eq!(p.map_stack(map), [world]);
     }
 
     #[test]

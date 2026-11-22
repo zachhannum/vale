@@ -3,6 +3,7 @@
 mod images;
 mod lines;
 mod masked;
+mod screenshot;
 mod striped;
 
 use eframe::egui::{Pos2, pos2};
@@ -1183,4 +1184,264 @@ fn an_export_wider_than_the_largest_texture_draws_in_strips_with_no_seam() {
         .filter(|(a, b)| a.0.iter().zip(b.0).any(|(a, b)| a.abs_diff(b) > 8))
         .count();
     assert!(off <= 100, "{off} pixels differ");
+}
+
+/// An Atlas workspace with a red and a blue polygon layer that cover the
+/// middle of the frame, in World, red below blue.
+fn two_squares() -> (App, [vale_store::LayerId; 2]) {
+    use vale_store::{Feature, Geometry, GeometryKind};
+    use vale_style::Color;
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    state.workspace = Workspace::Atlas;
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    let square = vec![
+        [-60.0, -60.0],
+        [60.0, -60.0],
+        [60.0, 60.0],
+        [-60.0, 60.0],
+        [-60.0, -60.0],
+    ];
+    let ids = [RED, BLUE].map(|color| {
+        let layer = state.doc.add_layer(GeometryKind::Polygon);
+        let feature = Feature::new(
+            Geometry::Polygons(vec![vec![square.clone()]]),
+            Default::default(),
+        );
+        assert!(state.doc.project.add_feature(layer, feature));
+        let style = &mut state.doc.entry_mut(layer).unwrap().style;
+        style.set_fill(Some(Color::rgb(color[0], color[1], color[2])));
+        style.set_stroke(None);
+        layer
+    });
+    state.touch();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    (h, ids)
+}
+
+const RED: [u8; 3] = [200, 30, 30];
+const BLUE: [u8; 3] = [30, 30, 200];
+
+fn close(a: [u8; 3], b: [u8; 3]) -> bool {
+    a.iter().zip(b).all(|(a, b)| a.abs_diff(b) <= 8)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_the_collections_of_its_map_in_their_stacking_order() {
+    let _gpu = one_gpu_test();
+    let (mut h, [red, _]) = two_squares();
+    let frame = open_frame(&h);
+    // Off the lines of the graticule.
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let world = h.state().doc.project.world_collection();
+    assert_eq!(h.state().doc.project.map_stack(frame.map), [world]);
+    let top = pixel(&mut h, middle);
+    assert!(close(top, BLUE), "{top:?}");
+
+    // Red is also in a collection on top of World, and it draws once, at
+    // its place in the top collection.
+    let x = h.state_mut().add_collection_with("Top", red).unwrap();
+    assert!(h.state_mut().add_map_collection(frame.map, x));
+    assert_eq!(h.state().doc.project.map_stack(frame.map), [world, x]);
+    let top = pixel(&mut h, middle);
+    assert!(close(top, RED), "{top:?}");
+
+    // World goes on top, so red is again at its place in World, below blue.
+    assert!(h.state_mut().move_map_collection(frame.map, x, 0));
+    let top = pixel(&mut h, middle);
+    assert!(close(top, BLUE), "{top:?}");
+
+    // A map without World draws only red.
+    assert!(h.state_mut().remove_map_collection(frame.map, world));
+    let top = pixel(&mut h, middle);
+    assert!(close(top, RED), "{top:?}");
+}
+
+/// A second height layer on top of the first, filled with `level` and
+/// shown in grey. The brush paints it.
+fn add_grey(h: &mut App, level: u16) -> RasterId {
+    let state = h.state_mut();
+    let id = state.add_height();
+    state.set_raster_display(id, RasterDisplay::Grey);
+    state.globe.raster_map_mut(id).unwrap().fill(level);
+    state.touch();
+    h.run_steps(3);
+    id
+}
+
+/// The raster layers of the list of the globe, from the bottom.
+fn globe_rasters(h: &App) -> Vec<RasterId> {
+    use vale_app::globe::StackItem;
+    let stack = h.state().globe.stack().unwrap_or_default().iter();
+    (stack.filter_map(|item| match item {
+        StackItem::Raster { id, .. } => Some(*id),
+        _ => None,
+    }))
+    .collect()
+}
+
+fn is_grey(pixel: [u8; 3], level: u16) -> bool {
+    let [r, g, b] = pixel;
+    r.abs_diff(grey_of(level)) <= 3 && r == g && g == b
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_a_raster_of_a_collection_that_the_globe_does_not_show() {
+    let _gpu = one_gpu_test();
+    let (level, below) = (40000, 20000);
+    let (mut h, height) = atlas(level);
+    // The brush paints the other layer, so the frame reads the copy of
+    // `height`.
+    let other = add_grey(&mut h, below);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let x = state.add_collection_with("Rasters", layer).unwrap();
+    assert!(state.add_map_collection(frame.map, x));
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.check_collection(x, false));
+    h.run_steps(4);
+    assert_eq!(globe_rasters(&h), [other]);
+    assert!(!h.state().globe.draws_full(height));
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, level), "{top:?}");
+
+    // The switch of the map turns it off.
+    h.state_mut().set_map_shown(frame.map, layer, false);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, below), "{top:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_draws_the_raster_layers_in_the_stacking_order_of_its_map() {
+    let _gpu = one_gpu_test();
+    let (lower_level, upper_level) = (40000, 20000);
+    let (mut h, lower) = atlas(lower_level);
+    let upper = add_grey(&mut h, upper_level);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, upper_level), "{top:?}");
+
+    // A collection on top of World in the map, and off on the globe, holds
+    // the lower layer.
+    let layer = h.state().doc.project.raster_layer(lower).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let x = state.add_collection_with("Top", layer).unwrap();
+    assert!(state.check_collection(x, false));
+    assert!(state.add_map_collection(frame.map, x));
+    assert_eq!(state.doc.project.map_stack(frame.map), [world, x]);
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, lower_level), "{top:?}");
+    assert_eq!(globe_rasters(&h), [lower, upper]);
+
+    // World goes on top in the map.
+    assert!(h.state_mut().move_map_collection(frame.map, x, 0));
+    let top = pixel(&mut h, middle);
+    assert!(is_grey(top, upper_level), "{top:?}");
+    assert_eq!(globe_rasters(&h), [lower, upper]);
+}
+
+/// `two_squares` with a grey height layer of `level` in a collection "Top"
+/// of its own, off on the globe and on top of World in the map of the
+/// frame. Returns the app, the height layer, and the collection.
+fn squares_under_grey(level: u16) -> (App, RasterId, vale_store::CollectionId) {
+    let (mut h, _) = two_squares();
+    let height = add_grey(&mut h, level);
+    let frame = open_frame(&h);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let top = state.add_collection_with("Top", layer).unwrap();
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.check_collection(top, false));
+    assert!(state.add_map_collection(frame.map, top));
+    assert_eq!(state.doc.project.map_stack(frame.map), [world, top]);
+    h.run_steps(4);
+    (h, height, top)
+}
+
+/// The pixel of an exported page at the page point `at`, in millimeters.
+fn export_pixel(image: &image::RgbaImage, at: Point) -> [u8; 3] {
+    let x = (at.x * EXPORT_PIXELS_PER_MM) as u32;
+    let y = (at.y * EXPORT_PIXELS_PER_MM) as u32;
+    let p = image.get_pixel(x, y);
+    [p[0], p[1], p[2]]
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_raster_in_a_higher_collection_of_the_map_covers_a_vector_below() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, _, top) = squares_under_grey(level);
+    let frame = open_frame(&h);
+    let middle = screen(&h, anchor(&frame.shape)) + eframe::egui::vec2(23.0, 17.0);
+    let got = pixel(&mut h, middle);
+    assert!(is_grey(got, level), "{got:?}");
+    screenshot::save(&mut h, "frame_raster_over_vector");
+
+    // Top goes to the bottom of the map, below the squares.
+    assert!(h.state_mut().move_map_collection(frame.map, top, 0));
+    let got = pixel(&mut h, middle);
+    assert!(close(got, BLUE), "{got:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn an_export_draws_a_raster_in_a_higher_collection_of_the_map_over_a_vector_below() {
+    let _gpu = one_gpu_test();
+    let level = 40000;
+    let (mut h, height, top) = squares_under_grey(level);
+    let frame = open_frame(&h);
+    let at = anchor(&frame.shape) + kurbo::Vec2::new(23.0, 17.0);
+    let dir = tempfile::tempdir().unwrap();
+    let image = export_png(&mut h, &dir.path().join("over.png"));
+    let got = export_pixel(&image, at);
+    assert!(is_grey(got, level), "{got:?}");
+    let one = images_in(&export_pdf(&mut h, &dir.path().join("one.pdf")));
+    assert!(one > 0, "the PDF has no raster image");
+
+    // A second raster layer at the bottom of the map, and a top raster
+    // layer that multiplies: two runs of raster layers, each an image.
+    let below = add_grey(&mut h, 20000);
+    let layer = h.state().doc.project.raster_layer(below).unwrap().id;
+    let world = h.state().doc.project.world_collection();
+    let state = h.state_mut();
+    let bottom = state.add_collection_with("Bottom", layer).unwrap();
+    assert!(state.set_in_collection(world, layer, false));
+    assert!(state.add_map_collection(frame.map, bottom));
+    assert!(state.move_map_collection(frame.map, bottom, 0));
+    let layer = state.doc.project.raster_layer(height).unwrap().id;
+    let mut look = state.look(Some(frame.map), layer).unwrap();
+    look.blend = BlendMode::Multiply;
+    state.set_look(Some(frame.map), layer, look);
+    state.touch();
+    h.run_steps(4);
+    let two = images_in(&export_pdf(&mut h, &dir.path().join("two.pdf")));
+    assert_eq!(two, 2 * one);
+
+    // Top goes to the bottom of the map, below the squares.
+    let state = h.state_mut();
+    assert!(state.move_map_collection(frame.map, top, 0));
+    let image = export_png(&mut h, &dir.path().join("under.png"));
+    let got = export_pixel(&image, at);
+    assert!(close(got, BLUE), "{got:?}");
+}
+
+/// The number of raster images in a PDF file.
+fn images_in(pdf: &[u8]) -> usize {
+    String::from_utf8_lossy(pdf)
+        .matches("/Subtype/Image")
+        .count()
 }
