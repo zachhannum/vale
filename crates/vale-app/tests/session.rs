@@ -9,7 +9,8 @@ use vale_app::ramps::DraftFrom;
 use vale_app::session::{SAVE_DELAY, Session, latest_project, new_project_path, worlds};
 use vale_app::ui::{Action, AppState, LayerRef, RampApply, RampSource, RasterSpec, Workspace};
 use vale_store::{
-    GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing, Units, World,
+    BlendMode, GeometryKind, Hillshade, Project, ProjectFile, RasterDisplay, RasterId, Smoothing,
+    Units, World,
 };
 use vale_style::expr::Filter;
 use vale_style::{LayerStyle, PointSymbolizer, Rule, Style, Symbolizer};
@@ -1706,6 +1707,74 @@ fn a_style_edit_is_an_undo_step() {
 
     assert!(session.undo(&mut doc, &mut []).unwrap());
     assert_eq!(doc.entry(roads).unwrap().style, before);
+}
+
+#[test]
+fn the_opacity_and_the_blend_mode_of_a_vector_layer_survive_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mix.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let style = &mut doc.entry_mut(roads).unwrap().style;
+    style.opacity = 0.5;
+    style.blend = BlendMode::Multiply;
+    doc.store_styles();
+    session.flush(&mut doc.project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::empty();
+    Session::open(&path, &mut doc).unwrap();
+    let style = &doc.entry(roads).unwrap().style;
+    assert_eq!((style.opacity, style.blend), (0.5, BlendMode::Multiply));
+}
+
+#[test]
+fn a_change_of_the_opacity_or_the_blend_mode_is_one_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mix.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let mix = |doc: &Document| {
+        let style = &doc.entry(roads).unwrap().style;
+        (style.opacity, style.blend)
+    };
+    doc.entry_mut(roads).unwrap().style.opacity = 0.25;
+    doc.store_styles();
+    session.flush(&mut doc.project, &mut []).unwrap();
+    doc.entry_mut(roads).unwrap().style.blend = BlendMode::Screen;
+    doc.store_styles();
+    session.flush(&mut doc.project, &mut []).unwrap();
+    assert_eq!(mix(&doc), (0.25, BlendMode::Screen));
+
+    assert!(session.undo(&mut doc, &mut []).unwrap());
+    assert_eq!(mix(&doc), (0.25, BlendMode::Normal));
+    assert!(session.undo(&mut doc, &mut []).unwrap());
+    assert_eq!(mix(&doc), (1.0, BlendMode::Normal));
+}
+
+#[test]
+fn a_map_sets_the_opacity_and_the_blend_mode_of_a_vector_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mix.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let map = doc.project.atlas.add_map();
+    let mut style = doc.map_style(map, roads).unwrap();
+    style.opacity = 0.75;
+    style.blend = BlendMode::Darken;
+    assert!(doc.set_map_style(map, roads, &style));
+    session.flush(&mut doc.project, &mut []).unwrap();
+    drop(session);
+
+    let mut doc = Document::empty();
+    Session::open(&path, &mut doc).unwrap();
+    let in_map = doc.map_style(map, roads).unwrap();
+    assert_eq!((in_map.opacity, in_map.blend), (0.75, BlendMode::Darken));
+    let globe = doc.layer_style(roads).unwrap();
+    assert_eq!((globe.opacity, globe.blend), (1.0, BlendMode::Normal));
 }
 
 /// The raster symbolizer of the style of the layer of a raster.
