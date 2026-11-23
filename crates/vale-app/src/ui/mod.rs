@@ -2838,6 +2838,7 @@ impl AppState {
                 flat_center: globe.flat.center,
                 flat_zoom: globe.flat.zoom,
                 page: Some(self.atlas.page),
+                map: self.globe_map,
             }),
         }
     }
@@ -2935,6 +2936,9 @@ impl AppState {
         {
             self.atlas.page = page;
         }
+        self.globe_map = view
+            .map
+            .filter(|&m| self.doc.project.atlas.map(m).is_some());
     }
 
     /// True if the world has a raster layer.
@@ -3371,6 +3375,7 @@ impl AppState {
         self.session = Some(session);
         self.start_world();
         self.show_world();
+        self.globe_map = None;
         if let Some(view) = view {
             self.show_view(view);
         }

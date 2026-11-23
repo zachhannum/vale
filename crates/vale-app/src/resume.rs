@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use vale_sphere::{Point, ProjectionKind, ProjectionSpec};
-use vale_store::PageId;
+use vale_store::{MapId, PageId};
 
 use crate::globe::math::Mat3;
 use crate::globe::view::GlobeView;
@@ -28,6 +28,8 @@ pub struct View {
     pub flat_zoom: f64,
     /// The open page of the atlas. `None`: the first page.
     pub page: Option<PageId>,
+    /// The map on the globe.
+    pub map: Option<MapId>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,6 +90,9 @@ impl Resume {
             if let Some(page) = view.page {
                 lines.push(format!("page {}", page.0));
             }
+            if let Some(map) = view.map {
+                lines.push(format!("map {}", map.0));
+            }
         }
         lines.join("\n")
     }
@@ -133,6 +138,7 @@ impl Resume {
                 flat_center: Point::new(flat_center[0], flat_center[1]),
                 flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
                 page: value("page").and_then(|v| v.parse().ok()).map(PageId),
+                map: value("map").and_then(|v| v.parse().ok()).map(MapId),
             })
         };
         Resume {
@@ -171,6 +177,7 @@ mod tests {
             flat_center: Point::new(0.3, -0.1),
             flat_zoom: 2.25,
             page: Some(PageId(3)),
+            map: Some(MapId(2)),
         }
     }
 

@@ -12,7 +12,8 @@ use crate::globe::view::GlobeView;
 impl AppState {
     /// Opens the globe workspace with the collections of `map` checked on
     /// top of the stack in the order of the map, as one undo step, and with
-    /// the extent of the map. The view moves to the extent.
+    /// the extent of the map. The view moves to the extent, and the flat
+    /// projection gets its center there.
     pub fn show_map_on_globe(&mut self, map: MapId) {
         let project = &self.doc.project;
         if project.atlas.map(map).is_none() {
@@ -102,8 +103,16 @@ impl AppState {
                 view.zoom = fit_zoom(reach);
                 globe.view = view;
             }
+            // The flat projection gets its center at the extent, as the
+            // Recenter command does, so the extent is in one piece.
             WorldView::Flat => {
                 let flat = &mut globe.flat;
+                let spec = flat.spec();
+                flat.set_spec(vale_sphere::ProjectionSpec {
+                    lon0: lon,
+                    lat0: lat,
+                    ..spec
+                });
                 let projection = flat.projection();
                 let projected = points().filter_map(|&p| {
                     let (lon, lat) = dir_to_lonlat(p);
@@ -173,6 +182,51 @@ mod tests {
         assert_eq!(state.map_on_globe(), Some(map));
         assert_eq!(state.workspace, Workspace::Globe);
         assert_eq!(state.pad.workspace, Workspace::Globe);
+    }
+
+    #[test]
+    fn an_undo_takes_the_checks_and_the_map_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, map, [world, _, b, _]) = state();
+        let path = dir.path().join("project.gpkg");
+        state.session = Some(crate::session::Session::open(&path, &mut state.doc).unwrap());
+        state.save_waiting().unwrap();
+        state.show_map_on_globe(map);
+        state.save_waiting().unwrap();
+        assert!(state.can_undo());
+        state.undo();
+        assert_eq!(state.doc.project.globe_collections(), [world, b]);
+        assert_eq!(state.map_on_globe(), None);
+    }
+
+    #[test]
+    fn a_restart_keeps_the_map_on_the_globe() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut state, map, _) = state();
+        let path = dir.path().join("project.gpkg");
+        state.session = Some(crate::session::Session::open(&path, &mut state.doc).unwrap());
+        state.screen = super::super::Screen::Editor;
+        state.show_map_on_globe(map);
+        let view = state.resume_now().view.unwrap();
+        assert_eq!(view.map, Some(map));
+        state.close_map_on_globe();
+        state.show_view(view);
+        assert_eq!(state.map_on_globe(), Some(map));
+    }
+
+    #[test]
+    fn the_flat_projection_centers_on_the_extent() {
+        let (mut state, map, _) = state();
+        state.globe.world_view = WorldView::Flat;
+        state.globe.rect = eframe::egui::Rect::from_min_size(
+            eframe::egui::Pos2::ZERO,
+            eframe::egui::vec2(800.0, 600.0),
+        );
+        state.show_map_on_globe(map);
+        let spec = state.globe.flat.spec();
+        // The frame is centered at 10 degrees east and 45 degrees north.
+        assert!((spec.lon0 - 10.0).abs() < 2.0, "{spec:?}");
+        assert!(state.globe.flat.zoom > 1.0);
     }
 
     #[test]
