@@ -68,6 +68,9 @@ impl LayerStyle {
         if let Some(name) = &self.flow_height {
             root["flow_height"] = json!(name);
         }
+        if let Some(scale) = self.reference_scale {
+            root["reference_scale"] = json!(scale);
+        }
         let w = &self.weights;
         if *w != Weights::default() {
             root["weights"] = json!({
@@ -103,11 +106,14 @@ impl LayerStyle {
         let label = read_label(object(root, "label")?)?;
         let mask = root.get("mask").and_then(read_mask);
         let flow_height = (root.get("flow_height").and_then(Json::as_str)).map(str::to_owned);
+        let reference_scale = (root.get("reference_scale").and_then(Json::as_f64))
+            .filter(|s| s.is_finite() && *s > 0.0);
         let (opacity, blend) = read_mix(root);
         Ok(LayerStyle {
             style: Style { rules, mask },
             label,
             flow_height,
+            reference_scale,
             weights: read_weights(root.get("weights")),
             opacity,
             blend,
