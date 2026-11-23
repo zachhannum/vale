@@ -1497,10 +1497,9 @@ fn draw_map<'a>(
                 let symbols = doc.symbols();
                 (page_layers.iter())
                     .find(|p| p.layer.id == *layer && p.kind == GeometryKind::Point)
-                    .map(|p| {
-                        let rings = footprints(p, symbols, symbol_scale.unit, f64::from(*gap));
-                        Some((knockout_path(area, &rings), FillRule::EvenOdd))
-                    })
+                    .map(|p| footprints(p, symbols, symbol_scale.unit, f64::from(*gap)))
+                    .filter(|rings| !rings.is_empty())
+                    .map(|rings| Some((knockout_path(area, &rings), FillRule::EvenOdd)))
             }
             (Some((masks, target)), _) => masks
                 .get(&pl.layer.id)
