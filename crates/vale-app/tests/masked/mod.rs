@@ -33,6 +33,48 @@ pub fn masked_square() -> (Document, vale_store::LayerId) {
     (doc, id)
 }
 
+/// The fill of the marker of `marker_masked`.
+pub const MARKER_FILL: Color = Color::rgb(10, 10, 200);
+
+/// The radius, the stroke width, and the gap of the marker of
+/// `marker_masked`, in points.
+pub const MARKER: (f64, f64, f32) = (4.0, 1.0, 1.0);
+
+/// A document with a green line "Marker River" from 40 degrees west to 40
+/// degrees east along the equator, and a point layer with one circle marker
+/// at 0 degrees. The marker layer is the markers mask of the line. Returns
+/// the document, the line layer, and the point layer.
+pub fn marker_masked() -> (Document, vale_store::LayerId, vale_store::LayerId) {
+    let mut doc = Document::empty();
+    doc.frame.labels = false;
+    doc.frame.graticule = false;
+    let line = r#"{"type":"Feature","properties":{"name":"Marker River"},"geometry":{"type":"LineString","coordinates":[[-40,0],[40,0]]}}"#;
+    let point = r#"{"type":"Point","coordinates":[0,0]}"#;
+    let line = doc.add_imported(geojson::read_str("river", line).unwrap(), None)[0];
+    let point = doc.add_imported(geojson::read_str("town", point).unwrap(), None)[0];
+    let (radius, width, gap) = MARKER;
+    doc.entry_mut(point).unwrap().style.style = vale_style::Style {
+        mask: None,
+        rules: vec![vale_style::Rule::new(
+            "Default",
+            vec![vale_style::Symbolizer::Marker {
+                radius: vale_style::expr::Property::constant(radius),
+                shape: vale_style::MarkerShape::Circle,
+                fill: Some(vale_style::expr::Property::constant(MARKER_FILL)),
+                hatch: None,
+                stroke: Some(vale_style::StrokeSymbolizer::constant(Stroke::solid(
+                    Color::rgb(0, 0, 0),
+                    width,
+                ))),
+            }],
+        )],
+    };
+    let style = &mut doc.entry_mut(line).unwrap().style;
+    style.set_stroke(Some(Stroke::solid(MASK_STROKE, 2.0)));
+    style.style.mask = Some(vale_style::Mask::Markers { layer: point, gap });
+    (doc, line, point)
+}
+
 /// Sets whether the mask cuts the fill and the stroke of `masked_square`.
 pub fn set_applies_mask(doc: &mut Document, id: vale_store::LayerId, fill: bool, stroke: bool) {
     let rule = &mut doc.entry_mut(id).unwrap().style.style.rules[0];

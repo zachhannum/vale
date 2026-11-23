@@ -4940,3 +4940,163 @@ fn the_vector_groups_of_a_frame_split_at_its_raster_layers() {
     assert_eq!(fills.len(), 2);
     assert!(fills[0] == 0 && fills[1] > 0, "{fills:?}");
 }
+
+/// The clips of `items` that hold the masked strokes of `marker_masked`,
+/// each with the items inside it.
+fn marker_clips(items: &[Item]) -> Vec<(&kurbo::BezPath, FillRule, &[Item])> {
+    (0..items.len())
+        .filter_map(|k| match &items[k] {
+            Item::PushClip { path, rule } => {
+                let end = k + items[k..].iter().position(|i| matches!(i, Item::PopClip))?;
+                let inside = &items[k + 1..end];
+                (inside.first().is_some_and(is_river)).then_some((path, *rule, inside))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `item` is a stroke of the line of `marker_masked`.
+fn is_river(item: &Item) -> bool {
+    matches!(item, Item::Stroke { color, .. } if *color == masked::MASK_STROKE)
+}
+
+/// The center of the marker of `marker_masked` in `items`.
+fn marker_center(items: &[Item]) -> Point {
+    let fill = (items.iter())
+        .find_map(|i| match i {
+            Item::Fill { path, color, .. } if *color == masked::MARKER_FILL => Some(path),
+            _ => None,
+        })
+        .expect("a marker");
+    fill.bounding_box().center()
+}
+
+/// No clip holds the masked strokes of `marker_masked`, and they draw.
+fn assert_no_marker_clip(items: &[Item]) {
+    assert!(marker_clips(items).is_empty());
+    assert!(items.iter().any(is_river));
+}
+
+/// Whether `p` is inside the even-odd clip `path`.
+fn in_clip(path: &kurbo::BezPath, p: Point) -> bool {
+    path.winding(p) % 2 != 0
+}
+
+/// `marker_masked` with a frame on its first page.
+fn marker_frame() -> (
+    Document,
+    Pipeline,
+    FrameId,
+    vale_store::LayerId,
+    vale_store::LayerId,
+) {
+    let (mut doc, line, point) = masked::marker_masked();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    (doc, pipeline, frame, line, point)
+}
+
+#[test]
+fn a_markers_mask_clips_the_masked_batches_with_a_hole_at_each_marker() {
+    let (doc, mut pipeline, frame, _, _) = marker_frame();
+    let items = compose_frame(&doc, &mut pipeline, frame);
+    let clips = marker_clips(&items);
+    assert_eq!(clips.len(), 1);
+    let (path, rule, inside) = clips[0];
+    assert_eq!(rule, FillRule::EvenOdd);
+    assert!(inside.iter().all(is_river));
+    // The hole reaches the outer edge of the stroke of the marker and the
+    // gap.
+    let (radius, width, gap) = masked::MARKER;
+    let reach = radius + width + f64::from(gap);
+    let c = marker_center(&items);
+    assert!(!in_clip(path, c));
+    assert!(!in_clip(path, c + kurbo::Vec2::new(reach - 0.2, 0.0)));
+    assert!(in_clip(path, c + kurbo::Vec2::new(reach + 0.2, 0.0)));
+    assert!(in_clip(path, c + kurbo::Vec2::new(4.0 * reach, 0.0)));
+}
+
+#[test]
+fn a_stroke_that_does_not_apply_a_markers_mask_is_not_clipped() {
+    let (mut doc, mut pipeline, frame, line, _) = marker_frame();
+    set_apply_mask(&mut doc, line, true, false);
+    assert_no_marker_clip(&compose_frame(&doc, &mut pipeline, frame));
+}
+
+#[test]
+fn a_hidden_point_layer_knocks_out_nothing() {
+    let (mut doc, mut pipeline, frame, _, point) = marker_frame();
+    let map = doc.project.atlas.maps[0].id;
+    doc.set_shown(map, point, false);
+    assert_no_marker_clip(&compose_frame(&doc, &mut pipeline, frame));
+}
+
+#[test]
+fn a_marker_rule_outside_its_scale_range_knocks_out_nothing() {
+    let (mut doc, mut pipeline, frame, _, point) = marker_frame();
+    doc.entry_mut(point).unwrap().style.style.rules[0].min_scale = Some(1e15);
+    assert_no_marker_clip(&compose_frame(&doc, &mut pipeline, frame));
+}
+
+#[test]
+fn a_frame_uses_the_markers_of_the_style_of_its_map() {
+    let (mut doc, mut pipeline, frame, _, point) = marker_frame();
+    let map = doc.project.atlas.maps[0].id;
+    let mut style = doc.map_style(map, point).unwrap();
+    let radius = 12.0;
+    if let Symbolizer::Marker { radius: r, .. } = &mut style.style.rules[0].symbolizers[0] {
+        *r = Property::constant(radius);
+    }
+    assert!(doc.set_map_style(map, point, &style));
+    let items = compose_frame(&doc, &mut pipeline, frame);
+    let (path, _, _) = marker_clips(&items)[0];
+    let (_, width, gap) = masked::MARKER;
+    let reach = radius + width + f64::from(gap);
+    let c = marker_center(&items);
+    assert!(!in_clip(path, c + kurbo::Vec2::new(reach - 0.2, 0.0)));
+    assert!(in_clip(path, c + kurbo::Vec2::new(reach + 0.2, 0.0)));
+}
+
+#[test]
+fn a_line_with_a_markers_mask_keeps_its_full_geometry_for_labels() {
+    let (mut doc, mut pipeline, frame, line, _) = marker_frame();
+    doc.frame.labels = true;
+    let map = doc.project.atlas.maps[0].id;
+    let class = vale_style::LabelClass::new("Rivers", vale_store::GeometryKind::Line, 0).unwrap();
+    assert!(doc.set_label_classes(map, line, &[class]));
+    let items = compose_frame(&doc, &mut pipeline, frame);
+    let c = marker_center(&items);
+    let xs: Vec<f64> = (items.iter())
+        .filter_map(|i| match i {
+            Item::Glyphs(g) if g.text.to_uppercase() == "MARKER RIVER" => Some(g),
+            _ => None,
+        })
+        .flat_map(|g| g.glyphs.iter().map(|(_, t)| t.translation().x))
+        .collect();
+    // The label runs over the marker, where the hole cuts the stroke.
+    assert!(
+        xs.iter().any(|x| *x < c.x) && xs.iter().any(|x| *x > c.x),
+        "{xs:?} {c:?}"
+    );
+}
+
+#[test]
+fn an_export_clips_a_layer_with_a_markers_mask_with_vector_holes() {
+    let (mut doc, mut pipeline, _, line, _) = marker_frame();
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = fonts().unwrap();
+    let mut pdf = |doc: &Document, name: &str| {
+        let path = dir.path().join(name);
+        let page = &doc.project.atlas.pages[0];
+        vale_app::headless::export_page(&mut pipeline, doc, page, &mut f, &path).unwrap();
+        masked::pdf_clips(&std::fs::read(path).unwrap())
+    };
+    let masked = pdf(&doc, "masked.pdf");
+    set_apply_mask(&mut doc, line, false, false);
+    let plain = pdf(&doc, "plain.pdf");
+    // One more even-odd clip: the frame with a hole at the marker.
+    assert_eq!(masked.0, plain.0);
+    assert_eq!(masked.1, plain.1 + 1);
+}
