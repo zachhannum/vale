@@ -2702,7 +2702,7 @@ fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Po
 /// frame of the Select tool, it selects the feature under it, and with
 /// Shift it adds the feature to the selection or takes it out. With a
 /// furniture tool, a tap on the page puts an item there. With the Pan tool,
-/// a tap selects a map frame or nothing.
+/// a tap does not select the page.
 fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shift: bool) {
     if state.atlas.tool == AtlasTool::Select {
         if let Some(id) = entered_at(state, page, place, pos) {
@@ -2732,20 +2732,15 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
     }
     state.atlas.vertices.clear();
     state.atlas.sizes = false;
-    if state.atlas.tool == AtlasTool::Pan {
-        state.atlas.selection = match frame_at(page, at) {
-            Some(id) if item_at(page, at).is_none() => AtlasSelection::Frame(id),
-            _ => AtlasSelection::None,
-        };
-        return;
-    }
     if let Some(id) = item_at(page, at) {
         state.atlas.selection = AtlasSelection::Item(id);
         return;
     }
     state.atlas.selection = match frame_at(page, at) {
         Some(id) => AtlasSelection::Frame(id),
-        None if place.rect.contains(pos) => AtlasSelection::Page,
+        None if place.rect.contains(pos) && state.atlas.tool != AtlasTool::Pan => {
+            AtlasSelection::Page
+        }
         None => AtlasSelection::None,
     };
 }
