@@ -868,9 +868,11 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             vec2(pages, ROW),
         );
         if !readout.is_empty() {
-            let left = rects.screen.left() + rects.bands.left + MARGIN + PAD;
+            let left = rects.screen.left() + rects.bands.left + MARGIN;
+            let room = rects.screen.right() - rects.bands.right - MARGIN - left;
             let at = pos2(left, rect.bottom() + GAP);
-            readout::halo_text(ctx, at, Align2::LEFT_TOP, &readout, theme::mono());
+            let backdrop = state.globe.backdrop();
+            readout::text_capsule(ctx, backdrop, "pad-measure", at, room, &readout);
         }
         (rect, 0.0)
     } else {

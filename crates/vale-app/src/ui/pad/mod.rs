@@ -537,6 +537,8 @@ pub struct PadState {
     pub view_menu_rect: Option<Rect>,
     /// The card of the place above the readout in the last frame.
     pub place_rect: Option<Rect>,
+    /// The capsule of the scale bar of a compact screen in the last frame.
+    pub scale_rect: Option<Rect>,
     /// A finger, the pen, or the mouse button is down on the canvas.
     pub canvas_down: bool,
     /// The pen hovers over the canvas.

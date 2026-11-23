@@ -24,10 +24,6 @@ const PLACE_GAP: f32 = 6.0;
 pub(super) const READOUT_PAD: f32 = 12.0;
 /// The space between the divider of the readout and the scale bar.
 const SCALE_GAP: f32 = 6.0;
-/// The height of the line of the labels of the scale overlay.
-const SCALE_LINE: f32 = 20.0;
-/// The halo of an overlay on the canvas.
-const HALO: Color32 = Color32::from_black_alpha(140);
 /// The width of the View popover. A narrow screen makes it narrower.
 pub const VIEW_MENU_WIDTH: f32 = 340.0;
 /// The height of the segmented control of the View popover.
@@ -78,6 +74,7 @@ pub(super) fn readout(
     let pad = &mut state.pad;
     pad.readout_scale = None;
     pad.place_rect = None;
+    pad.scale_rect = None;
     // A compact screen has the View button in the top row, and the scale
     // is an overlay below the top row.
     if rects.top_overlay() {
@@ -128,48 +125,35 @@ pub(super) fn readout(
     place_card(ctx, state, band, rect);
 }
 
-/// The scale bar of a compact screen: an overlay on the canvas at the left
-/// margin, below the top row, with a halo so it reads on a light canvas
-/// and a dark canvas. The place, while it shows, is a line below it.
+/// The scale bar of a compact screen: a glass capsule at the left margin,
+/// below the World menu, as wide as the scale bar and its labels. The
+/// place, while it shows, is a capsule of the same style below it.
 fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
     let world = &state.doc.project.world;
     let scale = km_per_point(&state.globe, world.radius_km)
         .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
     state.pad.readout_scale = scale.map(|s| s.label());
-    let left = rects.screen.left() + rects.bands.left + geometry::MARGIN + PAD;
-    let top = rects.column_top + PAD;
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        Order::Middle,
-        egui::Id::new("pad-scale-overlay"),
-    ));
-    let mut next = top;
+    let left = rects.screen.left() + rects.bands.left + geometry::MARGIN;
+    let room = rects.screen.right() - rects.bands.right - geometry::MARGIN - left;
+    let backdrop = state.globe.backdrop();
+    let mut top = rects.column_top;
     if let Some(scale) = scale {
-        let bar = Rect::from_min_size(pos2(left, top), vec2(scale.length as f32, 4.0));
-        let d = 1.0 / ctx.pixels_per_point();
-        painter.rect_filled(bar.expand(1.5 * d), 1.5 * d, HALO);
-        let part = bar.width() / 4.0;
-        for i in 0..4 {
-            let fill = if i % 2 == 0 {
-                theme::TEXT
-            } else {
-                theme::track()
-            };
-            let x = bar.left() + i as f32 * part;
-            let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
-            painter.rect_filled(rect, 0.0, fill);
-        }
-        let labels = bar.bottom() + 2.0;
-        let font = theme::small();
-        halo_galley(
-            &painter,
-            pos2(bar.left(), labels),
-            Align2::LEFT_TOP,
-            "0",
-            font.clone(),
+        let width = (scale_width(ctx, scale) + 2.0 * READOUT_PAD).min(room);
+        let rect = Rect::from_min_size(pos2(left, top), vec2(width, PLACE_HEIGHT));
+        state.pad.scale_rect = Some(rect);
+        widgets::card(
+            ctx,
+            backdrop,
+            "pad-scale",
+            rect,
+            Order::Middle,
+            theme::CARD_RADIUS.into(),
+            |ui| {
+                let at = pos2(rect.left() + READOUT_PAD, rect.center().y);
+                paint_scale(ui, at, rect, scale);
+            },
         );
-        let end = pos2(bar.right(), labels);
-        halo_galley(&painter, end, Align2::CENTER_TOP, &scale.label(), font);
-        next = labels + SCALE_LINE;
+        top = rect.bottom() + PLACE_GAP;
     }
     let now = Instant::now();
     let down = state.pad.canvas_down || state.pad.pen_hover;
@@ -185,55 +169,32 @@ fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
         ctx.request_repaint_after(PLACE_TIME.saturating_sub(now.saturating_duration_since(at)));
     }
     let text = super::readout_line(state);
-    halo_galley(
-        &painter,
-        pos2(left, next),
-        Align2::LEFT_TOP,
-        &text,
-        theme::mono(),
-    );
+    let rect = text_capsule(ctx, backdrop, "pad-place", pos2(left, top), room, &text);
+    state.pad.place_rect = Some(rect);
 }
 
-/// Paints `text` on the canvas with a dark halo, so it reads on a light
-/// canvas and a dark canvas.
-pub(super) fn halo_text(
+/// A glass capsule with a line of text in the monospace font, with its top
+/// left corner at `at`, at most `room` wide. Returns its place.
+pub(super) fn text_capsule(
     ctx: &egui::Context,
+    backdrop: Option<eframe::egui_wgpu::wgpu::TextureFormat>,
+    id: &str,
     at: egui::Pos2,
-    align: Align2,
+    room: f32,
     text: &str,
-    font: egui::FontId,
-) {
-    let painter = ctx.layer_painter(egui::LayerId::new(
+) -> Rect {
+    let width = (mono_width(ctx, text) + 2.0 * READOUT_PAD).min(room);
+    let rect = Rect::from_min_size(at, vec2(width, PLACE_HEIGHT));
+    widgets::card(
+        ctx,
+        backdrop,
+        id,
+        rect,
         Order::Middle,
-        egui::Id::new("pad-halo-text"),
-    ));
-    halo_galley(&painter, at, align, text, font);
-}
-
-fn halo_galley(
-    painter: &egui::Painter,
-    at: egui::Pos2,
-    align: Align2,
-    text: &str,
-    font: egui::FontId,
-) {
-    let galley = painter.layout_no_wrap(text.to_owned(), font, theme::TEXT);
-    let rect = align.anchor_size(at, galley.size());
-    // The halo is one pixel wide.
-    let d = 1.0 / painter.ctx().pixels_per_point();
-    for (dx, dy) in [
-        (-1.0, 0.0),
-        (1.0, 0.0),
-        (0.0, -1.0),
-        (0.0, 1.0),
-        (-0.7, -0.7),
-        (0.7, -0.7),
-        (-0.7, 0.7),
-        (0.7, 0.7),
-    ] {
-        painter.galley(rect.min + vec2(dx * d, dy * d), galley.clone(), HALO);
-    }
-    painter.galley(rect.min, galley, theme::TEXT);
+        theme::CARD_RADIUS.into(),
+        |ui| paint_line(ui, rect.shrink2(vec2(READOUT_PAD, 0.0)), text),
+    );
+    rect
 }
 
 /// The card of the place, above the card of the readout, while

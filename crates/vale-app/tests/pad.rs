@@ -386,6 +386,7 @@ fn cards(h: &Pad) -> Vec<Rect> {
     cards.extend(pad.view_rect);
     cards.extend(pad.view_menu_rect);
     cards.extend(pad.place_rect);
+    cards.extend(pad.scale_rect);
     cards.extend(r.brush);
     cards.extend(pad.panels.iter().map(|(_, rect)| *rect));
     cards.extend(pad.menu_rect);
@@ -16384,6 +16385,40 @@ fn on_an_iphone_the_rows_are_one_card_and_the_scale_is_on_the_canvas() {
     // There is no readout card. The scale bar is an overlay.
     assert_eq!(rects.readout, None);
     assert!(h.state().pad.readout_scale.is_some());
+}
+
+#[test]
+fn on_a_compact_screen_the_scale_bar_and_the_place_are_capsules_below_the_world_menu() {
+    let (_, size, safe, camera) = DUO_OUTER[0];
+    for (what, mut h) in [
+        ("iphone", phone_pad()),
+        ("duo", duo_outer(size, safe, camera, false)),
+    ] {
+        h.state_mut().pad.close(Panel::Layers);
+        h.run_steps(3);
+        let rects = h.state().pad.rects.unwrap();
+        assert!(rects.top_overlay(), "{what}");
+        // The capsule of the scale bar is at the left margin, below the
+        // World menu, as high as the card of the place.
+        let scale = h.state().pad.scale_rect.expect(what);
+        assert_eq!(scale.left(), 16.0, "{what}");
+        assert_eq!(scale.top(), rects.column_top, "{what}");
+        assert!(scale.top() > rects.workspace.bottom(), "{what}");
+        assert_eq!(scale.height(), 34.0, "{what}");
+        assert!(scale.width() < 200.0, "{what}: {scale:?}");
+        assert_eq!(h.state().pad.place_rect, None, "{what}");
+        // While a finger is down, the place is a capsule below it.
+        let at = h.state().globe.rect.center() + vec2(30.0, 0.0);
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.run_steps(2);
+        let place = h.state().pad.place_rect.expect(what);
+        assert_eq!(place.left(), scale.left(), "{what}");
+        assert_eq!(place.top(), scale.bottom() + 6.0, "{what}");
+        assert_eq!(place.height(), 34.0, "{what}");
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(2);
+        assert_eq!(h.state().pad.place_rect, None, "{what}");
+    }
 }
 
 #[test]
