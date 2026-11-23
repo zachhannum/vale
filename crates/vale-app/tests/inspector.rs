@@ -302,6 +302,40 @@ fn the_dock_edits_more_than_one_rule() {
 }
 
 #[test]
+fn the_desktop_mask_menu_lists_the_point_layers() {
+    use vale_app::ui::pad::rules::{MASK, MASK_GAP, NO_MASK};
+    use vale_style::Mask;
+    let mut h = harness();
+    let rivers = id_of(&h, "Rivers");
+    let places = id_of(&h, "Places");
+    let mask =
+        |h: &Harness<'static, AppState>| h.state().doc.entry(rivers).unwrap().style.style.mask;
+    h.state_mut().selected_layer = Some(LayerRef::Vector(rivers));
+    h.run_steps(2);
+    assert!(h.query_by_label(MASK_GAP).is_none());
+    // The menu is the "None" box in the row of the Mask label.
+    let row = h.get_by_label(MASK).rect().center().y;
+    let menu = (h.query_all_by_value(NO_MASK))
+        .find(|n| (n.rect().center().y - row).abs() < 8.0)
+        .unwrap();
+    let x = menu.rect().left();
+    menu.click();
+    h.run_steps(2);
+    // The row of the menu, below the box.
+    let item = (h.query_all_by_label("Places"))
+        .find(|n| n.rect().top() > row && (n.rect().left() - x).abs() < 16.0)
+        .unwrap();
+    item.click();
+    h.run_steps(2);
+    assert_eq!(mask(&h), Some(Mask::markers(places)));
+    assert!(
+        h.query_by_role_and_label(egui::accesskit::Role::SpinButton, MASK_GAP)
+            .is_some()
+    );
+    screenshot::save(&mut h, "dock-mask-markers");
+}
+
+#[test]
 fn the_dock_sets_a_point_symbol_and_a_scatter() {
     use vale_app::ui::Action;
     use vale_app::ui::pad::rules::{
