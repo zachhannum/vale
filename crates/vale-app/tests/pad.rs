@@ -4528,12 +4528,13 @@ fn the_view_popover_has_the_views_and_the_graticule_switch() {
 
         // The panel of the height layer has the rivers and no graticule.
         open_height(&mut h);
+        sheet_up(&mut h);
         let mut rivers = control(&h, RIVERS).is_some();
         for _ in 0..8 {
             if rivers {
                 break;
             }
-            let card = panel(&h, Panel::Layers).unwrap();
+            let card = scroll_part(&h, panel(&h, Panel::Layers).unwrap());
             // A drag up on a row or on the gradient scrolls.
             let inside = |p: &Pos2| p.y > card.top() + 60.0 && p.y < card.bottom() - 10.0;
             let rows = [IMPORT_HEIGHTMAP, EXPORT_GEOTIFF, raster::COLOR_STOPS];
@@ -8844,8 +8845,10 @@ fn cancel_ends_the_eyedropper_and_keeps_the_color() {
 /// Scrolls the panel of a layer until a control is inside the card, with a
 /// drag up on the margin at the left of the rows.
 fn scroll_to(h: &mut Pad, name: &str) {
+    // A sheet scrolls at its full height, so a later tap does not move it.
+    sheet_up(h);
     for _ in 0..16 {
-        let card = panel(h, Panel::Layers).unwrap();
+        let card = scroll_part(h, panel(h, Panel::Layers).unwrap());
         let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
@@ -8854,6 +8857,17 @@ fn scroll_to(h: &mut Pad, name: &str) {
         let step = (card.height() / 2.0).min(200.0);
         let from = pos2(card.left() + 6.0, card.bottom() - 30.0);
         drag(h, from, from - vec2(0.0, step), None);
+    }
+}
+
+/// The part of a panel that scrolls. On a phone, the rows of the tools are
+/// the footer of the sheet, below the part that scrolls.
+fn scroll_part(h: &Pad, card: Rect) -> Rect {
+    match h.state().pad.rects.and_then(|r| r.footer) {
+        Some(footer) if footer.top() < card.bottom() => {
+            Rect::from_min_max(card.min, pos2(card.right(), footer.top()))
+        }
+        _ => card,
     }
 }
 
