@@ -3626,3 +3626,42 @@ fn edit_on_globe_in_the_desktop_frame_tab_shows_the_map() {
     assert_eq!(h.state().workspace, vale_app::ui::Workspace::Globe);
     assert_eq!(h.state().globe_map, Some(frame.map));
 }
+
+#[test]
+fn the_desktop_label_class_masks_layers() {
+    use vale_app::ui::pad::labels::{MASK_LAYERS, MASK_WIDTH, NO_MASKED_LAYERS};
+    let mut h = harness();
+    h.run_steps(3);
+    let frame = h.state().doc.project.atlas.pages[0].frames[0].clone();
+    let layer = |h: &Harness<AppState>, name: &str| {
+        (h.state().doc.project.layers().iter())
+            .find(|l| l.name == name)
+            .unwrap()
+            .id
+    };
+    let (places, rivers) = (layer(&h, "Places"), layer(&h, "Rivers"));
+    h.state_mut().atlas.selection = AtlasSelection::Frame(frame.id);
+    h.state_mut().atlas.tab = FrameTab::Labels;
+    h.state_mut().atlas.label = Some((frame.id, places, 0));
+    h.run_steps(3);
+    let class =
+        |h: &Harness<AppState>| h.state().doc.label_classes_in(frame.map, places)[0].clone();
+    assert!(h.query_all_by_label(MASK_WIDTH).next().is_none());
+    h.get_by_label(MASK_LAYERS).scroll_to_me();
+    h.run_steps(3);
+    h.get_by_label(MASK_LAYERS).click();
+    h.run_steps(2);
+    assert!(class(&h).mask);
+    assert!(h.query_all_by_label(MASK_WIDTH).next().is_some());
+    h.get_by_label(NO_MASKED_LAYERS).scroll_to_me();
+    h.run_steps(3);
+    h.get_by_label(NO_MASKED_LAYERS).click();
+    h.run_steps(2);
+    // The menu is the last layer, after the checkbox of the layer list.
+    (h.query_all_by_role_and_label(egui::accesskit::Role::CheckBox, "Rivers"))
+        .last()
+        .unwrap()
+        .click();
+    h.run_steps(2);
+    assert_eq!(class(&h).masked_layers, vec![rivers]);
+}

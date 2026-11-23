@@ -395,6 +395,8 @@ pub enum ClassPage {
     Fallbacks,
     /// The words and the short forms of the fallback "Abbreviation".
     Abbreviations,
+    /// The layers that the labels of the class cut.
+    MaskedLayers,
 }
 
 /// A segment of the panel of a label class.

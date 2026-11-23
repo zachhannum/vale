@@ -14247,3 +14247,51 @@ fn edit_on_globe_opens_the_globe_with_the_map_and_its_collections() {
         assert!(control(&h, CLOSE_MAP).is_some(), "{what}: no card");
     }
 }
+
+#[test]
+fn the_mask_switch_of_a_class_shows_the_width_and_the_masked_layers() {
+    use vale_app::ui::pad::labels::{MASK_LAYERS, MASK_WIDTH, MASKED_LAYERS};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let map = frame(&h, 0).map;
+    let class = |h: &Pad| classes(h, map, "Places")[0].clone();
+    let id = |h: &Pad, name: &str| {
+        (h.state().doc.project.layers().iter())
+            .find(|l| l.name == name)
+            .unwrap()
+            .id
+    };
+    let (rivers, places) = (id(&h, "Rivers"), id(&h, "Places"));
+    show_tab(&mut h, FRAME_TABS[3]);
+    tap(&mut h, "Places");
+    tap(&mut h, SEGMENTS[2].0);
+    scroll_to(&mut h, MASK_LAYERS);
+    assert!(control(&h, &value_of(MASK_WIDTH)).is_none());
+    assert!(control(&h, MASKED_LAYERS).is_none());
+    tap(&mut h, MASK_LAYERS);
+    assert!(class(&h).mask);
+    scroll_to(&mut h, MASKED_LAYERS);
+    assert!(control(&h, &value_of(MASK_WIDTH)).is_some());
+    set_number(&mut h, MASK_WIDTH, "3");
+    assert_eq!(class(&h).mask_width, 3.0);
+
+    // The page lists each vector layer, the layer of the class too.
+    scroll_to(&mut h, MASKED_LAYERS);
+    tap(&mut h, MASKED_LAYERS);
+    for name in ["Land", "Rivers", "Places"] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    tap(&mut h, "Rivers");
+    tap(&mut h, "Places");
+    assert_eq!(class(&h).masked_layers, vec![rivers, places]);
+    // Each tap is one undo step.
+    tap(&mut h, "Undo");
+    assert_eq!(class(&h).masked_layers, vec![rivers]);
+    tap(&mut h, "Rivers");
+    assert!(class(&h).masked_layers.is_empty());
+}

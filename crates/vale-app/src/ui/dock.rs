@@ -1471,6 +1471,37 @@ fn labels_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 .show(ui);
         }
     });
+    {
+        use super::pad::labels::{
+            MASK_LAYERS, MASK_WIDTH, MASK_WIDTHS, MASKED_LAYERS, masked_layers_value,
+        };
+        ui.checkbox(&mut class.mask, MASK_LAYERS);
+        if class.mask {
+            number::stepper(MASK_WIDTH, &mut class.mask_width)
+                .range(MASK_WIDTHS.0..=MASK_WIDTHS.1)
+                .step(0.25)
+                .suffix(" pt")
+                .show(ui);
+            let layers: Vec<_> = (state.label_layers().into_iter().rev())
+                .filter_map(|(id, _)| Some((id, state.doc.layer(id)?.name.clone())))
+                .collect();
+            let value = masked_layers_value(state, &class);
+            ui.horizontal(|ui| {
+                ui.label(MASKED_LAYERS);
+                ui.menu_button(value, |ui| {
+                    for (id, name) in layers {
+                        let mut on = class.masked_layers.contains(&id);
+                        if ui.checkbox(&mut on, name).changed() {
+                            class.masked_layers.retain(|l| *l != id);
+                            if on {
+                                class.masked_layers.push(id);
+                            }
+                        }
+                    }
+                });
+            });
+        }
+    }
     fallback_controls(ui, &mut class, kind, salt);
     if kind == GeometryKind::Point {
         use super::pad::labels::AMBIGUOUS;
