@@ -133,7 +133,7 @@ fn key(doc: &Document, id: LayerId, mask: Mask, detail: Option<&Arc<Detail>>) ->
     layer.geometry()?;
     let mask_features = match mask {
         Mask::Polygons { layer: of } => doc.layer(of)?.features.len(),
-        Mask::Raster { .. } => return None,
+        Mask::Raster { .. } | Mask::Markers { .. } => return None,
     };
     Some(Key {
         mask,
@@ -155,6 +155,6 @@ fn region_polygons(doc: &Document, mask: &Mask) -> Option<Polygons> {
                 .flatten()
                 .collect(),
         ),
-        Mask::Raster { .. } => None,
+        Mask::Raster { .. } | Mask::Markers { .. } => None,
     }
 }

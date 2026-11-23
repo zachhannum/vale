@@ -40,9 +40,28 @@ pub enum Mask {
     },
     /// The inside of the polygons of a polygon layer.
     Polygons { layer: LayerId },
+    /// The world outside the markers and the point symbols of a point layer.
+    Markers {
+        layer: LayerId,
+        /// The distance in points that each hole grows by, from 0 up.
+        gap: f32,
+    },
 }
 
 impl Mask {
+    /// The gap of a new markers mask, in points.
+    pub const DEFAULT_GAP: f32 = 1.0;
+    /// The gaps that a markers mask can have, in points.
+    pub const GAPS: std::ops::RangeInclusive<f32> = 0.0..=12.0;
+
+    /// The world outside the markers of the point layer `layer`, with the default gap.
+    pub const fn markers(layer: LayerId) -> Mask {
+        Mask::Markers {
+            layer,
+            gap: Mask::DEFAULT_GAP,
+        }
+    }
+
     /// The land of the height layer `layer`: each value from 0 up.
     pub const fn land(layer: LayerId) -> Mask {
         Mask::Raster {
@@ -56,17 +75,19 @@ impl Mask {
     /// The layer that gives the region.
     pub fn layer(&self) -> LayerId {
         match *self {
-            Mask::Raster { layer, .. } | Mask::Polygons { layer } => layer,
+            Mask::Raster { layer, .. } | Mask::Polygons { layer } | Mask::Markers { layer, .. } => {
+                layer
+            }
         }
     }
 
-    /// The value `v` of a raster mask is in the range. A polygon mask holds no value.
+    /// The value `v` of a raster mask is in the range. A polygon mask and a markers mask hold no value.
     pub fn contains(&self, v: f64) -> bool {
         match *self {
             Mask::Raster { min, max, .. } => {
                 min.is_none_or(|m| v >= m) && max.is_none_or(|m| v < m)
             }
-            Mask::Polygons { .. } => false,
+            Mask::Polygons { .. } | Mask::Markers { .. } => false,
         }
     }
 }

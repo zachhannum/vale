@@ -146,6 +146,7 @@ fn mask_json(m: &Mask) -> Json {
             j
         }
         Mask::Polygons { layer } => json!({ "kind": "polygons", "layer": layer.0 }),
+        Mask::Markers { layer, gap } => json!({ "kind": "markers", "layer": layer.0, "gap": gap }),
     }
 }
 
@@ -160,6 +161,13 @@ fn read_mask(j: &Json) -> Option<Mask> {
             offset: j.get("offset").and_then(Json::as_f64).unwrap_or(0.0) as f32,
         }),
         "polygons" => Some(Mask::Polygons { layer }),
+        "markers" => Some(Mask::Markers {
+            layer,
+            gap: j
+                .get("gap")
+                .and_then(Json::as_f64)
+                .map_or(Mask::DEFAULT_GAP, |g| g as f32),
+        }),
         _ => None,
     }
 }
