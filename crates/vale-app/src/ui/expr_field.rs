@@ -651,6 +651,7 @@ fn completion_list(
         .order(egui::Order::Foreground)
         .fixed_pos(rect.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .show(&ctx, |ui| {

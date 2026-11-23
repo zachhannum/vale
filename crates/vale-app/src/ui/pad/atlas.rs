@@ -281,6 +281,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     super::table::check(state);
     super::table::widen(state, &mut rects);
+    super::popover::set_layout(&ctx, &rects);
     if super::labels::wide(state) && class != WidthClass::Compact {
         rects.dock = super::expression::wider(&rects, super::expression::PANEL_WIDTH);
     }

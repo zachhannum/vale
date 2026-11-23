@@ -1384,7 +1384,11 @@ fn you_make_rename_hide_and_delete_a_layer() {
             // of the panel.
             assert_eq!(menu.right_top(), layers.left_top() - vec2(8.0, 0.0));
         } else {
-            assert!(layers.contains_rect(menu), "{menu:?}");
+            // On a compact screen, the menu is a popover of its button,
+            // below the top row and inside the margins.
+            let rects = h.state().pad.rects.unwrap();
+            assert!(menu.top() >= rects.column_top - 4.0, "{menu:?}");
+            assert!(menu.right() <= size.0 - 8.0, "{menu:?}");
         }
         assert_eq!(menu.width(), 220.0);
 
@@ -17140,10 +17144,16 @@ fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
         quick_tap(&mut h, "Pan");
         tap(&mut h, PANELS);
         assert!(h.state().pad.panels_menu, "{size:?}");
-        // The menu is on the right edge, below the top row.
+        // The menu is on the right edge, below the top row. On a compact
+        // screen, it floats 8 points from the edge, or from the rail.
         let menu = h.state().pad.panels_menu_rect.unwrap();
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(menu.right(), size.0, "{size:?}");
+        let right = match (rects.class, rects.rail) {
+            (WidthClass::Compact, true) => rects.tools.left() - 8.0,
+            (WidthClass::Compact, false) => size.0 - 8.0,
+            _ => size.0,
+        };
+        assert_eq!(menu.right(), right, "{size:?}");
         assert!(menu.top() > rects.actions.bottom(), "{size:?}");
         for name in [
             "Layers",
@@ -22179,4 +22189,50 @@ fn copy_style_from_gives_a_raster_layer_the_look_of_the_map() {
     s.undo();
     assert_eq!(s.doc.project.raster(height).unwrap().opacity, 1.0);
     assert_eq!(s.look(Some(map), layer), Some(look));
+}
+
+#[test]
+fn a_popover_from_the_sheet_stays_in_its_room_on_each_compact_screen() {
+    use vale_app::ui::pad::ADD_LAYER;
+    use vale_app::ui::pad::collection::{COLLECTION_MENU, NEW_COLLECTION};
+    let (_, size, safe, camera) = DUO_OUTER[0];
+    for (what, mut h) in [
+        ("iphone", phone_pad()),
+        ("duo", duo_outer(size, safe, camera, false)),
+    ] {
+        if !h.state().pad.is_open(Panel::Layers) {
+            open_panel(&mut h, "Layers");
+        }
+        let rects = h.state().pad.rects.unwrap();
+        let screen = rects.screen;
+        // The room: inside the screen, below the top row, above the card of
+        // the rows, and clear of the rail.
+        let mut room = screen.shrink(8.0);
+        room.min.y = rects.column_top - 12.0 + 8.0;
+        if let Some(footer) = rects.footer {
+            room.max.y = footer.top() - 8.0;
+        }
+        if rects.rail {
+            room.max.x = rects.tools.left() - 8.0;
+        }
+        tap(&mut h, COLLECTION_MENU);
+        let popover = h.state().pad.collections_rect.expect(what);
+        assert!(
+            room.expand(0.5).contains_rect(popover),
+            "{what}: {popover:?} {room:?}"
+        );
+        // The popover is not cut by the sheet: its rows reach past the
+        // header of the sheet, and each takes a finger.
+        let new = control(&h, NEW_COLLECTION).expect(what);
+        assert!(popover.contains_rect(new), "{what}: {new:?}");
+        check_controls(&h, &format!("{what}: collections"));
+        tap(&mut h, COLLECTION_MENU);
+        tap(&mut h, ADD_LAYER);
+        let menu = h.state().pad.add_rect.expect(what);
+        assert!(
+            room.expand(0.5).contains_rect(menu),
+            "{what}: {menu:?} {room:?}"
+        );
+        check_controls(&h, &format!("{what}: add layer"));
+    }
 }

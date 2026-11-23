@@ -689,6 +689,34 @@ pub fn skip_gap(y: f32, height: f32, gap: Option<Rangef>) -> f32 {
     }
 }
 
+/// The space between a popover and the edges of its room.
+pub const POPOVER_MARGIN: f32 = 8.0;
+
+/// The room of a popover, a menu, or a card that opens from `anchor`: the
+/// screen inside the safe area, less `POPOVER_MARGIN`. On a compact screen,
+/// it is also below the top row, clear of the rail, and above the card of
+/// the rows or the footer of the sheet, unless `anchor` is in that card.
+pub fn popover_room(rects: &Rects, anchor: Rect) -> Rect {
+    let (screen, bands) = (rects.screen, rects.bands);
+    let mut room = Rect::from_min_max(
+        pos2(screen.left() + bands.left, screen.top() + bands.top),
+        pos2(screen.right() - bands.right, screen.bottom() - bands.bottom),
+    );
+    if rects.class == WidthClass::Compact {
+        // The top row: from the top of its cards to `column_top - GAP`.
+        room.min.y = room.min.y.max(rects.column_top - GAP);
+        if rects.rail && !rects.tools.intersects(anchor) {
+            room.max.x = room.max.x.min(rects.tools.left());
+        }
+        for card in [rects.bar, rects.footer].into_iter().flatten() {
+            if !card.intersects(anchor) {
+                room.max.y = room.max.y.min(card.top());
+            }
+        }
+    }
+    room.shrink(POPOVER_MARGIN)
+}
+
 /// The corners of a card that touches a side edge of the screen. Only the
 /// inner corners are round.
 pub fn edge_radius(rect: Rect, screen: Rect) -> CornerRadius {

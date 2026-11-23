@@ -104,6 +104,8 @@ fn run() -> anyhow::Result<u8> {
         }
         state.pad.panels_menu = args.panels_menu;
         state.pad.view_menu = args.view_menu;
+        state.pad.collections_menu = args.collections_menu;
+        state.pad.add = args.add_menu;
         apply_globe(&args, &mut state.globe, face_size)?;
         state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {

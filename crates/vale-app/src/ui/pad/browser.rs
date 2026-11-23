@@ -307,6 +307,7 @@ fn scrim(ctx: &egui::Context, id: &str, screen: Rect, alpha: u8) -> bool {
         .order(Order::Foreground)
         .fixed_pos(screen.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false);
     let shown = area.show(ctx, |ui| {

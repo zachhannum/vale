@@ -990,7 +990,8 @@ impl<'a> Number<'a> {
     ) {
         let ctx = ui.ctx();
         let id = egui::Id::new(("pad slider bubble", self.name));
-        let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
+        let mut painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
+        painter.set_clip_rect(ctx.viewport_rect());
         let screen = ctx.content_rect();
         if let Some(radius) = &self.preview {
             let (center, r) = (screen.center(), radius(value).max(1.0));
@@ -1112,7 +1113,10 @@ fn place(
     top: f32,
     own: Option<egui::LayerId>,
 ) -> Rect {
-    let screen = ctx.content_rect().shrink(8.0);
+    // On a compact screen, the card keeps out of the top row, the rail,
+    // and the card of the rows.
+    let screen =
+        super::popover::compact_room(ctx, anchor).unwrap_or_else(|| ctx.content_rect().shrink(8.0));
     // A card does not cross the fold of a partially folded device.
     let fold = super::geometry::regions(ctx).fold;
     let fits = |rect: Rect| screen.contains_rect(rect) && !fold.is_some_and(|f| f.intersects(rect));

@@ -335,6 +335,7 @@ fn edge_tab(
         .order(Order::Middle)
         .fixed_pos(rect.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {
@@ -801,6 +802,7 @@ pub fn handle(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls
         .order(Order::Middle)
         .fixed_pos(rect.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {

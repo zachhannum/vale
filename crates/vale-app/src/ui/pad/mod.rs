@@ -795,6 +795,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     }
     table::check(state);
     table::widen(state, &mut rects);
+    popover::set_layout(&ctx, &rects);
     expression::widen(state, &mut rects);
     state.sync_selection_form(state.pad.shows(Panel::Attributes));
     select::drop_focus(&ctx, state);
@@ -3765,6 +3766,11 @@ fn add_menu(
     );
     let min = if rects.sheet.is_none() && beside.x >= rects.screen.left() + geometry::MARGIN {
         beside
+    } else if rects.class == WidthClass::Compact {
+        // On a compact screen, the menu is a popover of its button.
+        let (place, _) = popover::place(button, size, popover::room(ctx, button));
+        size = place.size();
+        place.min
     } else {
         // A short screen moves the menu up, out of the bottom band. A menu
         // that then covers its button goes to the left of the button.
@@ -3808,11 +3814,6 @@ fn add_menu(
         radius,
         button.center().clamp(rect.min, rect.max),
         |ui| {
-            // A sheet below the menu does not show through it.
-            if rects.sheet.is_some() {
-                let fill = theme::card().to_opaque();
-                ui.painter().rect_filled(rect, radius, fill);
-            }
             let inner = rect.shrink2(widgets::menu_inset());
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));

@@ -1656,12 +1656,12 @@ pub fn choice_field(
     let ctx = ui.ctx().clone();
     let rows = (choices.len() as f32).min(MENU_ROWS);
     let size = vec2(row.width(), 2.0 * menu_inset().y + rows * PANEL_ROW);
-    let screen = ctx.viewport_rect();
+    let room = super::popover::room(&ctx, row);
     let below = row.bottom() + PAD;
-    let y = if below + size.y <= screen.bottom() - PAD {
+    let y = if below + size.y <= room.bottom() {
         below
     } else {
-        (row.top() - PAD - size.y).max(screen.top() + PAD)
+        (row.top() - PAD - size.y).max(room.top())
     };
     let rect = Rect::from_min_size(pos2(row.left(), y), size);
     let pressed = ui.input(|i| {
