@@ -910,8 +910,19 @@ fn show_sheet(
     // In the row layout, the sheet is the floating card of the rows, grown
     // up. Else it reaches the side edges and the bottom edge of the screen,
     // with round top corners.
+    // On the outer screen of iPhone Duo, the camera is at the top right,
+    // and the left edge is the hinge, where the corners of the display are
+    // almost square.
+    let hinge =
+        rects.rail && (state.pad.camera).is_some_and(|c| c.center().x > rects.screen.center().x);
     let radius = match rects.row || rects.rail {
-        true => egui::CornerRadius::same(theme::CARD_RADIUS as u8),
+        true => egui::CornerRadius {
+            sw: match hinge {
+                true => theme::HINGE_RADIUS as u8,
+                false => theme::CARD_RADIUS as u8,
+            },
+            ..egui::CornerRadius::same(theme::CARD_RADIUS as u8)
+        },
         false => {
             let r = match widgets::is_glass(ctx) {
                 true => theme::SHEET_GLASS_RADIUS as u8,

@@ -2173,7 +2173,12 @@ pub fn card_radius(rect: Rect, radius: CornerRadius) -> CornerRadius {
     let round = theme::CARD_RADIUS
         .max(most)
         .min(rect.width().min(rect.height()) / 2.0) as u8;
-    let pick = |corner: u8| if corner > 0 { round } else { 0 };
+    // A corner that is smaller than the largest corner keeps its radius.
+    let pick = |corner: u8| match corner {
+        0 => 0,
+        c if f32::from(c) < most => c,
+        _ => round,
+    };
     CornerRadius {
         nw: pick(radius.nw),
         ne: pick(radius.ne),
@@ -3481,6 +3486,13 @@ mod tests {
         };
         let round = card_radius(panel, edge);
         assert_eq!((round.nw, round.sw, round.ne, round.se), (0, 0, 28, 28));
+        // A smaller corner, such as the corner at the hinge, stays.
+        let hinge = CornerRadius {
+            sw: theme::HINGE_RADIUS as u8,
+            ..CornerRadius::same(28)
+        };
+        let round = card_radius(panel, hinge);
+        assert_eq!((round.nw, round.sw, round.ne, round.se), (28, 6, 28, 28));
     }
 
     #[test]

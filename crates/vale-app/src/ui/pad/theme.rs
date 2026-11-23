@@ -18,6 +18,9 @@ pub const ACCENT: Color32 = Color32::from_rgb(69, 196, 168);
 /// The corner radius of a card, a menu, a popover, a sheet, and the dock. A
 /// card with a short side under two times this radius is a capsule.
 pub const CARD_RADIUS: f32 = 28.0;
+/// The corner radius of a sheet at the hinge edge of the outer screen of
+/// iPhone Duo, where the corners of the display are almost square.
+pub const HINGE_RADIUS: f32 = 6.0;
 /// The corner radius of a glass sheet: the radius of the corners of the
 /// display of a phone, less the inset of the sheet.
 pub const SHEET_GLASS_RADIUS: f32 = 47.0;
