@@ -2142,6 +2142,93 @@ fn raster_masks(doc: &Document, globe: &Globe) -> Vec<(LayerId, RasterMask)> {
         .collect()
 }
 
+/// The vector layers with a markers mask whose point layer the globe
+/// draws.
+pub fn marker_masks(doc: &Document) -> Vec<LayerId> {
+    let drawn = doc.project.drawn_layer_ids();
+    let points = |id: LayerId| {
+        let layer = doc.layer(id).filter(|l| l.visible && drawn.contains(&id));
+        layer.is_some_and(|l| l.geometry() == Some(vale_store::GeometryKind::Point))
+    };
+    (doc.frame.entries.iter())
+        .filter(|entry| {
+            let own = doc.layer(entry.layer).and_then(|l| l.geometry());
+            let own = own.is_some_and(|k| k != vale_store::GeometryKind::Point);
+            matches!(entry.style.style.mask, Some(vale_style::Mask::Markers { layer, .. }) if own && points(layer))
+        })
+        .map(|entry| entry.layer)
+        .collect()
+}
+
+/// The holes of the markers mask of the layer `id`: a fan for the footprint
+/// of each marker and each point symbol that the point layer of the mask
+/// draws at the scale denominator `scale`, in black. `project` puts a
+/// direction on the screen, or gives `None` where the view does not show
+/// it.
+pub fn marker_holes(
+    doc: &Document,
+    id: LayerId,
+    scale: f64,
+    pipeline: &Pipeline,
+    project: impl Fn(V3) -> Option<egui::Pos2>,
+) -> Vec<Cut> {
+    use crate::mask::knockout::{Mark, footprint};
+    let mask = doc.entry(id).and_then(|e| e.style.style.mask);
+    let Some(vale_style::Mask::Markers { layer: of, gap }) = mask else {
+        return Vec::new();
+    };
+    let (Some(entry), Some(layer)) = (doc.entry(of), doc.layer(of).filter(|l| l.visible)) else {
+        return Vec::new();
+    };
+    let features = &layer.features;
+    let rasters = pipeline.rasters().for_layer(of);
+    let radius_km = doc.project.world.radius_km;
+    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
+        attributes: &features[i].attributes,
+        scale,
+        geometry: features[i].geometry.kind(),
+        shape: Some(&features[i].geometry),
+        radius_km,
+        page: None,
+        rasters: Some(&rasters),
+        index: i,
+    });
+    let symbols = doc.symbols();
+    let mut mesh = egui::Mesh::default();
+    for batch in &batches {
+        let Some(mark) = Mark::of(&batch.paint, symbols) else {
+            continue;
+        };
+        for &i in &batch.features {
+            let Geometry::Points(points) = &features[i].geometry else {
+                continue;
+            };
+            for pos in points
+                .iter()
+                .filter_map(|p| project(lonlat_to_dir(p[0], p[1])))
+            {
+                let center = kurbo::Point::new(f64::from(pos.x), f64::from(pos.y));
+                // A marker and a symbol draw their sizes in points.
+                let ring = footprint(mark, center, 1.0, f64::from(gap));
+                // A footprint is star-shaped around its center.
+                let base = mesh.vertices.len() as u32;
+                mesh.colored_vertex(pos, egui::Color32::BLACK);
+                for p in &ring {
+                    mesh.colored_vertex(egui::pos2(p.x as f32, p.y as f32), egui::Color32::BLACK);
+                }
+                let n = ring.len() as u32;
+                for k in 0..n {
+                    mesh.add_triangle(base, base + 1 + k, base + 1 + (k + 1) % n);
+                }
+            }
+        }
+    }
+    if mesh.is_empty() {
+        return Vec::new();
+    }
+    vec![Cut::Shape(mesh.into())]
+}
+
 /// The meshes of `cuts` in their order, each with the clip rectangle `clip`
 /// in points and its alpha. The meshes read no texture, so a disc is a
 /// polygon and not a picture of the font atlas.
@@ -2245,6 +2332,7 @@ pub(super) fn paint_canvas(
     (pipeline.scatter_cache_mut()).retain(|id| doc.layer(id).is_some());
     (pipeline.lod_mut()).retain(|id| doc.layer(id).is_some());
     globe.set_raster_masks(raster_masks(doc, globe));
+    globe.set_marker_masks(marker_masks(doc));
     // A large vector layer draws from tiles.
     pipeline.vtiles_mut().begin();
     for layer in doc.project.drawn_layers() {
@@ -2272,7 +2360,20 @@ pub(super) fn paint_canvas(
                         let flat = &globe.flat;
                         flat_vector_layer(&painter, format, rect, doc, flat, id, pipeline);
                     }
-                    Paint::Masked(id, pass) => {
+                    Paint::Masked(id, mut pass) => {
+                        if pass.markers() {
+                            let (view, flat) = (&globe.view, &globe.flat);
+                            let radius_m = doc.project.world.radius_km * 1000.0;
+                            let holes = if globe_view {
+                                let scale = scale_denominator(radius_m / view.radius(rect));
+                                marker_holes(doc, id, scale, pipeline, |d| view.project(rect, d))
+                            } else {
+                                let scale = scale_denominator(radius_m / flat.scale(rect));
+                                marker_holes(doc, id, scale, pipeline, |d| flat.project(rect, d))
+                            };
+                            let holes = tessellate(ui.ctx(), painter.clip_rect(), holes);
+                            pass.set_holes(pixels_per_point, holes);
+                        }
                         // The cut shapes go at the place of the masked
                         // paints in the draw order of the layer.
                         let mut shapes = Vec::new();

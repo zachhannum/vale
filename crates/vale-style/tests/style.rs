@@ -211,6 +211,11 @@ fn a_mask_round_trips() {
             offset: -1.5,
         },
         Mask::Polygons { layer: LayerId(7) },
+        Mask::markers(LayerId(8)),
+        Mask::Markers {
+            layer: LayerId(9),
+            gap: 0.0,
+        },
     ] {
         style.style.mask = Some(mask);
         let back = LayerStyle::from_json(&style.to_json()).unwrap();
@@ -236,6 +241,29 @@ fn a_raster_mask_without_an_offset_has_an_offset_of_0() {
     assert!(!json.contains("offset"));
     let back = LayerStyle::from_json(&json).unwrap();
     assert_eq!(back.style.mask, Some(Mask::land(LayerId(3))));
+}
+
+#[test]
+fn a_markers_mask_has_its_layer() {
+    let mask = Mask::markers(LayerId(5));
+    assert_eq!(mask.layer(), LayerId(5));
+    assert!(!mask.contains(0.0));
+}
+
+#[test]
+fn a_markers_mask_without_a_gap_reads_the_default_gap() {
+    let mut root: serde_json::Value =
+        serde_json::from_str(&LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json())
+            .unwrap();
+    root["mask"] = serde_json::json!({ "kind": "markers", "layer": 2 });
+    let style = LayerStyle::from_json(&root.to_string()).unwrap();
+    assert_eq!(
+        style.style.mask,
+        Some(Mask::Markers {
+            layer: LayerId(2),
+            gap: Mask::DEFAULT_GAP
+        })
+    );
 }
 
 #[test]

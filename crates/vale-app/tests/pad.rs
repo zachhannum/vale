@@ -16260,6 +16260,155 @@ fn a_new_raster_mask_keeps_the_offset_of_the_raster_mask_before_it() {
     );
 }
 
+/// Opens the Mask page of the layer `name`.
+fn open_mask_page(h: &mut Pad, name: &str) {
+    use vale_app::ui::pad::rules::MASK;
+    open_panel(h, "Layers");
+    tap(h, &format!("Open {name}"));
+    scroll_to_control(h, MASK);
+    tap(h, MASK);
+    assert_eq!(h.state().pad.page, Some(Page::Mask));
+}
+
+/// The mask of the layer `id`.
+fn mask_of(h: &Pad, id: vale_store::LayerId) -> Option<vale_style::Mask> {
+    h.state().doc.entry(id).unwrap().style.style.mask
+}
+
+#[test]
+fn the_mask_page_lists_the_point_layers() {
+    use vale_app::ui::pad::rules::{MARKERS_HINT, mask_choices};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        open_mask_page(&mut h, "Rivers");
+        scroll_to_control(&mut h, "Places");
+        // The point layers come last, below the polygon layers.
+        let places = control(&h, "Places").unwrap();
+        let land = control(&h, "Land").unwrap();
+        assert!(places.top() > land.bottom() + 20.0, "{what}");
+        let choices = mask_choices(&h.state().doc, vector(&h, "Rivers"));
+        let points: Vec<_> = choices.points.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(points, ["Places"], "{what}");
+        assert!(places.height() >= 44.0, "{what}: {places:?}");
+        assert!(h.query_by_label(MARKERS_HINT).is_none(), "{what}");
+        check_controls(&h, &format!("{what}: point layers"));
+        screenshot::save(&mut h, &format!("pad-mask-points-{}", size.0));
+    }
+}
+
+#[test]
+fn a_tap_on_a_point_layer_sets_a_markers_mask_with_the_default_gap() {
+    use vale_app::ui::pad::rules::{MARKERS_HINT, MASK_GAP};
+    use vale_style::Mask;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let rivers = vector(&h, "Rivers");
+        let places = vector(&h, "Places");
+        open_mask_page(&mut h, "Rivers");
+        scroll_to_control(&mut h, "Places");
+        tap(&mut h, "Places");
+        save_frames(&mut h);
+        assert_eq!(mask_of(&h, rivers), Some(Mask::markers(places)), "{what}");
+        let gap = Mask::DEFAULT_GAP;
+        assert_eq!(
+            mask_of(&h, rivers),
+            Some(Mask::Markers { layer: places, gap })
+        );
+        scroll_to_control(&mut h, &format!("Increase {MASK_GAP}"));
+        assert!(h.query_by_label(MARKERS_HINT).is_some(), "{what}");
+        check_controls(&h, &format!("{what}: markers mask"));
+        screenshot::save(&mut h, &format!("pad-mask-markers-{}", size.0));
+    }
+}
+
+#[test]
+fn the_gap_stepper_sets_the_gap_and_undo_restores_it() {
+    use vale_app::ui::pad::rules::MASK_GAP;
+    use vale_style::Mask;
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = saved_pad(size, dir.path());
+        let rivers = vector(&h, "Rivers");
+        let places = vector(&h, "Places");
+        open_mask_page(&mut h, "Rivers");
+        scroll_to_control(&mut h, "Places");
+        tap(&mut h, "Places");
+        save_frames(&mut h);
+        scrolled_step(&mut h, MASK_GAP, true);
+        save_frames(&mut h);
+        let gap = Mask::DEFAULT_GAP + 0.25;
+        assert_eq!(
+            mask_of(&h, rivers),
+            Some(Mask::Markers { layer: places, gap }),
+            "{what}"
+        );
+        set_number(&mut h, MASK_GAP, "20");
+        save_frames(&mut h);
+        let gap = *Mask::GAPS.end();
+        assert_eq!(
+            mask_of(&h, rivers),
+            Some(Mask::Markers { layer: places, gap }),
+            "{what}"
+        );
+
+        tap(&mut h, "Undo");
+        let gap = Mask::DEFAULT_GAP + 0.25;
+        assert_eq!(
+            mask_of(&h, rivers),
+            Some(Mask::Markers { layer: places, gap }),
+            "{what}"
+        );
+        tap(&mut h, "Undo");
+        assert_eq!(mask_of(&h, rivers), Some(Mask::markers(places)), "{what}");
+    }
+}
+
+#[test]
+fn a_change_between_point_layers_keeps_the_gap() {
+    use vale_app::ui::pad::rules::MASK_GAP;
+    use vale_style::Mask;
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = saved_pad(BOARDS[0], dir.path());
+    let rivers = vector(&h, "Rivers");
+    let places = vector(&h, "Places");
+    let towns = h.state_mut().doc.add_layer(vale_store::GeometryKind::Point);
+    let name = h.state().doc.layer(towns).unwrap().name.clone();
+    h.run_steps(2);
+    open_mask_page(&mut h, "Rivers");
+    scroll_to_control(&mut h, "Places");
+    tap(&mut h, "Places");
+    save_frames(&mut h);
+    set_number(&mut h, MASK_GAP, "3");
+    save_frames(&mut h);
+    let gap = 3.0;
+    assert_eq!(
+        mask_of(&h, rivers),
+        Some(Mask::Markers { layer: places, gap })
+    );
+
+    scroll_to_control(&mut h, &name);
+    tap(&mut h, &name);
+    save_frames(&mut h);
+    assert_eq!(
+        mask_of(&h, rivers),
+        Some(Mask::Markers { layer: towns, gap })
+    );
+
+    // A change to another kind and back gives the default gap.
+    scroll_to_control(&mut h, "Land");
+    tap(&mut h, "Land");
+    save_frames(&mut h);
+    scroll_to_control(&mut h, "Places");
+    tap(&mut h, "Places");
+    save_frames(&mut h);
+    assert_eq!(mask_of(&h, rivers), Some(Mask::markers(places)));
+}
+
 #[test]
 fn a_point_layer_has_no_mask_row() {
     use vale_app::ui::pad::rules::{ADD_RULE, MASK};

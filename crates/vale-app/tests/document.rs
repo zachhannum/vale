@@ -65,6 +65,29 @@ fn move_and_remove() {
 }
 
 #[test]
+fn deleting_the_point_layer_of_a_markers_mask_removes_the_mask() {
+    let mut d = Document::sample();
+    let ids: Vec<_> = d.frame.entries.iter().map(|e| e.layer).collect();
+    let (rivers, places) = (ids[1], ids[2]);
+    d.entry_mut(rivers).unwrap().style.style.mask = Some(vale_style::Mask::markers(places));
+    assert!(d.remove_layer(places));
+    assert_eq!(d.entry(rivers).unwrap().style.style.mask, None);
+}
+
+#[test]
+fn deleting_the_point_layer_of_a_mask_removes_the_mask_from_a_map_style() {
+    let mut d = Document::sample();
+    let ids: Vec<_> = d.frame.entries.iter().map(|e| e.layer).collect();
+    let (rivers, places) = (ids[1], ids[2]);
+    let map = d.project.atlas.add_map();
+    let mut style = d.map_style(map, rivers).unwrap();
+    style.style.mask = Some(vale_style::Mask::markers(places));
+    assert!(d.set_map_style(map, rivers, &style));
+    assert!(d.remove_layer(places));
+    assert_eq!(d.map_style(map, rivers).unwrap().style.mask, None);
+}
+
+#[test]
 fn a_new_layer_goes_on_top_with_the_first_free_name() {
     let mut d = Document::sample();
     let a = d.add_layer(GeometryKind::Line);

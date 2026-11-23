@@ -575,9 +575,10 @@ pub enum Paint {
     Callback(GlobeCallback),
     /// The shapes of a vector layer.
     Vector(LayerId),
-    /// A vector layer with a raster mask: its fills and its strokes go
-    /// through the GPU, which cuts them to the pixels inside the value range
-    /// of the raster. Its other shapes go above them.
+    /// A vector layer with a raster mask or a markers mask: its fills and
+    /// its strokes go through the GPU, which cuts them to the pixels inside
+    /// the value range of the raster, or outside the holes of the markers.
+    /// Its other shapes go above them.
     Masked(LayerId, MaskedPass),
 }
 
@@ -597,14 +598,33 @@ pub struct RasterMask {
     pub smoothing: Smoothing,
 }
 
-/// The passes of a vector layer with a raster mask, which wait for the
-/// shapes of the layer.
+/// The passes of a vector layer with a raster mask or a markers mask, which
+/// wait for the shapes of the layer.
 pub struct MaskedPass {
     frame: Arc<Frame>,
     group: Box<Group>,
 }
 
 impl MaskedPass {
+    /// The pass is for a markers mask, and it waits for its holes.
+    pub fn markers(&self) -> bool {
+        self.group.holes.is_some()
+    }
+
+    /// Sets the holes of a markers mask: meshes as in `callback`.
+    pub fn set_holes(
+        &mut self,
+        pixels_per_point: f32,
+        meshes: Vec<(Rect, eframe::egui::Mesh, f32)>,
+    ) {
+        if self.markers() {
+            self.group.holes = Some(VectorShapes {
+                pixels_per_point,
+                meshes,
+            });
+        }
+    }
+
     /// The callback that draws the meshes `meshes`, each with its clip
     /// rectangle in points and its alpha, cut to the mask.
     pub fn callback(
@@ -937,6 +957,8 @@ pub struct Globe {
     stack: Option<Vec<StackItem>>,
     /// The vector layers with a raster mask.
     raster_masks: Vec<(LayerId, RasterMask)>,
+    /// The vector layers with a markers mask whose point layer is visible.
+    marker_masks: Vec<LayerId>,
     /// The vector layers that draw from tiles.
     vector_tiles: Vec<LayerId>,
     /// The extent of a map. The globe shades the ground outside it.
@@ -1150,6 +1172,7 @@ impl Globe {
             images: Vec::new(),
             stack: None,
             raster_masks: Vec::new(),
+            marker_masks: Vec::new(),
             vector_tiles: Vec::new(),
             extent: None,
             frame_mask_rasters: Vec::new(),
@@ -1760,6 +1783,12 @@ impl Globe {
         let grid = self.view_grid(pixels_per_point);
         let link = self.format.map(|_| &self.link);
         tiles.plan(&grid, link, block);
+    }
+
+    /// Sets the vector layers with a markers mask whose point layer is
+    /// visible.
+    pub fn set_marker_masks(&mut self, layers: Vec<LayerId>) {
+        self.marker_masks = layers;
     }
 
     pub fn set_raster_masks(&mut self, masks: Vec<(LayerId, RasterMask)>) {
@@ -4531,6 +4560,7 @@ impl Globe {
                     vector: None,
                     cover: None,
                     cover_offset: 0.0,
+                    holes: None,
                     pixel_grid,
                 })
             });
@@ -4579,6 +4609,7 @@ impl Globe {
                 vector: None,
                 cover: None,
                 cover_offset: 0.0,
+                holes: None,
                 pixel_grid: [0.0; 3],
             };
             let callback = GlobeCallback {
@@ -4675,6 +4706,7 @@ impl Globe {
             vector: None,
             cover: Some(cover),
             cover_offset: mask.offset * point_scale(canvas.pixels_per_point, Some(&frame.place)),
+            holes: None,
             pixel_grid: [0.0; 3],
         };
         let gpu = self.gpu_frame(format, smooth_full, &river_layers, None);
@@ -5024,6 +5056,7 @@ impl Globe {
             Vector(LayerId),
             Tiles(LayerId),
             Masked(LayerId, Option<(LayerDraw<'a>, RasterMask)>),
+            Markers(LayerId),
         }
         let mut items: Vec<Item> = Vec::new();
         match &self.stack {
@@ -5052,6 +5085,7 @@ impl Globe {
                                 Some((_, mask)) => {
                                     Item::Masked(id, self.mask_draw(stack, mask, &rivers))
                                 }
+                                None if self.marker_masks.contains(&id) => Item::Markers(id),
                                 None if self.vector_tiles.contains(&id) => Item::Tiles(id),
                                 None => Item::Vector(id),
                             });
@@ -5146,7 +5180,7 @@ impl Globe {
                 pass: Pass::VectorTiles(*id),
                 ..plain(Pass::Ground, false)
             }),
-            Item::Vector(_) | Item::Masked(..) => None,
+            Item::Vector(_) | Item::Masked(..) | Item::Markers(_) => None,
         };
 
         let mut out = Vec::new();
@@ -5180,6 +5214,7 @@ impl Globe {
                 vector: None,
                 cover: None,
                 cover_offset: 0.0,
+                holes: None,
                 pixel_grid: [0.0; 3],
             };
             out.push(callback(GpuJob::Group(Box::new(group))));
@@ -5216,6 +5251,35 @@ impl Globe {
                         vector: None,
                         cover: Some(cover),
                         cover_offset: mask.offset * canvas.pixels_per_point,
+                        holes: None,
+                        pixel_grid: [0.0; 3],
+                    };
+                    let frame = frame.clone();
+                    out.push(Paint::Masked(
+                        *id,
+                        MaskedPass {
+                            frame,
+                            group: Box::new(group),
+                        },
+                    ));
+                }
+                Item::Markers(id) => {
+                    flush(&mut run, &mut out);
+                    masked += 1;
+                    let group = Group {
+                        target: MASK_TARGET + masked,
+                        place: None,
+                        mesh: flat_mesh.clone(),
+                        mask: None,
+                        draws: Vec::new(),
+                        capture: None,
+                        vector: None,
+                        cover: None,
+                        cover_offset: 0.0,
+                        holes: Some(VectorShapes {
+                            pixels_per_point: canvas.pixels_per_point,
+                            meshes: Vec::new(),
+                        }),
                         pixel_grid: [0.0; 3],
                     };
                     let frame = frame.clone();

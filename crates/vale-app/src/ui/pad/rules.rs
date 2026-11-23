@@ -128,15 +128,20 @@ pub const MASK: &str = "Mask";
 pub const NO_MASK: &str = "None";
 pub const RASTER_LAYERS: &str = "Raster layers";
 pub const POLYGON_LAYERS: &str = "Polygon layers";
+pub const POINT_LAYERS: &str = "Point layers";
 pub const MASK_MIN: &str = "Minimum";
 pub const MASK_MAX: &str = "Maximum";
 pub const MASK_OFFSET: &str = "Offset";
 /// The limits of the offset of a raster mask, in points.
 pub const MASK_OFFSETS: (f64, f64) = (-20.0, 20.0);
+/// The stepper of the gap of a markers mask.
+pub const MASK_GAP: &str = "Gap";
 /// The text below the range of a raster mask when the minimum is not below the maximum.
 pub const BAD_MASK_RANGE: &str = "Minimum must be less than maximum.";
 /// The hint of the mask page.
 pub const MASK_HINT: &str = "A fill or a stroke with Apply mask on draws only inside the mask. A negative offset clears a line at its edge.";
+/// The hint of the mask page with a markers mask.
+pub const MARKERS_HINT: &str = "Masked fills and strokes stop short of each marker.";
 /// The range of the width slider, in points. The slider has a log scale.
 pub const WIDTHS: (f64, f64) = (0.1, 20.0);
 /// The range of the size of a shape, in points.
@@ -679,10 +684,29 @@ fn mask_text(state: &AppState, id: LayerId) -> String {
         .map_or(NO_MASK.to_owned(), |l| l.name.clone())
 }
 
-/// The layers that can be the mask of layer `id`: the raster layers, and the polygon layers other than `id`, each with its name and the mask that a tap on it sets. The mask of a height layer is its land.
-pub fn mask_choices(doc: &Document, id: LayerId) -> (Vec<MaskChoice>, Vec<MaskChoice>) {
+/// The layers that can be the mask of layer `id`, in groups.
+#[derive(Default)]
+pub struct MaskChoices {
+    pub rasters: Vec<MaskChoice>,
+    pub polygons: Vec<MaskChoice>,
+    pub points: Vec<MaskChoice>,
+}
+
+impl MaskChoices {
+    /// Each choice, group by group.
+    pub fn all(self) -> Vec<MaskChoice> {
+        let mut all = self.rasters;
+        all.extend(self.polygons);
+        all.extend(self.points);
+        all
+    }
+}
+
+/// The layers that can be the mask of layer `id`: the raster layers, and the polygon layers and the point layers other than `id`, each with its name and the mask that a tap on it sets. The mask of a height layer is its land.
+pub fn mask_choices(doc: &Document, id: LayerId) -> MaskChoices {
     let mut rasters = Vec::new();
     let mut polygons = Vec::new();
+    let mut points = Vec::new();
     for layer in doc.project.layers() {
         if let Some(rid) = layer.raster() {
             let height = doc.project.raster(rid).is_some_and(crate::ui::is_height);
@@ -699,15 +723,21 @@ pub fn mask_choices(doc: &Document, id: LayerId) -> (Vec<MaskChoice>, Vec<MaskCh
             rasters.push((layer.name.clone(), mask));
         } else if layer.geometry() == Some(GeometryKind::Polygon) && layer.id != id {
             polygons.push((layer.name.clone(), Mask::Polygons { layer: layer.id }));
+        } else if layer.geometry() == Some(GeometryKind::Point) && layer.id != id {
+            points.push((layer.name.clone(), Mask::markers(layer.id)));
         }
     }
-    (rasters, polygons)
+    MaskChoices {
+        rasters,
+        polygons,
+        points,
+    }
 }
 
 /// The name of a layer, and the mask that a tap on it sets.
 pub type MaskChoice = (String, Mask);
 
-/// The mask `choice` with the offset of the raster mask `current`, so a change of the layer keeps the offset.
+/// The mask `choice` with the offset of the raster mask or the gap of the markers mask `current`, so a change of the layer keeps the offset or the gap.
 pub fn keep_offset(choice: Mask, current: Option<Mask>) -> Mask {
     match (choice, current) {
         (
@@ -721,6 +751,9 @@ pub fn keep_offset(choice: Mask, current: Option<Mask>) -> Mask {
             max,
             offset,
         },
+        (Mask::Markers { layer, .. }, Some(Mask::Markers { gap, .. })) => {
+            Mask::Markers { layer, gap }
+        }
         _ => choice,
     }
 }
@@ -735,19 +768,20 @@ fn set_mask(state: &mut AppState, id: LayerId, mask: Option<Mask>) {
     }
 }
 
-/// The mask page of layer `id`: "None", a row for each raster layer and for each other polygon layer, and the range of a raster mask.
+/// The mask page of layer `id`: "None", a row for each raster layer and for each other polygon layer and point layer, the range of a raster mask, and the gap of a markers mask.
 pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
     let Some(entry) = state.doc.entry(id) else {
         return;
     };
     let current = entry.style.style.mask;
-    let (rasters, polygons) = mask_choices(&state.doc, id);
+    let choices = mask_choices(&state.doc, id);
     ui.spacing_mut().item_spacing.y = 0.0;
     ui.add_space(8.0);
     let groups = [
         (None, vec![(NO_MASK.to_owned(), None)]),
-        (Some(RASTER_LAYERS), with_masks(rasters)),
-        (Some(POLYGON_LAYERS), with_masks(polygons)),
+        (Some(RASTER_LAYERS), with_masks(choices.rasters)),
+        (Some(POLYGON_LAYERS), with_masks(choices.polygons)),
+        (Some(POINT_LAYERS), with_masks(choices.points)),
     ];
     let on = |mask: &Option<Mask>| current.map(|m| m.layer()) == mask.map(|m| m.layer());
     for (title, choices) in groups {
@@ -819,8 +853,26 @@ pub fn mask_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Control
             set_mask(state, id, Some(mask));
         }
     }
+    if let Some(Mask::Markers { layer, gap }) = current {
+        let (lo, hi) = (*Mask::GAPS.start(), *Mask::GAPS.end());
+        let gap = Number::new(MASK_GAP, f64::from(gap), f64::from(lo)..=f64::from(hi))
+            .step(0.25)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(gap) = gap {
+            let mask = Mask::Markers {
+                layer,
+                gap: gap as f32,
+            };
+            set_mask(state, id, Some(mask));
+        }
+    }
     ui.add_space(8.0);
-    raster::note(ui, MASK_HINT);
+    let hint = match current {
+        Some(Mask::Markers { .. }) => MARKERS_HINT,
+        _ => MASK_HINT,
+    };
+    raster::note(ui, hint);
 }
 
 /// The choices of a mask, each with its mask.

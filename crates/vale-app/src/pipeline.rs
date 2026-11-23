@@ -26,6 +26,7 @@ use crate::document::{Document, LayerEntry};
 use crate::globe::shapes::ShapeCache;
 use crate::globe::vtiles::{LEVELS, VectorTiles};
 use crate::lod::{self, LodCache};
+use crate::mask::knockout::{Mark, footprint, knockout_path};
 use crate::mask::{MaskCache, MaskedFeature, MaskedLayer, PageMask};
 use crate::raster_values::{LayerRasters, RasterCache};
 use crate::scatter::{self, ScatterCache, ScatterFill};
@@ -712,7 +713,7 @@ struct SymbolDraw<'a> {
 }
 
 /// The box of a symbol in symbol units.
-fn symbol_box(symbol: &Symbol) -> Rect {
+pub(crate) fn symbol_box(symbol: &Symbol) -> Rect {
     symbol
         .paths()
         .iter()
@@ -722,7 +723,7 @@ fn symbol_box(symbol: &Symbol) -> Rect {
 }
 
 /// The radius of the dot that stands for a missing symbol, in symbol units.
-const MISSING_DOT: f64 = 1.0 / 6.0;
+pub(crate) const MISSING_DOT: f64 = 1.0 / 6.0;
 
 impl SymbolDraw<'_> {
     fn view(&mut self) -> &[LonLat] {
@@ -1170,6 +1171,26 @@ fn closed_path(ring: &[Point]) -> BezPath {
     path
 }
 
+/// The footprints of the markers and the point symbols that the point
+/// layer `pl` draws, grown by `gap` points. `unit` is the number of target
+/// points per point of a symbol.
+fn footprints(pl: &PageLayer<'_>, symbols: &Symbols, unit: f64, gap: f64) -> Vec<Vec<Point>> {
+    let mut out = Vec::new();
+    for batch in batches(pl) {
+        let Some(mark) = Mark::of(&batch.paint, symbols) else {
+            continue;
+        };
+        // A marker draws its radius in target points, as `draw_batch` does.
+        let unit = match mark {
+            Mark::Marker { .. } => 1.0,
+            Mark::Symbol { .. } => unit,
+        };
+        let points = batch.features.iter().flat_map(|&i| &pl.features[i].points);
+        out.extend(points.map(|p| footprint(mark, *p, unit, gap)));
+    }
+    out
+}
+
 /// Closes the clip that starts at item `at`. A clip with nothing in it goes.
 fn close_clip(list: &mut DisplayList, at: Option<usize>) {
     match at {
@@ -1468,11 +1489,21 @@ fn draw_map<'a>(
         }
         sd.layer_count = 0;
         // The page mask clips the masked batches of a line or polygon layer.
-        // A layer whose page mask is not ready draws none of them.
-        let mask = match masks {
-            Some((masks, target)) if pl.kind != GeometryKind::Point => masks
+        // A layer whose page mask is not ready draws none of them. A markers
+        // mask clips them with a hole at each marker that the map draws.
+        let mask = match (masks, &pl.entry.style.style.mask) {
+            _ if pl.kind == GeometryKind::Point => None,
+            (_, Some(Mask::Markers { layer, gap })) => {
+                let symbols = doc.symbols();
+                (page_layers.iter())
+                    .find(|p| p.layer.id == *layer && p.kind == GeometryKind::Point)
+                    .map(|p| footprints(p, symbols, symbol_scale.unit, f64::from(*gap)))
+                    .filter(|rings| !rings.is_empty())
+                    .map(|rings| Some((knockout_path(area, &rings), FillRule::EvenOdd)))
+            }
+            (Some((masks, target)), _) => masks
                 .get(&pl.layer.id)
-                .map(|m| m.as_ref().map(|m| m.path(target))),
+                .map(|m| m.as_ref().map(|m| (m.path(target), FillRule::NonZero))),
             _ => None,
         };
         // The index of the open clip in the list.
@@ -1480,11 +1511,11 @@ fn draw_map<'a>(
         for batch in batches(pl) {
             match (&mask, batch.masked) {
                 (Some(None), true) => continue,
-                (Some(Some(path)), true) if open.is_none() => {
+                (Some(Some((path, rule))), true) if open.is_none() => {
                     open = Some(list.items.len());
                     list.push(Item::PushClip {
                         path: path.clone(),
-                        rule: FillRule::NonZero,
+                        rule: *rule,
                     });
                 }
                 (_, false) => close_clip(list, open.take()),

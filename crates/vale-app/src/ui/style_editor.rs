@@ -322,7 +322,7 @@ fn selection_rows(
     changed
 }
 
-/// The mask of a style: a choice of "None" or a layer of `choices`, and the range of a raster mask. A blank limit has no limit. Returns true if the user changed the mask.
+/// The mask of a style: a choice of "None" or a layer of `choices`, the range and the offset of a raster mask, and the gap of a markers mask. A blank limit has no limit. Returns true if the user changed the mask.
 pub fn mask_rows(
     ui: &mut egui::Ui,
     id: LayerId,
@@ -393,6 +393,18 @@ pub fn mask_rows(
         {
             ui.weak(BAD_MASK_RANGE);
         }
+    }
+    if let Some(Mask::Markers { gap, .. }) = mask {
+        ui.horizontal(|ui| {
+            let label = ui.label(super::pad::rules::MASK_GAP);
+            ui.add(
+                egui::DragValue::new(gap)
+                    .speed(0.25)
+                    .range(Mask::GAPS)
+                    .suffix(" pt"),
+            )
+            .labelled_by(label.id);
+        });
     }
     *mask != before
 }
