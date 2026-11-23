@@ -229,6 +229,7 @@ struct Resident {
 #[derive(Clone, PartialEq)]
 struct StyleKey {
     style: vale_style::Style,
+    reference_scale: Option<f64>,
     pixels_per_point: f32,
     radius_m: f64,
 }
@@ -325,7 +326,7 @@ impl VectorTiles {
     pub fn show(
         &mut self,
         layer: &Layer,
-        style: &vale_style::Style,
+        style: &vale_style::LayerStyle,
         (pixels_per_point, radius_m): (f32, f64),
         paints: impl FnOnce() -> Option<Vec<TilePaints>>,
     ) -> bool {
@@ -344,7 +345,8 @@ impl VectorTiles {
             level: None,
         });
         let key = StyleKey {
-            style: style.clone(),
+            style: style.style.clone(),
+            reference_scale: style.reference_scale,
             pixels_per_point,
             radius_m,
         };

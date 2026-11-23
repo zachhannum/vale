@@ -416,6 +416,8 @@ pub struct GlobeScatter<'a> {
     /// The symbols of the layer so far. The layer draws at most
     /// `scatter::MAX_POINTS`.
     pub count: usize,
+    /// The factor of the sizes, from the reference scale of the style. The spacing stays on the ground at the reference scale.
+    pub size: f64,
 }
 
 impl GlobeScatter<'_> {
@@ -428,7 +430,7 @@ impl GlobeScatter<'_> {
         feature: &Feature,
         fill: &ScatterFill,
     ) -> Vec<Instance> {
-        let scale = globe_scale(self.view, self.rect, self.radius_m);
+        let scale = globe_scale(self.view, self.rect, self.radius_m) * self.size;
         let points: Arc<Vec<ScatterPoint>> = self.cache.get(
             layer,
             index,
@@ -438,7 +440,7 @@ impl GlobeScatter<'_> {
             self.radius_m,
             self.places,
         );
-        let reach = fill.size as f32;
+        let reach = (fill.size * self.size) as f32;
         let shown = self.rect.expand(reach);
         let mut out = Vec::new();
         for p in points.iter() {
@@ -456,7 +458,7 @@ impl GlobeScatter<'_> {
             out.push(Instance {
                 lonlat: p.lonlat,
                 pos,
-                size: (fill.size * p.scale) as f32,
+                size: (fill.size * p.scale * self.size) as f32,
                 rotation: p.rotation as f32,
             });
         }

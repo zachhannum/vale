@@ -711,7 +711,7 @@ fn geometries(pl: &PageLayer<'_>, f: &PageFeature, c: &StyleClass, page: Rect) -
                 .map(f64::to_radians);
             let mut shape = Vec::new();
             if c.offset_from_outline {
-                pl.entry.style.style.paints(&ctx, &mut shape);
+                pl.paints(f.index, &mut shape);
             }
             (f.points.iter())
                 .filter(|p| page.contains(**p))

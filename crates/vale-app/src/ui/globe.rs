@@ -1322,15 +1322,18 @@ pub fn vector_layer_cut(
     let rasters = pipeline.rasters().for_layer(id);
     let batches: Vec<_> = (entries.iter())
         .map(|entry| {
-            pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
-                attributes: &features[i].attributes,
-                scale,
-                geometry: features[i].geometry.kind(),
-                shape: Some(&features[i].geometry),
-                radius_km: doc.project.world.radius_km,
-                page: None,
-                rasters: Some(&rasters),
-                index: i,
+            let size = entry.style.size_factor(scale);
+            pipeline::style_batches(&entry.style.style, scale, size, features.len(), |i| {
+                Context {
+                    attributes: &features[i].attributes,
+                    scale,
+                    geometry: features[i].geometry.kind(),
+                    shape: Some(&features[i].geometry),
+                    radius_km: doc.project.world.radius_km,
+                    page: None,
+                    rasters: Some(&rasters),
+                    index: i,
+                }
             })
         })
         .collect();
@@ -1545,6 +1548,7 @@ pub fn vector_layer_cut(
                             radius_m,
                             places,
                             count,
+                            size: entry.style.size_factor(scale),
                         };
                         let instances = on_globe.instances(entry.layer, index, feature, &fill);
                         count = on_globe.count;
@@ -1769,15 +1773,18 @@ pub fn flat_vector_layer_cut(
     let scale = scale_denominator(radius_km * 1000.0 / flat.scale(rect));
     let features = &layer.features;
     let rasters = pipeline.rasters().for_layer(id);
-    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
-        attributes: &features[i].attributes,
-        scale,
-        geometry: features[i].geometry.kind(),
-        shape: Some(&features[i].geometry),
-        radius_km,
-        page: None,
-        rasters: Some(&rasters),
-        index: i,
+    let size = entry.style.size_factor(scale);
+    let batches = pipeline::style_batches(&entry.style.style, scale, size, features.len(), |i| {
+        Context {
+            attributes: &features[i].attributes,
+            scale,
+            geometry: features[i].geometry.kind(),
+            shape: Some(&features[i].geometry),
+            radius_km,
+            page: None,
+            rasters: Some(&rasters),
+            index: i,
+        }
     });
     let height = entry.style.flow_height.as_deref();
     let flat_flows = Flows::of(
@@ -2183,15 +2190,18 @@ pub fn marker_holes(
     let features = &layer.features;
     let rasters = pipeline.rasters().for_layer(of);
     let radius_km = doc.project.world.radius_km;
-    let batches = pipeline::style_batches(&entry.style.style, scale, features.len(), |i| Context {
-        attributes: &features[i].attributes,
-        scale,
-        geometry: features[i].geometry.kind(),
-        shape: Some(&features[i].geometry),
-        radius_km,
-        page: None,
-        rasters: Some(&rasters),
-        index: i,
+    let size = entry.style.size_factor(scale);
+    let batches = pipeline::style_batches(&entry.style.style, scale, size, features.len(), |i| {
+        Context {
+            attributes: &features[i].attributes,
+            scale,
+            geometry: features[i].geometry.kind(),
+            shape: Some(&features[i].geometry),
+            radius_km,
+            page: None,
+            rasters: Some(&rasters),
+            index: i,
+        }
     });
     let symbols = doc.symbols();
     let mut mesh = egui::Mesh::default();

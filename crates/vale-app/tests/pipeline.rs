@@ -5100,3 +5100,46 @@ fn an_export_clips_a_layer_with_a_markers_mask_with_vector_holes() {
     assert_eq!(masked.0, plain.0);
     assert_eq!(masked.1, plain.1 + 1);
 }
+
+/// The widths of the round strokes of `items`.
+fn round_widths(items: &[Item]) -> Vec<f64> {
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke {
+                width, round: true, ..
+            } => Some(*width),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_reference_scale_keeps_the_widths_on_the_ground() {
+    let (mut doc, id) = lines_at(&[("road", &[[-40.0, 0.0], [40.0, 10.0]])]);
+    let red = Color::rgb(200, 0, 0);
+    doc.entry_mut(id).unwrap().style.style = Style {
+        mask: None,
+        rules: vec![stroke_rule("road", "", red, 2.0)],
+    };
+    let view = compose(&doc, &mut Pipeline::new()).view;
+    let nominal = vale_style::scale_denominator(1.0 / view.scale);
+    assert_eq!(line_strokes(&doc), vec![(2.0, [200, 0, 0])]);
+
+    // At twice the reference scale, a line is half as wide, and at half the reference scale, twice as wide.
+    for (reference, width) in [(nominal, 2.0), (nominal / 2.0, 1.0), (nominal * 2.0, 4.0)] {
+        doc.entry_mut(id).unwrap().style.reference_scale = Some(reference);
+        let widths: Vec<_> = line_strokes(&doc).iter().map(|s| s.0).collect();
+        assert_eq!(widths.len(), 1);
+        assert!((widths[0] - width).abs() < 1e-6, "{widths:?} {width}");
+    }
+
+    // A map frame uses the scale of the frame.
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let frame = frame_on(&mut doc, &mut pipeline, page);
+    let scale = doc.project.atlas.frame(frame).unwrap().scale;
+    doc.entry_mut(id).unwrap().style.reference_scale = Some(scale * 3.0);
+    let widths = round_widths(&compose_frame(&doc, &mut pipeline, frame));
+    assert!(!widths.is_empty());
+    assert!(widths.iter().all(|w| (w - 6.0).abs() < 1e-6), "{widths:?}");
+}
