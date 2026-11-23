@@ -306,7 +306,17 @@ pub fn tooltip(
         Rect::from_min_size(pos2(left, y), size)
     };
     let rect = match tip.place {
-        Place::Strip if rects.row => centered(rects.tools.top() - TIP_GAP - size.y),
+        Place::Strip if rects.row => {
+            centered(rects.bar.unwrap_or(rects.tools).top() - TIP_GAP - size.y)
+        }
+        // The tooltip of a cell of the rail is at the left of the rail.
+        Place::Strip if rects.rail => {
+            let min = pos2(
+                rects.tools.left() - TIP_GAP - size.x,
+                tip.cell.center().y - size.y / 2.0,
+            );
+            Rect::from_min_size(min, size)
+        }
         Place::Strip => {
             let min = pos2(
                 rects.tools.right() + TIP_GAP,
@@ -388,9 +398,10 @@ pub fn show(
     // In the row layout, the list is above its cell. Else it is at the
     // right of the strip.
     let rect = if rects.row {
-        // A cell of the card of the tool has the list above the card.
-        let card = rects.brush.filter(|card| card.contains_rect(cell));
-        let bottom = card.unwrap_or(rects.tools).top() - geometry::GAP;
+        // The list is above the card of the tools, so it does not cover
+        // the control row.
+        let card = rects.bar.unwrap_or(rects.tools);
+        let bottom = card.top() - geometry::GAP;
         let size = vec2(geometry::MODES_WIDTH, full.min(bottom - rects.column_top));
         let screen = rects.screen.shrink2(vec2(geometry::MARGIN, 0.0));
         let left = cell.left().min(screen.right() - size.x).max(screen.left());
@@ -402,7 +413,12 @@ pub fn show(
             .top()
             .min(rects.panel_bottom - size.y)
             .max(rects.tools.top());
-        Rect::from_min_size(pos2(rects.tools.right() + geometry::GAP, top), size)
+        // The list of a cell of the rail is at the left of the rail.
+        let x = match rects.rail {
+            true => rects.tools.left() - geometry::GAP - size.x,
+            false => rects.tools.right() + geometry::GAP,
+        };
+        Rect::from_min_size(pos2(x, top), size)
     };
     // On a partially folded device, the list is in the part of its cell,
     // and it scrolls if it does not fit.

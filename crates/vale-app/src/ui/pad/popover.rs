@@ -61,26 +61,24 @@ pub fn rect(ctx: &egui::Context) -> Option<Rect> {
     shown.filter(|(p, _)| p + 1 >= pass).map(|(_, r)| r)
 }
 
-/// The card of a popover of `size` at `anchor`, inside the visible area
-/// from `top` to `bottom`, and true if it is under the anchor. The card is
-/// under the anchor if it fits there, or else above it if it fits there, or
-/// else on the side with more room. A card that is higher than the area
-/// gets the height of the area, and its contents scroll.
-pub fn place(
-    anchor: Rect,
-    size: egui::Vec2,
-    screen: Rect,
-    (top, bottom): (f32, f32),
-) -> (Rect, bool) {
-    let (top, bottom) = (top + MARGIN, (bottom - MARGIN).max(top + MARGIN));
+/// The card of a popover of `size` at `anchor`, inside `room`, and true if
+/// it is under the anchor. The card is under the anchor if it fits there,
+/// or else above it if it fits there, or else on the side with more room,
+/// with the height of that side, and its contents scroll. Only a side with
+/// less than `SIDE_MIN` lets the card cover its control. A card that is
+/// wider than the room gets its width.
+pub fn place(anchor: Rect, size: egui::Vec2, room: Rect) -> (Rect, bool) {
+    let (top, bottom) = (room.top(), room.bottom().max(room.top()));
     let room_below = bottom - (anchor.bottom() + GAP);
     let room_above = anchor.top() - GAP - top;
     let below = room_below >= size.y || (room_above < size.y && room_below >= room_above);
-    let height = size.y.min(bottom - top);
-    let x = (anchor.center().x - CONTROL_LEFT).clamp(
-        screen.left() + MARGIN,
-        (screen.right() - MARGIN - size.x).max(screen.left()),
-    );
+    let side = if below { room_below } else { room_above };
+    let height = match side >= SIDE_MIN {
+        true => size.y.min(side),
+        false => size.y.min(bottom - top),
+    };
+    let width = size.x.min(room.width());
+    let x = (anchor.center().x - CONTROL_LEFT).clamp(room.left(), room.right() - width);
     let y = if below {
         anchor.bottom() + GAP
     } else {
@@ -88,7 +86,50 @@ pub fn place(
     };
     // A popover that does not fit covers its control, and not the floor.
     let y = y.min(bottom - height).max(top);
-    (Rect::from_min_size(pos2(x, y), vec2(size.x, height)), below)
+    (Rect::from_min_size(pos2(x, y), vec2(width, height)), below)
+}
+
+/// The least height of a popover beside its control: two rows. With less
+/// room on both sides, the popover covers its control.
+const SIDE_MIN: f32 = 2.0 * 48.0;
+
+fn layout_id() -> egui::Id {
+    egui::Id::new("pad-popover-layout")
+}
+
+/// Keeps the places of the layout of this frame, for the room of the
+/// popovers and the cards that open from a control.
+pub fn set_layout(ctx: &egui::Context, rects: &geometry::Rects) {
+    ctx.data_mut(|d| d.insert_temp(layout_id(), *rects));
+}
+
+/// The room of a card that opens from `anchor` on a compact screen, or
+/// `None` on a wider screen.
+pub fn compact_room(ctx: &egui::Context, anchor: Rect) -> Option<Rect> {
+    let rects: Option<geometry::Rects> = ctx.data(|d| d.get_temp(layout_id()));
+    rects
+        .filter(|r| r.class == geometry::WidthClass::Compact && r.screen == ctx.viewport_rect())
+        .map(|_| room(ctx, anchor))
+}
+
+/// The room of a popover or a card that opens from `anchor`: the rule of
+/// `geometry::popover_room` for the layout of this frame, in the part of
+/// `anchor` on a partially folded device, and above the floor of
+/// `set_floor`.
+pub fn room(ctx: &egui::Context, anchor: Rect) -> Rect {
+    let screen = ctx.viewport_rect();
+    let rects: Option<geometry::Rects> = ctx.data(|d| d.get_temp(layout_id()));
+    let mut room = match rects.filter(|r| r.screen == screen) {
+        Some(rects) => geometry::popover_room(&rects, anchor),
+        None => {
+            let top = screen.top() + Bands::of(ctx).top;
+            Rect::from_min_max(pos2(screen.left(), top), screen.max).shrink(MARGIN)
+        }
+    };
+    let part = geometry::fold_part(anchor, geometry::regions(ctx).fold, screen);
+    room = room.intersect(part.shrink2(vec2(0.0, MARGIN)));
+    room.max.y = room.max.y.min(floor(ctx, screen) - MARGIN);
+    room
 }
 
 /// The popover `key` of `width` under `anchor`, or above it if the screen
@@ -106,13 +147,7 @@ pub fn show(
 ) -> Shown {
     let id = egui::Id::new(key);
     let height: f32 = ctx.data(|d| d.get_temp(id.with("height"))).unwrap_or(240.0);
-    let screen = ctx.viewport_rect();
-    let top = screen.top() + Bands::of(ctx).top;
-    // On a partially folded device, the popover is in the part of its
-    // control.
-    let part = geometry::fold_part(anchor, geometry::regions(ctx).fold, screen);
-    let area = (top.max(part.top()), floor(ctx, screen).min(part.bottom()));
-    let (rect, below) = place(anchor, vec2(width, height), part, area);
+    let (rect, below) = place(anchor, vec2(width, height), room(ctx, anchor));
     let pressed = ctx.input(|i| i.pointer.press_origin().filter(|_| i.pointer.any_pressed()));
     let closed = pressed.is_some_and(|p| !rect.contains(p) && !anchor.contains(p));
     token_field::keep_focus(ctx, rect);
@@ -128,10 +163,13 @@ pub fn show(
         if below { rect.top() } else { rect.bottom() },
     );
     let grow = widgets::grow(ctx, egui::LayerId::new(egui::Order::Tooltip, id), tip);
+    // The popover has a layer of its own, and the safe area does not cut
+    // it.
     egui::Area::new(id)
         .order(egui::Order::Tooltip)
         .fixed_pos(rect.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {
@@ -179,35 +217,43 @@ mod tests {
 
     #[test]
     fn popover_stays_inside_visible_area() {
-        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1366.0, 1024.0));
-        // The top safe area and the top of the bar above the keyboard.
-        let (top, bottom) = (24.0, 500.0);
-        let inside =
-            |r: Rect| r.top() >= top + MARGIN - 0.01 && r.bottom() <= bottom - MARGIN + 0.01;
+        // The room from the top safe area to the top of the bar above the
+        // keyboard.
+        let room = Rect::from_min_max(pos2(8.0, 32.0), pos2(1358.0, 492.0));
+        let inside = |r: Rect| room.expand(0.01).contains_rect(r);
         let size = vec2(340.0, 300.0);
 
         // Near the top, the popover opens under the chip.
         let chip = Rect::from_min_size(pos2(900.0, 40.0), vec2(80.0, 32.0));
-        let (rect, below) = place(chip, size, screen, (top, bottom));
+        let (rect, below) = place(chip, size, room);
         assert!(below && inside(rect), "{rect:?}");
         assert!(rect.top() >= chip.bottom());
 
         // Near the bar, it opens above the chip.
         let chip = Rect::from_min_size(pos2(900.0, 440.0), vec2(80.0, 32.0));
-        let (rect, below) = place(chip, size, screen, (top, bottom));
+        let (rect, below) = place(chip, size, room);
         assert!(!below && inside(rect), "{rect:?}");
         assert!(rect.bottom() <= chip.top());
 
-        // A popover that fits on neither side stays inside, and gets the
-        // height of the area at most.
+        // A popover that fits on neither side opens on the side with more
+        // room, with the height of that side, and does not cover the chip.
         let chip = Rect::from_min_size(pos2(900.0, 250.0), vec2(80.0, 32.0));
         for size in [vec2(340.0, 400.0), vec2(340.0, 900.0)] {
-            let (rect, _) = place(chip, size, screen, (top, bottom));
+            let (rect, below) = place(chip, size, room);
             assert!(inside(rect), "{size:?}: {rect:?}");
-            assert!(rect.height() <= bottom - top - 2.0 * MARGIN + 0.01);
+            assert!(!below && !rect.intersects(chip), "{size:?}: {rect:?}");
+            assert_eq!(rect.top(), room.top());
         }
+        // With no room for two rows on either side, it covers the chip.
+        let tight = Rect::from_min_max(pos2(8.0, 200.0), pos2(1358.0, 340.0));
+        let (rect, _) = place(chip, size, tight);
+        assert_eq!(rect.y_range(), tight.y_range());
         // A popover that fits stays its own height.
-        let (rect, _) = place(chip, vec2(340.0, 120.0), screen, (top, bottom));
+        let (rect, _) = place(chip, vec2(340.0, 120.0), room);
         assert_eq!(rect.height(), 120.0);
+        // A popover wider than the room gets its width.
+        let narrow = Rect::from_min_max(pos2(8.0, 32.0), pos2(300.0, 492.0));
+        let (rect, _) = place(chip, size, narrow);
+        assert_eq!(rect.x_range(), narrow.x_range());
     }
 }

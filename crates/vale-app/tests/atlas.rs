@@ -262,12 +262,12 @@ fn double_tap(h: &mut Pad, pos: Pos2, input: Input) {
     h.run_steps(3);
 }
 
-/// Pulls an open sheet of the row layout down to its title row, so the
-/// tool strip and the context strip show above it.
-fn lower_sheet(h: &mut Pad) {
+/// Pulls an open sheet of a compact screen up to its full height, so more
+/// of its panel shows.
+fn raise_sheet(h: &mut Pad) {
     let rects = h.state().pad.rects.unwrap();
-    if rects.row && rects.sheet.is_some() {
-        h.state_mut().pad.sheet_offset = rects.sheet_travel;
+    if rects.top_overlay() && rects.sheet.is_some() {
+        h.state_mut().pad.sheet_offset = -rects.sheet_rise;
         h.run_steps(2);
     }
 }
@@ -278,12 +278,12 @@ fn open_panel(h: &mut Pad, name: &str) {
     tap(h, name);
 }
 
-/// A tap of a finger on the middle of a control. If an open sheet covers
-/// the control, the sheet goes down to its title row first, as a user
+/// A tap of a finger on the middle of a control. If the control is below
+/// an open sheet, the sheet goes up to its full height first, as a user
 /// pulls it.
 fn tap(h: &mut Pad, name: &str) {
     if control(h, name).is_none() {
-        lower_sheet(h);
+        raise_sheet(h);
     }
     let rect = control(h, name).unwrap_or_else(|| panic!("no control `{name}`"));
     tap_with(h, rect.center(), Input::Finger);
@@ -293,7 +293,7 @@ fn tap(h: &mut Pad, name: &str) {
 /// touch in one frame. A `tap` lasts as long as a long press on a tab.
 fn quick_tap(h: &mut Pad, name: &str) {
     if control(h, name).is_none() {
-        lower_sheet(h);
+        raise_sheet(h);
     }
     let pos = control(h, name)
         .unwrap_or_else(|| panic!("no control `{name}`"))
@@ -308,6 +308,20 @@ fn show_tab(h: &mut Pad, name: &str) {
     use vale_app::ui::pad::panes::FRAME_PANELS;
     let i = FRAME_TABS.iter().position(|t| *t == name);
     let panel = FRAME_PANELS[i.unwrap_or_else(|| panic!("no frame tab `{name}`"))];
+    // The Frame tab of the desktop is the Properties tab of the iPad.
+    let name = if i == Some(0) { PROPERTIES } else { name };
+    // The sheet of a compact screen shows the panels of the dock as tabs,
+    // and a tile opens a panel that is not open.
+    if h.state().pad.rects.is_some_and(|r| r.top_overlay()) {
+        if h.state().pad.shows(panel) {
+            return;
+        }
+        match h.state().pad.is_open(panel) {
+            true => quick_tap(h, &tab_name(name)),
+            false => open_panel(h, name),
+        }
+        return;
+    }
     let dock = h.state().pad.dock();
     let tab = dock
         .find(panel)
@@ -320,8 +334,6 @@ fn show_tab(h: &mut Pad, name: &str) {
     if h.state().pad.dock().shows(panel) {
         return;
     }
-    // The Frame tab of the desktop is the Properties tab of the iPad.
-    let name = if i == Some(0) { PROPERTIES } else { name };
     quick_tap(h, &tab_name(name));
 }
 
@@ -573,16 +585,21 @@ fn pos_of(h: &mut Pad, index: usize, lonlat: [f64; 2]) -> Pos2 {
 }
 
 /// Scrolls the panel of the selection until a control is inside the card,
-/// with a drag up of a finger on the margin at the left of the rows.
+/// with a drag up of a finger on the margin at the left of the rows. A
+/// sheet goes up to its full height first, as a user pulls it.
 fn scroll_to(h: &mut Pad, name: &str) {
-    for _ in 0..8 {
+    raise_sheet(h);
+    for _ in 0..16 {
         let card = h.state().atlas.panel_rect.unwrap();
         let inside = |rect: Rect| visible(card).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
+        // A short sheet scrolls by less than its height, so no row skips
+        // past it.
+        let d = (visible(card).height() / 2.0).min(200.0);
         let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
-        drag(h, from, from - vec2(0.0, 200.0), Input::Finger);
+        drag(h, from, from - vec2(0.0, d), Input::Finger);
     }
 }
 
@@ -606,16 +623,19 @@ fn nudge_up_to(h: &mut Pad, name: &str) {
     }
 }
 
-/// Scrolls the panel up until a control shows.
+/// Scrolls the panel up until a control shows. A sheet goes up to its
+/// full height first.
 fn scroll_up_to(h: &mut Pad, name: &str) {
+    raise_sheet(h);
     for _ in 0..8 {
         let card = h.state().atlas.panel_rect.unwrap();
         let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
-        // Below the header, the back row, and the rows that do not scroll.
-        let from = pos2(card.left() + 6.0, card.top() + 280.0);
+        // Below the header, the back row, and the rows that do not scroll,
+        // and in the upper half of a short sheet.
+        let from = pos2(card.left() + 6.0, (card.top() + 280.0).min(card.center().y));
         let to = pos2(from.x, card.bottom() - 20.0);
         drag(h, from, to, Input::Finger);
     }
@@ -1491,7 +1511,13 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         check_controls(&h, "frame tab");
+        // The sheet of a compact screen has the tabs of the pane too.
         assert!(control(&h, &tab_name(FRAME_TABS[3])).is_some());
+        if h.state().pad.rects.unwrap().top_overlay() {
+            let dock = h.state().pad.dock();
+            assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 4));
+            show_tab(&mut h, FRAME_TABS[0]);
+        }
         tap(&mut h, POLYGON);
         check_controls(&h, "polygon");
         scroll_to(&mut h, SCALE);
@@ -1539,7 +1565,6 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         h.state_mut().atlas.selection = AtlasSelection::Frame(inset);
         h.state_mut().atlas.tab = FrameTab::Frame;
         h.run_steps(3);
-        lower_sheet(&mut h);
         assert!(control(&h, DELETE_SELECTION).is_some(), "{size:?}");
         check_controls(&h, "context strip of the frame");
     }
@@ -2021,6 +2046,7 @@ fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
 
 #[test]
 fn each_tab_of_a_frame_takes_a_finger_and_the_open_tab_shows_its_name() {
+    // The sheet of a compact screen has the same tabs.
     for size in BOARDS {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
@@ -8118,7 +8144,9 @@ fn the_bar_inserts_page_number_and_page_count_and_the_date_chip_switches_to_iso(
     tap(&mut h, DATE_FORMATS[1]);
     let iso = "concat('Page ', page_number(), ' of ', page_count(), date('iso'))";
     assert_eq!(template(&h, 0), iso);
-    // Remove value takes the chip away.
+    // Remove value takes the chip away. The popover has the room above or
+    // below the chip, and its rows scroll to the row.
+    scroll_popover_to(&mut h, DATE_FORMATS[1], REMOVE_VALUE);
     tap(&mut h, REMOVE_VALUE);
     assert_eq!(
         template(&h, 0),
@@ -9183,8 +9211,7 @@ fn snap_shows_with_no_selection_in_the_frame_and_vertex_tools() {
             tap(&mut h, tool);
             h.state_mut().atlas.selection = AtlasSelection::None;
             h.run_steps(3);
-            // The panes of the frame stay, and a sheet goes down.
-            lower_sheet(&mut h);
+            // The panes of the frame stay, and the strips show below a sheet.
             scroll_column_to(&mut h, SNAP_TO_LAYOUT);
             assert!(control(&h, SNAP_TO_LAYOUT).is_some(), "{what}: {tool}");
             for name in [DESELECT, DELETE_SELECTION, DELETE_VERTEX] {
@@ -9274,16 +9301,24 @@ fn the_top_row_has_undo_redo_the_panels_button_and_the_dock_button() {
             "{size:?}"
         );
         let x = |name: &str| control(&h, name).map(|r| r.left());
-        // Undo and Redo, which are off here, are at the left end.
-        let redo = h.state().pad.rects.unwrap().actions.left() + 4.0 + 48.0;
+        // Undo and Redo, which are off here, are at the left end. On a
+        // phone, the buttons are 6 points inside the card, so the last
+        // button is on the last column of the tools.
+        let compact = size.0 < 600.0;
+        let inset = if compact { 6.0 } else { 4.0 };
+        let redo = h.state().pad.rects.unwrap().actions.left() + inset + 48.0;
         let panels = x(PANELS).unwrap_or_else(|| panic!("{size:?}"));
         // The Dock button is at the right end of the screen, and on a phone,
-        // which has no Dock button, the Panels button is.
-        let compact = size.0 < 600.0;
+        // which has no Dock button, the Panels button is. Beside the rail,
+        // the card ends 8 points at the left of the column of the rail.
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(rects.actions.right(), size.0, "{size:?}");
+        let end = match rects.rail {
+            true => rects.tools.left() - 8.0,
+            false => size.0,
+        };
+        assert_eq!(rects.actions.right(), end, "{size:?}");
         let last = if compact { panels } else { panels + 48.0 };
-        assert_eq!(last + 44.0 + 4.0, size.0, "{size:?}");
+        assert_eq!(last + 44.0 + inset, end, "{size:?}");
         // The top row adds no frame and no item of furniture.
         assert!(control(&h, "Add").is_none(), "{size:?}");
         // Undo, Redo, a line, and then the Panels button, as in the World
@@ -9308,8 +9343,7 @@ fn the_grid_cell_is_in_the_context_strip_of_the_frame_item_and_vertex_tools() {
             h.run_steps(2);
         }
         add_frame(&mut h);
-        // On a compact screen, the sheet of the frame covers the strips.
-        lower_sheet(&mut h);
+        // On a compact screen, the strips show below the sheet of the frame.
         let tools = [
             AtlasTool::Frame,
             AtlasTool::Vertex,
@@ -10394,6 +10428,24 @@ fn map_style_page_of(h: &mut Pad, index: usize) {
 }
 
 /// A sideways drag of a finger on a row, from near the right end of it.
+/// Drags the rows of an open popover up from its row `from` until the
+/// control `name` shows.
+fn scroll_popover_to(h: &mut Pad, from: &str, name: &str) {
+    for _ in 0..6 {
+        if control(h, name).is_some() {
+            return;
+        }
+        let row = control(h, from).unwrap_or_else(|| panic!("no row {from}"));
+        drag(
+            h,
+            row.center(),
+            row.center() - vec2(0.0, 120.0),
+            Input::Finger,
+        );
+        h.run_steps(5);
+    }
+}
+
 fn swipe_row(h: &mut Pad, name: &str, dx: f32) {
     let row = control(h, name).unwrap_or_else(|| panic!("no row {name}"));
     let from = row.right_center() - vec2(10.0, 0.0);
@@ -12056,7 +12108,40 @@ fn iphone_pad() -> Pad {
 }
 
 #[test]
-fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_bottom() {
+fn in_split_view_the_page_and_its_card_are_at_the_left_of_the_rail() {
+    // Split View on the inner screen of iPhone Duo in landscape.
+    let mut h = pad_with(state(), (475.0, 669.0));
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 0.0,
+        bottom: 34.0,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    let rects = h.state().pad.rects.unwrap();
+    assert!(rects.rail && !rects.row);
+    let rail = rects.tools;
+    // The rail is 22 points from the edges, and its controls stay above
+    // the bottom band.
+    assert_eq!((rail.right(), rail.bottom()), (475.0 - 22.0, 669.0 - 22.0));
+    // The cells end on the line of the bottom band.
+    assert_eq!(rects.tools_content().bottom(), 669.0 - 34.0 + 6.0);
+    // The page ends at the left of the rail, and the page card is at the
+    // middle of the page, below the top row.
+    let page = place(&h).rect;
+    assert!(page.right() <= rail.left(), "{page:?} {rail:?}");
+    let previous = control(&h, PREVIOUS_PAGE);
+    let name = control(&h, vale_app::ui::pad::atlas::OPEN_PAGES).unwrap();
+    assert!(previous.is_none());
+    assert!(name.bottom() < page.top(), "{name:?}");
+    assert!(name.right() < rail.left(), "{name:?}");
+    check_controls(&h, "split view atlas");
+}
+
+#[test]
+fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at_the_bottom() {
     let mut h = iphone_pad();
     let ((width, height), [_, _, bottom, _]) = IPHONE;
     // The middle page of three, so both page buttons are on.
@@ -12070,31 +12155,39 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     let top_row = control(&h, "Workspace").unwrap();
     let previous = control(&h, PREVIOUS_PAGE).unwrap();
     let next = control(&h, NEXT_PAGE).unwrap();
-    // The page card is above the rows of the tools, at the left of the
-    // screen.
+    // The page card is below the top row, at the middle of the screen.
     assert!(previous.top() > top_row.bottom(), "{previous:?}");
     assert_eq!(previous.top(), next.top());
-    assert!(previous.left() < width / 4.0, "{previous:?}");
-    // The tools are one row above the home indicator. Six cells fit, and
-    // the row scrolls to Measure.
+    let pill_middle = (previous.left() + next.right()) / 2.0;
+    assert!((pill_middle - width / 2.0).abs() < 1.0, "{pill_middle}");
+    // The tools are one row in the card at the bottom, on the seven
+    // columns of the card.
+    let rects = h.state().pad.rects.unwrap();
+    let bar = rects.bar.unwrap();
+    let grid = rects.grid.unwrap();
+    assert_eq!(grid.columns, 7);
     let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Pan", "Move"];
     let tools = names.map(|name| control(&h, name).unwrap());
-    for pair in tools.windows(2) {
-        assert_eq!(pair[0].top(), pair[1].top());
-        assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
+    for (tool, column) in tools.iter().zip([0, 2, 3, 4, 5]) {
+        assert_eq!(tool.top(), tools[0].top());
+        assert!(
+            (tool.center().x - grid.center(column)).abs() < 0.5,
+            "{tool:?}"
+        );
     }
-    let foot = height - bottom;
-    assert!(tools[0].bottom() <= foot && tools[0].bottom() > foot - 40.0);
-    let row_middle = (tools[0].left() + tools[4].right()) / 2.0;
-    assert!((row_middle - width / 2.0).abs() < 1.0, "{row_middle}");
-    // The page is between the top row and the page pill.
+    // The card reaches into the bottom band, and the tools end on its
+    // line.
+    assert_eq!(bar.bottom(), height - 16.0);
+    assert_eq!(tools[0].bottom(), height - bottom, "{:?}", tools[0]);
+    assert!(bar.contains_rect(tools[0]), "{bar:?}");
+    assert_eq!((bar.left(), bar.right()), (16.0, width - 16.0));
+    // The page is between the page pill and the card of the tools.
     let page = place(&h).rect;
-    assert!(page.top() > top_row.bottom() && page.bottom() < previous.top());
-    assert!(next.bottom() < tools[0].top());
+    assert!(page.top() > next.bottom() && page.bottom() < bar.top());
     check_controls(&h, "iphone");
 
-    // A selected frame shows its Frame panel as a sheet. The tabs of
-    // merged frame panels fit in the sheet.
+    // A selected frame shows its Frame panel as a sheet, above the tools.
+    // The sheet shows the panels of the frame as tabs.
     add_frame(&mut h);
     assert!(matches!(
         h.state().atlas.selection,
@@ -12102,13 +12195,29 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     ));
     assert!(h.state().pad.shows(vale_app::ui::pad::Panel::Properties));
     merge_frame_tabs(&mut h);
-    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
-    assert_eq!((sheet.left(), sheet.right()), (0.0, width));
-    assert_eq!(h.state().atlas.panel_rect, Some(sheet));
-    for tab in [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]] {
-        let rect = control(&h, &tab_name(tab)).unwrap();
-        assert!(sheet.contains_rect(rect), "{tab}");
-    }
+    let rects = h.state().pad.rects.unwrap();
+    let sheet = rects.sheet.unwrap();
+    assert_eq!((sheet.left(), sheet.right()), (16.0, width - 16.0));
+    // The panel ends at the footer of the sheet: the rows of the tools,
+    // at the place of the card.
+    let footer = rects.footer.unwrap();
+    assert_eq!(rects.bar, Some(bar));
+    assert_eq!(footer, bar);
+    assert_eq!(sheet.bottom(), bar.bottom());
+    let panel = h.state().atlas.panel_rect.unwrap();
+    assert_eq!(
+        (panel.top(), panel.bottom()),
+        (sheet.top(), footer.top() - 1.0)
+    );
+    assert_eq!(h.state().pad.dock().panes.len(), 1);
+    assert_eq!(h.state().pad.dock().panes[0].tabs.len(), 4);
+    assert_eq!(control(&h, FRAME_TOOL), Some(tools[0]));
+    assert!(control(&h, &tab_name(FRAME_TABS[1])).is_some());
+    // A tile shows another panel of the pane in the sheet.
+    open_panel(&mut h, FRAME_TABS[2]);
+    let dock = h.state().pad.dock();
+    assert_eq!(dock.panes.len(), 1);
+    assert!(dock.shows(vale_app::ui::pad::panes::FRAME_PANELS[2]));
     check_controls(&h, "iphone sheet");
 }
 
@@ -12630,14 +12739,21 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         assert!(control(&h, PREVIOUS_PAGE).is_none(), "{what}");
         let next = control(&h, NEXT_PAGE).unwrap();
         let name = control(&h, OPEN_PAGES).unwrap();
-        // The card is at the lower left, below the page.
+        // The card is at the lower left, below the page. On a compact
+        // screen, it is at the middle below the top row, above the page.
         let page = place(&h).rect;
-        assert!(name.top() > page.bottom(), "{what}");
         assert_eq!(name.top(), next.top(), "{what}");
         let r = h.state().pad.rects.unwrap();
-        let band = r.readout.unwrap();
-        assert!(band.contains_rect(name), "{what}");
-        assert!(name.left() - 44.0 - band.left() < 20.0, "{what}: {name:?}");
+        if r.top_overlay() {
+            assert!(name.bottom() < page.top(), "{what}");
+            assert_eq!(name.top(), r.column_top + 4.0, "{what}");
+            assert_eq!(r.readout, None, "{what}");
+        } else {
+            assert!(name.top() > page.bottom(), "{what}");
+            let band = r.readout.unwrap();
+            assert!(band.contains_rect(name), "{what}");
+            assert!(name.left() - 44.0 - band.left() < 20.0, "{what}: {name:?}");
+        }
         check_controls(&h, &what);
 
         tap(&mut h, NEXT_PAGE);

@@ -383,6 +383,7 @@ fn paint_picture(ctx: &egui::Context, picture: &Picture, t: f32, fill: bool) {
         .fixed_pos(picture.origin)
         .interactable(false)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .show(ctx, |ui| {

@@ -3,7 +3,7 @@
 
 use eframe::egui::{self, Align2, Order, Rect, Sense, pos2, vec2};
 
-use super::geometry::{self, PANELS_MENU_WIDTH, Rects};
+use super::geometry::{self, PANELS_MENU_WIDTH, Rects, WidthClass};
 use super::icons::{self, Icon};
 use super::widgets::{self, Controls, ICON, PANEL_ROW};
 use super::{PANELS, Panel, theme};
@@ -138,6 +138,19 @@ pub fn show(
     let collapsed = state.pad.dock().collapsed;
     let size = vec2(PANELS_MENU_WIDTH + rects.bands.right, height(groups));
     let rect = Rect::from_min_size(pos2(rects.screen.right() - size.x, rects.column_top), size);
+    // On a compact screen, the menu floats at the right of the popover
+    // room, below the top row and clear of the rail.
+    let rect = match rects.class {
+        WidthClass::Compact => {
+            let room = geometry::popover_room(rects, rects.actions);
+            let width = PANELS_MENU_WIDTH.min(room.width());
+            Rect::from_min_size(
+                pos2(room.right() - width, rects.column_top),
+                vec2(width, size.y),
+            )
+        }
+        _ => rect,
+    };
     let room = Rect::from_x_y_ranges(
         rects.screen.x_range(),
         rects.column_top..=rects.panel_bottom,

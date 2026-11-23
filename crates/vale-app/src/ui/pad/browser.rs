@@ -142,6 +142,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         camera: state.pad.camera,
         fold: state.pad.fold,
         glass: false,
+        keyboard: false,
+        top_view: false,
     });
     world_form::pad(&ctx, state, &mut controls, &rects);
     state.pad.controls = controls;
@@ -305,6 +307,7 @@ fn scrim(ctx: &egui::Context, id: &str, screen: Rect, alpha: u8) -> bool {
         .order(Order::Foreground)
         .fixed_pos(screen.min)
         .movable(false)
+        .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false);
     let shown = area.show(ctx, |ui| {

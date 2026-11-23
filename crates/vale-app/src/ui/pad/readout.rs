@@ -73,9 +73,16 @@ pub(super) fn readout(
 ) {
     let pad = &mut state.pad;
     pad.readout_scale = None;
+    pad.place_rect = None;
+    pad.scale_rect = None;
+    // A compact screen has the View button in the top row, and the scale
+    // is an overlay below the top row.
+    if rects.top_overlay() {
+        scale_overlay(ctx, state, rects);
+        return;
+    }
     pad.view_rect = None;
     pad.view_button = None;
-    pad.place_rect = None;
     let Some(band) = rects.readout else {
         state.pad.view_menu = false;
         return;
@@ -118,6 +125,89 @@ pub(super) fn readout(
     place_card(ctx, state, band, rect);
 }
 
+/// The scale bar of a compact screen: a glass capsule at the left margin,
+/// below the World menu, as wide as the scale bar and its labels. The
+/// place, while it shows, is a capsule of the same style below it.
+fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
+    let world = &state.doc.project.world;
+    let scale = km_per_point(&state.globe, world.radius_km)
+        .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
+    state.pad.readout_scale = scale.map(|s| s.label());
+    let left = rects.left_margin();
+    let room = rects.screen.right() - rects.bands.right - geometry::MARGIN - left;
+    let backdrop = state.globe.backdrop();
+    let mut top = rects.column_top;
+    state.pad.scale_rect = None;
+    state.pad.place_rect = None;
+    if let Some(scale) = scale {
+        let width = (scale_width(ctx, scale) + 2.0 * READOUT_PAD).min(room);
+        let rect = Rect::from_min_size(pos2(left, top), vec2(width, PLACE_HEIGHT));
+        top = rect.bottom() + PLACE_GAP;
+        // An open sheet covers the capsules of the canvas.
+        if rects.sheet.is_some_and(|s| s.intersects(rect)) {
+            return;
+        }
+        state.pad.scale_rect = Some(rect);
+        widgets::card(
+            ctx,
+            backdrop,
+            "pad-scale",
+            rect,
+            Order::Middle,
+            theme::CARD_RADIUS.into(),
+            |ui| {
+                let at = pos2(rect.left() + READOUT_PAD, rect.center().y);
+                paint_scale(ui, at, rect, scale);
+            },
+        );
+    }
+    let now = Instant::now();
+    let down = state.pad.canvas_down || state.pad.pen_hover;
+    if down && !state.headless {
+        state.pad.last_down = Some(now);
+    }
+    let last = state.pad.last_down.filter(|_| !state.headless);
+    let measure = state.measure_readout().is_some();
+    if !shows_place(down, measure, last, now) {
+        return;
+    }
+    if let Some(at) = last.filter(|_| !down && !measure) {
+        ctx.request_repaint_after(PLACE_TIME.saturating_sub(now.saturating_duration_since(at)));
+    }
+    let text = super::readout_line(state);
+    let at = pos2(left, top);
+    state.pad.place_rect = text_capsule(ctx, backdrop, "pad-place", at, room, &text, rects.sheet);
+}
+
+/// A glass capsule with a line of text in the monospace font, with its top
+/// left corner at `at`, at most `room` wide. Returns its place. A `sheet`
+/// that overlaps the capsule covers it, and then it does not show.
+pub(super) fn text_capsule(
+    ctx: &egui::Context,
+    backdrop: Option<eframe::egui_wgpu::wgpu::TextureFormat>,
+    id: &str,
+    at: egui::Pos2,
+    room: f32,
+    text: &str,
+    sheet: Option<Rect>,
+) -> Option<Rect> {
+    let width = (mono_width(ctx, text) + 2.0 * READOUT_PAD).min(room);
+    let rect = Rect::from_min_size(at, vec2(width, PLACE_HEIGHT));
+    if sheet.is_some_and(|s| s.intersects(rect)) {
+        return None;
+    }
+    widgets::card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        Order::Middle,
+        theme::CARD_RADIUS.into(),
+        |ui| paint_line(ui, rect.shrink2(vec2(READOUT_PAD, 0.0)), text),
+    );
+    Some(rect)
+}
+
 /// The card of the place, above the card of the readout, while
 /// `shows_place` is true. A test has no clock, so there the place does not
 /// stay after the touch.
@@ -153,7 +243,7 @@ fn place_card(ctx: &egui::Context, state: &mut AppState, band: Rect, card: Rect)
 
 /// The button that opens the View popover. It shows the icon of the
 /// present view, and it has the accent color while the popover is open.
-fn view_button(
+pub(super) fn view_button(
     ui: &egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
@@ -272,9 +362,21 @@ pub(super) fn view_menu(
     let rows = if flat { 4.0 } else { 1.0 };
     let height = 2.0 * widgets::menu_inset().y + TABS + rows * PANEL_ROW;
     let screen = rects.screen.shrink(geometry::PANEL_GAP);
-    let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
-    let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
-    let menu = Rect::from_min_size(pos2(card.left(), top), vec2(width, height));
+    // On a compact screen, the popover is below the top row, at the right
+    // end of the actions card, as wide as the margins allow.
+    let menu = if rects.top_overlay() {
+        let left = rects.screen.left() + rects.bands.left + geometry::MARGIN;
+        let width = VIEW_MENU_WIDTH.min(rects.actions.right() - left);
+        let top = rects.actions.bottom() + geometry::GAP;
+        Rect::from_min_size(
+            pos2(rects.actions.right() - width, top),
+            vec2(width, height),
+        )
+    } else {
+        let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
+        let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
+        Rect::from_min_size(pos2(card.left(), top), vec2(width, height))
+    };
     let room = Rect::from_x_y_ranges(screen.x_range(), rects.column_top..=rects.panel_bottom);
     let menu = geometry::off_fold(menu, button, rects.fold, room);
     let list = |open: bool| {

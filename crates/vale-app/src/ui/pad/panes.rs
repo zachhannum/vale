@@ -440,6 +440,38 @@ impl Dock {
         self.focus = None;
     }
 
+    /// The panels of all panes, in the order of the dock. A compact screen
+    /// shows them as the tabs of one sheet.
+    pub fn all_tabs(&self) -> Vec<Panel> {
+        self.panes.iter().flat_map(|p| p.tabs.clone()).collect()
+    }
+
+    /// The panel that a compact screen shows: the panel of the last focus,
+    /// or else the open tab of the last pane.
+    pub fn sheet_panel(&self) -> Option<Panel> {
+        match self.focus.filter(|f| self.is_open(*f)) {
+            Some(focus) => Some(focus),
+            None => self.panes.last().map(Pane::panel),
+        }
+    }
+
+    /// The sheet of a compact screen as one pane: the panels of all panes
+    /// as its tabs, with the panel of the sheet open.
+    pub fn sheet(&self) -> Option<Pane> {
+        let panel = self.sheet_panel()?;
+        let tabs = self.all_tabs();
+        let active = tabs.iter().position(|t| *t == panel).unwrap_or(0);
+        Some(Pane::with_tabs(tabs, active))
+    }
+
+    /// Shows the panel in the sheet of a compact screen. It becomes the open
+    /// tab of its pane.
+    pub fn show_in_sheet(&mut self, panel: Panel) {
+        if let Some((i, tab)) = self.find(panel) {
+            self.focus(i, tab);
+        }
+    }
+
     /// Closes a panel that shows, shows an open panel that is a tab
     /// behind another, and opens a closed panel.
     pub fn toggle(&mut self, panel: Panel) {
@@ -1272,6 +1304,45 @@ mod tests {
         assert!(d.collapsed && d.is_open(Panel::Attributes));
         d.open(Panel::Labels);
         assert!(!d.collapsed);
+    }
+
+    #[test]
+    fn a_compact_screen_shows_the_panels_of_all_panes_as_tabs_of_one_sheet() {
+        let mut d = Dock::world();
+        d.open_tabs(&[Panel::Layers, Panel::Toolbox]);
+        d.open_new(Panel::Brush);
+        d.focus(0, 1);
+        let panes = d.panes.clone();
+        // The sheet has the tabs of both panes, in the order of the dock,
+        // and shows the panel of the focus. The panes do not change.
+        let sheet = d.sheet().unwrap();
+        assert_eq!(
+            sheet.tabs,
+            vec![Panel::Layers, Panel::Toolbox, Panel::Brush]
+        );
+        assert_eq!(sheet.panel(), Panel::Toolbox);
+        assert_eq!(d.panes, panes);
+        // A tap on a tab shows its panel.
+        d.show_in_sheet(Panel::Brush);
+        assert_eq!(d.sheet_panel(), Some(Panel::Brush));
+        assert_eq!(
+            tabs(&d),
+            vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]]
+        );
+        // A panel that opens is a new pane, and the sheet shows it.
+        d.open(Panel::Snap);
+        assert_eq!(d.panes.len(), 3);
+        assert_eq!(d.sheet().unwrap().tabs.len(), 4);
+        assert_eq!(d.sheet_panel(), Some(Panel::Snap));
+        // A close closes only the panel that shows.
+        d.close(Panel::Snap);
+        assert_eq!(
+            tabs(&d),
+            vec![vec![Panel::Layers, Panel::Toolbox], vec![Panel::Brush]]
+        );
+        assert!(d.sheet_panel().is_some());
+        d.close_all();
+        assert_eq!(d.sheet(), None);
     }
 
     #[test]

@@ -399,7 +399,8 @@ fn tap_band(bands: &Bands, selected: Option<usize>, index: usize) -> Option<usiz
 /// at `at`.
 fn value_bubble(ui: &egui::Ui, id: egui::Id, at: Pos2, align: Align2, text: &str) {
     let layer = egui::LayerId::new(egui::Order::Tooltip, id.with("value"));
-    let painter = ui.ctx().layer_painter(layer);
+    let mut painter = ui.ctx().layer_painter(layer);
+    painter.set_clip_rect(ui.ctx().viewport_rect());
     let galley = painter.layout_no_wrap(text.to_owned(), theme::body(), theme::TEXT);
     let size = galley.size() + vec2(20.0, 10.0);
     let screen = ui.ctx().content_rect();

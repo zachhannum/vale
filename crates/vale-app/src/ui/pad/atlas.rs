@@ -207,6 +207,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let class = WidthClass::of(screen.width());
     let measuring = state.measuring();
     follow_selection(state);
+    super::pin_sheet(&mut state.pad);
     // On a compact screen, the tool strip and the context strip are rows at
     // the bottom, as in the globe workspace.
     let row = class == WidthClass::Compact;
@@ -234,6 +235,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         camera: state.pad.camera,
         fold: state.pad.fold,
         glass: state.globe.backdrop().is_some(),
+        keyboard: ctx.egui_wants_keyboard_input(),
+        top_view: false,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -241,7 +244,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .clamp(-rects.sheet_rise, rects.sheet_travel);
     if input.panel {
         input.sheet_offset =
-            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_closed);
         rects = geometry::layout(&input);
     }
 
@@ -254,12 +257,15 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects);
     if rects.row {
-        tool_strip(&ctx, state, &mut controls, &rects);
-        frame_card(&ctx, state, &mut controls, &rects);
-        if measuring {
-            super::cell_card(&ctx, state, &mut controls, &rects);
-        }
+        let closing = super::closing_sheet(&ctx, &input, &rects);
+        super::bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
+        super::rail_closing(
+            &ctx,
+            state,
+            &rects,
+            super::closing_sheet(&ctx, &input, &rects),
+        );
         tool_column(&ctx, state, &mut controls, &rects, measuring);
     }
     // A button above can open or close a panel. The panels use the new
@@ -270,11 +276,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     rects = geometry::layout(&input);
     if input.panel {
         input.sheet_offset =
-            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+            super::shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_closed);
         rects = geometry::layout(&input);
     }
     super::table::check(state);
     super::table::widen(state, &mut rects);
+    super::popover::set_layout(&ctx, &rects);
     if super::labels::wide(state) && class != WidthClass::Compact {
         rects.dock = super::expression::wider(&rects, super::expression::PANEL_WIDTH);
     }
@@ -289,7 +296,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         state.pad.sheet_offset = 0.0;
     }
     state.atlas.every_tab = true;
-    super::dock_ui::show(&ctx, state, &mut controls, &rects);
+    super::dock_ui::show(&ctx, state, &mut controls, &rects, &mut footer);
     state.pad.docks.atlas.learn();
     // A touch in the pane of a panel of a frame chooses that panel.
     let pressed = ctx.input(|i| i.pointer.any_pressed().then(|| i.pointer.press_origin()));
@@ -359,7 +366,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let mut free = page_space(&rects);
     // In the row layout, the page is at the top of the space, so a sheet
     // covers only its lower part.
-    if rects.row {
+    if rects.top_overlay() {
         let page = atlas::open_page(state);
         let height = free.width() * (page.height_mm / page.width_mm) as f32;
         free.max.y = free.max.y.min(free.top() + height);
@@ -378,11 +385,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// width, whether the dock shows or not, so the page does not move with
 /// the dock.
 fn page_space(rects: &Rects) -> Rect {
-    let left = match rects.row {
-        true => rects.screen.left() + rects.bands.left + MARGIN,
+    let left = match rects.top_overlay() {
+        true => rects.left_margin(),
         false => rects.tools.right() + GAP,
     };
     let right = match rects.class {
+        // The page ends at the left of the rail.
+        WidthClass::Compact if rects.rail => rects.tools.left() - GAP,
         WidthClass::Compact => rects.screen.right() - rects.bands.right - MARGIN,
         // The page leaves room for the dock and its width handle.
         _ => {
@@ -393,7 +402,12 @@ fn page_space(rects: &Rects) -> Rect {
     let bottom = rects
         .readout
         .map_or(rects.panel_bottom, |r| r.bottom() - ROW - GAP);
-    let space = Rect::from_min_max(pos2(left, rects.column_top), pos2(right, bottom));
+    // On a compact screen, the page pill is below the top row.
+    let top = match rects.top_overlay() {
+        true => rects.column_top + ROW + GAP,
+        false => rects.column_top,
+    };
+    let space = Rect::from_min_max(pos2(left, top), pos2(right, bottom));
     // On a partially folded device, the page is in one part of the canvas.
     let part = geometry::canvas_part(rects.screen, rects.fold);
     space.intersect(part)
@@ -460,8 +474,9 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         rects,
         |ui| {
             let card = ui.max_rect();
+            let inset = geometry::actions_inset(rects.class);
             let at = |x: f32| {
-                let min = pos2(card.left() + PAD + x, card.top() + PAD);
+                let min = pos2(card.left() + inset + x, card.top() + PAD);
                 Rect::from_min_size(min, vec2(TOUCH, TOUCH))
             };
             let step = TOUCH + PAD;
@@ -477,7 +492,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             {
                 state.redo();
             }
-            divider(ui, card.left() + PAD + 2.0 * step + 4.5, card);
+            divider(ui, card.left() + inset + 2.0 * step + 4.5, card);
             let x = 2.0 * step + 9.0 + PAD;
             super::panels_button(ui, state, controls, at(x));
             if rects.class != WidthClass::Compact {
@@ -487,27 +502,25 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     );
 }
 
-/// The context strip of the row layout: the row above the tool strip while
-/// the tool has controls. An open sheet covers it.
-fn frame_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let place = rects.brush.filter(|_| context_cells(state) > 0);
-    let Some(place) = place else {
+/// The rows of the tools in the footer of the sheet: the controls of the
+/// tool above the tool strip.
+fn footer(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let ctx = ui.ctx().clone();
+    if state.measuring() {
+        super::cell_card_in(ui, state, controls, rects);
+    } else if let Some(place) = rects.brush.filter(|_| context_cells(state) > 0) {
+        let mut row = super::row_at(ui, place);
+        let cell = frame_cells(
+            &mut super::row_in(&mut row, rects.row_grid, 0),
+            state,
+            controls,
+        );
+        selectable_menu(&ctx, state, controls, rects, cell);
+    } else {
         state.pad.selectable = false;
-        return;
-    };
-    let mut selectable_cell = None;
-    widgets::edge_card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-frame-card",
-        place,
-        rects,
-        |ui| {
-            let mut ui = super::padded_in(ui, true);
-            selectable_cell = frame_cells(&mut ui, state, controls);
-        },
-    );
-    selectable_menu(ctx, state, controls, rects, selectable_cell);
+    }
+    strip_cells(&mut super::row_at(ui, rects.tools), state, controls, rects);
+    widgets::set_cell_style(&ctx, widgets::CellStyle::default());
 }
 
 /// Opens the list of the Selectable cell at `cell`, while it is open.
@@ -636,29 +649,16 @@ fn context_cells(state: &AppState) -> usize {
     }
 }
 
-/// The tool strip of the row layout.
-fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    // An open sheet covers the row of the strip.
-    if rects.tool_cells == 0 {
-        return;
+/// The cells of the tool strip, in a row that fills `ui`.
+fn strip_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let mut ui = super::row_in(ui, rects.grid, 0);
+    if rects.tool_cells < TOOL_CELLS {
+        egui::ScrollArea::horizontal()
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(&mut ui, |ui| tool_cells(ui, state, controls));
+    } else {
+        tool_cells(&mut ui, state, controls);
     }
-    widgets::edge_card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-tools",
-        rects.tools,
-        rects,
-        |ui| {
-            let mut ui = super::padded_in(ui, true);
-            if rects.tool_cells < TOOL_CELLS {
-                egui::ScrollArea::horizontal()
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, |ui| tool_cells(ui, state, controls));
-            } else {
-                tool_cells(&mut ui, state, controls);
-            }
-        },
-    );
 }
 
 /// The cells of the tools: Frame, Furniture, Select, Vertex, Pan, Move,
@@ -816,16 +816,26 @@ fn tool_column(
     let context = rects.column_context;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
+    // In the rail, the controls of the tool are above the tools.
     super::column_card(ctx, backdrop, rects, |ui| {
-        tool_cells(ui, state, controls);
-        if !context {
-            return;
+        if !rects.rail {
+            tool_cells(ui, state, controls);
         }
-        super::column_divider(ui);
-        if measuring {
-            super::measure_cells(ui, state, controls);
-        } else {
-            selectable_cell = frame_cells(ui, state, controls);
+        if context {
+            if !rects.rail {
+                super::column_divider(ui);
+            }
+            if measuring {
+                super::measure_cells(ui, state, controls);
+            } else {
+                selectable_cell = frame_cells(ui, state, controls);
+            }
+            if rects.rail {
+                super::column_divider(ui);
+            }
+        }
+        if rects.rail {
+            tool_cells(ui, state, controls);
         }
     });
     selectable_menu(ctx, state, controls, rects, selectable_cell);
@@ -845,19 +855,47 @@ pub fn page_pill_text(state: &AppState) -> String {
 /// the text opens the Pages panel. The result of the Measure tool is at the
 /// right of the next page.
 fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(band) = rects.readout else {
-        return;
-    };
     let text = page_pill_text(state);
     let name = text_width(ctx, &text);
     let readout = state.measure_readout().unwrap_or_default();
-    let extra = match readout.is_empty() {
-        true => 0.0,
-        false => super::DIVIDER + readout::mono_width(ctx, &readout) + readout::READOUT_PAD,
-    };
     let pages = 2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD;
-    let width = (pages + extra).min(band.width());
-    let rect = Rect::from_min_size(pos2(band.left(), band.bottom() - ROW), vec2(width, ROW));
+    // On a compact screen, the pill is centered below the top row, and
+    // the result of the Measure tool is an overlay below it.
+    let (rect, extra) = if rects.top_overlay() {
+        // The pill is centered over the space of the page.
+        let center = page_space(rects).center().x;
+        let rect = Rect::from_min_size(
+            pos2(center - pages / 2.0, rects.column_top),
+            vec2(pages, ROW),
+        );
+        if !readout.is_empty() {
+            let left = rects.left_margin();
+            let room = rects.screen.right() - rects.bands.right - MARGIN - left;
+            let at = pos2(left, rect.bottom() + GAP);
+            let backdrop = state.globe.backdrop();
+            readout::text_capsule(
+                ctx,
+                backdrop,
+                "pad-measure",
+                at,
+                room,
+                &readout,
+                rects.sheet,
+            );
+        }
+        (rect, 0.0)
+    } else {
+        let Some(band) = rects.readout else {
+            return;
+        };
+        let extra = match readout.is_empty() {
+            true => 0.0,
+            false => super::DIVIDER + readout::mono_width(ctx, &readout) + readout::READOUT_PAD,
+        };
+        let width = (pages + extra).min(band.width());
+        let rect = Rect::from_min_size(pos2(band.left(), band.bottom() - ROW), vec2(width, ROW));
+        (rect, extra)
+    };
     let (index, count) = atlas::page_index(state);
     widgets::card(
         ctx,

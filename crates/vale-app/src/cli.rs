@@ -72,6 +72,15 @@ pub struct Args {
     /// With --layout pad: open the flyout of the group of the brush mode.
     #[arg(long)]
     pub brush_modes: bool,
+    /// Choose this tool. A vector tool selects the first visible layer of
+    /// its kind, and the brush selects the first raster layer. The Atlas
+    /// workspace has the tools pan, select, and measure.
+    #[arg(long, value_enum, value_name = "TOOL")]
+    pub tool: Option<ToolName>,
+    /// With --layout pad on a compact screen: the place of the sheet of
+    /// the open panel.
+    #[arg(long, value_enum, value_name = "DETENT")]
+    pub sheet_detent: Option<SheetDetent>,
     /// Choose the Measure tool, with a path through these places. A last
     /// place that is the first place closes the path.
     #[arg(long, value_name = "LON,LAT LON,LAT ...", allow_hyphen_values = true)]
@@ -88,6 +97,13 @@ pub struct Args {
     /// With --layout pad: open the View popover of the readout.
     #[arg(long)]
     pub view_menu: bool,
+    /// With --layout pad and --panel layers: open the collection popover.
+    #[arg(long)]
+    pub collections_menu: bool,
+    /// With --layout pad and --panel layers: open the menu of the new
+    /// layers.
+    #[arg(long)]
+    pub add_menu: bool,
     /// Open the form of a new raster layer.
     #[arg(long)]
     pub raster_form: bool,
@@ -290,6 +306,84 @@ pub fn parse_measure(s: &str) -> anyhow::Result<Measure> {
         path.close();
     }
     Ok(path)
+}
+
+/// A tool of `--tool`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum ToolName {
+    Pan,
+    Brush,
+    Line,
+    Polygon,
+    Point,
+    Select,
+    Measure,
+}
+
+/// A place of the sheet of `--sheet-detent`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum SheetDetent {
+    /// The title row and the footer.
+    Title,
+    /// About half the height of the screen.
+    Half,
+    /// Below the top row.
+    Full,
+}
+
+/// Applies `--tool` to the open workspace, and `--sheet-detent` to the
+/// sheet. The sheet clamps a large offset to its place.
+pub fn apply_tool(args: &Args, state: &mut AppState) -> anyhow::Result<()> {
+    use crate::globe::Tool;
+    use crate::ui::LayerRef;
+    use crate::ui::atlas::AtlasTool;
+    use vale_store::GeometryKind;
+    if let Some(detent) = args.sheet_detent {
+        state.pad.sheet_offset = match detent {
+            SheetDetent::Title => 1.0e4,
+            SheetDetent::Half => 0.0,
+            SheetDetent::Full => -1.0e4,
+        };
+    }
+    let Some(tool) = args.tool else {
+        return Ok(());
+    };
+    if state.workspace == Workspace::Atlas {
+        state.atlas.tool = match tool {
+            ToolName::Pan => AtlasTool::Pan,
+            ToolName::Select => AtlasTool::Select,
+            ToolName::Measure => AtlasTool::Measure,
+            _ => bail!("--tool {tool:?} is not a tool of the Atlas workspace"),
+        };
+        return Ok(());
+    }
+    let layers = state.doc.project.layers();
+    let vector = |kind: GeometryKind| {
+        let layer = layers
+            .iter()
+            .find(|l| l.visible && l.geometry() == Some(kind))
+            .map(|l| LayerRef::Vector(l.id));
+        layer.ok_or_else(|| anyhow!("--tool {tool:?}: the world has no visible {kind:?} layer"))
+    };
+    let (layer, tool) = match tool {
+        ToolName::Pan => (None, Tool::Pan),
+        ToolName::Select => (None, Tool::Select),
+        ToolName::Measure => (None, Tool::Measure),
+        ToolName::Line => (Some(vector(GeometryKind::Line)?), Tool::Line),
+        ToolName::Polygon => (Some(vector(GeometryKind::Polygon)?), Tool::Polygon),
+        ToolName::Point => (Some(vector(GeometryKind::Point)?), Tool::Point),
+        ToolName::Brush => {
+            let raster = layers.iter().find_map(|l| l.raster().map(LayerRef::Raster));
+            let raster =
+                raster.ok_or_else(|| anyhow!("--tool brush: the world has no raster layer"))?;
+            (Some(raster), Tool::Brush)
+        }
+    };
+    if layer.is_some() {
+        state.select(layer);
+    }
+    state.globe.tool = tool;
+    Ok(())
 }
 
 /// Applies `--pixel-preview` and `--frame`, which selects the frame with this number on the open

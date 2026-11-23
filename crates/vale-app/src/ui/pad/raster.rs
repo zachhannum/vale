@@ -1153,7 +1153,11 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
     // On a partially folded device, the card is in the part of its row.
     let part = super::geometry::fold_part(Rect::from_pos(at), rects.fold, screen);
     let top = (screen.top() + rects.bands.top + PAD).max(part.top());
-    let bottom = (screen.bottom() - rects.bands.bottom - PAD).min(part.bottom());
+    let mut bottom = (screen.bottom() - rects.bands.bottom - PAD).min(part.bottom());
+    // The card stays above the rows of the tools.
+    if rects.row && rects.tool_cells > 0 {
+        bottom = bottom.min(rects.bar.unwrap_or(rects.tools).top() - PAD);
+    }
     let room = panel.left() - GAP - CARD_WIDTH - PAD;
     let side = |height: f32| {
         let height = height.min(bottom - top);

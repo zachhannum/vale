@@ -263,7 +263,8 @@ pub fn draw(ctx: &egui::Context, controls: &mut Controls) {
             at + vec2(0.0, LIFT)
         };
         let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("pad-eyedropper-loupe"));
-        let painter = ctx.layer_painter(layer);
+        let mut painter = ctx.layer_painter(layer);
+        painter.set_clip_rect(ctx.viewport_rect());
         painter.circle_filled(center, radius, Color32::from_rgb(r, g, b));
         painter.circle_stroke(center, radius, egui::Stroke::new(3.0, Color32::BLACK));
         painter.circle_stroke(center, radius, egui::Stroke::new(1.5, Color32::WHITE));

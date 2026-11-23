@@ -28,6 +28,8 @@ const BUBBLE_WIDTH: f32 = 112.0;
 pub const LABEL_COLUMN: f32 = 96.0;
 /// The width of the value field at the right of a row.
 const VALUE_WIDTH: f32 = 84.0;
+/// The thickness of the track of a bare horizontal slider.
+const BARE_TRACK: f32 = 24.0;
 /// The distance from the track at which each slower speed starts, and the
 /// speed.
 const SPEEDS: [(f32, f64, &str); 3] = [
@@ -519,13 +521,22 @@ impl<'a> Number<'a> {
         out.filter(|v| *v != self.value)
     }
 
-    /// Adds the slider as a row `width` wide, with the label and the value
-    /// above the track. Returns the new value when the user changes it. The
-    /// keypad opens above the card.
-    pub fn horizontal(self, ui: &mut egui::Ui, controls: &mut Controls, width: f32) -> Option<f64> {
+    /// Adds the slider as a row `width` wide and a cell high, with the
+    /// track alone: no label and no value. During a drag, the bubble shows
+    /// the name and the value. Returns the new value when the user changes
+    /// it.
+    pub fn horizontal_bare(
+        self,
+        ui: &mut egui::Ui,
+        controls: &mut Controls,
+        width: f32,
+    ) -> Option<f64> {
         let enabled = self.enabled;
-        let (rect, _) = ui.allocate_exact_size(vec2(width, CELL.1), Sense::hover());
-        let rect = rect.shrink2(vec2(PAD, 0.0));
+        let cell = super::geometry::ROW_CELL;
+        let (rect, _) = ui.allocate_exact_size(vec2(width, cell), Sense::hover());
+        // The track starts and ends on the edges of the highlights of the
+        // cells of the row.
+        let rect = rect.shrink2(vec2(super::geometry::CELL_INSET, 0.0));
         let resp = hit(
             ui,
             controls,
@@ -535,10 +546,51 @@ impl<'a> Number<'a> {
             enabled,
             None,
         );
+        let y = rect.center().y;
         let track = Rect::from_min_max(
-            pos2(rect.left(), rect.top() + 22.0),
-            pos2(rect.right(), rect.bottom() - 4.0),
+            pos2(rect.left(), y - BARE_TRACK / 2.0),
+            pos2(rect.right(), y + BARE_TRACK / 2.0),
         );
+        let left = track.left() + TRACK_INSET;
+        let right = track.right() - TRACK_INSET;
+        let out = self.drag(ui, &resp, false, right - left, |p| (p.x, (p.y - y).abs()));
+        let value = out.unwrap_or(self.value);
+        let x_of = |v: f64| left + self.place(v) as f32 * (right - left);
+        let marks: Vec<f32> = self.default.iter().map(|d| x_of(*d)).collect();
+        let held = resp.dragged() || resp.is_pointer_button_down_on();
+        paint_track(ui, track, x_of(value), &marks, false, enabled, held);
+        if let Some(drag) = dragging(ui, &resp) {
+            self.bubble_named(ui, value, Some(self.label), drag.note, rect);
+        }
+        out.filter(|v| *v != self.value)
+    }
+
+    /// Adds the slider as a row `width` wide, with the label and the value
+    /// above the track. Returns the new value when the user changes it. The
+    /// keypad opens above the card.
+    pub fn horizontal(self, ui: &mut egui::Ui, controls: &mut Controls, width: f32) -> Option<f64> {
+        let enabled = self.enabled;
+        let (rect, _) = ui.allocate_exact_size(vec2(width, CELL.1), Sense::hover());
+        // The track starts and ends on the edges of the highlights of the
+        // cells of the row.
+        let rect = rect.shrink2(vec2(super::geometry::CELL_INSET, 0.0));
+        let resp = hit(
+            ui,
+            controls,
+            rect,
+            self.name,
+            Sense::click_and_drag(),
+            enabled,
+            None,
+        );
+        // The track is on the line of the icons of the cells of the row,
+        // and the label and the value are on the baseline of their labels.
+        let track = Rect::from_min_max(
+            pos2(rect.left(), rect.top() + 7.0),
+            pos2(rect.right(), rect.top() + 31.0),
+        );
+        let baseline = rect.bottom() - 7.0;
+        let text_height = ui.fonts_mut(|f| f.row_height(&theme::small()));
         let y = track.center().y;
         let left = track.left() + TRACK_INSET;
         let right = track.right() - TRACK_INSET;
@@ -550,15 +602,23 @@ impl<'a> Number<'a> {
         let held = resp.dragged() || resp.is_pointer_button_down_on();
         paint_track(ui, track, x_of(value), &marks, false, enabled, held);
         let color = fade(theme::MUTE, enabled);
-        let at = pos2(rect.left() + 2.0, rect.top() + 2.0);
+        let at = pos2(rect.left(), baseline);
         let painter = ui.painter();
-        painter.text(at, Align2::LEFT_TOP, self.label, theme::small(), color);
+        painter.text(at, Align2::LEFT_BOTTOM, self.label, theme::small(), color);
 
-        // The field covers the value at the right. It takes the touches
-        // there from the track.
-        let size = vec2((rect.width() / 2.0).clamp(TOUCH, VALUE_WIDTH), TOUCH);
+        // The value is at the right end of the track, on the baseline of the
+        // label. The field covers it. It takes the touches there from the
+        // track.
+        let size = vec2((rect.width() / 2.0).clamp(TOUCH, VALUE_WIDTH), CELL.1);
         let field = Rect::from_min_size(pos2(rect.right() - size.x, rect.top()), size);
-        let back = field.with_max_y(field.top() + 20.0);
+        let text_width = ui
+            .fonts_mut(|f| f.layout_no_wrap(self.value_text(value), theme::small(), color))
+            .size()
+            .x;
+        let back = Rect::from_min_max(
+            pos2(rect.right() - text_width, baseline - text_height),
+            pos2(rect.right(), baseline),
+        );
         let typed = self.field(ui, controls, field, back, value, Look::Plain);
         out = typed.or(out);
         self.keypad_beside(ui, controls, rect);
@@ -930,7 +990,8 @@ impl<'a> Number<'a> {
     ) {
         let ctx = ui.ctx();
         let id = egui::Id::new(("pad slider bubble", self.name));
-        let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
+        let mut painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, id));
+        painter.set_clip_rect(ctx.viewport_rect());
         let screen = ctx.content_rect();
         if let Some(radius) = &self.preview {
             let (center, r) = (screen.center(), radius(value).max(1.0));
@@ -1052,7 +1113,10 @@ fn place(
     top: f32,
     own: Option<egui::LayerId>,
 ) -> Rect {
-    let screen = ctx.content_rect().shrink(8.0);
+    // On a compact screen, the card keeps out of the top row, the rail,
+    // and the card of the rows.
+    let screen =
+        super::popover::compact_room(ctx, anchor).unwrap_or_else(|| ctx.content_rect().shrink(8.0));
     // A card does not cross the fold of a partially folded device.
     let fold = super::geometry::regions(ctx).fold;
     let fits = |rect: Rect| screen.contains_rect(rect) && !fold.is_some_and(|f| f.intersects(rect));

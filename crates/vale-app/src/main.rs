@@ -4,8 +4,8 @@ use anyhow::Context;
 use clap::Parser;
 use vale_app::app::run_window;
 use vale_app::cli::{
-    Args, apply_export_form, apply_frame, apply_globe, apply_import, apply_measure, apply_view,
-    export_heightmap, parse_pair,
+    Args, apply_export_form, apply_frame, apply_globe, apply_import, apply_measure, apply_tool,
+    apply_view, export_heightmap, parse_pair,
 };
 use vale_app::globe::{FACE_SIZE, WINDOW_FACE_SIZE};
 use vale_app::headless;
@@ -104,6 +104,8 @@ fn run() -> anyhow::Result<u8> {
         }
         state.pad.panels_menu = args.panels_menu;
         state.pad.view_menu = args.view_menu;
+        state.pad.collections_menu = args.collections_menu;
+        state.pad.add = args.add_menu;
         apply_globe(&args, &mut state.globe, face_size)?;
         state.form_face_size = args.face_size.map(|size| size as usize);
         if args.raster_form {
@@ -119,6 +121,7 @@ fn run() -> anyhow::Result<u8> {
         let mut state = new_state(doc, WINDOW_FACE_SIZE)?;
         state.text_size = args.text_size;
         apply_import(&args, &mut state, false)?;
+        apply_tool(&args, &mut state)?;
         // The start screen opens only if the last run ended there.
         let restore = args.starts_on_projects(true) && !args.start_screen;
         let frames = args.smoke_frames.map(u64::from);
@@ -211,6 +214,7 @@ fn run() -> anyhow::Result<u8> {
                 state.pad.camera = camera;
                 state.pad.fold = fold;
                 apply_import(&args, state, true)?;
+                apply_tool(&args, state)?;
                 // The flyout of the brush modes closes while no layer is
                 // painted, so it opens after the import.
                 if args.brush_modes {

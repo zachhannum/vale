@@ -198,7 +198,8 @@ fn paint_lifted<P: Clone>(
     lay.translate(at - start.min);
     let rect = start.translate(at - start.min);
     let layer = egui::LayerId::new(egui::Order::Tooltip, id.with("lift"));
-    let painter = ctx.layer_painter(layer);
+    let mut painter = ctx.layer_painter(layer);
+    painter.set_clip_rect(ctx.viewport_rect());
     let shadow = egui::Shadow {
         offset: [0, 6],
         blur: 18,
