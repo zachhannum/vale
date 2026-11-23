@@ -1,4 +1,5 @@
 mod common;
+mod masked;
 
 use clap::Parser;
 use kurbo::{Point, Rect, Shape};
@@ -1381,7 +1382,7 @@ fn place_halos(
     page: Rect,
 ) -> (Vec<Rect>, vale_app::pipeline::LabelSummary) {
     let mut f = fonts().unwrap();
-    let (items, summary) = vale_app::labels::place(
+    let (items, summary, _) = vale_app::labels::place(
         layers,
         classes,
         page,
@@ -1481,4 +1482,169 @@ fn a_label_avoids_a_layer_with_no_label_class_by_the_weight_of_the_layer() {
         let crosses = placed[0].y0 < y && placed[0].y1 > y;
         assert_eq!(crosses, !avoids, "{weight}: {:?} {y}", placed[0]);
     }
+}
+
+/// The paths of the label mask clips of a frame: the even-odd clips before the decor, other than
+/// the frame shape.
+fn label_mask_clips(c: &Composed) -> Vec<&kurbo::BezPath> {
+    (c.list.items[1..c.decor].iter())
+        .filter_map(|i| match i {
+            Item::PushClip {
+                path,
+                rule: vale_render::FillRule::EvenOdd,
+            } => Some(path),
+            _ => None,
+        })
+        .collect()
+}
+
+/// True if an even-odd clip with `path` lets a layer draw at `p`.
+fn draws_at(path: &kurbo::BezPath, p: Point) -> bool {
+    path.winding(p).rem_euclid(2) == 1
+}
+
+#[test]
+fn a_label_mask_cuts_each_masked_layer_and_no_other() {
+    let doc = Document::sample();
+    let (land, rivers) = (layer_id(&doc, "Land"), layer_id(&doc, "Rivers"));
+    let (_, c) = places_frame(|_| {});
+    assert!(label_mask_clips(&c).is_empty());
+    let (_, c) = places_frame(|class| class.masked_layers = vec![land]);
+    assert!(label_mask_clips(&c).is_empty(), "the mask is off");
+    let (_, c) = places_frame(|class| {
+        class.mask = true;
+        class.masked_layers = vec![LayerId(9999)];
+    });
+    assert!(label_mask_clips(&c).is_empty(), "no layer has the id");
+
+    let (_, c) = places_frame(|class| {
+        class.mask = true;
+        class.masked_layers = vec![land];
+    });
+    let clips = label_mask_clips(&c);
+    assert_eq!(clips.len(), 1);
+    // Each clip has a pop, before the labels.
+    let push = (c.list.items.iter())
+        .position(|i| matches!(i, Item::PushClip { path, .. } if path == clips[0]))
+        .unwrap();
+    let pop = push
+        + (c.list.items[push..].iter())
+            .position(|i| matches!(i, Item::PopClip))
+            .unwrap();
+    let first_label = (c.list.items.iter())
+        .position(|i| matches!(i, Item::Glyphs(_)))
+        .unwrap();
+    assert!(push < pop && pop < first_label);
+    assert!(c.list.items[push + 1..pop].iter().all(|i| matches!(
+        i,
+        Item::Fill { .. } | Item::Stroke { .. } | Item::Image { .. }
+    )));
+    // The glyphs of each label are cut out.
+    for i in &c.list.items {
+        if let Item::Glyphs(g) = i {
+            let outline = vale_render::glyph_run_outline(g);
+            let b = outline.bounding_box();
+            let mut hits = 0;
+            for k in 0..=40 {
+                let p = Point::new(b.x0 + b.width() * k as f64 / 40.0, b.center().y);
+                if outline.winding(p) != 0 {
+                    hits += 1;
+                    assert!(!draws_at(clips[0], p), "{} at {p:?}", g.text);
+                }
+            }
+            assert!(hits > 0, "{}", g.text);
+        }
+    }
+
+    let (_, c) = places_frame(|class| {
+        class.mask = true;
+        class.masked_layers = vec![land, rivers];
+    });
+    let clips = label_mask_clips(&c);
+    assert_eq!(clips.len(), 2);
+    assert_eq!(clips[0], clips[1]);
+}
+
+/// The contours of a clip after its outer rectangle.
+fn holes(path: &kurbo::BezPath) -> Vec<kurbo::PathEl> {
+    path.elements().iter().skip(5).copied().collect()
+}
+
+#[test]
+fn each_part_of_a_frame_has_the_label_masks_of_the_whole_frame() {
+    let doc = Document::sample();
+    let land = layer_id(&doc, "Land");
+    let (doc, whole) = places_frame(|class| {
+        class.mask = true;
+        class.masked_layers = vec![land];
+    });
+    let all = holes(label_mask_clips(&whole)[0]);
+    assert!(!all.is_empty());
+    let frame = &doc.project.atlas.pages[0].frames.last().unwrap();
+    let b = vale_app::atlas::shape_bbox(&frame.shape).scale_from_origin(PT_PER_MM);
+    let part = Rect::new(b.x0, b.y0, b.center().x, b.y1);
+    let c = compose_part(&doc, Point::ZERO, part);
+    assert_eq!(holes(label_mask_clips(&c)[0]), all);
+}
+
+#[test]
+fn a_label_mask_is_the_glyphs_and_a_band_of_its_width() {
+    use vale_app::labels::{LabelMask, mask_clips};
+    let square = Rect::new(10.0, 10.0, 30.0, 30.0).to_path(0.01);
+    let outer = Rect::new(0.0, 0.0, 100.0, 100.0);
+    let clip = |width: f64| {
+        let mask = LabelMask {
+            outline: square.clone(),
+            width,
+            layers: vec![LayerId(1), LayerId(2)],
+        };
+        let clips = mask_clips(&[mask], outer, 0.05);
+        assert_eq!(clips.len(), 2);
+        clips[&LayerId(1)].clone()
+    };
+    let path = clip(2.0);
+    assert!(!draws_at(&path, Point::new(20.0, 20.0)));
+    assert!(!draws_at(&path, Point::new(31.6, 20.0)));
+    assert!(!draws_at(&path, Point::new(20.0, 8.4)));
+    assert!(draws_at(&path, Point::new(32.4, 20.0)));
+    assert!(draws_at(&path, Point::new(50.0, 50.0)));
+    let path = clip(0.0);
+    assert!(!draws_at(&path, Point::new(20.0, 20.0)));
+    assert!(draws_at(&path, Point::new(30.5, 20.0)));
+}
+
+#[test]
+fn a_label_mask_cuts_the_pixels_and_is_a_vector_clip_in_a_pdf() {
+    use vale_app::labels::{LabelMask, mask_clips};
+    use vale_render::{Color, DisplayList, FillRule};
+    let mask = LabelMask {
+        outline: Rect::new(40.0, 40.0, 60.0, 60.0).to_path(0.01),
+        width: 4.0,
+        layers: vec![LayerId(1)],
+    };
+    let clip = mask_clips(&[mask], Rect::new(0.0, 0.0, 100.0, 100.0), 0.05)[&LayerId(1)].clone();
+    let road = Item::Fill {
+        path: Rect::new(0.0, 45.0, 100.0, 55.0).to_path(0.01),
+        color: Color::rgb(200, 0, 0),
+        rule: FillRule::NonZero,
+    };
+    let mut list = DisplayList::new(100.0, 100.0);
+    list.items = vec![road.clone()];
+    let plain = list.clone();
+    list.items = vec![
+        Item::PushClip {
+            path: clip,
+            rule: FillRule::EvenOdd,
+        },
+        road,
+        Item::PopClip,
+    ];
+    let png = vale_render::render_rgba(&list, 1.0).unwrap();
+    let alpha = |x: usize, y: usize| png.data[(y * png.width + x) * 4 + 3];
+    assert_eq!(alpha(50, 50), 0, "under the label");
+    assert_eq!(alpha(62, 50), 0, "in the band");
+    assert_eq!(alpha(80, 50), 255, "away from the label");
+    let pdf = vale_render::render_pdf(&list).unwrap();
+    let before = vale_render::render_pdf(&plain).unwrap();
+    assert_eq!(masked::pdf_clips(&pdf).1, masked::pdf_clips(&before).1 + 1);
 }
