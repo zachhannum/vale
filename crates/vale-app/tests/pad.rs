@@ -22576,3 +22576,34 @@ fn a_clear_of_a_check_of_the_map_removes_the_card() {
     assert_eq!(h.state().globe_map, None);
     assert!(control(&h, CLOSE_MAP).is_none());
 }
+
+#[test]
+fn the_style_section_sets_the_reference_scale() {
+    use vale_app::ui::pad::rules::{REFERENCE_SCALE, USE_CURRENT_SCALE};
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = pad(size);
+        let rivers = vector(&h, "Rivers");
+        let reference = |h: &Pad| h.state().doc.entry(rivers).unwrap().style.reference_scale;
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Rivers");
+        assert_eq!(reference(&h), None, "{what}");
+
+        type_scrolled_keys(&mut h, REFERENCE_SCALE, "5000000");
+        assert_eq!(reference(&h), Some(5_000_000.0), "{what}");
+        check_controls(&h, &format!("{what} with a reference scale"));
+        if size == BOARDS[0] {
+            scroll_to_control(&mut h, USE_CURRENT_SCALE);
+            screenshot::save(&mut h, "pad-reference-scale");
+        }
+
+        // The button takes the scale of the globe.
+        scroll_to_control(&mut h, USE_CURRENT_SCALE);
+        tap(&mut h, USE_CURRENT_SCALE);
+        let state = h.state();
+        let current = vale_style::scale_denominator(
+            state.doc.project.world.radius_km * 1000.0 / state.globe.radius(),
+        );
+        assert_eq!(reference(&h), Some(current.round()), "{what}");
+    }
+}

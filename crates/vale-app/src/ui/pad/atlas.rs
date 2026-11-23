@@ -1725,7 +1725,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
         }
         return look_head(state, id, layer);
     }
-    let map = state.doc.project.atlas.frame(id)?.map;
+    let (map, scale) = (state.doc.project.atlas.frame(id)).map(|f| (f.map, f.scale))?;
     let name = state.doc.layer(layer)?.name.clone();
     let rules = state.doc.map_style(map, layer)?.style.rules;
     let page = match state.atlas.layer_page {
@@ -1863,7 +1863,7 @@ fn layer_head(state: &mut AppState, id: vale_store::FrameId) -> Option<Head> {
             ),
             Some(Page::RampLabels(i)) => super::raster::labels_body(ui, state, controls, i),
             Some(Page::RampEditor) => super::ramp_editor::body(ui, state, controls),
-            _ => super::rules::section(ui, state, controls, layer),
+            _ => super::rules::section(ui, state, controls, layer, scale),
         });
         if page.is_none() {
             style_source_rows(ui, state, controls, map, layer);

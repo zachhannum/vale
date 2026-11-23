@@ -37,6 +37,8 @@ pub const MIN_SCALE: &str = "Min scale";
 pub const MAX_SCALE: &str = "Max scale";
 /// The text of a scale field with no limit.
 pub const NO_LIMIT: &str = "None";
+pub const REFERENCE_SCALE: &str = "Reference scale";
+pub const USE_CURRENT_SCALE: &str = "Use current scale";
 /// The text below the scale range when the minimum is not below the maximum.
 pub const BAD_RANGE: &str = "Min scale must be less than max scale.";
 pub const STROKE: &str = "Stroke";
@@ -219,8 +221,15 @@ pub fn selection_title(state: &AppState, id: LayerId) -> String {
 /// The Style section: a row for each rule, first rule first, and the row
 /// that adds a rule. A later rule draws on top. A tap on a rule opens its
 /// page, and a tap on a selected rule opens the page of the selected rules.
-/// [`selection_buttons`] gives the actions of the selected rules.
-pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: LayerId) {
+/// [`selection_buttons`] gives the actions of the selected rules. `current`
+/// is the scale denominator of the view, for the reference scale.
+pub fn section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    current: f64,
+) {
     let Some(kind) = state.doc.layer(id).and_then(|l| l.geometry()) else {
         return;
     };
@@ -305,6 +314,48 @@ pub fn section(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         if widgets::open_row(ui, controls, MASK, &text).clicked() {
             state.pad.page = Some(Page::Mask);
         }
+    }
+    reference_scale_rows(ui, state, controls, id, current);
+}
+
+/// The field of the reference scale, its keypad, and the button that sets
+/// it to the scale of the view.
+fn reference_scale_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    id: LayerId,
+    current: f64,
+) {
+    let Some(value) = state.doc.entry(id).map(|e| e.style.reference_scale) else {
+        return;
+    };
+    let none = |text: &str| text.trim().is_empty() || text == NO_LIMIT;
+    let valid = |text: &str| none(text) || parse_scale(text).is_some();
+    let shown = value.map_or(NO_LIMIT.to_owned(), scale_text);
+    let name = REFERENCE_SCALE;
+    let typed = widgets::key_field(ui, controls, name, name, "", &shown, Keys::Number, valid);
+    let mut set = typed.map(|text| {
+        if none(&text) {
+            None
+        } else {
+            parse_scale(&text)
+        }
+    });
+    let open = widgets::keypad_field(ui.ctx()).is_some_and(|f| f == REFERENCE_SCALE);
+    if open {
+        ui.add_space(4.0);
+        widgets::keypad(ui, controls, KEYPAD);
+    }
+    let can_use = current.is_finite() && current > 0.0;
+    if widgets::button_row(ui, controls, USE_CURRENT_SCALE, can_use).clicked() && can_use {
+        set = Some(Some(current.round()));
+    }
+    if let Some(new) = set.filter(|new| *new != value)
+        && let Some(entry) = state.doc.entry_mut(id)
+    {
+        entry.style.reference_scale = new;
+        state.touch();
     }
 }
 
