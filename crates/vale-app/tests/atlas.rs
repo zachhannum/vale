@@ -986,7 +986,7 @@ fn a_tap_opens_the_panel_of_a_frame_or_of_the_page() {
 }
 
 #[test]
-fn the_pan_tool_is_the_default_and_pans_the_page_without_a_change() {
+fn the_pan_tool_is_the_default_selects_frames_and_pans_the_page_without_a_change() {
     let h = pad_with(default_state(), BOARDS[0]);
     assert_eq!(h.state().atlas.tool, AtlasTool::Pan);
     assert_eq!(toggled(&h, PAN), Some(true));
@@ -996,11 +996,19 @@ fn the_pan_tool_is_the_default_and_pans_the_page_without_a_change() {
     atlas::clear_selection(h.state_mut());
     h.run_steps(2);
     let shape = frame(&h, 0).shape.clone();
-    // A tap on a frame and a tap on the paper select nothing.
-    let (on_frame, on_paper) = (middle(&h, 0), screen(&h, Point::new(4.0, 50.0)));
-    tap_with(&mut h, on_frame, Input::Finger);
-    tap_with(&mut h, on_paper, Input::Finger);
-    assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+    // A tap on a frame selects the frame, and a tap on the paper selects
+    // nothing.
+    let id = frame(&h, 0).id;
+    for input in INPUTS {
+        let on_frame = middle(&h, 0);
+        tap_with(&mut h, on_frame, input);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(id));
+        h.run_steps(30);
+        let on_paper = screen(&h, Point::new(4.0, 50.0));
+        tap_with(&mut h, on_paper, input);
+        assert_eq!(h.state().atlas.selection, AtlasSelection::None);
+        h.run_steps(30);
+    }
     // A drag on a frame and on the paper pans the page, and the frame and
     // its map stay.
     let center = frame(&h, 0).center;
