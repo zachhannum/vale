@@ -2145,9 +2145,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
         let quick = last.is_some_and(|(t, _)| now - t < DOUBLE_TAP);
         let again = quick && last.is_some_and(|(_, p)| p.distance(pos) < 12.0);
         let before = state.atlas.selection;
-        if state.atlas.tool != AtlasTool::Pan {
-            tap(state, &page, place, pos, shift);
-        }
+        tap(state, &page, place, pos, shift);
         let at = place.to_mm(pos);
         if again && !place.rect.contains(pos) {
             state.atlas.view = PageView::default();
@@ -2703,7 +2701,8 @@ fn vertex_tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Po
 /// A tap selects an item, a frame, the page, or nothing. In the entered
 /// frame of the Select tool, it selects the feature under it, and with
 /// Shift it adds the feature to the selection or takes it out. With a
-/// furniture tool, a tap on the page puts an item there.
+/// furniture tool, a tap on the page puts an item there. With the Pan tool,
+/// a tap does not select the page.
 fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shift: bool) {
     if state.atlas.tool == AtlasTool::Select {
         if let Some(id) = entered_at(state, page, place, pos) {
@@ -2739,7 +2738,9 @@ fn tap(state: &mut AppState, page: &PageRecord, place: PagePlace, pos: Pos2, shi
     }
     state.atlas.selection = match frame_at(page, at) {
         Some(id) => AtlasSelection::Frame(id),
-        None if place.rect.contains(pos) => AtlasSelection::Page,
+        None if place.rect.contains(pos) && state.atlas.tool != AtlasTool::Pan => {
+            AtlasSelection::Page
+        }
         None => AtlasSelection::None,
     };
 }
