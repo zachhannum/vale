@@ -1,7 +1,7 @@
 //! The label classes of a map.
 
 use serde_json::{Map, Value as Json, json};
-use vale_store::GeometryKind;
+use vale_store::{GeometryKind, LayerId};
 
 use crate::{Color, LabelStyle, StyleError};
 
@@ -740,6 +740,9 @@ pub const SMOOTHING: f64 = 1.5;
 /// The default buffer around a label, in points.
 pub const BUFFER: f64 = 1.0;
 
+/// The default width of the band around a label that cuts the masked layers, in points.
+pub const MASK_WIDTH: f64 = 1.5;
+
 /// The default distance between two labels with the same text, in points.
 pub const DUPLICATE_DISTANCE: f64 = 300.0;
 
@@ -878,6 +881,12 @@ pub struct LabelClass {
     pub remove_duplicates: bool,
     /// The smallest distance between two labels with the same text, in points.
     pub duplicate_distance: f64,
+    /// True cuts the layers of `masked_layers` around each label.
+    pub mask: bool,
+    /// The width of the band around the glyphs that cuts the masked layers, in points.
+    pub mask_width: f64,
+    /// The layers that the labels cut. An id that is not a vector layer of the map does nothing.
+    pub masked_layers: Vec<LayerId>,
     /// The fallbacks of a label that does not fit, in the order that they are tried.
     pub fallbacks: Vec<FallbackRank>,
     /// The smallest font size of the fallback "Smaller font", in points.
@@ -1016,6 +1025,9 @@ impl LabelClass {
             never_remove: false,
             remove_duplicates: true,
             duplicate_distance: DUPLICATE_DISTANCE,
+            mask: false,
+            mask_width: MASK_WIDTH,
+            masked_layers: Vec::new(),
             fallbacks: FallbackRank::defaults(),
             min_size: MIN_SIZE,
             size_step: SIZE_STEP,
@@ -1162,6 +1174,9 @@ pub fn classes_to_json(classes: &[LabelClass]) -> String {
                 "buffer_hard": c.buffer_hard,
                 "background": c.background,
                 "never_remove": c.never_remove,
+                "mask": c.mask,
+                "mask_width": c.mask_width,
+                "masked_layers": c.masked_layers.iter().map(|l| l.0).collect::<Vec<_>>(),
             });
             if let (Json::Object(m), Json::Object(f), Json::Object(l), Json::Object(p)) =
                 (&mut class, fallbacks, line, point)
@@ -1210,6 +1225,17 @@ fn ranks<const N: usize>(m: &Map<String, Json>, key: &str, fallback: [u8; N]) ->
         .filter_map(|r| r.as_u64().and_then(|r| u8::try_from(r).ok()))
         .collect();
     ranks.try_into().unwrap_or(fallback)
+}
+
+/// The masked layers of a class. An entry that is not a layer id drops out.
+fn masked_layers(m: &Map<String, Json>) -> Vec<LayerId> {
+    m.get("masked_layers")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.as_u64().and_then(|l| u32::try_from(l).ok()))
+        .map(LayerId)
+        .collect()
 }
 
 /// The fallback order of a class. A fallback that the list leaves out comes last, off.
@@ -1387,6 +1413,9 @@ fn read_class(j: &Json) -> Result<LabelClass, StyleError> {
         never_remove: flag("never_remove", false),
         remove_duplicates: flag("remove_duplicates", true),
         duplicate_distance: number("duplicate_distance", DUPLICATE_DISTANCE),
+        mask: flag("mask", false),
+        mask_width: number("mask_width", MASK_WIDTH),
+        masked_layers: masked_layers(m),
         fallbacks: fallbacks(m),
         min_size: number("min_size", MIN_SIZE),
         size_step: number("size_step", SIZE_STEP),
@@ -1490,6 +1519,14 @@ mod tests {
     }
 
     #[test]
+    fn a_masked_layer_that_is_not_an_id_drops_out() {
+        let text = r##"{"version":1,"classes":[{"color":"#102030","placement":"around","mask":true,"masked_layers":[3,"x",-1,5000000000,7]}]}"##;
+        let read = &classes_from_json(text).unwrap()[0];
+        assert!(read.mask);
+        assert_eq!(read.masked_layers, vec![LayerId(3), LayerId(7)]);
+    }
+
+    #[test]
     fn a_fallback_that_the_list_leaves_out_comes_last_and_off() {
         let text = r##"{"version":1,"classes":[{"color":"#102030","placement":"around","fallbacks":[{"fallback":"leader","on":true},{"fallback":"x"},{"fallback":"leader","on":false}]}]}"##;
         let read = &classes_from_json(text).unwrap()[0];
@@ -1542,6 +1579,9 @@ mod tests {
         a.buffer_hard = false;
         a.background = true;
         a.never_remove = true;
+        a.mask = true;
+        a.mask_width = 2.5;
+        a.masked_layers = vec![LayerId(4), LayerId(9)];
         a.remove_duplicates = false;
         a.duplicate_distance = 120.0;
         a.graticule = true;
@@ -1671,6 +1711,9 @@ mod tests {
         assert_eq!(read[0].buffer, 1.0);
         assert!(read[0].buffer_hard);
         assert!(!read[0].background && !read[0].never_remove);
+        assert!(!read[0].mask);
+        assert_eq!(read[0].mask_width, MASK_WIDTH);
+        assert!(read[0].masked_layers.is_empty());
         assert!(read[0].remove_duplicates);
         assert_eq!(read[0].duplicate_distance, 300.0);
         assert!(!read[0].graticule);
