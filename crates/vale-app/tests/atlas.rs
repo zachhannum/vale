@@ -8144,7 +8144,9 @@ fn the_bar_inserts_page_number_and_page_count_and_the_date_chip_switches_to_iso(
     tap(&mut h, DATE_FORMATS[1]);
     let iso = "concat('Page ', page_number(), ' of ', page_count(), date('iso'))";
     assert_eq!(template(&h, 0), iso);
-    // Remove value takes the chip away.
+    // Remove value takes the chip away. The popover has the room above or
+    // below the chip, and its rows scroll to the row.
+    scroll_popover_to(&mut h, DATE_FORMATS[1], REMOVE_VALUE);
     tap(&mut h, REMOVE_VALUE);
     assert_eq!(
         template(&h, 0),
@@ -10426,6 +10428,24 @@ fn map_style_page_of(h: &mut Pad, index: usize) {
 }
 
 /// A sideways drag of a finger on a row, from near the right end of it.
+/// Drags the rows of an open popover up from its row `from` until the
+/// control `name` shows.
+fn scroll_popover_to(h: &mut Pad, from: &str, name: &str) {
+    for _ in 0..6 {
+        if control(h, name).is_some() {
+            return;
+        }
+        let row = control(h, from).unwrap_or_else(|| panic!("no row {from}"));
+        drag(
+            h,
+            row.center(),
+            row.center() - vec2(0.0, 120.0),
+            Input::Finger,
+        );
+        h.run_steps(5);
+    }
+}
+
 fn swipe_row(h: &mut Pad, name: &str, dx: f32) {
     let row = control(h, name).unwrap_or_else(|| panic!("no row {name}"));
     let from = row.right_center() - vec2(10.0, 0.0);

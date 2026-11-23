@@ -12622,6 +12622,20 @@ fn a_file_that_is_not_an_image_makes_no_layer() {
     }
 }
 
+/// Drags the rows of the menu of the new layers up until the row `name` is
+/// inside the menu.
+fn scroll_menu_to(h: &mut Pad, name: &str) {
+    for _ in 0..6 {
+        let menu = h.state().pad.add_rect.unwrap();
+        if control(h, name).is_some_and(|r| menu.contains_rect(r)) {
+            return;
+        }
+        let low = menu.center_bottom() - vec2(0.0, 30.0);
+        drag(h, low, pos2(low.x, menu.top() + 30.0), None);
+        h.run_steps(5);
+    }
+}
+
 #[test]
 fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
     for size in BOARDS {
@@ -12630,6 +12644,7 @@ fn the_menu_of_the_new_layers_asks_for_the_file_of_an_image_layer() {
         open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
+        scroll_menu_to(&mut h, NEW_IMAGE);
         let row = control(&h, NEW_IMAGE).unwrap_or_else(|| panic!("{what}: no row"));
         let menu = h.state().pad.add_rect.unwrap();
         assert!(menu.contains_rect(row), "{what}: {row:?}");
@@ -12648,6 +12663,7 @@ fn the_menu_of_the_new_layers_imports_a_geojson_file() {
         open_panel(&mut h, "Layers");
         tap(&mut h, ADD_LAYER);
         check_controls(&h, &format!("{what} with the menu of the new layers"));
+        scroll_menu_to(&mut h, NEW_GEOJSON);
         let row = control(&h, NEW_GEOJSON).unwrap_or_else(|| panic!("{what}: no row"));
         let menu = h.state().pad.add_rect.unwrap();
         assert!(menu.contains_rect(row), "{what}: {row:?}");
@@ -22227,12 +22243,45 @@ fn a_popover_from_the_sheet_stays_in_its_room_on_each_compact_screen() {
         assert!(popover.contains_rect(new), "{what}: {new:?}");
         check_controls(&h, &format!("{what}: collections"));
         tap(&mut h, COLLECTION_MENU);
+        // The menu of a new layer opens from its button, inside the room,
+        // with the height of the room on its side.
         tap(&mut h, ADD_LAYER);
         let menu = h.state().pad.add_rect.expect(what);
+        let button = control(&h, ADD_LAYER).expect(what);
         assert!(
             room.expand(0.5).contains_rect(menu),
             "{what}: {menu:?} {room:?}"
         );
+        assert!(!menu.intersects(button), "{what}: {menu:?} {button:?}");
         check_controls(&h, &format!("{what}: add layer"));
+        // Its rows scroll to the last row, and the drag chooses no row.
+        let layers = h.state().doc.project.layers().len();
+        // The last row is Heightmap… in a world with no height layer, and
+        // else GeoJSON….
+        let inside = |r: &Rect| menu.contains_rect(*r);
+        let last = |h: &Pad| {
+            let heightmap = control(h, NEW_HEIGHTMAP);
+            let geojson = control(h, NEW_GEOJSON).filter(inside);
+            geojson.filter(|_| heightmap.is_none_or(|r| inside(&r)))
+        };
+        assert!(last(&h).is_none(), "{what}: the menu fits");
+        let (low, high) = (
+            menu.center_bottom() - vec2(0.0, 30.0),
+            menu.center_top() + vec2(0.0, 30.0),
+        );
+        for _ in 0..3 {
+            drag(&mut h, low, high, None);
+            h.run_steps(10);
+        }
+        assert!(h.state().pad.add, "{what}");
+        assert!(last(&h).is_some(), "{what}: no last row");
+        assert_eq!(h.state().doc.project.layers().len(), layers, "{what}");
+        // A tap still chooses a row.
+        for _ in 0..3 {
+            drag(&mut h, high, low, None);
+            h.run_steps(10);
+        }
+        tap(&mut h, "Polygons");
+        assert_eq!(h.state().doc.project.layers().len(), layers + 1, "{what}");
     }
 }
