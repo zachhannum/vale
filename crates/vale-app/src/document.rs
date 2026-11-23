@@ -384,6 +384,19 @@ impl Document {
                 entry.style.style.mask = None;
             }
         }
+        let atlas = &mut self.project.atlas;
+        let maps = atlas.maps.iter_mut().map(|m| &mut m.styles);
+        for styles in maps.chain(atlas.map_styles.iter_mut().map(|s| &mut s.styles)) {
+            for text in styles.values_mut() {
+                let Ok(mut style) = LayerStyle::from_json(text) else {
+                    continue;
+                };
+                if style.style.mask.is_some_and(|m| m.layer() == id) {
+                    style.style.mask = None;
+                    *text = style.to_json();
+                }
+            }
+        }
         self.project.remove_layer(id).is_some()
     }
 
