@@ -729,8 +729,7 @@ fn layers_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     };
     let mut changed = style_editor::rules(ui, layer, &mut style, kind, &fields, &mut library);
     if kind != vale_store::GeometryKind::Point {
-        let (mut masks, polygons) = super::pad::rules::mask_choices(&state.doc, layer);
-        masks.extend(polygons);
+        let masks = super::pad::rules::mask_choices(&state.doc, layer).all();
         ui.add_space(4.0);
         changed |= style_editor::mask_rows(ui, layer, &mut style.style.mask, &masks);
     }

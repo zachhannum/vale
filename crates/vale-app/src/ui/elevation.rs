@@ -154,8 +154,7 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     };
     let fields = layer.fields.clone();
     ui.label(pad::rules::STYLE);
-    let (mut masks, polygons) = pad::rules::mask_choices(&state.doc, id);
-    masks.extend(polygons);
+    let masks = pad::rules::mask_choices(&state.doc, id).all();
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();

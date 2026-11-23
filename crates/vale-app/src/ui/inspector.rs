@@ -76,8 +76,7 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         .doc
         .layer(info.id)
         .map_or(Vec::new(), |l| l.fields.clone());
-    let (mut masks, polygons) = super::pad::rules::mask_choices(&state.doc, info.id);
-    masks.extend(polygons);
+    let masks = super::pad::rules::mask_choices(&state.doc, info.id).all();
     let symbols = state.doc.symbols().clone();
     state.open_ramps();
     let ramps = state.ramps.list().to_vec();
