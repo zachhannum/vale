@@ -1156,7 +1156,7 @@ fn place(rects: &Rects, panel: Rect, at: Pos2, avoid: Rect, height: f32) -> (Rec
     let mut bottom = (screen.bottom() - rects.bands.bottom - PAD).min(part.bottom());
     // The card stays above the rows of the tools.
     if rects.row && rects.tool_cells > 0 {
-        bottom = bottom.min(rects.brush.unwrap_or(rects.tools).top() - PAD);
+        bottom = bottom.min(rects.bar.unwrap_or(rects.tools).top() - PAD);
     }
     let room = panel.left() - GAP - CARD_WIDTH - PAD;
     let side = |height: f32| {

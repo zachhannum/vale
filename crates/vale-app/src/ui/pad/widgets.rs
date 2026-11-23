@@ -44,6 +44,16 @@ pub fn fade(color: Color32, enabled: bool) -> Color32 {
     }
 }
 
+/// The color of the icon of a tool cell: `color`, or its `CELL_OFF` part
+/// while the cell is off.
+fn fade_cell(color: Color32, enabled: bool) -> Color32 {
+    if enabled {
+        color
+    } else {
+        color.gamma_multiply(theme::CELL_OFF)
+    }
+}
+
 /// A floating card. A touch on the card does not go to the canvas below it.
 /// `backdrop`: the card is glass, with a copy of the canvas in a texture of
 /// this format.
@@ -734,6 +744,28 @@ pub enum CellStyle {
     /// A cell of `COLUMN_CELL` with an icon alone, as in the tool column.
     /// A hold on a `tool_cell` shows its name next to it.
     Icon,
+    /// A segment of a control row: a capsule as wide as `segment_width`,
+    /// `COLUMN_CELL` high, with an icon alone in its middle.
+    Segment,
+}
+
+fn segment_width_id() -> egui::Id {
+    egui::Id::new("pad-segment-width")
+}
+
+/// Sets the look of the tool cells that come next, until the next call.
+pub fn set_cell_style(ctx: &egui::Context, style: CellStyle) {
+    ctx.data_mut(|d| d.insert_temp(cell_style_id(), style));
+}
+
+/// Sets the width of a `CellStyle::Segment` cell.
+pub fn set_segment_width(ctx: &egui::Context, width: f32) {
+    ctx.data_mut(|d| d.insert_temp(segment_width_id(), width));
+}
+
+fn segment_width(ctx: &egui::Context) -> f32 {
+    ctx.data(|d| d.get_temp(segment_width_id()))
+        .unwrap_or(geometry::COLUMN_CELL)
 }
 
 fn cell_style_id() -> egui::Id {
@@ -769,6 +801,7 @@ fn cell_size(ctx: &egui::Context) -> egui::Vec2 {
     match cell_style(ctx) {
         CellStyle::Labeled => vec2(CELL.0, CELL.1),
         CellStyle::Icon => vec2(geometry::COLUMN_CELL, geometry::COLUMN_CELL),
+        CellStyle::Segment => vec2(segment_width(ctx), geometry::COLUMN_CELL),
     }
 }
 
@@ -831,9 +864,16 @@ pub(super) fn tool_cell_with(
         enabled,
         Some(active),
     );
+    // A segment is a capsule, so the row reads as one bar of buttons.
+    if style == CellStyle::Segment {
+        let capsule = rect.shrink(HIGHLIGHT_INSET);
+        let fill = fade(theme::raise(), enabled).gamma_multiply(0.55);
+        ui.painter()
+            .rect_filled(capsule, theme::capsule(capsule), fill);
+    }
     fill(ui, rect, &resp, active);
-    let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
-    if style == CellStyle::Icon {
+    let color = fade_cell(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    if style != CellStyle::Labeled {
         icons::paint(ui.painter(), rect, icon, ICON, color);
         if hold {
             hold_name(ui, &resp, label);
@@ -900,7 +940,7 @@ pub fn icon_cell(
         Some(active),
     );
     fill(ui, rect, &resp, active);
-    let color = fade(if active { theme::TEXT } else { theme::MUTE }, enabled);
+    let color = fade_cell(if active { theme::TEXT } else { theme::MUTE }, enabled);
     icons::paint(ui.painter(), rect, icon, ICON, color);
     resp
 }

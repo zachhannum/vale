@@ -76,8 +76,8 @@ pub mod widgets;
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{
-    BrushCard, CELL, ColumnInput, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS,
-    TOUCH, VERTEX_CELLS, WidthClass,
+    BrushCard, ColumnInput, Input, MEASURE_CELLS, PAD, ROW, Rects, SELECT_CELLS, TOOLS, TOUCH,
+    VERTEX_CELLS, WidthClass,
 };
 use icons::Icon;
 use number::{Number, Scale};
@@ -748,6 +748,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         fold: state.pad.fold,
         glass: state.globe.backdrop().is_some(),
         keyboard: ctx.egui_wants_keyboard_input(),
+        top_view: class == WidthClass::Compact,
     };
     let mut rects = geometry::layout(&input);
     state.pad.sheet_offset = input
@@ -778,8 +779,8 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 
     top_row(&ctx, state, &mut controls, &rects);
     if rects.row {
-        tool_strip(&ctx, state, &mut controls, &rects);
-        brush_card(&ctx, state, &mut controls, &rects);
+        let closing = closing_sheet(&ctx, &input, &rects);
+        bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
         tool_column(&ctx, state, &mut controls, &rects);
     }
@@ -791,7 +792,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     input.sheet_offset = state.pad.sheet_offset;
     rects = geometry::layout(&input);
     if input.panel {
-        input.sheet_offset = shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_travel);
+        input.sheet_offset = shown_sheet_offset(&ctx, state.pad.sheet_offset, rects.sheet_closed);
         rects = geometry::layout(&input);
     }
     table::check(state);
@@ -801,7 +802,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     select::drop_focus(&ctx, state);
     state.pad.collections_rect = None;
     state.pad.collections_button = None;
-    dock_ui::show(&ctx, state, &mut controls, &rects);
+    dock_ui::show(&ctx, state, &mut controls, &rects, &mut footer);
     super::new_feature::keep_in_view(&ctx, state, &rects);
     expire_notes(&ctx, state);
     raster::band_card(&ctx, state, &mut controls, &rects);
@@ -1011,14 +1012,32 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
         rects,
         |ui| {
             let card = ui.max_rect();
+            let inset = geometry::actions_inset(rects.class);
             let at = |x: f32| {
-                let min = pos2(card.left() + PAD + x, card.top() + PAD);
+                let min = pos2(card.left() + inset + x, card.top() + PAD);
                 Rect::from_min_size(min, vec2(TOUCH, TOUCH))
             };
             let step = TOUCH + PAD;
+            let divider = |ui: &egui::Ui, x: f32| {
+                let at = pos2(card.left() + inset + x + 4.5, card.center().y);
+                let line = Rect::from_center_size(at, vec2(1.0, 24.0));
+                ui.painter().rect_filled(line, 0.0, theme::divider());
+            };
+            let mut x = 0.0;
+            // A compact screen has the View button at the left end, before
+            // a divider. It has no readout card.
+            if rects.class == WidthClass::Compact {
+                let view = at(0.0);
+                let flat = state.globe.world_view == crate::globe::WorldView::Flat;
+                readout::view_button(ui, state, controls, view, flat);
+                state.pad.view_rect = Some(view);
+                state.pad.view_button = Some(view);
+                divider(ui, step);
+                x = step + geometry::DIVIDER_WIDTH;
+            }
             let can_undo = state.can_undo();
             let undo =
-                widgets::icon_button_at(ui, controls, at(0.0), "Undo", Icon::Undo, false, can_undo);
+                widgets::icon_button_at(ui, controls, at(x), "Undo", Icon::Undo, false, can_undo);
             if undo.clicked() {
                 state.undo();
             }
@@ -1026,7 +1045,7 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             let redo = widgets::icon_button_at(
                 ui,
                 controls,
-                at(step),
+                at(x + step),
                 "Redo",
                 Icon::Redo,
                 false,
@@ -1035,10 +1054,8 @@ fn top_row(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
             if redo.clicked() {
                 state.redo();
             }
-            let divider = pos2(card.left() + PAD + 2.0 * step + 4.5, card.center().y);
-            let line = Rect::from_center_size(divider, vec2(1.0, 24.0));
-            ui.painter().rect_filled(line, 0.0, theme::divider());
-            let x = 2.0 * step + 9.0 + PAD;
+            divider(ui, x + 2.0 * step);
+            let x = x + 2.0 * step + geometry::DIVIDER_WIDTH;
             panels_button(ui, state, controls, at(x));
             if rects.class != WidthClass::Compact {
                 dock_button(ui, state, controls, at(x + step));
@@ -1163,29 +1180,140 @@ fn padded_in(ui: &mut egui::Ui, row: bool) -> egui::Ui {
     ui
 }
 
-/// The tool strip of the row layout.
-fn tool_strip(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    // An open sheet covers the row of the strip.
-    if rects.tool_cells == 0 {
-        return;
+/// The cells of the tool strip, in a row that fills `ui`.
+fn strip_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let mut ui = row_in(ui, rects.grid, 0);
+    if rects.tool_cells < TOOLS {
+        egui::ScrollArea::horizontal()
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(&mut ui, |ui| tool_cells(ui, state, controls));
+    } else {
+        tool_cells(&mut ui, state, controls);
     }
-    widgets::edge_card(
+}
+
+/// A row of cells on the columns of `grid`, from column `start`: a child
+/// of `ui` with the cells from left to right, with the space between two
+/// columns. Without a grid, the cells are `PAD` inside `ui`.
+pub(super) fn row_in(ui: &mut egui::Ui, grid: Option<geometry::Grid>, start: usize) -> egui::Ui {
+    let Some(grid) = grid else {
+        return padded_in(ui, true);
+    };
+    // The cells of the rows of a phone are icons alone, as in the tool
+    // column. `footer` puts the style back.
+    let style = match grid.segment {
+        true => widgets::CellStyle::Segment,
+        false => widgets::CellStyle::Icon,
+    };
+    widgets::set_cell_style(ui.ctx(), style);
+    widgets::set_segment_width(ui.ctx(), grid.cell_width());
+    let outer = ui.max_rect();
+    let rect = Rect::from_min_max(
+        pos2(grid.cell_left(start), outer.top() + PAD),
+        pos2(outer.right(), outer.bottom() - PAD),
+    );
+    let layout = egui::Layout::left_to_right(egui::Align::Min);
+    let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
+    ui.spacing_mut().item_spacing = vec2(grid.spacing(), 0.0);
+    ui
+}
+
+/// The floating card of the rows of a compact screen with no sheet: the
+/// rows of the tools at the place of the footer of the sheet, so a sheet
+/// grows up from the card and no cell moves. `closing` is the place of a
+/// sheet that closes: the card is there, with no panel, until it reaches
+/// the place of the rows.
+pub(super) fn bottom_bar(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    footer: dock_ui::Footer<'_>,
+    closing: Option<Rect>,
+) {
+    let Some(bar) = rects.bar.filter(|_| rects.sheet.is_none()) else {
+        return;
+    };
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|d| d.insert_temp(bar_pass(), pass));
+    // The card has the id of the sheet, so a sheet that opens or closes
+    // is the same card.
+    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
+    let backdrop = state.globe.backdrop();
+    widgets::card(
         ctx,
-        state.globe.backdrop(),
-        "pad-tools",
-        rects.tools,
-        rects,
+        backdrop,
+        "pad-sheet",
+        closing.unwrap_or(bar),
+        Order::Middle,
+        radius,
         |ui| {
-            let mut ui = padded_in(ui, true);
-            if rects.tool_cells < TOOLS {
-                egui::ScrollArea::horizontal()
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, |ui| tool_cells(ui, state, controls));
-            } else {
-                tool_cells(&mut ui, state, controls);
+            if let Some(sheet) = closing {
+                dock_ui::sheet_chrome(ui, sheet, bar);
             }
+            footer(ui, state, controls, rects);
         },
     );
+}
+
+fn bar_pass() -> egui::Id {
+    egui::Id::new("pad-bar-pass")
+}
+
+/// True if `bottom_bar` showed the card of the tools in this pass.
+pub(super) fn bar_shown(ctx: &egui::Context) -> bool {
+    let pass: Option<u64> = ctx.data(|d| d.get_temp(bar_pass()));
+    pass == Some(ctx.cumulative_pass_nr())
+}
+
+/// The place of a sheet that closes. It follows the spring of the sheet
+/// down to the floating card of the rows. None if no sheet closes.
+pub(super) fn closing_sheet(ctx: &egui::Context, input: &Input, rects: &Rects) -> Option<Rect> {
+    if input.panel || rects.bar.is_none() {
+        return None;
+    }
+    let id = sheet_spring();
+    let pass = ctx.cumulative_pass_nr();
+    let seen: Option<u64> = ctx.data(|d| d.get_temp(id.with("seen")));
+    if seen.is_none_or(|p| p + 1 < pass) {
+        return None;
+    }
+    let offset = motion::points(ctx, id, rects.sheet_closed, motion::SNAPPY);
+    if offset >= rects.sheet_closed - 0.5 {
+        return None;
+    }
+    ctx.data_mut(|d| d.insert_temp(id.with("seen"), pass));
+    let input = Input {
+        panel: true,
+        sheet_offset: offset,
+        ..*input
+    };
+    geometry::layout(&input).sheet
+}
+
+/// A child of `ui` at `rect`, for a row of the footer of the sheet.
+pub(super) fn row_at(ui: &mut egui::Ui, rect: Rect) -> egui::Ui {
+    let layout = egui::Layout::top_down(egui::Align::Min);
+    ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout))
+}
+
+/// The rows of the tools in the footer of the sheet: the controls of the
+/// tool above the tool strip.
+pub(super) fn footer(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) {
+    if let Some(rect) = rects.brush {
+        if rects.card_cells > 0 {
+            cell_card_in(ui, state, controls, rects);
+        } else {
+            brush_cells(&mut row_at(ui, rect), state, controls, rects);
+        }
+    }
+    strip_cells(&mut row_at(ui, rects.tools), state, controls, rects);
+    widgets::set_cell_style(ui.ctx(), widgets::CellStyle::default());
 }
 
 /// The cells of the tools: Sculpt, Terrain, Vector, Select, Move, and
@@ -1495,49 +1623,30 @@ fn percent(name: &str, value: f64) -> Number<'_> {
     Number::new(name, value, 0.0..=1.0).percent()
 }
 
-fn brush_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
-    let Some(rect) = rects.brush else {
-        return;
-    };
-    if rects.card_cells > 0 {
-        cell_card(ctx, state, controls, rects);
-        return;
-    }
-    // A tool with no context strip has a strip of the extra cells alone.
+/// The controls of the tool, in a row that fills `ui`. A tool with no
+/// context strip has the extra cells alone.
+fn brush_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+    let mut ui = row_in(ui, rects.row_grid, 0);
     if !has_strip(&state.globe) {
-        widgets::edge_card(
-            ctx,
-            state.globe.backdrop(),
-            "pad-brush-card",
-            rect,
-            rects,
-            |ui| deselect_cell(&mut padded_in(ui, rects.row), state, controls),
-        );
+        deselect_cell(&mut ui, state, controls);
         return;
     }
-    widgets::edge_card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-brush-card",
-        rect,
-        rects,
-        |ui| {
-            let mut ui = padded_in(ui, true);
-            if let BrushCard::Full(length) = rects.brush_card {
-                strip_controls(&mut ui, state, controls, Slide::Row(length));
-            }
-            deselect_cell(&mut ui, state, controls);
-            brush_button(&mut ui, state, controls);
-        },
-    );
+    if let BrushCard::Full(pitch) = rects.brush_card {
+        let spans = rects.slider_spans;
+        strip_controls(&mut ui, state, controls, Slide::Row { pitch, spans });
+    }
+    deselect_cell(&mut ui, state, controls);
+    brush_button(&mut ui, state, controls);
 }
 
 /// The length of the sliders of the controls of the brush and of the
 /// vector tools.
 #[derive(Clone, Copy)]
 enum Slide {
-    /// The row layout, with two sliders of this length.
-    Row(f32),
+    /// The row layout: each slider spans whole columns of this pitch, the
+    /// first slider the first number of columns and each later slider the
+    /// second number.
+    Row { pitch: f32, spans: [usize; 2] },
     /// The tool column, with tracks of this length. Zero: the Brush panel
     /// holds the sliders.
     Column(f32),
@@ -1549,13 +1658,14 @@ enum Slide {
 /// The controls of the brush and of the vector tools. Each control shows
 /// while the tool can use it.
 fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, slide: Slide) {
-    let height = match slide {
-        Slide::Row(height) => height,
-        Slide::Column(_) | Slide::Bare(_) => 0.0,
-    };
+    // `slide` adds slider number `i` of the row.
     let slide =
-        |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, length: f32| match slide {
-            Slide::Row(_) => number.horizontal(ui, controls, length),
+        |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls, i: usize| match slide {
+            Slide::Row { pitch, spans } => {
+                let k = spans[i.min(1)].max(1);
+                let width = (k - 1) as f32 * pitch + geometry::ROW_CELL;
+                number.horizontal_bare(ui, controls, width)
+            }
             Slide::Column(track) if track > 0.0 => {
                 number.vertical(ui, controls, track + geometry::SLIDER_TEXT)
             }
@@ -1605,28 +1715,25 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             }
         }
         if sweep {
-            let length = height - CELL.0 / 2.0;
             let smoothing = &mut state.globe.line.smoothing;
             let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
-            if let Some(value) = slide(number, ui, controls, length) {
+            if let Some(value) = slide(number, ui, controls, 0) {
                 *smoothing = value;
             }
             if let Some(value) = slide(
                 polygon_brush_size(state, POLYGON_BRUSH_SIZE),
                 ui,
                 controls,
-                length,
+                1,
             ) {
                 state.globe.line.brush_size = value as f32;
             }
             return;
         }
         if stroke {
-            let cells = [true, line, fit || fill].iter().filter(|&&c| c).count() as f32;
-            let length = 2.0 * height - cells * CELL.0;
             let smoothing = &mut state.globe.line.smoothing;
             let number = percent(SMOOTHING, *smoothing).default(DEFAULT_SMOOTHING);
-            if let Some(value) = slide(number, ui, controls, length) {
+            if let Some(value) = slide(number, ui, controls, 0) {
                 *smoothing = value;
             }
         }
@@ -1667,10 +1774,10 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
             }
         }
     } else if paint {
-        let mut control = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls| {
-            slide(number, ui, controls, height)
-        };
-        for slider in strip_sliders(state) {
+        for (i, slider) in strip_sliders(state).into_iter().enumerate() {
+            let mut control = |number: Number<'_>, ui: &mut egui::Ui, controls: &mut Controls| {
+                slide(number, ui, controls, i)
+            };
             brush_slider(ui, controls, state, slider, &mut Place::Strip(&mut control));
         }
     }
@@ -1682,10 +1789,9 @@ fn strip_sliders(state: &AppState) -> Vec<Slider> {
     state.tools.pins.strip(globe.brush.mode, globe.is_height())
 }
 
-/// The card of cells of the Measure tool, the Vertex tool, or the Select
-/// tool, in the place of the brush card.
-pub(super) fn cell_card(
-    ctx: &egui::Context,
+/// The card of cells in the footer of the sheet, at `rects.brush`.
+pub(super) fn cell_card_in(
+    ui: &mut egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
     rects: &Rects,
@@ -1693,46 +1799,64 @@ pub(super) fn cell_card(
     let Some(rect) = rects.brush.filter(|_| rects.card_cells > 0) else {
         return;
     };
+    let cells = card_cells_in(&mut row_at(ui, rect), state, controls, rects);
+    cell_menus(&ui.ctx().clone(), state, controls, rects, cells);
+}
+
+/// The cells of the card of cells, in a row or a column that fills `ui`.
+/// Returns the places of the Merge cell and the Selectable cell.
+fn card_cells_in(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+) -> (Option<Rect>, Option<Rect>) {
     let mut merge_cell = None;
     let mut selectable_cell = None;
-    widgets::edge_card(
-        ctx,
-        state.globe.backdrop(),
-        "pad-brush-card",
-        rect,
-        rects,
-        |ui| {
-            let mut ui = padded_in(ui, rects.row);
-            let globe = state.workspace == Workspace::Globe;
-            let vertexing = state.globe.vertexing() && globe;
-            let selecting = state.globe.selecting() && globe;
-            let own = if vertexing {
-                VERTEX_CELLS
-            } else if selecting {
-                SELECT_CELLS
-            } else {
-                MEASURE_CELLS
-            };
-            let all = own + extra_cells(state);
-            let mut cells = |ui: &mut egui::Ui| {
-                if vertexing {
-                    vertex_cells(ui, state, controls);
-                } else if selecting {
-                    selectable_cell = Some(selectable::cell(ui, state, controls));
-                    merge_cell = select_cells(ui, state, controls);
-                } else {
-                    measure_cells(ui, state, controls);
-                }
-            };
-            if rects.card_cells < all {
-                egui::ScrollArea::new([rects.row, !rects.row])
-                    .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-                    .show(&mut ui, cells);
-            } else {
-                cells(&mut ui);
-            }
-        },
-    );
+    let mut ui = if rects.row {
+        row_in(ui, rects.row_grid, 0)
+    } else {
+        padded_in(ui, false)
+    };
+    let globe = state.workspace == Workspace::Globe;
+    let vertexing = state.globe.vertexing() && globe;
+    let selecting = state.globe.selecting() && globe;
+    let own = if vertexing {
+        VERTEX_CELLS
+    } else if selecting {
+        SELECT_CELLS
+    } else {
+        MEASURE_CELLS
+    };
+    let all = own + extra_cells(state);
+    let mut cells = |ui: &mut egui::Ui| {
+        if vertexing {
+            vertex_cells(ui, state, controls);
+        } else if selecting {
+            selectable_cell = Some(selectable::cell(ui, state, controls));
+            merge_cell = select_cells(ui, state, controls);
+        } else {
+            measure_cells(ui, state, controls);
+        }
+    };
+    if rects.card_cells < all {
+        egui::ScrollArea::new([rects.row, !rects.row])
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(&mut ui, cells);
+    } else {
+        cells(&mut ui);
+    }
+    (merge_cell, selectable_cell)
+}
+
+/// The lists of the Merge cell and the Selectable cell, while they are open.
+fn cell_menus(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    (merge_cell, selectable_cell): (Option<Rect>, Option<Rect>),
+) {
     match merge_cell {
         Some(cell) if state.merging => merge_menu(ctx, state, controls, rects, cell),
         _ => state.merging = false,
@@ -2635,15 +2759,15 @@ fn sheet_spring() -> egui::Id {
 }
 
 /// The offset of the sheet on the screen. It follows `offset` on a spring.
-/// A sheet that the last frame did not show rises from its title row, at
-/// the offset `travel`.
-fn shown_sheet_offset(ctx: &egui::Context, offset: f32, travel: f32) -> f32 {
+/// A sheet that the last frame did not show rises from the offset
+/// `closed`: the floating card of the rows, or else its title row.
+fn shown_sheet_offset(ctx: &egui::Context, offset: f32, closed: f32) -> f32 {
     let id = sheet_spring();
     let pass = ctx.cumulative_pass_nr();
     let seen: Option<u64> = ctx.data(|d| d.get_temp(id.with("seen")));
     ctx.data_mut(|d| d.insert_temp(id.with("seen"), pass));
     if seen.is_none_or(|p| p + 1 < pass) {
-        motion::set(ctx, id, travel.max(offset));
+        motion::set(ctx, id, closed.max(offset));
     }
     motion::points(ctx, id, offset, motion::SNAPPY)
 }
@@ -4077,7 +4201,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     let button = HELD_BUTTON.min((room - width(slot, 0.0)) / count).floor();
     let size = vec2(width(slot, button), PANEL_ROW + 2.0 * PAD);
     let mut bottom = rects.screen.bottom() - rects.bands.bottom - geometry::GAP;
-    for top in [rects.readout, rects.sheet]
+    for top in [rects.readout, rects.sheet, rects.bar]
         .into_iter()
         .flatten()
         .map(|r| r.top())

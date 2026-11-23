@@ -4,7 +4,7 @@ mod screenshot;
 
 use std::collections::BTreeMap;
 
-use eframe::egui::{self, Pos2, Rect, vec2};
+use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use vale_app::document::Document;
 use vale_app::globe::select::FeatureRef;
@@ -493,15 +493,18 @@ fn on_an_iphone_the_table_is_a_sheet_that_scrolls_sideways_with_its_header() {
     h.run_steps(3);
     let rects = h.state().pad.rects.unwrap();
     let sheet = rects.sheet.expect("no sheet");
-    assert_eq!(table_rect(&h), sheet);
-    // The sheet is above the rows of the tools. A user pulls it up to its
-    // full height.
-    assert!(sheet.bottom() < rects.tools.top());
+    // The table ends at the footer of the sheet: the rows of the tools. A
+    // user pulls the sheet up to its full height.
+    let footer = rects.footer.unwrap();
+    let above =
+        |sheet: Rect| Rect::from_min_max(sheet.min, pos2(sheet.right(), footer.top() - 1.0));
+    assert_eq!(table_rect(&h), above(sheet));
+    assert!(table_rect(&h).bottom() < rects.tools.top());
     h.state_mut().pad.sheet_offset = -rects.sheet_rise;
     h.run_steps(10);
     let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
     assert_eq!(sheet.top(), rects.column_top);
-    assert_eq!(table_rect(&h), sheet);
+    assert_eq!(table_rect(&h), above(sheet));
 
     // The first column shows, and the last column is out of the sheet at
     // the right.

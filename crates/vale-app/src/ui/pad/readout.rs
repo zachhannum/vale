@@ -24,6 +24,10 @@ const PLACE_GAP: f32 = 6.0;
 pub(super) const READOUT_PAD: f32 = 12.0;
 /// The space between the divider of the readout and the scale bar.
 const SCALE_GAP: f32 = 6.0;
+/// The height of the line of the labels of the scale overlay.
+const SCALE_LINE: f32 = 20.0;
+/// The halo of an overlay on the canvas.
+const HALO: Color32 = Color32::from_black_alpha(140);
 /// The width of the View popover. A narrow screen makes it narrower.
 pub const VIEW_MENU_WIDTH: f32 = 340.0;
 /// The height of the segmented control of the View popover.
@@ -73,9 +77,15 @@ pub(super) fn readout(
 ) {
     let pad = &mut state.pad;
     pad.readout_scale = None;
+    pad.place_rect = None;
+    // A compact screen has the View button in the top row, and the scale
+    // is an overlay below the top row.
+    if rects.row {
+        scale_overlay(ctx, state, rects);
+        return;
+    }
     pad.view_rect = None;
     pad.view_button = None;
-    pad.place_rect = None;
     let Some(band) = rects.readout else {
         state.pad.view_menu = false;
         return;
@@ -118,6 +128,114 @@ pub(super) fn readout(
     place_card(ctx, state, band, rect);
 }
 
+/// The scale bar of a compact screen: an overlay on the canvas at the left
+/// margin, below the top row, with a halo so it reads on a light canvas
+/// and a dark canvas. The place, while it shows, is a line below it.
+fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
+    let world = &state.doc.project.world;
+    let scale = km_per_point(&state.globe, world.radius_km)
+        .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
+    state.pad.readout_scale = scale.map(|s| s.label());
+    let left = rects.screen.left() + rects.bands.left + geometry::MARGIN + PAD;
+    let top = rects.column_top + PAD;
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        Order::Middle,
+        egui::Id::new("pad-scale-overlay"),
+    ));
+    let mut next = top;
+    if let Some(scale) = scale {
+        let bar = Rect::from_min_size(pos2(left, top), vec2(scale.length as f32, 4.0));
+        let d = 1.0 / ctx.pixels_per_point();
+        painter.rect_filled(bar.expand(1.5 * d), 1.5 * d, HALO);
+        let part = bar.width() / 4.0;
+        for i in 0..4 {
+            let fill = if i % 2 == 0 {
+                theme::TEXT
+            } else {
+                theme::track()
+            };
+            let x = bar.left() + i as f32 * part;
+            let rect = Rect::from_min_max(pos2(x, bar.top()), pos2(x + part, bar.bottom()));
+            painter.rect_filled(rect, 0.0, fill);
+        }
+        let labels = bar.bottom() + 2.0;
+        let font = theme::small();
+        halo_galley(
+            &painter,
+            pos2(bar.left(), labels),
+            Align2::LEFT_TOP,
+            "0",
+            font.clone(),
+        );
+        let end = pos2(bar.right(), labels);
+        halo_galley(&painter, end, Align2::CENTER_TOP, &scale.label(), font);
+        next = labels + SCALE_LINE;
+    }
+    let now = Instant::now();
+    let down = state.pad.canvas_down || state.pad.pen_hover;
+    if down && !state.headless {
+        state.pad.last_down = Some(now);
+    }
+    let last = state.pad.last_down.filter(|_| !state.headless);
+    let measure = state.measure_readout().is_some();
+    if !shows_place(down, measure, last, now) {
+        return;
+    }
+    if let Some(at) = last.filter(|_| !down && !measure) {
+        ctx.request_repaint_after(PLACE_TIME.saturating_sub(now.saturating_duration_since(at)));
+    }
+    let text = super::readout_line(state);
+    halo_galley(
+        &painter,
+        pos2(left, next),
+        Align2::LEFT_TOP,
+        &text,
+        theme::mono(),
+    );
+}
+
+/// Paints `text` on the canvas with a dark halo, so it reads on a light
+/// canvas and a dark canvas.
+pub(super) fn halo_text(
+    ctx: &egui::Context,
+    at: egui::Pos2,
+    align: Align2,
+    text: &str,
+    font: egui::FontId,
+) {
+    let painter = ctx.layer_painter(egui::LayerId::new(
+        Order::Middle,
+        egui::Id::new("pad-halo-text"),
+    ));
+    halo_galley(&painter, at, align, text, font);
+}
+
+fn halo_galley(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    align: Align2,
+    text: &str,
+    font: egui::FontId,
+) {
+    let galley = painter.layout_no_wrap(text.to_owned(), font, theme::TEXT);
+    let rect = align.anchor_size(at, galley.size());
+    // The halo is one pixel wide.
+    let d = 1.0 / painter.ctx().pixels_per_point();
+    for (dx, dy) in [
+        (-1.0, 0.0),
+        (1.0, 0.0),
+        (0.0, -1.0),
+        (0.0, 1.0),
+        (-0.7, -0.7),
+        (0.7, -0.7),
+        (-0.7, 0.7),
+        (0.7, 0.7),
+    ] {
+        painter.galley(rect.min + vec2(dx * d, dy * d), galley.clone(), HALO);
+    }
+    painter.galley(rect.min, galley, theme::TEXT);
+}
+
 /// The card of the place, above the card of the readout, while
 /// `shows_place` is true. A test has no clock, so there the place does not
 /// stay after the touch.
@@ -153,7 +271,7 @@ fn place_card(ctx: &egui::Context, state: &mut AppState, band: Rect, card: Rect)
 
 /// The button that opens the View popover. It shows the icon of the
 /// present view, and it has the accent color while the popover is open.
-fn view_button(
+pub(super) fn view_button(
     ui: &egui::Ui,
     state: &mut AppState,
     controls: &mut Controls,
@@ -272,9 +390,21 @@ pub(super) fn view_menu(
     let rows = if flat { 4.0 } else { 1.0 };
     let height = 2.0 * widgets::menu_inset().y + TABS + rows * PANEL_ROW;
     let screen = rects.screen.shrink(geometry::PANEL_GAP);
-    let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
-    let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
-    let menu = Rect::from_min_size(pos2(card.left(), top), vec2(width, height));
+    // On a compact screen, the popover is below the top row, at the right
+    // end of the actions card, as wide as the margins allow.
+    let menu = if rects.row {
+        let left = rects.screen.left() + rects.bands.left + geometry::MARGIN;
+        let width = VIEW_MENU_WIDTH.min(rects.actions.right() - left);
+        let top = rects.actions.bottom() + geometry::GAP;
+        Rect::from_min_size(
+            pos2(rects.actions.right() - width, top),
+            vec2(width, height),
+        )
+    } else {
+        let width = VIEW_MENU_WIDTH.min(screen.right() - card.left());
+        let top = (card.top() - geometry::PANEL_GAP - height).max(rects.column_top);
+        Rect::from_min_size(pos2(card.left(), top), vec2(width, height))
+    };
     let room = Rect::from_x_y_ranges(screen.x_range(), rects.column_top..=rects.panel_bottom);
     let menu = geometry::off_fold(menu, button, rects.fold, room);
     let list = |open: bool| {

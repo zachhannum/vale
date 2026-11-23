@@ -111,6 +111,14 @@ fn panel(h: &Pad, panel: Panel) -> Option<Rect> {
     panels.iter().find(|(p, _)| *p == panel).map(|(_, r)| *r)
 }
 
+/// The place of the panel of the open sheet of a compact screen: the sheet
+/// above the line of its footer.
+fn sheet_panel(rects: &vale_app::ui::pad::geometry::Rects) -> Rect {
+    let sheet = rects.sheet.expect("no sheet");
+    let end = rects.footer.map_or(sheet.bottom(), |f| f.top() - 1.0);
+    Rect::from_min_max(sheet.min, pos2(sheet.right(), end))
+}
+
 /// The first touch is also the pointer. A touch with a force is a pen.
 fn touch(h: &mut Pad, phase: egui::TouchPhase, pos: Pos2, force: Option<f32>) {
     h.event(egui::Event::Touch {
@@ -1685,6 +1693,8 @@ fn the_opacity_slider_changes_the_layer_and_is_one_undo_step() {
         assert_eq!(opacity(&h), 1.0);
         open_panel(&mut h, "Layers");
         tap(&mut h, "Open Height");
+        // A sheet goes up to its full height, so it shows the rows.
+        sheet_up(&mut h);
         check_controls(&h, &format!("{what} with the opacity slider"));
         let slider = control(&h, OPACITY).unwrap();
         let card = panel(&h, Panel::Layers).unwrap();
@@ -2329,8 +2339,15 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
         let full = size.1 > 400.0;
         assert_eq!(rects.tool_cells, TOOLS, "{what}");
         if rects.row {
-            // On a compact screen, the strip is a row.
-            assert_eq!(rects.tools.width(), 6.0 * 52.0 + 8.0, "{what}");
+            // On a compact screen, the strip is a row inside the margins,
+            // with the cells on the columns of the grid.
+            let width = size.0 - safe[1] - safe[3] - 32.0;
+            assert_eq!(rects.tools.width(), width, "{what}");
+            let grid = rects.grid.unwrap();
+            assert_eq!(grid.columns, TOOLS, "{what}");
+            let sculpt = control(&h, SCULPT).unwrap();
+            assert_eq!(sculpt.left(), grid.cell_left(0), "{what}");
+            assert_eq!(sculpt.size(), vec2(44.0, 44.0), "{what}");
         } else {
             // The tool column has the six tools at its top, and below them
             // the controls of the tool.
@@ -2470,8 +2487,10 @@ fn each_flyout_lists_the_modes_of_its_group_and_fits_on_each_screen() {
             let rects = h.state().pad.rects.unwrap();
             let tools = rects.tools;
             if rects.row {
-                // In the row layout, the flyout is above the strip.
-                assert_eq!(flyout.bottom(), tools.top() - 12.0, "{what}");
+                // In the row layout, the flyout is above the card of the
+                // rows.
+                let bar = rects.bar.unwrap();
+                assert_eq!(flyout.bottom(), bar.top() - 12.0, "{what}");
                 assert!(flyout.top() >= rects.column_top, "{what}");
             } else {
                 assert_eq!(flyout.left(), tools.right() + 12.0, "{what}");
@@ -4437,7 +4456,12 @@ fn the_view_popover_has_the_views_and_the_graticule_switch() {
             h.run_steps(2);
             let rects = h.state().pad.rects.unwrap();
             let card = h.state().pad.view_rect.unwrap();
-            assert!(rects.readout.unwrap().contains_rect(card), "{what}");
+            // A compact screen has the View button in the actions card, and
+            // no readout card.
+            match rects.row {
+                true => assert!(rects.actions.contains_rect(card), "{what}"),
+                false => assert!(rects.readout.unwrap().contains_rect(card), "{what}"),
+            }
             // At rest, the card has the View button and no rows.
             assert!(card.contains_rect(control(&h, VIEW).unwrap()), "{what}");
             for name in view_rows() {
@@ -4518,13 +4542,13 @@ fn the_flat_view_has_rows_that_move_the_center_of_the_projection_and_reset_it() 
         h.state_mut().globe.world_view = WorldView::Flat;
         h.run_steps(2);
         let rects = h.state().pad.rects.unwrap();
-        // The card of the readout is at the lower left of the canvas.
+        // The card of the readout is at the lower left of the canvas. A
+        // compact screen has the View button in the top row.
         let card = h.state().pad.view_rect.unwrap();
-        assert_eq!(
-            card.left_bottom(),
-            rects.readout.unwrap().left_bottom(),
-            "{size:?}"
-        );
+        match rects.readout {
+            Some(readout) => assert_eq!(card.left_bottom(), readout.left_bottom(), "{size:?}"),
+            None => assert!(rects.row && rects.actions.contains_rect(card), "{size:?}"),
+        }
         assert!(!card.intersects(rects.tools), "{size:?}");
         // The middle of the view is the center of the projection, and the
         // view shows the whole map, so the two actions are off.
@@ -4571,7 +4595,20 @@ fn the_readout_at_rest_has_the_view_button_and_the_scale_bar_and_no_place() {
             let mut h = pad(size);
             h.state_mut().globe.world_view = view;
             h.run_steps(2);
-            let band = h.state().pad.rects.unwrap().readout.unwrap();
+            let rects = h.state().pad.rects.unwrap();
+            if rects.row {
+                // A compact screen has no readout card. The View button is
+                // in the actions card, and the scale bar is on the canvas.
+                assert_eq!(rects.readout, None, "{what}");
+                let view = h.state().pad.view_rect.unwrap();
+                assert!(rects.actions.contains_rect(view), "{what}");
+                assert_eq!(control(&h, VIEW).unwrap().size(), vec2(44.0, 44.0));
+                let scale = h.state().pad.readout_scale.clone();
+                assert!(scale.is_some_and(|s| s.ends_with("km")), "{what}");
+                assert_eq!(h.state().pad.place_rect, None, "{what}");
+                continue;
+            }
+            let band = rects.readout.unwrap();
             let card = h.state().pad.view_rect.unwrap();
             // One row at the bottom of the band.
             assert_eq!(card.height(), 52.0, "{what}");
@@ -4701,9 +4738,18 @@ fn the_top_row_has_no_center_card() {
                 assert!(!top.intersects(c.rect), "{what}: {}", c.name);
             }
             use vale_app::ui::pad::atlas::{NEXT_PAGE, PREVIOUS_PAGE};
-            for name in [VIEW, PREVIOUS_PAGE, NEXT_PAGE] {
+            // The page card is below the top row. A compact screen has the
+            // View button in the actions card, and a larger screen has it in
+            // the readout card.
+            for name in [PREVIOUS_PAGE, NEXT_PAGE] {
                 if let Some(rect) = control(&h, name) {
-                    assert!(rect.top() > r.column_top, "{what}: {name}");
+                    assert!(rect.top() >= r.column_top, "{what}: {name}");
+                }
+            }
+            if let Some(rect) = control(&h, VIEW) {
+                match r.row {
+                    true => assert!(r.actions.contains_rect(rect), "{what}"),
+                    false => assert!(rect.top() > r.column_top, "{what}"),
                 }
             }
         }
@@ -4820,16 +4866,20 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(r.workspace.min, pos2(0.0, 28.0));
         assert_eq!(r.actions.right(), size.0);
         assert!(r.workspace.right() < r.actions.left());
-        // The readout is above the card of the tool, and the card is above
-        // the row of the strip. The card of the View button is at the
-        // bottom of the band of the readout.
-        let readout = r.readout.unwrap();
-        assert_eq!(readout.left_bottom(), pos2(16.0, 670.0));
-        assert_eq!(readout.top(), 670.0 - 52.0 - 40.0);
+        // The control row and the strip are one card at the margins, on
+        // the bottom band. There is no readout card, and the View button
+        // is in the actions card.
+        let bar = r.bar.unwrap();
+        assert_eq!(
+            bar,
+            Rect::from_min_max(pos2(16.0, bar.top()), pos2(size.0 - 16.0, 814.0))
+        );
+        assert!(bar.contains_rect(control(&h, "Brush settings").unwrap()));
+        assert!(bar.contains_rect(control(&h, SCULPT).unwrap()));
+        assert!(r.brush.unwrap().bottom() <= r.tools.top() + 8.0);
+        assert_eq!(r.readout, None);
         let view = h.state().pad.view_rect.unwrap();
-        assert_eq!(view.left_bottom(), readout.left_bottom());
-        assert_eq!(r.brush.unwrap().bottom(), r.tools.top() - 8.0);
-        assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
+        assert!(r.actions.contains_rect(view));
 
         // The menu holds the workspaces, the Worlds row, and the Export row.
         tap(&mut h, "Workspace");
@@ -4852,7 +4902,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         tap(&mut h, PROJECTION);
         let list = h.state().pad.projections_rect.unwrap();
         assert!(Rect::from_min_size(Pos2::ZERO, size.into()).contains_rect(list));
-        assert_eq!(list.left(), readout.left());
+        assert!(list.left() >= 16.0);
         assert!(h.state().pad.view_menu_rect.is_none());
         check_controls(&h, &format!("{size:?} with the projections"));
         tap(&mut h, "Mercator");
@@ -4861,17 +4911,24 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         tap(&mut h, "Globe");
         assert_eq!(h.state().globe.world_view, WorldView::Globe);
 
-        // A panel is a sheet above the card of the tool and the strip, and
-        // one sheet shows at a time. The sheet opens at half the room
-        // between the top row and the card.
+        // A panel is a sheet that grows up from the card of the rows, and
+        // one sheet shows at a time. It opens 452 points above the bottom,
+        // and the rows keep their place below its panel.
+        let rows = r;
         open_panel(&mut h, "Layers");
         let r = h.state().pad.rects.unwrap();
-        let card = r.brush.unwrap();
-        assert_eq!(card.bottom(), r.tools.top() - 8.0);
-        assert_eq!(r.tools.bottom(), 834.0 - 20.0 - 8.0);
-        let floor = card.top() - 8.0;
-        let sheet = Rect::from_min_max(pos2(0.0, (92.0 + floor) / 2.0), pos2(size.0, floor));
+        assert_eq!(
+            (r.tools, r.brush, r.bar),
+            (rows.tools, rows.brush, rows.bar)
+        );
+        let footer = r.footer.unwrap();
+        assert_eq!(footer, bar);
+        let sheet = Rect::from_min_max(
+            pos2(16.0, 834.0 - 452.0),
+            pos2(size.0 - 16.0, footer.top() - 1.0),
+        );
         assert_eq!(panel(&h, Panel::Layers), Some(sheet));
+        assert_eq!(r.sheet.unwrap().bottom(), 814.0);
         assert_eq!(r.readout, None);
         toolbox(&mut h);
         assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
@@ -4882,10 +4939,10 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
 fn you_pull_the_sheet_down_to_its_title_row() {
     let mut h = painted_pad(BOARDS[3]);
     open_panel(&mut h, "Layers");
-    // The sheet opens at half the room between the top row and the Brush
-    // card, and the card shows below it.
-    let floor = h.state().pad.rects.unwrap().brush.unwrap().top() - 8.0;
-    let open = (92.0 + floor) / 2.0;
+    // The sheet opens 452 points above the bottom, and the rows of the
+    // tools are its footer, below its panel.
+    let floor = h.state().pad.rects.unwrap().footer.unwrap().top() - 1.0;
+    let open = 834.0 - 452.0;
     let sheet = panel(&h, Panel::Layers).unwrap();
     assert_eq!((sheet.top(), sheet.bottom()), (open, floor));
     assert!(control(&h, "Layer Places").is_some());
@@ -4893,10 +4950,10 @@ fn you_pull_the_sheet_down_to_its_title_row() {
     let bar = pos2(150.0, open + 26.0);
     drag(&mut h, bar, bar + vec2(0.0, 250.0), None);
     let sheet = panel(&h, Panel::Layers).unwrap();
-    assert_eq!(sheet.top(), floor - 52.0);
-    // The title row shows, above the Brush card.
+    assert_eq!(sheet.top(), floor + 1.0 - 52.0);
+    // The title row shows, above the rows of the tools.
     assert!(control(&h, "Layer Places").is_none());
-    assert_eq!(control(&h, "Close Layers").unwrap().bottom(), floor - 4.0);
+    assert_eq!(control(&h, "Close Layers").unwrap().bottom(), floor - 3.0);
     assert!(control(&h, "Brush settings").is_some());
 
     // A short pull does not close the sheet, and a pull up opens it.
@@ -6359,18 +6416,20 @@ fn seam(h: &Pad, index: usize) -> Pos2 {
 /// Scrolls the Layers panel until the height `y` is near the middle of the
 /// card, with drags on the margin at the left of the rows.
 fn scroll_to_y(h: &mut Pad, y: impl Fn(&Pad) -> f32) {
-    for _ in 0..8 {
+    for _ in 0..24 {
         let card = panel(h, Panel::Layers).unwrap();
         let at = y(h);
         if card.top() + 120.0 < at && at < card.bottom() - 120.0 {
             return;
         }
-        // The drag starts above or below the width handle, which is at the
-        // middle of the left edge of the dock.
         let reach = card.height() / 2.0 - 60.0;
         let dy = (card.center().y - at).clamp(-reach, reach);
+        // The drag starts above or below the width handle, which is at the
+        // middle of the left edge of the dock. In a short sheet, it starts
+        // below the header rows.
         let side = if dy > 0.0 { -90.0 } else { 90.0 };
-        let from = pos2(card.left() + 6.0, card.center().y + side);
+        let y = (card.center().y + side).max(card.top() + 110.0);
+        let from = pos2(card.left() + 6.0, y);
         drag(h, from, from + vec2(0.0, dy), None);
     }
 }
@@ -8701,14 +8760,16 @@ fn cancel_ends_the_eyedropper_and_keeps_the_color() {
 /// Scrolls the panel of a layer until a control is inside the card, with a
 /// drag up on the margin at the left of the rows.
 fn scroll_to(h: &mut Pad, name: &str) {
-    for _ in 0..8 {
+    for _ in 0..16 {
         let card = panel(h, Panel::Layers).unwrap();
         let inside = |rect: Rect| card.shrink2(vec2(0.0, 40.0)).contains_rect(rect);
         if control(h, name).is_some_and(inside) {
             return;
         }
-        let from = pos2(card.left() + 6.0, card.bottom() - 60.0);
-        drag(h, from, from - vec2(0.0, 200.0), None);
+        // A short sheet shows little of the panel, so each drag is short.
+        let step = (card.height() / 2.0).min(200.0);
+        let from = pos2(card.left() + 6.0, card.bottom() - 30.0);
+        drag(h, from, from - vec2(0.0, step), None);
     }
 }
 
@@ -13660,10 +13721,14 @@ fn the_measure_cell_and_card_fit_in_the_atlas_on_each_screen() {
         check_safe(&h, size, safe, &what);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         let r = h.state().pad.rects.unwrap();
+        // The tool column holds the cells of the tool. In the row layout,
+        // the two rows are in one card, and the cells of a row are `PAD`
+        // inside it.
+        let cells = |row: Rect| row.shrink2(vec2(0.0, 4.0));
+        let card = if r.row { cells(card) } else { card };
         let mut cards = vec![r.workspace, r.actions, card];
-        // The tool column holds the cells of the tool.
         if r.row {
-            cards.push(r.tools);
+            cards.push(cells(r.tools));
         } else {
             assert!(r.tools.contains_rect(card), "{what}");
         }
@@ -13724,8 +13789,10 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
         let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions];
+        // In the row layout, the cells of the strip are `PAD` inside its
+        // row.
         if r.row {
-            cards.push(r.tools);
+            cards.push(r.tools.shrink2(vec2(0.0, 4.0)));
         } else {
             assert!(r.tools.contains_rect(card), "{what}");
         }
@@ -13778,8 +13845,10 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         let card = cells[0].union(cells[2]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions];
+        // In the row layout, the cells of the strip are `PAD` inside its
+        // row.
         if r.row {
-            cards.push(r.tools);
+            cards.push(r.tools.shrink2(vec2(0.0, 4.0)));
         } else {
             assert!(r.tools.contains_rect(card), "{what}");
         }
@@ -14932,8 +15001,7 @@ fn below_600_points_the_inspector_is_a_sheet() {
         let rects = h.state().pad.rects.unwrap();
         let rect = panel(&h, Panel::Attributes).expect("no panel");
         if size.0 < 600.0 {
-            let sheet = rects.sheet.expect("no sheet");
-            assert_eq!(rect, sheet, "{size:?}");
+            assert_eq!(rect, sheet_panel(&rects), "{size:?}");
         } else {
             assert!(rects.sheet.is_none(), "{size:?}");
             assert_eq!(rect.right(), rects.screen.right(), "{size:?}");
@@ -16130,16 +16198,30 @@ fn on_an_iphone_the_tool_strip_is_a_row_above_the_home_indicator() {
 fn on_an_iphone_the_sliders_and_the_brush_button_are_a_row_above_the_strip() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
-    let strip = h.state().pad.rects.unwrap().tools;
+    let rects = h.state().pad.rects.unwrap();
+    let (strip, grid) = (rects.tools, rects.grid.unwrap());
     let size = control(&h, STRIP_SIZE).unwrap();
     let flow = control(&h, STRIP_STRENGTH).unwrap();
     let brush = control(&h, "Brush settings").unwrap();
     for c in [size, flow, brush] {
-        assert!(c.bottom() <= strip.top(), "{c:?}");
+        assert!(c.bottom() <= strip.top() + 8.0, "{c:?}");
         assert!(c.height() >= 44.0 && c.width() >= 44.0, "{c:?}");
     }
     assert!(size.right() <= flow.left() && flow.right() <= brush.left());
-    assert!((brush.right() - (strip.right() - 4.0)).abs() <= 1.0);
+    // The sliders and the button are on the columns of the strip: the
+    // sliders span three columns and two columns, and the Brush button is
+    // on the last column.
+    assert_eq!(rects.row_grid, rects.grid);
+    assert_eq!(rects.slider_spans, [3, 2]);
+    assert!((size.left() - grid.cell_left(0)).abs() <= 2.0, "{size:?}");
+    assert!((flow.left() - grid.cell_left(3)).abs() <= 2.0, "{flow:?}");
+    assert_eq!(brush.center().x, grid.center(5));
+    // Each cell is an icon alone, 44 points wide.
+    for name in STRIP.iter().chain(&["Brush settings"]) {
+        if let Some(cell) = control(&h, name) {
+            assert_eq!(cell.size(), vec2(44.0, 44.0), "{name}");
+        }
+    }
     // The line tool has the Smoothing slider and the Snap button in their
     // places.
     let rivers = vector(&h, "Rivers");
@@ -16175,22 +16257,35 @@ fn a_drag_along_a_slider_of_the_row_moves_its_value() {
 }
 
 #[test]
-fn on_an_iphone_the_readout_is_above_the_slider_row() {
+fn on_an_iphone_the_rows_are_one_card_and_the_scale_is_on_the_canvas() {
     let h = phone_pad();
     let rects = h.state().pad.rects.unwrap();
-    let readout = rects.readout.unwrap();
+    // The control row and the strip are in one card at the margins, on the
+    // bottom band.
+    let bar = rects.bar.unwrap();
+    assert_eq!(
+        (bar.left(), bar.right(), bar.bottom()),
+        (16.0, 377.0, PHONE_BOTTOM)
+    );
     let card = rects.brush.unwrap();
-    assert!(readout.bottom() <= card.top());
-    assert!(card.bottom() <= rects.tools.top());
+    assert!(card.bottom() <= rects.tools.top() + 8.0);
+    for name in [STRIP_SIZE, "Brush settings", SCULPT, MEASURE] {
+        let cell = control(&h, name).unwrap();
+        assert!(bar.contains_rect(cell), "{name}: {cell:?}");
+    }
+    // There is no readout card. The scale bar is an overlay.
+    assert_eq!(rects.readout, None);
+    assert!(h.state().pad.readout_scale.is_some());
 }
 
 #[test]
-fn on_an_iphone_the_readout_has_the_view_button_and_the_popover_fits() {
+fn on_an_iphone_the_view_button_is_in_the_top_row_and_the_popover_fits() {
     let mut h = phone_pad();
-    let readout = h.state().pad.rects.unwrap().readout.unwrap();
+    let rects = h.state().pad.rects.unwrap();
     let view = h.state().pad.view_rect.unwrap();
-    assert_eq!(view.left_bottom(), readout.left_bottom());
-    assert!(view.width() <= readout.width());
+    // The View button is the first button of the actions card.
+    assert!(rects.actions.contains_rect(view));
+    assert!(view.left() - rects.actions.left() <= 8.0);
     assert!(view.contains_rect(control(&h, VIEW).unwrap()));
     // The menu does not hold the views.
     tap(&mut h, "Workspace");
@@ -16199,10 +16294,12 @@ fn on_an_iphone_the_readout_has_the_view_button_and_the_popover_fits() {
     h.run_steps(2);
     tap_in_view(&mut h, "Flat");
     assert_eq!(h.state().globe.world_view, WorldView::Flat);
-    // The popover fits in the width of the phone.
+    // The popover is below the top row, at the right end of the actions,
+    // and it fits in the width of the phone.
     let menu = h.state().pad.view_menu_rect.unwrap();
-    assert_eq!(menu.left(), view.left());
-    assert!(menu.right() <= 393.0 - 8.0);
+    assert_eq!(menu.right(), rects.actions.right());
+    assert!(menu.top() >= rects.actions.bottom());
+    assert!(menu.left() >= 16.0);
     for name in [PROJECTION, "Flat", GRATICULE] {
         assert!(menu.contains_rect(control(&h, name).unwrap()), "{name}");
     }
@@ -16234,41 +16331,56 @@ fn pull_sheet(h: &mut Pad, panel_kind: Panel, by: f32) {
 #[test]
 fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     let mut h = phone_pad();
+    let rows = h.state().pad.rects.unwrap();
     open_panel(&mut h, "Layers");
-    // The sheet opens at half height, above the rows. It covers the
-    // readout.
+    // The sheet opens at half height. It is the card of the rows, grown up,
+    // and the rows stay in their place below its panel.
     let half = panel(&h, Panel::Layers).unwrap();
     assert_eq!(half.top(), 400.0);
     let rects = h.state().pad.rects.unwrap();
-    let card = rects.brush.unwrap();
-    assert_eq!(half.bottom(), card.top() - 8.0);
-    assert_eq!(card.bottom(), rects.tools.top() - 8.0);
+    let footer = rects.footer.unwrap();
+    assert_eq!(half.bottom(), footer.top() - 1.0);
+    assert_eq!(rects.sheet.unwrap().bottom(), PHONE_BOTTOM);
+    assert_eq!((rects.tools, rects.brush), (rows.tools, rows.brush));
     assert!(control(&h, SCULPT).unwrap().top() >= half.bottom());
     assert!(rects.readout.is_none());
     pull_sheet(&mut h, Panel::Layers, -200.0);
     let full = panel(&h, Panel::Layers).unwrap();
     assert_eq!(full.top(), 127.0);
+    let rects = h.state().pad.rects.unwrap();
+    assert_eq!((rects.tools, rects.brush), (rows.tools, rows.brush));
     pull_sheet(&mut h, Panel::Layers, 200.0);
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 400.0);
     // A layer style opens in the sheet at the same height.
     tap(&mut h, "Open Rivers");
     assert!(control(&h, "Back to Layers").is_some());
     assert_eq!(panel(&h, Panel::Layers).unwrap().top(), 400.0);
-    // Down to the title row, the sheet stays above the rows.
+    // Down to the title row, the sheet is its title row above the rows.
     pull_sheet(&mut h, Panel::Layers, 300.0);
     let sheet = panel(&h, Panel::Layers).unwrap();
     let rects = h.state().pad.rects.unwrap();
-    let floor = rects.brush.unwrap_or(rects.tools).top() - 8.0;
-    assert_eq!((sheet.top(), sheet.bottom()), (floor - 52.0, floor));
+    let footer = rects.footer.unwrap().top();
+    let grabber = if h.state().globe.backdrop().is_some() {
+        10.0
+    } else {
+        0.0
+    };
+    let title = footer - grabber - 52.0;
+    assert_eq!((sheet.top(), sheet.bottom()), (title, footer - 1.0));
+    // The layer of the style is a vector layer, so the tool has no
+    // control row, and the strip stays in its place.
+    assert_eq!(rects.tools, rows.tools);
     assert!(control(&h, "Pan").unwrap().top() >= sheet.bottom());
-    assert!(rects.tools.bottom() <= PHONE_BOTTOM);
+    assert!(rects.tools.bottom() <= PHONE_BOTTOM + 8.0);
 }
 
 #[test]
 fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
-    tap(&mut h, "Brush settings");
+    h.state_mut().pad.flyouts.open = None;
+    h.run_steps(2);
+    quick_tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
     open_panel(&mut h, "Layers");
     // The Layers panel takes the place of the Brush panel in the sheet,
@@ -16282,7 +16394,7 @@ fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
     assert!(control(&h, &vale_app::ui::pad::dock_ui::tab_name("Brush")).is_none());
     // The Brush button below the sheet opens the Brush panel again in its
     // place.
-    tap(&mut h, "Brush settings");
+    quick_tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
     assert!(!h.state().pad.is_open(Panel::Layers));
     assert_eq!(h.state().pad.panels.len(), 1);
@@ -16292,7 +16404,10 @@ fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
 fn on_an_iphone_the_brush_sheet_has_no_pressure_settings() {
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
-    tap(&mut h, "Brush settings");
+    // The list of the modes covers the canvas.
+    h.state_mut().pad.flyouts.open = None;
+    h.run_steps(2);
+    quick_tap(&mut h, "Brush settings");
     pull_sheet(&mut h, Panel::Brush, -300.0);
     assert_eq!(panel(&h, Panel::Brush).unwrap().top(), 127.0);
     let controls = &h.state().pad.controls;
@@ -17522,7 +17637,7 @@ fn on_a_phone_a_panel_is_a_sheet_with_no_tabs() {
         .open_tabs(&[Panel::Layers, Panel::Toolbox]);
     h.run_steps(3);
     // The sheet keeps one of the panels, as the one tab of the one pane.
-    let sheet = h.state().pad.rects.unwrap().sheet.expect("no sheet");
+    let sheet = sheet_panel(&h.state().pad.rects.unwrap());
     let dock = h.state().pad.dock();
     assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
     let shown = dock.panes[0].panel();
@@ -17631,12 +17746,21 @@ fn the_readout_is_one_card_with_the_view_button_and_the_scale_bar() {
             h.run_steps(2);
             assert!(h.state().pad.readout_scale.is_some(), "{what}");
             let rects = h.state().pad.rects.unwrap();
-            let band = rects.readout.unwrap();
             let card = h.state().pad.view_rect.unwrap();
+            let button = control(&h, VIEW).unwrap();
+            if rects.row {
+                // A compact screen has no readout card. The View button is
+                // in the actions card, and the scale bar is on the canvas.
+                assert_eq!(rects.readout, None, "{what}");
+                assert!(rects.actions.contains_rect(card), "{what}");
+                assert_eq!(button, card, "{what}");
+                check_controls(&h, &what);
+                continue;
+            }
+            let band = rects.readout.unwrap();
             assert!(band.contains_rect(card), "{what}");
             assert_eq!(card.left_bottom(), band.left_bottom(), "{what}");
             assert_eq!(card.height(), 52.0, "{what}");
-            let button = control(&h, VIEW).unwrap();
             assert_eq!(button.min, card.min + vec2(4.0, 4.0), "{what}");
             // The scale bar is at the right of the button.
             assert!(card.right() >= button.right() + 60.0, "{what}");
@@ -17680,11 +17804,16 @@ fn the_readout_shows_the_place_and_a_scale_bar_with_a_round_distance() {
         );
         // The readout is at the lower left of the canvas, at the right of
         // the tool column.
+        // A compact screen has the scale bar on the canvas, and no readout
+        // card.
         let r = h.state().pad.rects.unwrap();
-        let readout = r.readout.unwrap();
-        if !r.row {
-            assert_eq!(readout.left(), r.tools.right() + 16.0, "{what}");
-            assert_eq!(readout.bottom(), size.1 - 20.0 - 8.0, "{what}");
+        match r.row {
+            true => assert_eq!(r.readout, None, "{what}"),
+            false => {
+                let readout = r.readout.unwrap();
+                assert_eq!(readout.left(), r.tools.right() + 16.0, "{what}");
+                assert_eq!(readout.bottom(), size.1 - 20.0 - 8.0, "{what}");
+            }
         }
     }
 }
@@ -17881,13 +18010,17 @@ fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
             assert!(panel(&h, open).is_some(), "{what}: {open:?}");
             if pose == "split" {
                 assert_eq!(rects.class, WidthClass::Compact, "{what}");
-                // The sheet opens at half the room between the top row and
-                // the rows of the tools, above the rows.
+                // A screen lower than 834 points opens the sheet at half
+                // its height. The sheet grows up from the card of the rows,
+                // which is its footer, on the bottom band.
                 let sheet = rects.sheet.expect(&what);
-                let floor = rects.brush.unwrap_or(rects.tools).top() - 8.0;
                 assert!(rects.tool_cells > 0, "{what}");
-                assert_eq!(sheet.top(), (rects.column_top + floor) / 2.0, "{what}");
-                assert_eq!(sheet.bottom(), floor, "{what}");
+                assert_eq!(sheet.top(), screen.height() / 2.0, "{what}");
+                assert_eq!(sheet.bottom(), screen.bottom() - bottom, "{what}");
+                assert_eq!(rects.footer, rects.bar, "{what}");
+                let footer = rects.footer.expect(&what);
+                assert_eq!(footer.bottom(), sheet.bottom(), "{what}");
+                assert!(footer.contains_rect(control(&h, "Pan").unwrap()), "{what}");
             } else {
                 assert_eq!(rects.class, WidthClass::Medium, "{what}");
                 assert!(!rects.row, "{what}");
@@ -18314,13 +18447,18 @@ fn the_outer_screen_of_iphone_duo_keeps_the_controls_off_the_camera() {
                 // The card of the actions ends at the left of the camera.
                 assert_eq!(rects.actions.right(), camera.left() - ROW_GAP, "{what}");
                 assert_eq!(rects.workspace, before.workspace, "{what}");
-                // The sheet opens at half the room between the top row and
-                // the rows of the tools, above the rows.
+                // A screen lower than 834 points opens the sheet at half
+                // its height. The sheet grows up from the card of the rows,
+                // on the bottom band.
                 let sheet = rects.sheet.expect(&what);
-                let floor = rects.brush.unwrap_or(rects.tools).top() - ROW_GAP;
                 assert!(rects.tool_cells > 0, "{what}");
-                assert_eq!(sheet.top(), (rects.column_top + floor) / 2.0, "{what}");
-                assert_eq!(sheet.bottom(), floor, "{what}");
+                assert_eq!(sheet.top(), size.1 / 2.0, "{what}");
+                assert_eq!(sheet.bottom(), size.1 - bottom, "{what}");
+                assert_eq!(
+                    rects.footer.map(|f| f.bottom()),
+                    Some(sheet.bottom()),
+                    "{what}"
+                );
             } else {
                 assert_eq!(rects.class, WidthClass::Medium, "{what}");
                 // The card of the world menu starts at the right of the

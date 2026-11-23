@@ -9297,16 +9297,19 @@ fn the_top_row_has_undo_redo_the_panels_button_and_the_dock_button() {
             "{size:?}"
         );
         let x = |name: &str| control(&h, name).map(|r| r.left());
-        // Undo and Redo, which are off here, are at the left end.
-        let redo = h.state().pad.rects.unwrap().actions.left() + 4.0 + 48.0;
+        // Undo and Redo, which are off here, are at the left end. On a
+        // phone, the buttons are 6 points inside the card, so the last
+        // button is on the last column of the tools.
+        let compact = size.0 < 600.0;
+        let inset = if compact { 6.0 } else { 4.0 };
+        let redo = h.state().pad.rects.unwrap().actions.left() + inset + 48.0;
         let panels = x(PANELS).unwrap_or_else(|| panic!("{size:?}"));
         // The Dock button is at the right end of the screen, and on a phone,
         // which has no Dock button, the Panels button is.
-        let compact = size.0 < 600.0;
         let rects = h.state().pad.rects.unwrap();
         assert_eq!(rects.actions.right(), size.0, "{size:?}");
         let last = if compact { panels } else { panels + 48.0 };
-        assert_eq!(last + 44.0 + 4.0, size.0, "{size:?}");
+        assert_eq!(last + 44.0 + inset, size.0, "{size:?}");
         // The top row adds no frame and no item of furniture.
         assert!(control(&h, "Add").is_none(), "{size:?}");
         // Undo, Redo, a line, and then the Panels button, as in the World
@@ -12078,7 +12081,7 @@ fn iphone_pad() -> Pad {
 }
 
 #[test]
-fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_bottom() {
+fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at_the_bottom() {
     let mut h = iphone_pad();
     let ((width, height), [_, _, bottom, _]) = IPHONE;
     // The middle page of three, so both page buttons are on.
@@ -12092,27 +12095,33 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     let top_row = control(&h, "Workspace").unwrap();
     let previous = control(&h, PREVIOUS_PAGE).unwrap();
     let next = control(&h, NEXT_PAGE).unwrap();
-    // The page card is above the rows of the tools, at the left of the
-    // screen.
+    // The page card is below the top row, at the middle of the screen.
     assert!(previous.top() > top_row.bottom(), "{previous:?}");
     assert_eq!(previous.top(), next.top());
-    assert!(previous.left() < width / 4.0, "{previous:?}");
-    // The tools are one row above the home indicator. Six cells fit, and
-    // the row scrolls to Measure.
+    let pill_middle = (previous.left() + next.right()) / 2.0;
+    assert!((pill_middle - width / 2.0).abs() < 1.0, "{pill_middle}");
+    // The tools are one row in the card at the bottom, on the seven
+    // columns of the card.
+    let rects = h.state().pad.rects.unwrap();
+    let bar = rects.bar.unwrap();
+    let grid = rects.grid.unwrap();
+    assert_eq!(grid.columns, 7);
     let names = [FRAME_TOOL, SELECT_TOOL, VERTEX, "Pan", "Move"];
     let tools = names.map(|name| control(&h, name).unwrap());
-    for pair in tools.windows(2) {
-        assert_eq!(pair[0].top(), pair[1].top());
-        assert!(pair[0].right() <= pair[1].left(), "{pair:?}");
+    for (tool, column) in tools.iter().zip([0, 2, 3, 4, 5]) {
+        assert_eq!(tool.top(), tools[0].top());
+        assert!(
+            (tool.center().x - grid.center(column)).abs() < 0.5,
+            "{tool:?}"
+        );
     }
     let foot = height - bottom;
-    assert!(tools[0].bottom() <= foot && tools[0].bottom() > foot - 40.0);
-    let row_middle = (tools[0].left() + tools[4].right()) / 2.0;
-    assert!((row_middle - width / 2.0).abs() < 1.0, "{row_middle}");
-    // The page is between the top row and the page pill.
+    assert_eq!(bar.bottom(), foot);
+    assert!(bar.contains_rect(tools[0]), "{bar:?}");
+    assert_eq!((bar.left(), bar.right()), (16.0, width - 16.0));
+    // The page is between the page pill and the card of the tools.
     let page = place(&h).rect;
-    assert!(page.top() > top_row.bottom() && page.bottom() < previous.top());
-    assert!(next.bottom() < tools[0].top());
+    assert!(page.top() > next.bottom() && page.bottom() < bar.top());
     check_controls(&h, "iphone");
 
     // A selected frame shows its Frame panel as a sheet, above the tools.
@@ -12126,11 +12135,21 @@ fn on_an_iphone_the_page_card_is_above_the_tools_and_the_tools_are_a_row_at_the_
     merge_frame_tabs(&mut h);
     let rects = h.state().pad.rects.unwrap();
     let sheet = rects.sheet.unwrap();
-    assert_eq!((sheet.left(), sheet.right()), (0.0, width));
-    assert_eq!(h.state().atlas.panel_rect, Some(sheet));
+    assert_eq!((sheet.left(), sheet.right()), (16.0, width - 16.0));
+    // The panel ends at the footer of the sheet: the rows of the tools,
+    // at the place of the card.
+    let footer = rects.footer.unwrap();
+    assert_eq!(rects.bar, Some(bar));
+    assert_eq!(footer, bar);
+    assert_eq!(sheet.bottom(), bar.bottom());
+    let panel = h.state().atlas.panel_rect.unwrap();
+    assert_eq!(
+        (panel.top(), panel.bottom()),
+        (sheet.top(), footer.top() - 1.0)
+    );
     assert_eq!(h.state().pad.dock().panes.len(), 1);
     assert_eq!(h.state().pad.dock().panes[0].tabs.len(), 1);
-    assert!(sheet.bottom() < rects.tools.top());
+    assert_eq!(control(&h, FRAME_TOOL), Some(tools[0]));
     assert!(control(&h, &tab_name(FRAME_TABS[1])).is_none());
     // A tile opens another panel in place of the panel of the sheet.
     open_panel(&mut h, FRAME_TABS[2]);
@@ -12658,14 +12677,21 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         assert!(control(&h, PREVIOUS_PAGE).is_none(), "{what}");
         let next = control(&h, NEXT_PAGE).unwrap();
         let name = control(&h, OPEN_PAGES).unwrap();
-        // The card is at the lower left, below the page.
+        // The card is at the lower left, below the page. On a compact
+        // screen, it is at the middle below the top row, above the page.
         let page = place(&h).rect;
-        assert!(name.top() > page.bottom(), "{what}");
         assert_eq!(name.top(), next.top(), "{what}");
         let r = h.state().pad.rects.unwrap();
-        let band = r.readout.unwrap();
-        assert!(band.contains_rect(name), "{what}");
-        assert!(name.left() - 44.0 - band.left() < 20.0, "{what}: {name:?}");
+        if r.row {
+            assert!(name.bottom() < page.top(), "{what}");
+            assert_eq!(name.top(), r.column_top + 4.0, "{what}");
+            assert_eq!(r.readout, None, "{what}");
+        } else {
+            assert!(name.top() > page.bottom(), "{what}");
+            let band = r.readout.unwrap();
+            assert!(band.contains_rect(name), "{what}");
+            assert!(name.left() - 44.0 - band.left() < 20.0, "{what}: {name:?}");
+        }
         check_controls(&h, &what);
 
         tap(&mut h, NEXT_PAGE);

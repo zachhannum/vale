@@ -31,9 +31,14 @@ pub const COLLAPSE_DRAG: f32 = 40.0;
 /// The size of the glass capsule of the handle of the dock.
 const GLASS_HANDLE: (f32, f32) = (20.0, 80.0);
 /// The extra space at each side of the content of a glass sheet.
-const SHEET_GLASS_PAD: f32 = 12.0;
-/// The space below the content of the sheet, which keeps the last row clear
-/// of the round corners.
+const SHEET_GLASS_PAD: f32 = geometry::MARGIN;
+/// The distance that the rows of a sheet reach past its header at each side,
+/// so the highlight of a row is `BAR_PAD` inside the sheet, on the line of
+/// the highlights of the cells of the footer. The buttons of the header,
+/// `PAD` inside it, are on the columns of the cells.
+const SHEET_ROW_OUT: f32 = geometry::BAR_CELL_INSET - PAD;
+/// The space below the content of a sheet with no footer, which keeps the
+/// last row clear of the round corners.
 const SHEET_FOOT: f32 = 12.0;
 /// The tab at the right edge that shows a collapsed dock.
 pub const SHOW_DOCK: &str = "Show dock";
@@ -169,7 +174,16 @@ enum DragPhase {
     Stopped,
 }
 
-pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, rects: &Rects) {
+/// The rows of the tools of a workspace, in the footer of the sheet.
+pub type Footer<'a> = &'a mut dyn FnMut(&mut egui::Ui, &mut AppState, &mut Controls, &Rects);
+
+pub fn show(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    controls: &mut Controls,
+    rects: &Rects,
+    footer: Footer<'_>,
+) {
     state.pad.dock_rect = None;
     if let Some(menu) = &mut state.pad.pane_menu
         && !ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())
@@ -186,8 +200,12 @@ pub fn show(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, 
         if crate::ui::new_feature::point_card(state, rects.class) {
             let rect = point_card::show(ctx, state, controls, rects);
             state.pad.panels.push((Panel::Attributes, rect));
-        } else if let Some(sheet) = rects.sheet {
-            show_sheet(ctx, state, controls, rects, sheet);
+        } else if let Some(sheet) = rects.sheet
+            && !super::bar_shown(ctx)
+        {
+            // A sheet that a cell of the card of the tools opens shows
+            // from the next frame, so the cells show once in a frame.
+            show_sheet(ctx, state, controls, rects, sheet, footer);
         }
     } else {
         track_swipe(ctx, state, rects.dock.width());
@@ -882,21 +900,40 @@ fn show_sheet(
     controls: &mut Controls,
     rects: &Rects,
     rect: Rect,
+    footer: Footer<'_>,
 ) {
     let Some(i) = state.pad.sheet_pane() else {
         return;
     };
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
-    // The sheet is a card above the rows of the tools.
-    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
+    // In the row layout, the sheet is the floating card of the rows, grown
+    // up. Else it reaches the side edges and the bottom edge of the screen,
+    // with round top corners.
+    let radius = match rects.row {
+        true => egui::CornerRadius::same(theme::CARD_RADIUS as u8),
+        false => {
+            let r = match widgets::is_glass(ctx) {
+                true => theme::SHEET_GLASS_RADIUS as u8,
+                false => theme::CARD_RADIUS as u8,
+            };
+            egui::CornerRadius {
+                nw: r,
+                ne: r,
+                sw: 0,
+                se: 0,
+            }
+        }
+    };
     let backdrop = state.globe.backdrop();
     let inner = geometry::edge_content(rect, rects.screen, rects.bands);
-    // The header and the rows of a glass sheet keep clear of its round
-    // corners.
-    let inner = match widgets::is_glass(ctx) {
-        true => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
-        false => inner,
+    // The buttons of the header of a floating sheet are on the columns of
+    // the cells of the footer. A sheet at the screen edges keeps clear of
+    // its round corners, at the margin of the cards of the top row.
+    let inner = match (rects.row, widgets::is_glass(ctx)) {
+        (true, _) => inner.shrink2(vec2(SHEET_ROW_OUT, 0.0)),
+        (false, true) => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
+        (false, false) => inner,
     };
     // The header of a glass sheet starts below the grabber, so the highlight
     // of a tab keeps clear of it.
@@ -904,12 +941,16 @@ fn show_sheet(
         true => Rect::from_min_max(inner.min + vec2(0.0, geometry::GRABBER_SPACE), inner.max),
         false => inner,
     };
-    // A sheet at the bottom of the screen, above the keyboard, keeps its
+    // The content ends at the footer: the rows of the tools, below a line.
+    // A sheet that rises from the card comes out from behind the line. A
+    // sheet with no footer reaches the bottom of the screen and keeps its
     // rows out of the bottom band.
-    let foot = match rect.bottom() > rects.screen.bottom() - geometry::SHEET_INSET - 1.0 {
-        true => rects.bands.bottom.max(SHEET_FOOT),
-        false => SHEET_FOOT,
-    };
+    let end = rects
+        .footer
+        .map_or(rect.bottom() - rects.bands.bottom.max(SHEET_FOOT), |f| {
+            f.top() - 1.0
+        });
+    let above = Rect::from_min_max(rect.min, pos2(rect.right(), end));
     let mut out = None;
     widgets::card(
         ctx,
@@ -919,25 +960,31 @@ fn show_sheet(
         Order::Middle,
         radius,
         |ui| {
-            let grabber =
-                Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
-            ui.painter().rect_filled(
-                grabber,
-                theme::capsule(grabber),
-                theme::MUTE.gamma_multiply(0.6),
+            paint_grabber(ui, rect, above);
+            // The rows of the body reach `SHEET_ROW_OUT` past the header,
+            // so the highlight of a row starts on the line of the first
+            // button of the header.
+            let body = Rect::from_min_max(
+                pos2(inner.left() - SHEET_ROW_OUT, inner.top()),
+                pos2(inner.right() + SHEET_ROW_OUT, end),
             );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
-                    .max_rect(inner)
+                    .max_rect(body)
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
-            let body = Rect::from_min_max(inner.min, pos2(inner.right(), rect.bottom() - foot));
+            child.set_clip_rect(above);
             out = Some(pane_in_sheet(
                 &mut child, state, controls, rects, i, &mut head, body,
             ));
+            if let Some(footer_rect) = rects.footer {
+                paint_footer_line(ui, rect, footer_rect);
+                footer(ui, state, controls, rects);
+            }
         },
     );
-    state.pad.panels.push((panel, rect));
+    // The place of the panel is the sheet above its footer.
+    state.pad.panels.push((panel, above));
     if let Some(out) = out {
         let dock = state.pad.dock_mut();
         if out.close {
@@ -947,6 +994,34 @@ fn show_sheet(
             dock.focus(i, tab);
         }
     }
+}
+
+/// The grabber at the top of the sheet `rect`, clipped to `clip`.
+fn paint_grabber(ui: &egui::Ui, rect: Rect, clip: Rect) {
+    let grabber = Rect::from_center_size(pos2(rect.center().x, rect.top() + 8.5), vec2(36.0, 5.0));
+    ui.painter().with_clip_rect(clip).rect_filled(
+        grabber,
+        theme::capsule(grabber),
+        theme::MUTE.gamma_multiply(0.6),
+    );
+}
+
+/// The line above the footer of the sheet `rect`. It is `BAR_PAD` inside
+/// the sheet, as the highlights of the rows and the cells are.
+fn paint_footer_line(ui: &egui::Ui, rect: Rect, footer: Rect) {
+    let line = Rect::from_min_max(
+        pos2(rect.left() + geometry::BAR_PAD, footer.top() - 1.0),
+        pos2(rect.right() - geometry::BAR_PAD, footer.top()),
+    );
+    ui.painter().rect_filled(line, 0.0, theme::divider());
+}
+
+/// The grabber and the footer line of a sheet with no panel, as it closes
+/// down to the floating card `footer`.
+pub(super) fn sheet_chrome(ui: &egui::Ui, rect: Rect, footer: Rect) {
+    let above = Rect::from_min_max(rect.min, pos2(rect.right(), footer.top() - 1.0));
+    paint_grabber(ui, rect, above);
+    paint_footer_line(ui, rect, footer);
 }
 
 fn pane_in_sheet(
@@ -959,7 +1034,10 @@ fn pane_in_sheet(
     body: Rect,
 ) -> HeaderOut {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let header = Rect::from_min_size(body.min, vec2(body.width(), ROW));
+    let header = Rect::from_min_size(
+        body.min + vec2(SHEET_ROW_OUT, 0.0),
+        vec2(body.width() - 2.0 * SHEET_ROW_OUT, ROW),
+    );
     let out = header_row(ui, state, controls, i, head, header, Mode::Sheet, true);
     ui.advance_cursor_after_rect(header);
     let low = state.pad.sheet_offset > -rects.sheet_rise + 0.5;
@@ -1226,10 +1304,13 @@ fn header_row(
         .painter()
         .with_clip_rect(tabs_area.intersect(ui.clip_rect()));
     if pane.tabs.len() == 1 {
-        let icon = Rect::from_center_size(
-            pos2(rect.left() + BODY_PAD + ICON / 2.0, rect.center().y),
-            vec2(ICON, ICON),
-        );
+        // In a sheet, the icon is on the column of the first control, under
+        // the first button of the top row.
+        let x = match mode {
+            Mode::Sheet => PAD + TOUCH / 2.0,
+            Mode::Dock => BODY_PAD + ICON / 2.0,
+        };
+        let icon = Rect::from_center_size(pos2(rect.left() + x, rect.center().y), vec2(ICON, ICON));
         icons::paint(&painter, icon, panel_icon(pane.panel()), ICON, theme::MUTE);
         let at = pos2(icon.right() + 10.0, rect.center().y);
         let title = painter.text(at, Align2::LEFT_CENTER, name, theme::title(), theme::TEXT);
