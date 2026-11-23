@@ -261,7 +261,12 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let closing = super::closing_sheet(&ctx, &input, &rects);
         super::bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
-        super::rail_closing(&ctx, state, super::closing_sheet(&ctx, &input, &rects));
+        super::rail_closing(
+            &ctx,
+            state,
+            &rects,
+            super::closing_sheet(&ctx, &input, &rects),
+        );
         tool_column(&ctx, state, &mut controls, &rects, measuring);
     }
     // A button above can open or close a panel. The panels use the new

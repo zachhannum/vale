@@ -782,7 +782,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let closing = closing_sheet(&ctx, &input, &rects);
         bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
-        rail_closing(&ctx, state, closing_sheet(&ctx, &input, &rects));
+        rail_closing(&ctx, state, &rects, closing_sheet(&ctx, &input, &rects));
         tool_column(&ctx, state, &mut controls, &rects);
     }
     // A button above can open or close a panel. The panels use the new state.
@@ -1239,7 +1239,7 @@ pub(super) fn bottom_bar(
     ctx.data_mut(|d| d.insert_temp(bar_pass(), pass));
     // The card has the id of the sheet, so a sheet that opens or closes
     // is the same card.
-    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
+    let radius = rects.sheet_radius();
     let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
@@ -1269,11 +1269,16 @@ pub(super) fn bar_shown(ctx: &egui::Context) -> bool {
 
 /// The sheet beside the rail as it closes, with no panel, down to its
 /// title row.
-pub(super) fn rail_closing(ctx: &egui::Context, state: &AppState, closing: Option<Rect>) {
+pub(super) fn rail_closing(
+    ctx: &egui::Context,
+    state: &AppState,
+    rects: &Rects,
+    closing: Option<Rect>,
+) {
     let Some(sheet) = closing else {
         return;
     };
-    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
+    let radius = rects.sheet_radius();
     let backdrop = state.globe.backdrop();
     widgets::card(
         ctx,
@@ -1425,15 +1430,19 @@ pub(super) fn column_card(
     add_contents: impl FnOnce(&mut egui::Ui),
 ) {
     let rect = rects.tools;
-    let scroll = rects.column_content > rect.height() + 0.5;
+    // The rail reaches into the bottom band, and its controls stay above it.
+    let content = rects.tools_content();
+    let scroll = rects.column_content > content.height() + 0.5;
     let inset = geometry::COLUMN_INSET;
     let gap = rects.column_gap.filter(|_| !scroll);
     let card_gap = gap.map(|g| egui::Rangef::new(g.min + inset, g.max - inset));
     widgets::split_edge_card(ctx, backdrop, "pad-tools", rect, card_gap, rects, |ui| {
-        let inner = ui.max_rect().shrink(geometry::COLUMN_INSET);
+        let mut inner = ui.max_rect();
+        inner.max.y = inner.max.y.min(content.bottom());
+        let inner = inner.shrink(geometry::COLUMN_INSET);
         let layout = egui::Layout::top_down(egui::Align::Min);
         let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
-        ui.set_clip_rect(rect.shrink2(vec2(0.0, geometry::COLUMN_INSET)));
+        ui.set_clip_rect(content.shrink2(vec2(0.0, geometry::COLUMN_INSET)));
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         widgets::with_cell_style(&mut ui, widgets::CellStyle::Icon, |ui| {
             if scroll {

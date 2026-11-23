@@ -908,21 +908,12 @@ fn show_sheet(
     let panel = state.pad.dock().panes[i].panel();
     let mut head = panel_head(state, panel);
     // In the row layout, the sheet is the floating card of the rows, grown
-    // up. Else it reaches the side edges and the bottom edge of the screen,
-    // with round top corners.
-    // On the outer screen of iPhone Duo, the camera is at the top right,
-    // and the left edge is the hinge, where the corners of the display are
-    // almost square.
-    let hinge =
-        rects.rail && (state.pad.camera).is_some_and(|c| c.center().x > rects.screen.center().x);
+    // up, and beside the rail it floats on the bottom line of the rail. Its
+    // bottom corners are concentric with the corners of the display. Else
+    // it reaches the side edges and the bottom edge of the screen, with
+    // round top corners.
     let radius = match rects.row || rects.rail {
-        true => egui::CornerRadius {
-            sw: match hinge {
-                true => theme::HINGE_RADIUS as u8,
-                false => theme::CARD_RADIUS as u8,
-            },
-            ..egui::CornerRadius::same(theme::CARD_RADIUS as u8)
-        },
+        true => rects.sheet_radius(),
         false => {
             let r = match widgets::is_glass(ctx) {
                 true => theme::SHEET_GLASS_RADIUS as u8,
@@ -961,12 +952,14 @@ fn show_sheet(
     // The content ends at the footer: the rows of the tools, below a line.
     // A sheet that rises from the card comes out from behind the line. A
     // sheet at the bottom of the screen keeps its rows out of the bottom
-    // band, and a sheet beside the rail ends `BAR_PAD` above its bottom.
+    // band, and a sheet beside the rail ends `BAR_PAD` above its bottom or
+    // above the bottom band.
     let at_bottom = rect.bottom() > rects.screen.bottom() - 0.5;
+    let band = rects.screen.bottom() - rects.bands.bottom;
     let end = match rects.footer {
         Some(f) => f.top() - 1.0,
         None if at_bottom => rect.bottom() - rects.bands.bottom.max(SHEET_FOOT),
-        None => rect.bottom() - geometry::BAR_PAD,
+        None => rect.bottom().min(band) - geometry::BAR_PAD,
     };
     let above = Rect::from_min_max(rect.min, pos2(rect.right(), end));
     let mut out = None;

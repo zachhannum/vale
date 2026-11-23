@@ -116,10 +116,11 @@ fn panel(h: &Pad, panel: Panel) -> Option<Rect> {
 fn sheet_panel(rects: &vale_app::ui::pad::geometry::Rects) -> Rect {
     let sheet = rects.sheet.expect("no sheet");
     // A sheet beside the rail has no footer, and its panel ends 8 points
-    // above its bottom.
+    // above its bottom or above the bottom band.
+    let band = rects.screen.bottom() - rects.bands.bottom;
     let end = match rects.footer {
         Some(footer) => footer.top() - 1.0,
-        None if rects.rail => sheet.bottom() - 8.0,
+        None if rects.rail => sheet.bottom().min(band) - 8.0,
         None => sheet.bottom(),
     };
     Rect::from_min_max(sheet.min, pos2(sheet.right(), end))
@@ -2355,11 +2356,14 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
             assert_eq!(sculpt.left(), grid.cell_left(0), "{what}");
             assert_eq!(sculpt.size(), vec2(44.0, 44.0), "{what}");
         } else if rects.rail {
-            // The rail stands at the right margin on the bottom band, with
-            // the six tools at its bottom.
-            assert_eq!(rects.tools.right(), size.0 - safe[1] - 16.0, "{what}");
-            assert_eq!(rects.tools.bottom(), size.1 - safe[2].max(20.0), "{what}");
-            let top = rects.tools.bottom() - 6.0 - 6.0 * 44.0;
+            // The rail stands at the right inset, with the six tools at
+            // its bottom, above the bottom band.
+            let inset = rects.inset;
+            assert_eq!(rects.tools.right(), size.0 - safe[1] - inset, "{what}");
+            assert_eq!(rects.tools.bottom(), size.1 - inset, "{what}");
+            let floor = (size.1 - safe[2].max(20.0)).min(size.1 - inset);
+            assert_eq!(rects.tools_content().bottom(), floor, "{what}");
+            let top = floor - 6.0 - 6.0 * 44.0;
             assert_eq!(control(&h, SCULPT).unwrap().top(), top, "{what}");
         } else {
             // The tool column has the six tools at its top, and below them
@@ -4890,16 +4894,16 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
         assert_eq!(r.class, WidthClass::Compact);
         assert_eq!(r.workspace.min, pos2(0.0, 28.0));
         assert!(r.workspace.right() < r.actions.left());
-        // From 450 points, the tools are a rail at the right margin, on the
-        // bottom band, and the actions card ends 8 points at its left.
-        // Below, the control row and the strip are one card at the
-        // margins, on the bottom band. There is no readout card, and the
+        // From 450 points, the tools are a rail at the right margin, 16
+        // points from the bottom edge, and the actions card ends 8 points
+        // at its left. Below, the control row and the strip are one card
+        // at the margins, 16 points from the bottom edge. There is no readout card, and the
         // View button is in the actions card.
         assert_eq!(r.rail, size.0 >= 450.0);
         if r.rail {
             let rail = r.tools;
             assert_eq!(rail.x_range(), (size.0 - 72.0)..=(size.0 - 16.0));
-            assert_eq!(rail.bottom(), 814.0);
+            assert_eq!(rail.bottom(), 818.0);
             assert_eq!(r.actions.right(), rail.left() - 8.0);
             assert!(rail.contains_rect(control(&h, "Brush settings").unwrap()));
             assert!(rail.contains_rect(control(&h, SCULPT).unwrap()));
@@ -4909,7 +4913,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
             let bar = r.bar.unwrap();
             assert_eq!(
                 bar,
-                Rect::from_min_max(pos2(16.0, bar.top()), pos2(size.0 - 16.0, 814.0))
+                Rect::from_min_max(pos2(16.0, bar.top()), pos2(size.0 - 16.0, 818.0))
             );
             assert!(bar.contains_rect(control(&h, "Brush settings").unwrap()));
             assert!(bar.contains_rect(control(&h, SCULPT).unwrap()));
@@ -4976,7 +4980,7 @@ fn the_top_row_and_the_panels_match_the_split_view_boards() {
             }
         };
         assert_eq!(panel(&h, Panel::Layers), Some(sheet));
-        assert_eq!(r.sheet.unwrap().bottom(), 814.0);
+        assert_eq!(r.sheet.unwrap().bottom(), 818.0);
         assert_eq!(r.readout, None);
         toolbox(&mut h);
         assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
@@ -5004,10 +5008,12 @@ fn beside_the_rail_the_tool_cells_keep_their_place_in_each_place_of_the_sheet() 
         assert_eq!(cells(&h), before, "{offset}");
         check_controls(&h, &format!("sheet at {offset}"));
     }
-    // At its title row, the sheet is its title row, 8 points above its
-    // bottom. A test has no glass, so the sheet has no grabber space.
-    let sheet = h.state().pad.rects.unwrap().sheet.unwrap();
-    assert_eq!(sheet.top(), sheet.bottom() - 8.0 - 52.0);
+    // At its title row, the sheet is its title row, 8 points above the
+    // bottom band. A test has no glass, so the sheet has no grabber space.
+    let r = h.state().pad.rects.unwrap();
+    let band = r.screen.bottom() - r.bands.bottom;
+    let sheet = r.sheet.unwrap();
+    assert_eq!(sheet.top(), sheet.bottom().min(band) - 8.0 - 52.0);
     toolbox(&mut h);
     h.state_mut().pad.close(Panel::Toolbox);
     h.run_steps(30);
@@ -16259,6 +16265,9 @@ fn phone_pad() -> Pad {
 
 /// The top of the bottom band of an iPhone 16 in portrait.
 const PHONE_BOTTOM: f32 = 852.0 - 34.0;
+/// The bottom of the floating card of the tools of an iPhone 16 in
+/// portrait: 16 points from the bottom edge.
+const PHONE_CARD_BOTTOM: f32 = 852.0 - 16.0;
 
 /// The names of the cells of the tool strip.
 const STRIP: [&str; 6] = [SCULPT, TERRAIN, VECTOR, select::TOOL, "Pan", MEASURE];
@@ -16358,12 +16367,12 @@ fn a_drag_along_a_slider_of_the_row_moves_its_value() {
 fn on_an_iphone_the_rows_are_one_card_and_the_scale_is_on_the_canvas() {
     let h = phone_pad();
     let rects = h.state().pad.rects.unwrap();
-    // The control row and the strip are in one card at the margins, on the
-    // bottom band.
+    // The control row and the strip are in one card at the margins, 16
+    // points from the bottom edge.
     let bar = rects.bar.unwrap();
     assert_eq!(
         (bar.left(), bar.right(), bar.bottom()),
-        (16.0, 377.0, PHONE_BOTTOM)
+        (16.0, 377.0, PHONE_CARD_BOTTOM)
     );
     let card = rects.brush.unwrap();
     assert!(card.bottom() <= rects.tools.top() + 8.0);
@@ -16438,7 +16447,7 @@ fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
     let rects = h.state().pad.rects.unwrap();
     let footer = rects.footer.unwrap();
     assert_eq!(half.bottom(), footer.top() - 1.0);
-    assert_eq!(rects.sheet.unwrap().bottom(), PHONE_BOTTOM);
+    assert_eq!(rects.sheet.unwrap().bottom(), PHONE_CARD_BOTTOM);
     assert_eq!((rects.tools, rects.brush), (rows.tools, rows.brush));
     assert!(control(&h, SCULPT).unwrap().top() >= half.bottom());
     assert!(rects.readout.is_none());
@@ -18116,9 +18125,10 @@ fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
                 assert!(rects.rail && !rects.row, "{what}");
                 let rail = rects.tools;
                 assert_eq!(sheet.top(), screen.height() / 2.0, "{what}");
-                assert_eq!(sheet.bottom(), screen.bottom() - bottom, "{what}");
+                assert_eq!(sheet.bottom(), screen.bottom() - 22.0, "{what}");
+                assert!(rects.tools_content().bottom() <= screen.bottom() - bottom);
                 assert_eq!(rail.bottom(), sheet.bottom(), "{what}");
-                assert_eq!(rail.right(), screen.right() - right - 16.0, "{what}");
+                assert_eq!(rail.right(), screen.right() - right - 22.0, "{what}");
                 assert_eq!(sheet.right(), rail.left() - 8.0, "{what}");
                 assert_eq!((rects.footer, rects.bar), (None, None), "{what}");
                 assert!(rail.contains_rect(control(&h, "Pan").unwrap()), "{what}");
@@ -18565,7 +18575,8 @@ fn the_outer_screen_of_iphone_duo_keeps_the_controls_off_the_camera() {
                 // bottom band.
                 let sheet = rects.sheet.expect(&what);
                 assert_eq!(sheet.top(), size.1 / 2.0, "{what}");
-                assert_eq!(sheet.bottom(), size.1 - bottom, "{what}");
+                assert_eq!(sheet.bottom(), size.1 - 22.0, "{what}");
+                assert_eq!(rects.tools_content().bottom(), size.1 - bottom, "{what}");
                 assert_eq!(sheet.right(), rail.left() - 8.0, "{what}");
                 assert_eq!(rail.bottom(), sheet.bottom(), "{what}");
             } else {
