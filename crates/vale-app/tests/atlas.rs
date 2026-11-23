@@ -262,11 +262,11 @@ fn double_tap(h: &mut Pad, pos: Pos2, input: Input) {
     h.run_steps(3);
 }
 
-/// Pulls an open sheet of the row layout up to its full height, so more of
-/// its panel shows.
+/// Pulls an open sheet of a compact screen up to its full height, so more
+/// of its panel shows.
 fn raise_sheet(h: &mut Pad) {
     let rects = h.state().pad.rects.unwrap();
-    if rects.row && rects.sheet.is_some() {
+    if rects.top_overlay() && rects.sheet.is_some() {
         h.state_mut().pad.sheet_offset = -rects.sheet_rise;
         h.run_steps(2);
     }
@@ -312,7 +312,7 @@ fn show_tab(h: &mut Pad, name: &str) {
     let name = if i == Some(0) { PROPERTIES } else { name };
     // The sheet of a compact screen shows one panel, and its tile opens
     // another.
-    if h.state().pad.rects.is_some_and(|r| r.row) {
+    if h.state().pad.rects.is_some_and(|r| r.top_overlay()) {
         if !h.state().pad.dock().shows(panel) {
             open_panel(h, name);
         }
@@ -1507,7 +1507,7 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         check_controls(&h, "frame tab");
-        if h.state().pad.rects.unwrap().row {
+        if h.state().pad.rects.unwrap().top_overlay() {
             // The sheet of a compact screen shows one panel, with no tabs.
             let dock = h.state().pad.dock();
             assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
@@ -9305,11 +9305,16 @@ fn the_top_row_has_undo_redo_the_panels_button_and_the_dock_button() {
         let redo = h.state().pad.rects.unwrap().actions.left() + inset + 48.0;
         let panels = x(PANELS).unwrap_or_else(|| panic!("{size:?}"));
         // The Dock button is at the right end of the screen, and on a phone,
-        // which has no Dock button, the Panels button is.
+        // which has no Dock button, the Panels button is. Beside the rail,
+        // the card ends 8 points at the left of the column of the rail.
         let rects = h.state().pad.rects.unwrap();
-        assert_eq!(rects.actions.right(), size.0, "{size:?}");
+        let end = match rects.rail {
+            true => rects.tools.left() - 8.0,
+            false => size.0,
+        };
+        assert_eq!(rects.actions.right(), end, "{size:?}");
         let last = if compact { panels } else { panels + 48.0 };
-        assert_eq!(last + 44.0 + inset, size.0, "{size:?}");
+        assert_eq!(last + 44.0 + inset, end, "{size:?}");
         // The top row adds no frame and no item of furniture.
         assert!(control(&h, "Add").is_none(), "{size:?}");
         // Undo, Redo, a line, and then the Panels button, as in the World
@@ -12081,6 +12086,35 @@ fn iphone_pad() -> Pad {
 }
 
 #[test]
+fn in_split_view_the_page_and_its_card_are_at_the_left_of_the_rail() {
+    // Split View on the inner screen of iPhone Duo in landscape.
+    let mut h = pad_with(state(), (475.0, 669.0));
+    let insets = egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 0.0,
+        bottom: 34.0,
+    };
+    h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
+    h.state_mut().atlas.selection = AtlasSelection::None;
+    h.run_steps(3);
+    let rects = h.state().pad.rects.unwrap();
+    assert!(rects.rail && !rects.row);
+    let rail = rects.tools;
+    assert_eq!((rail.right(), rail.bottom()), (475.0 - 16.0, 669.0 - 34.0));
+    // The page ends at the left of the rail, and the page card is at the
+    // middle of the page, below the top row.
+    let page = place(&h).rect;
+    assert!(page.right() <= rail.left(), "{page:?} {rail:?}");
+    let previous = control(&h, PREVIOUS_PAGE);
+    let name = control(&h, vale_app::ui::pad::atlas::OPEN_PAGES).unwrap();
+    assert!(previous.is_none());
+    assert!(name.bottom() < page.top(), "{name:?}");
+    assert!(name.right() < rail.left(), "{name:?}");
+    check_controls(&h, "split view atlas");
+}
+
+#[test]
 fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at_the_bottom() {
     let mut h = iphone_pad();
     let ((width, height), [_, _, bottom, _]) = IPHONE;
@@ -12682,7 +12716,7 @@ fn the_page_pill_turns_the_pages_and_its_name_opens_the_pages_panel() {
         let page = place(&h).rect;
         assert_eq!(name.top(), next.top(), "{what}");
         let r = h.state().pad.rects.unwrap();
-        if r.row {
+        if r.top_overlay() {
             assert!(name.bottom() < page.top(), "{what}");
             assert_eq!(name.top(), r.column_top + 4.0, "{what}");
             assert_eq!(r.readout, None, "{what}");

@@ -80,7 +80,7 @@ pub(super) fn readout(
     pad.place_rect = None;
     // A compact screen has the View button in the top row, and the scale
     // is an overlay below the top row.
-    if rects.row {
+    if rects.top_overlay() {
         scale_overlay(ctx, state, rects);
         return;
     }
@@ -392,7 +392,7 @@ pub(super) fn view_menu(
     let screen = rects.screen.shrink(geometry::PANEL_GAP);
     // On a compact screen, the popover is below the top row, at the right
     // end of the actions card, as wide as the margins allow.
-    let menu = if rects.row {
+    let menu = if rects.top_overlay() {
         let left = rects.screen.left() + rects.bands.left + geometry::MARGIN;
         let width = VIEW_MENU_WIDTH.min(rects.actions.right() - left);
         let top = rects.actions.bottom() + geometry::GAP;

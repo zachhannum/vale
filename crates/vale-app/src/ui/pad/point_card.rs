@@ -46,7 +46,11 @@ pub fn show(
     rects: &Rects,
 ) -> Rect {
     let min = rects.dock.min;
-    let right = rects.screen.right() - rects.bands.right - MARGIN;
+    // Beside the rail, the card ends 8 points at the left of the rail.
+    let right = match rects.rail {
+        true => rects.tools.left() - super::geometry::ROW_GAP,
+        false => rects.screen.right() - rects.bands.right - MARGIN,
+    };
     // Before the first frame of the card, the height comes from the count
     // of the fields.
     let fields = state.selection_form.as_ref().map_or(0, |f| f.fields.len());

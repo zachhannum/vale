@@ -910,7 +910,7 @@ fn show_sheet(
     // In the row layout, the sheet is the floating card of the rows, grown
     // up. Else it reaches the side edges and the bottom edge of the screen,
     // with round top corners.
-    let radius = match rects.row {
+    let radius = match rects.row || rects.rail {
         true => egui::CornerRadius::same(theme::CARD_RADIUS as u8),
         false => {
             let r = match widgets::is_glass(ctx) {
@@ -930,8 +930,14 @@ fn show_sheet(
     // The buttons of the header of a floating sheet are on the columns of
     // the cells of the footer. A sheet at the screen edges keeps clear of
     // its round corners, at the margin of the cards of the top row.
-    let inner = match (rects.row, widgets::is_glass(ctx)) {
-        (true, _) => inner.shrink2(vec2(SHEET_ROW_OUT, 0.0)),
+    // Beside the rail, the buttons of the header are 8 points inside the
+    // sheet, and the rows reach `BAR_CELL_INSET` past the header.
+    let (header_in, row_out) = match rects.rail {
+        true => (theme::ROW_INSET - PAD, geometry::BAR_CELL_INSET),
+        false => (SHEET_ROW_OUT, SHEET_ROW_OUT),
+    };
+    let inner = match (rects.row || rects.rail, widgets::is_glass(ctx)) {
+        (true, _) => inner.shrink2(vec2(header_in, 0.0)),
         (false, true) => inner.shrink2(vec2(SHEET_GLASS_PAD, 0.0)),
         (false, false) => inner,
     };
@@ -943,13 +949,14 @@ fn show_sheet(
     };
     // The content ends at the footer: the rows of the tools, below a line.
     // A sheet that rises from the card comes out from behind the line. A
-    // sheet with no footer reaches the bottom of the screen and keeps its
-    // rows out of the bottom band.
-    let end = rects
-        .footer
-        .map_or(rect.bottom() - rects.bands.bottom.max(SHEET_FOOT), |f| {
-            f.top() - 1.0
-        });
+    // sheet at the bottom of the screen keeps its rows out of the bottom
+    // band, and a sheet beside the rail ends `BAR_PAD` above its bottom.
+    let at_bottom = rect.bottom() > rects.screen.bottom() - 0.5;
+    let end = match rects.footer {
+        Some(f) => f.top() - 1.0,
+        None if at_bottom => rect.bottom() - rects.bands.bottom.max(SHEET_FOOT),
+        None => rect.bottom() - geometry::BAR_PAD,
+    };
     let above = Rect::from_min_max(rect.min, pos2(rect.right(), end));
     let mut out = None;
     widgets::card(
@@ -961,12 +968,10 @@ fn show_sheet(
         radius,
         |ui| {
             paint_grabber(ui, rect, above);
-            // The rows of the body reach `SHEET_ROW_OUT` past the header,
-            // so the highlight of a row starts on the line of the first
-            // button of the header.
+            // The rows of the body reach `row_out` past the header.
             let body = Rect::from_min_max(
-                pos2(inner.left() - SHEET_ROW_OUT, inner.top()),
-                pos2(inner.right() + SHEET_ROW_OUT, end),
+                pos2(inner.left() - row_out, inner.top()),
+                pos2(inner.right() + row_out, end),
             );
             let mut child = ui.new_child(
                 egui::UiBuilder::new()
@@ -974,8 +979,9 @@ fn show_sheet(
                     .layout(egui::Layout::top_down(egui::Align::Min)),
             );
             child.set_clip_rect(above);
+            let header = Rect::from_min_size(inner.min, vec2(inner.width(), ROW));
             out = Some(pane_in_sheet(
-                &mut child, state, controls, rects, i, &mut head, body,
+                &mut child, state, controls, rects, i, &mut head, header, body,
             ));
             if let Some(footer_rect) = rects.footer {
                 paint_footer_line(ui, rect, footer_rect);
@@ -1017,13 +1023,20 @@ fn paint_footer_line(ui: &egui::Ui, rect: Rect, footer: Rect) {
 }
 
 /// The grabber and the footer line of a sheet with no panel, as it closes
-/// down to the floating card `footer`.
-pub(super) fn sheet_chrome(ui: &egui::Ui, rect: Rect, footer: Rect) {
-    let above = Rect::from_min_max(rect.min, pos2(rect.right(), footer.top() - 1.0));
-    paint_grabber(ui, rect, above);
-    paint_footer_line(ui, rect, footer);
+/// down to the floating card `footer`, or beside the rail to its title row.
+pub(super) fn sheet_chrome(ui: &egui::Ui, rect: Rect, footer: Option<Rect>) {
+    let end = footer.map_or(rect.bottom(), |f| f.top() - 1.0);
+    paint_grabber(
+        ui,
+        rect,
+        Rect::from_min_max(rect.min, pos2(rect.right(), end)),
+    );
+    if let Some(footer) = footer {
+        paint_footer_line(ui, rect, footer);
+    }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn pane_in_sheet(
     ui: &mut egui::Ui,
     state: &mut AppState,
@@ -1031,13 +1044,10 @@ fn pane_in_sheet(
     rects: &Rects,
     i: usize,
     head: &mut Head,
+    header: Rect,
     body: Rect,
 ) -> HeaderOut {
     ui.spacing_mut().item_spacing.y = 0.0;
-    let header = Rect::from_min_size(
-        body.min + vec2(SHEET_ROW_OUT, 0.0),
-        vec2(body.width() - 2.0 * SHEET_ROW_OUT, ROW),
-    );
     let out = header_row(ui, state, controls, i, head, header, Mode::Sheet, true);
     ui.advance_cursor_after_rect(header);
     let low = state.pad.sheet_offset > -rects.sheet_rise + 0.5;

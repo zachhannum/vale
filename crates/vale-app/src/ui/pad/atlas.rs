@@ -261,6 +261,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let closing = super::closing_sheet(&ctx, &input, &rects);
         super::bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
+        super::rail_closing(&ctx, state, super::closing_sheet(&ctx, &input, &rects));
         tool_column(&ctx, state, &mut controls, &rects, measuring);
     }
     // A button above can open or close a panel. The panels use the new
@@ -361,7 +362,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     let mut free = page_space(&rects);
     // In the row layout, the page is at the top of the space, so a sheet
     // covers only its lower part.
-    if rects.row {
+    if rects.top_overlay() {
         let page = atlas::open_page(state);
         let height = free.width() * (page.height_mm / page.width_mm) as f32;
         free.max.y = free.max.y.min(free.top() + height);
@@ -380,11 +381,13 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// width, whether the dock shows or not, so the page does not move with
 /// the dock.
 fn page_space(rects: &Rects) -> Rect {
-    let left = match rects.row {
+    let left = match rects.top_overlay() {
         true => rects.screen.left() + rects.bands.left + MARGIN,
         false => rects.tools.right() + GAP,
     };
     let right = match rects.class {
+        // The page ends at the left of the rail.
+        WidthClass::Compact if rects.rail => rects.tools.left() - GAP,
         WidthClass::Compact => rects.screen.right() - rects.bands.right - MARGIN,
         // The page leaves room for the dock and its width handle.
         _ => {
@@ -396,7 +399,7 @@ fn page_space(rects: &Rects) -> Rect {
         .readout
         .map_or(rects.panel_bottom, |r| r.bottom() - ROW - GAP);
     // On a compact screen, the page pill is below the top row.
-    let top = match rects.row {
+    let top = match rects.top_overlay() {
         true => rects.column_top + ROW + GAP,
         false => rects.column_top,
     };
@@ -809,16 +812,26 @@ fn tool_column(
     let context = rects.column_context;
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
+    // In the rail, the controls of the tool are above the tools.
     super::column_card(ctx, backdrop, rects, |ui| {
-        tool_cells(ui, state, controls);
-        if !context {
-            return;
+        if !rects.rail {
+            tool_cells(ui, state, controls);
         }
-        super::column_divider(ui);
-        if measuring {
-            super::measure_cells(ui, state, controls);
-        } else {
-            selectable_cell = frame_cells(ui, state, controls);
+        if context {
+            if !rects.rail {
+                super::column_divider(ui);
+            }
+            if measuring {
+                super::measure_cells(ui, state, controls);
+            } else {
+                selectable_cell = frame_cells(ui, state, controls);
+            }
+            if rects.rail {
+                super::column_divider(ui);
+            }
+        }
+        if rects.rail {
+            tool_cells(ui, state, controls);
         }
     });
     selectable_menu(ctx, state, controls, rects, selectable_cell);
@@ -844,8 +857,9 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     let pages = 2.0 * TOUCH + name + 2.0 * TAB_PAD + 2.0 * PAD;
     // On a compact screen, the pill is centered below the top row, and
     // the result of the Measure tool is an overlay below it.
-    let (rect, extra) = if rects.row {
-        let center = geometry::canvas_part(rects.screen, rects.fold).center().x;
+    let (rect, extra) = if rects.top_overlay() {
+        // The pill is centered over the space of the page.
+        let center = page_space(rects).center().x;
         let rect = Rect::from_min_size(
             pos2(center - pages / 2.0, rects.column_top),
             vec2(pages, ROW),

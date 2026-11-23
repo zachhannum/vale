@@ -309,6 +309,14 @@ pub fn tooltip(
         Place::Strip if rects.row => {
             centered(rects.bar.unwrap_or(rects.tools).top() - TIP_GAP - size.y)
         }
+        // The tooltip of a cell of the rail is at the left of the rail.
+        Place::Strip if rects.rail => {
+            let min = pos2(
+                rects.tools.left() - TIP_GAP - size.x,
+                tip.cell.center().y - size.y / 2.0,
+            );
+            Rect::from_min_size(min, size)
+        }
         Place::Strip => {
             let min = pos2(
                 rects.tools.right() + TIP_GAP,
@@ -405,7 +413,12 @@ pub fn show(
             .top()
             .min(rects.panel_bottom - size.y)
             .max(rects.tools.top());
-        Rect::from_min_size(pos2(rects.tools.right() + geometry::GAP, top), size)
+        // The list of a cell of the rail is at the left of the rail.
+        let x = match rects.rail {
+            true => rects.tools.left() - geometry::GAP - size.x,
+            false => rects.tools.right() + geometry::GAP,
+        };
+        Rect::from_min_size(pos2(x, top), size)
     };
     // On a partially folded device, the list is in the part of its cell,
     // and it scrolls if it does not fit.

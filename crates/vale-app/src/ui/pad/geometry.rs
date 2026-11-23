@@ -62,6 +62,13 @@ pub const TRACK: f32 = 120.0;
 /// Below this length, the sliders lose their value and their name, and
 /// then the Brush panel holds them.
 pub const TRACK_MIN: f32 = 90.0;
+/// The shortest track of a bare slider of the rail. The bubble of a drag
+/// shows the value, so the track can be short.
+pub const RAIL_TRACK_MIN: f32 = 64.0;
+/// The space above and below the track of a bare slider of the rail, in
+/// all. The track of the first slider then ends 14 points from the end of
+/// the capsule: the radius of the capsule less the radius of the track.
+pub const RAIL_SLIDER_GAP: f32 = 16.0;
 /// The space of a vertical slider of the tool column with no value and no
 /// name, above and below its track.
 pub const SLIDER_GAP: f32 = 8.0;
@@ -252,6 +259,10 @@ pub struct Input {
 /// The space at the top of a glass sheet that holds its grabber, above the
 /// title row.
 pub const GRABBER_SPACE: f32 = 10.0;
+/// A compact screen of this width or more has the tool rail: the tool
+/// column as a floating capsule at the right margin, on the bottom band.
+/// The sheet is beside it. A narrower screen has the rows.
+pub const RAIL_FROM: f32 = 450.0;
 
 /// The space between the highlight of a cell, or the track of a slider,
 /// and the edge of the floating card of the rows, on each side. It is also
@@ -415,6 +426,9 @@ pub struct Rects {
     pub sheet_closed: f32,
     /// The tool strip and its card are rows at the bottom.
     pub row: bool,
+    /// The tool column is a floating rail at the right margin, on the bottom
+    /// band, and the sheet is beside it.
+    pub rail: bool,
     /// The top of the space below the top row.
     pub column_top: f32,
     /// The place of the readout at the lower left of the canvas: the card
@@ -429,6 +443,14 @@ pub struct Rects {
     /// fold to `COLUMN_INSET` below the end of the card at the fold. A
     /// control that would be in it is below it.
     pub column_gap: Option<Rangef>,
+}
+
+impl Rects {
+    /// On a compact screen, the View button is in the top row and the
+    /// scale is an overlay below it: in the row layout and the rail layout.
+    pub fn top_overlay(&self) -> bool {
+        self.row || self.rail
+    }
 }
 
 /// True if the fold is a horizontal band: the hinge of the inner screen of
@@ -648,7 +670,16 @@ pub fn layout(input: &Input) -> Rects {
         }
     }
 
-    let row = input.row && class == WidthClass::Compact;
+    let row = input.row && class == WidthClass::Compact && screen.width() < RAIL_FROM;
+    let rail = class == WidthClass::Compact && !row;
+    // The rail stands in the column at the right margin. The actions card
+    // ends `ROW_GAP` at the left of that column, so the right edge is one
+    // column: the camera, then the rail.
+    let rail_left = right - COLUMN;
+    if rail {
+        let end = actions.right().min(rail_left - ROW_GAP);
+        actions = Rect::from_min_size(pos2(end - actions_width, top), vec2(actions_width, ROW));
+    }
     if row {
         let rows = Rows {
             input,
@@ -722,6 +753,7 @@ pub fn layout(input: &Input) -> Rects {
             sheet_rise,
             sheet_closed,
             row,
+            rail: false,
             column_top,
             readout,
             column_context: false,
@@ -729,31 +761,20 @@ pub fn layout(input: &Input) -> Rects {
             column_gap: None,
         };
     }
-    // Outside the row layout, a compact screen has the sheet at the bottom
-    // edge.
-    let (sheet, sheet_travel, sheet_rise) = if class == WidthClass::Compact {
-        let full = screen.bottom() - column_top;
-        let open = if screen.height() < SHORT_SCREEN {
-            screen.height() / 2.0
-        } else {
-            SHEET_HEIGHT
-        };
-        let height = open.min(full);
-        let grabber = if input.glass { GRABBER_SPACE } else { 0.0 };
-        let travel = (height - grabber - ROW - bands.bottom).max(0.0);
-        let rise = full - height;
-        let offset = input.sheet_offset.clamp(-rise, travel);
-        let sheet_top = screen.bottom() - height + offset;
-        let rect = Rect::from_min_max(pos2(screen.left(), sheet_top), screen.max);
-        (input.panel.then_some(rect), travel, rise)
-    } else {
-        (None, 0.0, 0.0)
-    };
-
     // The tool column: the tools, a divider, the cells and the sliders of
-    // the tool, and the Brush button. It ends above an open sheet.
-    let limit = sheet.map_or(bottom - DOCK_FOOT, |sheet| sheet.top() - GAP);
-    let room = limit - column_top;
+    // the tool, and the Brush button. The rail stands on the bottom band,
+    // and it can reach up to the top of the top row, or to `ROW_GAP` below
+    // a camera region in its column.
+    let in_column = |c: &Rect| c.right() > rail_left && c.left() < right && c.intersects(row_band);
+    let rail_top = match input.camera.filter(in_column) {
+        Some(camera) if rail => top.max(camera.bottom() + ROW_GAP),
+        _ => top,
+    };
+    let room = if rail {
+        bottom - rail_top
+    } else {
+        bottom - DOCK_FOOT - column_top
+    };
     let c = input.column;
     let context = c.cells > 0 || c.sliders > 0 || c.brush_button;
     let fixed = 2.0 * COLUMN_INSET
@@ -768,19 +789,29 @@ pub fn layout(input: &Input) -> Rects {
     let fits = |slider: f32| column_height(column_top, &c, slider, gap).0 <= room;
     // The length of the tracks of sliders with `space` above and below
     // each track. Zero: the sliders do not fit.
+    let track_min = if rail { RAIL_TRACK_MIN } else { TRACK_MIN };
     let track = |space: f32| {
-        let mut track = ((room - fixed) / c.sliders as f32 - space).min(TRACK);
-        while gap.is_some() && track >= TRACK_MIN && !fits(track + space) {
+        let fill = (room - fixed) / c.sliders as f32 - space;
+        let mut track = fill.min(TRACK);
+        // A rail that reaches up beside the top row reaches its top, so
+        // its top is on the line of the top row or of the camera region.
+        if rail && fixed + c.sliders as f32 * (track + space) > bottom - column_top {
+            track = fill;
+        }
+        while gap.is_some() && track >= track_min && !fits(track + space) {
             track -= 1.0;
         }
-        if track >= TRACK_MIN { track } else { 0.0 }
+        if track >= track_min { track } else { 0.0 }
     };
     // The sliders become shorter, then they lose their value and their
-    // name, and then the Brush panel holds them.
+    // name, and then the Brush panel holds them. The sliders of the rail
+    // have no value and no name.
     let (slider, space) = if c.sliders == 0 {
         (0.0, 0.0)
-    } else if track(SLIDER_TEXT) > 0.0 {
+    } else if !rail && track(SLIDER_TEXT) > 0.0 {
         (track(SLIDER_TEXT), SLIDER_TEXT)
+    } else if rail {
+        (track(RAIL_SLIDER_GAP), RAIL_SLIDER_GAP)
     } else {
         (track(SLIDER_GAP), SLIDER_GAP)
     };
@@ -803,10 +834,48 @@ pub fn layout(input: &Input) -> Rects {
     let height = column_content
         .min(room)
         .max(COLUMN_CELL + 2.0 * COLUMN_INSET);
-    let tools = Rect::from_min_size(
-        pos2(screen.left(), column_top),
-        vec2(bands.left + COLUMN, height),
-    );
+    // The rail is a floating capsule at the right margin that grows up
+    // from the bottom band, so the tool cells at its bottom never move.
+    let tools = if rail {
+        Rect::from_min_max(pos2(rail_left, bottom - height), pos2(right, bottom))
+    } else {
+        Rect::from_min_size(
+            pos2(screen.left(), column_top),
+            vec2(bands.left + COLUMN, height),
+        )
+    };
+    // The sheet of the rail layout is beside the rail, from the left margin
+    // to `ROW_GAP` at the left of the rail, on the same bottom line. It opens at
+    // about half the height of the screen, rises to below the top row,
+    // and goes down to its title row.
+    let (sheet, sheet_travel, sheet_rise) = if rail {
+        let top_full = column_top;
+        let top_half = match screen.height() < SHORT_SCREEN {
+            true => screen.bottom() - screen.height() / 2.0,
+            false => screen.bottom() - SHEET_HEIGHT,
+        }
+        .max(top_full);
+        let grabber = if input.glass { GRABBER_SPACE } else { 0.0 };
+        let top_title = bottom - BAR_PAD - ROW - grabber;
+        let rise = top_half - top_full;
+        let travel = (top_title - top_half).max(0.0);
+        let offset = input.sheet_offset.clamp(-rise, travel);
+        // The keyboard of the system covers the bottom, and a sheet then
+        // reaches the bottom of the screen.
+        let floor = match input.keyboard {
+            true => screen.bottom(),
+            false => bottom,
+        };
+        let sheet = input.panel.then(|| {
+            Rect::from_min_max(
+                pos2(left, top_half + offset),
+                pos2(tools.left() - ROW_GAP, floor),
+            )
+        });
+        (sheet, travel, rise)
+    } else {
+        (None, 0.0, 0.0)
+    };
     let brush_card = if slider == 0.0 {
         BrushCard::Button
     } else if space == SLIDER_TEXT {
@@ -814,7 +883,7 @@ pub fn layout(input: &Input) -> Rects {
     } else {
         BrushCard::Bare(slider)
     };
-    let column_right = tools.right() + GAP;
+    let column_right = if rail { left } else { tools.right() + GAP };
 
     // The dock touches the right edge, and it leaves the left column free.
     // In landscape, it is in the part at the right of the fold.
@@ -824,6 +893,11 @@ pub fn layout(input: &Input) -> Rects {
     }
     let width = (input.dock_width + bands.right).min(most);
     let dock = match class {
+        // In the rail layout, the room of a card is at the left of the rail.
+        WidthClass::Compact if rail => Rect::from_min_max(
+            pos2(left, column_top),
+            pos2(tools.left() - GAP, bottom - DOCK_FOOT),
+        ),
         WidthClass::Compact => Rect::from_min_max(
             pos2((right - input.dock_width).max(column_right), column_top),
             pos2(right, bottom - DOCK_FOOT),
@@ -842,8 +916,8 @@ pub fn layout(input: &Input) -> Rects {
         dock.max.y = (f.top() - FOLD_GAP).max(dock.top() + ROW);
     }
     // The readout is at the lower left of the canvas, at the right of the
-    // tool column. An open sheet covers it.
-    let readout = sheet.is_none().then(|| {
+    // tool column. A compact screen has no readout card.
+    let readout = (!rail).then(|| {
         Rect::from_min_max(
             pos2(
                 tools.right() + READOUT_GAP,
@@ -884,6 +958,7 @@ pub fn layout(input: &Input) -> Rects {
         sheet_rise,
         sheet_closed: sheet_travel,
         row,
+        rail,
         column_top,
         readout,
         column_context: context,
@@ -1114,30 +1189,88 @@ mod tests {
     fn the_half_board_has_the_measured_places() {
         let r = layout(&board(597.0, 834.0));
         assert_eq!(r.class, WidthClass::Compact);
+        assert!(r.rail && !r.row);
         assert_eq!(r.menu, pos2(16.0, 84.0));
-        assert_eq!(r.tools.min, pos2(0.0, 92.0));
-        let readout = r.readout.unwrap();
-        assert_eq!((readout.left(), readout.bottom()), (72.0, 806.0));
+        // The rail is a capsule at the right margin, on the bottom band,
+        // with bare sliders of the full length.
+        assert_eq!(r.tools, rect(525.0, 209.0, COLUMN, 605.0));
+        assert_eq!(r.actions.right(), 525.0 - ROW_GAP);
+        assert_eq!(r.brush_card, BrushCard::Bare(TRACK));
+        assert_eq!(r.readout, None);
     }
 
     #[test]
-    fn the_narrow_board_shows_a_panel_as_a_sheet() {
-        let mut input = board(375.0, 834.0);
+    fn the_narrow_board_shows_a_panel_as_a_sheet_beside_the_rail() {
+        let mut input = board(475.0, 834.0);
         input.panel = true;
+        input.glass = true;
         let r = layout(&input);
-        assert_eq!(r.sheet, Some(rect(0.0, 382.0, 375.0, 452.0)));
+        // The sheet is `ROW_GAP` at the left of the rail, and it shares
+        // the bottom line of the rail.
+        assert_eq!(r.sheet, Some(rect(16.0, 382.0, 379.0, 432.0)));
         assert_eq!(r.readout, None);
-        // The column ends above the open sheet, and it scrolls.
-        assert_eq!(r.tools.bottom(), 382.0 - GAP);
-        assert!(r.column_content > r.tools.height());
-        assert_eq!(r.brush_card, BrushCard::Button);
+        let rail = rect(403.0, 209.0, COLUMN, 605.0);
+        assert_eq!(r.tools, rail);
+        assert_eq!(r.brush_card, BrushCard::Bare(TRACK));
 
+        // The rail does not move with the sheet.
         input.sheet_offset = 1000.0;
         let r = layout(&input);
         let sheet = r.sheet.unwrap();
-        // The title row is above the bottom band.
-        assert_eq!(sheet.top(), 834.0 - 20.0 - 52.0);
-        assert_eq!(r.brush_card, BrushCard::Full(118.5));
+        assert_eq!(sheet.top(), 814.0 - BAR_PAD - ROW - GRABBER_SPACE);
+        assert_eq!(r.tools, rail);
+        input.sheet_offset = -1000.0;
+        let r = layout(&input);
+        assert_eq!(r.sheet.unwrap().top(), r.column_top);
+        assert_eq!(r.tools, rail);
+        // The keyboard covers the bottom, and the sheet reaches the bottom
+        // of the screen.
+        input.keyboard = true;
+        let r = layout(&input);
+        assert_eq!(r.sheet.unwrap().bottom(), 834.0);
+        assert_eq!(r.tools, rail);
+    }
+
+    #[test]
+    fn the_rail_starts_at_450_points_and_its_tool_cells_never_move() {
+        let mut narrow = board(449.0, 678.0);
+        narrow.row = true;
+        assert!(layout(&narrow).row);
+        // From 600 points, the medium layout has the tool column at the
+        // left edge.
+        for (width, rail) in [(599.0, true), (600.0, false)] {
+            let mut wide = board(width, 678.0);
+            wide.row = true;
+            let r = layout(&wide);
+            assert_eq!(r.rail, rail, "{width}");
+            assert!(!r.row, "{width}");
+            assert_eq!(r.tools.left() == 0.0, !rail, "{width}");
+        }
+        let mut input = board(450.0, 678.0);
+        input.row = true;
+        input.bands.bottom = 34.0;
+        let r = layout(&input);
+        assert!(r.rail && !r.row);
+        assert_eq!(r.tools.bottom(), 678.0 - 34.0);
+        assert_eq!(r.tools.right(), 450.0 - MARGIN);
+        // The rail reaches up beside the top row, so it reaches the top of
+        // the top row, and the tracks fill it.
+        assert_eq!(r.tools.top(), r.actions.top());
+        assert_eq!(r.brush_card, BrushCard::Bare(125.5));
+        // A panel and a tool with no controls do not move the bottom of
+        // the rail.
+        input.panel = true;
+        assert_eq!(layout(&input).tools.bottom(), r.tools.bottom());
+        input.column = ColumnInput {
+            tools: TOOLS,
+            ..Default::default()
+        };
+        let pan = layout(&input);
+        assert_eq!(pan.tools.bottom(), r.tools.bottom());
+        assert_eq!(
+            pan.tools.height(),
+            TOOLS as f32 * COLUMN_CELL + 2.0 * COLUMN_INSET
+        );
     }
 
     /// An iPhone 16 in portrait, with its safe area.
@@ -1338,7 +1471,7 @@ mod tests {
         input.panel = true;
         let r = layout(&input);
         assert_eq!(r.class, WidthClass::Compact);
-        assert_eq!(r.sheet, Some(rect(16.0, 334.5, 443.0, 300.5)));
+        assert_eq!(r.sheet, Some(rect(16.0, 334.5, 379.0, 300.5)));
     }
 
     #[test]
@@ -1514,7 +1647,7 @@ mod tests {
 
     #[test]
     fn the_chrome_touches_the_side_edges_and_sits_4_points_below_the_status_bar() {
-        for (width, height) in [(1194.0, 834.0), (834.0, 1194.0), (597.0, 834.0)] {
+        for (width, height) in [(1194.0, 834.0), (834.0, 1194.0)] {
             let r = layout(&board(width, height));
             let size = format!("{width}x{height}");
             assert_eq!(r.workspace.top(), Bands::MIN.top + TOP_GAP, "{size}");
@@ -1580,21 +1713,27 @@ mod tests {
         without.camera = None;
         let (r, before) = (layout(&input), layout(&without));
         assert_eq!(r.class, WidthClass::Compact);
-        assert_eq!(r.actions.right(), camera.left() - ROW_GAP);
+        // The rail is in the column of the camera, below it, and the
+        // actions card ends at the left of the column.
+        assert!(r.rail);
+        assert_eq!(r.tools.x_range(), (450.0 - COLUMN)..=450.0);
+        // Without the camera, the rail of the brush reaches the top of the
+        // top row. With it, the rail ends `ROW_GAP` below the region, and
+        // its tracks are shorter.
+        assert_eq!(before.tools.top(), before.actions.top());
+        assert_eq!(r.tools.top(), camera.bottom() + ROW_GAP);
+        assert_eq!(r.brush_card, BrushCard::Bare(116.0));
+        assert_eq!(r.tools.bottom(), before.tools.bottom());
+        assert_eq!(r.actions.right(), r.tools.left() - ROW_GAP);
         let inset = 2.0 * (BAR_CELL_INSET - PAD);
         assert_eq!(
             r.actions.size(),
             vec2(ACTIONS_WIDTH - BUTTON_STEP + inset, ROW)
         );
-        assert_eq!(r.actions.top(), before.actions.top());
+        assert_eq!(r.actions, before.actions);
+        assert_eq!(r.workspace, before.workspace);
         assert!(!r.actions.intersects(camera));
-        assert_eq!(
-            Rects {
-                actions: before.actions,
-                ..r
-            },
-            before
-        );
+        assert!(!r.tools.intersects(camera));
 
         // Landscape: the card of the world menu starts at the right of the
         // region.
@@ -1628,7 +1767,7 @@ mod tests {
         let mut input = duo_outer(true);
         input.panel = true;
         let r = layout(&input);
-        assert_eq!(r.sheet, Some(rect(16.0, 339.0, 434.0, 305.0)));
+        assert_eq!(r.sheet, Some(rect(16.0, 339.0, 370.0, 305.0)));
     }
 
     #[test]

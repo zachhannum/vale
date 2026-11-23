@@ -782,6 +782,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         let closing = closing_sheet(&ctx, &input, &rects);
         bottom_bar(&ctx, state, &mut controls, &rects, &mut footer, closing);
     } else {
+        rail_closing(&ctx, state, closing_sheet(&ctx, &input, &rects));
         tool_column(&ctx, state, &mut controls, &rects);
     }
     // A button above can open or close a panel. The panels use the new state.
@@ -1249,7 +1250,7 @@ pub(super) fn bottom_bar(
         radius,
         |ui| {
             if let Some(sheet) = closing {
-                dock_ui::sheet_chrome(ui, sheet, bar);
+                dock_ui::sheet_chrome(ui, sheet, Some(bar));
             }
             footer(ui, state, controls, rects);
         },
@@ -1266,10 +1267,32 @@ pub(super) fn bar_shown(ctx: &egui::Context) -> bool {
     pass == Some(ctx.cumulative_pass_nr())
 }
 
+/// The sheet beside the rail as it closes, with no panel, down to its
+/// title row.
+pub(super) fn rail_closing(ctx: &egui::Context, state: &AppState, closing: Option<Rect>) {
+    let Some(sheet) = closing else {
+        return;
+    };
+    let radius = egui::CornerRadius::same(theme::CARD_RADIUS as u8);
+    let backdrop = state.globe.backdrop();
+    widgets::card(
+        ctx,
+        backdrop,
+        "pad-sheet",
+        sheet,
+        Order::Middle,
+        radius,
+        |ui| {
+            dock_ui::sheet_chrome(ui, sheet, None);
+        },
+    );
+}
+
 /// The place of a sheet that closes. It follows the spring of the sheet
-/// down to the floating card of the rows. None if no sheet closes.
+/// down to the floating card of the rows, or beside the rail down to its
+/// title row. None if no sheet closes.
 pub(super) fn closing_sheet(ctx: &egui::Context, input: &Input, rects: &Rects) -> Option<Rect> {
-    if input.panel || rects.bar.is_none() {
+    if input.panel || (rects.bar.is_none() && !rects.rail) {
         return None;
     }
     let id = sheet_spring();
@@ -1443,12 +1466,21 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
     let mut selectable_cell = None;
     let backdrop = state.globe.backdrop();
     let context = rects.column_context;
+    // In the rail, the controls of the tool are above the tools, so the
+    // tool cells at the bottom never move.
     column_card(ctx, backdrop, rects, |ui| {
-        tool_cells(ui, state, controls);
+        if !rects.rail {
+            tool_cells(ui, state, controls);
+        }
         if !context {
+            if rects.rail {
+                tool_cells(ui, state, controls);
+            }
             return;
         }
-        column_divider(ui);
+        if !rects.rail {
+            column_divider(ui);
+        }
         if state.globe.vertexing() {
             vertex_cells(ui, state, controls);
         } else if state.globe.selecting() {
@@ -1459,7 +1491,10 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
         } else if has_strip(&state.globe) {
             let slide = match rects.brush_card {
                 BrushCard::Full(track) => Slide::Column(track),
-                BrushCard::Bare(track) => Slide::Bare(track),
+                BrushCard::Bare(track) if rects.rail => {
+                    Slide::Bare(track, geometry::RAIL_SLIDER_GAP)
+                }
+                BrushCard::Bare(track) => Slide::Bare(track, geometry::SLIDER_GAP),
                 _ => Slide::Column(0.0),
             };
             strip_controls(ui, state, controls, slide);
@@ -1467,6 +1502,10 @@ fn tool_column(ctx: &egui::Context, state: &mut AppState, controls: &mut Control
             brush_button(ui, state, controls);
         } else {
             deselect_cell(ui, state, controls);
+        }
+        if rects.rail {
+            column_divider(ui);
+            tool_cells(ui, state, controls);
         }
     });
     match merge_cell {
@@ -1651,8 +1690,8 @@ enum Slide {
     /// holds the sliders.
     Column(f32),
     /// The tool column, with tracks of this length and no values and no
-    /// names.
-    Bare(f32),
+    /// names, and this space above and below each track in all.
+    Bare(f32, f32),
 }
 
 /// The controls of the brush and of the vector tools. Each control shows
@@ -1670,12 +1709,7 @@ fn strip_controls(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Contro
                 number.vertical(ui, controls, track + geometry::SLIDER_TEXT)
             }
             Slide::Column(_) => None,
-            Slide::Bare(track) => number.vertical_bare(
-                ui,
-                controls,
-                track + geometry::SLIDER_GAP,
-                geometry::SLIDER_GAP,
-            ),
+            Slide::Bare(track, space) => number.vertical_bare(ui, controls, track + space, space),
         };
     let paint = state.globe.brushing();
     let line = state.globe.drawing();
@@ -1901,10 +1935,12 @@ fn merge_menu(
         Rect::from_min_size(pos2(left, cell.top() - 8.0 - height), vec2(width, height))
     } else {
         let top = cell.top().min(screen.bottom() - height).max(screen.top());
-        Rect::from_min_size(
-            pos2(cell.right() + 2.0 * PAD + 8.0, top),
-            vec2(width, height),
-        )
+        // The list of a cell of the rail is at the left of the cell.
+        let x = match rects.rail {
+            true => cell.left() - 2.0 * PAD - 8.0 - width,
+            false => cell.right() + 2.0 * PAD + 8.0,
+        };
+        Rect::from_min_size(pos2(x, top), vec2(width, height))
     };
     let rect = geometry::off_fold(rect, cell, rects.fold, screen);
     if choices.is_empty() || pressed.is_some_and(|p| !rect.contains(p) && !cell.contains(p)) {
