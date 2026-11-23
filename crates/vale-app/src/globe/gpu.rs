@@ -23,6 +23,7 @@ use super::compile::{Compiled, render_pipeline};
 use super::edges::{self, EdgePipelines, Edges};
 use super::flat::{FlatMesh, Vertex};
 use super::preview::{BandUniform, LineUniform};
+use crate::extent::{GpuExtent, TABLE_HEIGHT, TABLE_WIDTH};
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
@@ -230,6 +231,8 @@ pub enum Pass {
     /// The soft edge of the globe. The other passes have a hard edge, so
     /// the edge has the cover of one pass.
     Rim,
+    /// The shade outside the extent of a map.
+    Extent,
 }
 
 /// The uniform buffer of one pass, with its bind group.
@@ -288,6 +291,7 @@ struct Layouts {
     no_tiles: wgpu::PipelineLayout,
     with_image: wgpu::PipelineLayout,
     with_vtiles: wgpu::PipelineLayout,
+    with_extent: wgpu::PipelineLayout,
     composite: wgpu::PipelineLayout,
     vector: wgpu::BindGroupLayout,
     vector_group: wgpu::BindGroupLayout,
@@ -323,19 +327,20 @@ fn vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 }
 
 impl Layouts {
-    /// The module of `globe.wgsl`, with `edges.wgsl`, `image.wgsl`, and
-    /// `vtiles.wgsl`.
+    /// The module of `globe.wgsl`, with `edges.wgsl`, `image.wgsl`,
+    /// `vtiles.wgsl`, and `extent.wgsl`.
     fn shader(&self) -> wgpu::ShaderModule {
         self.device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("globe"),
                 source: wgpu::ShaderSource::Wgsl(
                     format!(
-                        "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}\n{}",
+                        "{TILES_WGSL}\n{FIELD_WGSL}\n{}\n{}\n{}\n{}\n{}",
                         include_str!("globe.wgsl"),
                         include_str!("edges.wgsl"),
                         include_str!("image.wgsl"),
-                        include_str!("vtiles.wgsl")
+                        include_str!("vtiles.wgsl"),
+                        include_str!("extent.wgsl")
                     )
                     .into(),
                 ),
@@ -507,6 +512,33 @@ impl Layouts {
                 "fs_flat_image_blend",
                 true,
                 true,
+            ),
+        ]
+    }
+
+    /// The passes of the shade outside an extent: on the globe and in the
+    /// flat view.
+    fn extents(&self) -> [wgpu::RenderPipeline; 2] {
+        let shader = self.shader();
+        let layout = &self.with_extent;
+        [
+            self.pipeline(
+                &shader,
+                "extent",
+                layout,
+                "vs_main",
+                "fs_extent",
+                false,
+                false,
+            ),
+            self.pipeline(
+                &shader,
+                "flat extent",
+                layout,
+                "vs_flat",
+                "fs_flat_extent",
+                true,
+                false,
             ),
         ]
     }
@@ -712,6 +744,10 @@ struct Resources {
     /// The page table of each vector layer that draws from tiles, with its
     /// bind group.
     vtile_pages: HashMap<LayerId, (wgpu::Texture, wgpu::BindGroup)>,
+    extent_pipelines: Compiled<[wgpu::RenderPipeline; 2]>,
+    extent_layout: wgpu::BindGroupLayout,
+    /// The extent that the globe shows.
+    extent: Option<ResidentExtent>,
     /// The passes of a mask: the value range of a raster mask, and the
     /// meshes of egui shapes in the target of a group.
     masks: Compiled<Masks>,
@@ -884,6 +920,26 @@ impl Resources {
             bind_group_layouts: &[Some(&layout), Some(&vtile_layout)],
             immediate_size: 0,
         });
+        // The bindings of `extent.wgsl`: the table and the frames.
+        let extent_texture = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let extent_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("extent"),
+            entries: &[extent_texture(10), extent_texture(11)],
+        });
+        let with_extent = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("extent"),
+            bind_group_layouts: &[Some(&layout), Some(&extent_layout)],
+            immediate_size: 0,
+        });
         let vtile_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("vtiles"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -944,6 +1000,7 @@ impl Resources {
             no_tiles,
             with_image,
             with_vtiles,
+            with_extent,
             composite,
             vector: vector_layout.clone(),
             vector_group: vector_group_layout.clone(),
@@ -956,6 +1013,7 @@ impl Resources {
         });
         let (blend_layouts, mask_layouts) = (layouts.clone(), layouts.clone());
         let vtile_layouts = layouts.clone();
+        let extent_layouts = layouts.clone();
         let empty = |label, layers, dimension| {
             let texture = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -989,6 +1047,9 @@ impl Resources {
             vtile_sampler,
             vtile_atlas: None,
             vtile_pages: HashMap::new(),
+            extent_pipelines: Compiled::lazy(move || extent_layouts.extents()),
+            extent_layout,
+            extent: None,
             masks: Compiled::lazy(move || mask_layouts.masks()),
             vector_layout,
             vector_group_layout,
@@ -1088,6 +1149,7 @@ impl Resources {
             Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
             Pass::VectorTiles(id) => frame.vector_tiles.contains(id),
             Pass::Ground | Pass::Graticule | Pass::Rim => true,
+            Pass::Extent => frame.extent.is_some(),
         };
         self.slots.retain(|(_, pass), _| live(pass));
         self.sync_vtiles(device, frame);
@@ -1214,6 +1276,85 @@ impl Resources {
                 },
             );
         }
+    }
+
+    /// Keeps the textures of the extent that the frame shows.
+    fn sync_extent(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        extent: Option<&GpuExtent>,
+    ) {
+        let Some(extent) = extent else {
+            self.extent = None;
+            return;
+        };
+        let same_table = (self.extent.as_ref())
+            .is_some_and(|resident| Arc::ptr_eq(&resident.source.table, &extent.table));
+        let fits =
+            (self.extent.as_ref()).is_some_and(|resident| resident.capacity >= extent.frames.len());
+        if same_table && fits {
+            let resident = self.extent.as_mut().expect("tested above");
+            if !Arc::ptr_eq(&resident.source.frames, &extent.frames)
+                && resident.source.frames != extent.frames
+            {
+                write_texels(queue, &resident.frames, FRAME_TEXELS, &extent.frames);
+            }
+            resident.source = extent.clone();
+            return;
+        }
+        let texture = |label, width, height| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            })
+        };
+        let table = match self.extent.take() {
+            Some(resident) if same_table => resident.table,
+            _ => {
+                let table = texture("extent table", TABLE_WIDTH, TABLE_HEIGHT);
+                write_texels(queue, &table, TABLE_WIDTH, &extent.table.texels);
+                table
+            }
+        };
+        let rows = (extent.frames.len() as u32)
+            .div_ceil(FRAME_TEXELS)
+            .max(1)
+            .next_power_of_two();
+        let frames = texture("extent frames", FRAME_TEXELS, rows);
+        write_texels(queue, &frames, FRAME_TEXELS, &extent.frames);
+        let view = |t: &wgpu::Texture| t.create_view(&wgpu::TextureViewDescriptor::default());
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("extent"),
+            layout: &self.extent_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&view(&table)),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(&view(&frames)),
+                },
+            ],
+        });
+        self.extent = Some(ResidentExtent {
+            source: extent.clone(),
+            table,
+            frames,
+            capacity: (FRAME_TEXELS * rows) as usize,
+            bind_group,
+        });
     }
 
     /// A copy of an image with no pixels, which is transparent.
@@ -1557,7 +1698,7 @@ impl Resources {
             Pass::Ground => Some(GROUND),
             Pass::Graticule => Some(GRATICULE),
             Pass::Rim => Some(RIM),
-            Pass::Layer(_) | Pass::Image(_) | Pass::VectorTiles(_) => None,
+            Pass::Layer(_) | Pass::Image(_) | Pass::VectorTiles(_) | Pass::Extent => None,
         };
         // The flat view has no edge of a globe.
         if flat && kind == Some(RIM) {
@@ -1595,6 +1736,16 @@ impl Resources {
             };
             pipeline = &pipelines[usize::from(flat) * 2 + usize::from(blend)];
         }
+        if let Pass::Extent = draw.pass {
+            let Some(extent) = &self.extent else {
+                return;
+            };
+            let Some(pipelines) = self.extent_pipelines.get() else {
+                return;
+            };
+            pass.set_bind_group(1, &extent.bind_group, &[]);
+            pipeline = &pipelines[usize::from(flat)];
+        }
         if let Pass::VectorTiles(id) = draw.pass {
             let Some((_, group)) = self.vtile_pages.get(&id) else {
                 return;
@@ -1616,6 +1767,49 @@ impl Resources {
             pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..mesh.count, 0, 0..1);
         }
+    }
+}
+
+/// The width of the texture of the frames of an extent, in texels.
+const FRAME_TEXELS: u32 = 256;
+
+/// The textures of an extent on the GPU.
+struct ResidentExtent {
+    source: GpuExtent,
+    table: wgpu::Texture,
+    frames: wgpu::Texture,
+    /// The number of texels of `frames`.
+    capacity: usize,
+    bind_group: wgpu::BindGroup,
+}
+
+/// Writes RGBA float texels into the rows of a texture of `width` texels,
+/// from its first texel.
+fn write_texels(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, texels: &[[f32; 4]]) {
+    for (row, chunk) in texels.chunks(width as usize).enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: row as u32,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(chunk),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(chunk.len() as u32 * 16),
+                rows_per_image: None,
+            },
+            wgpu::Extent3d {
+                width: chunk.len() as u32,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -3119,6 +3313,8 @@ pub struct Frame {
     pub images: Vec<ImageKey>,
     /// The vector layers that draw from tiles.
     pub vector_tiles: Vec<LayerId>,
+    /// The extent of a map that the globe shows.
+    pub extent: Option<GpuExtent>,
     /// `Some`: the canvas shows the flat view with this mesh.
     pub flat: Option<Arc<FlatMesh>>,
     /// The count of the sets of reduced copies before this one.
@@ -3438,6 +3634,7 @@ impl Batch<'_> {
 /// an empty queue.
 fn run_ops(device: &wgpu::Device, queue: &wgpu::Queue, res: &mut Resources, frame: &Frame) {
     res.sync(device, frame);
+    res.sync_extent(device, queue, frame.extent.as_ref());
     let link = &frame.link;
     let images = std::mem::take(&mut *link.images.lock().expect("no panic holds the lock"));
     res.upload_images(queue, images);

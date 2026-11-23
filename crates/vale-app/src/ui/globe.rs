@@ -1112,6 +1112,27 @@ pub fn measure_lines(
 
 /// Draws the path of the Measure tool: the arcs, the points, the length of
 /// each segment, and a dashed line from the last point to the cursor.
+/// The outline of the extent of a map: a dashed line over a shadow, with
+/// the same width on the screen at each zoom.
+fn extent_overlay(painter: &egui::Painter, rect: egui::Rect, globe: &Globe, outline: &[Vec<V3>]) {
+    let ppp = painter.ctx().pixels_per_point();
+    let shadow = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(110));
+    let line = egui::Stroke::new(EXTENT_WIDTH, theme::ACCENT);
+    let parts: Vec<_> = (outline.iter())
+        .flat_map(|run| screen_lines(globe, rect, ppp, run))
+        .filter(|part| part.len() > 1)
+        .collect();
+    for part in &parts {
+        painter.line(part.clone(), shadow);
+    }
+    for part in &parts {
+        painter.extend(egui::Shape::dashed_line(part, line, 8.0, 5.0));
+    }
+}
+
+/// The width of the outline of an extent, in points.
+pub const EXTENT_WIDTH: f32 = 2.0;
+
 fn measure_overlay(
     painter: &egui::Painter,
     rect: egui::Rect,
@@ -1927,6 +1948,33 @@ pub(super) fn canvas(ui: &mut egui::Ui, state: &mut AppState, background: egui::
     if let Some(rect) = canvas_input(ui, state, background) {
         paint_canvas(ui, state, rect, background);
         held_buttons(ui, state, rect);
+        map_card(ui, state, rect);
+    }
+}
+
+/// The name of the map on the globe and its Close map button, at the top
+/// of the canvas.
+fn map_card(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
+    use super::pad::map_card::CLOSE_MAP;
+    let Some(map) = state.map_on_globe() else {
+        return;
+    };
+    let name = (state.doc.project.atlas.map(map)).map_or_else(String::new, |m| m.name.clone());
+    let mut close = false;
+    egui::Area::new(egui::Id::new("map-card"))
+        .order(egui::Order::Foreground)
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(rect.center_top() + egui::vec2(0.0, 8.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(&name);
+                    close = ui.button(CLOSE_MAP).clicked();
+                });
+            });
+        });
+    if close {
+        state.close_map_on_globe();
     }
 }
 
@@ -2181,6 +2229,7 @@ pub(super) fn paint_canvas(
 ) {
     let painter = egui::Painter::new(ui.ctx().clone(), ui.layer_id(), rect);
     let layer = state.selected_vector();
+    let (_, extent) = state.update_extent();
     let globe = &mut state.globe;
     let more = globe.advance(Instant::now());
     let pixels_per_point = ui.ctx().pixels_per_point();
@@ -2329,6 +2378,9 @@ pub(super) fn paint_canvas(
     });
     if let Some(highlight) = globe.snap_highlight() {
         snap_highlight(&painter, rect, globe, &highlight, stroke.width + 4.0);
+    }
+    if let Some(outline) = &extent {
+        extent_overlay(&painter, rect, globe, outline);
     }
     measure_overlay(
         &painter,

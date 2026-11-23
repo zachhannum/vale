@@ -69,6 +69,7 @@ pub const SHAPE: &str = "Shape";
 pub const RECTANGLE: &str = "Rectangle";
 pub const POLYGON: &str = "Polygon";
 pub const ADD_HOLE: &str = "Add hole";
+pub const EDIT_ON_GLOBE: &str = "Edit on globe";
 pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
@@ -1225,6 +1226,9 @@ fn frame_tab(
     }
     if polygon && widgets::button_row(ui, controls, ADD_HOLE, true).clicked() {
         atlas::add_hole(state, id);
+    }
+    if widgets::text_row(ui, controls, EDIT_ON_GLOBE, 0.0, false, true).clicked() {
+        state.show_map_on_globe(frame.map);
     }
 
     let keys = Keys::Number;

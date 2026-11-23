@@ -3580,3 +3580,49 @@ fn the_desktop_layers_tab_adds_restacks_and_removes_the_collections_of_a_map() {
     h.run_steps(3);
     assert_eq!(stack(&h), [coast]);
 }
+
+#[test]
+fn the_desktop_collection_menu_shows_a_map_on_the_globe() {
+    use vale_app::ui::pad::collection::{COLLECTION_MENU, map_row};
+    use vale_app::ui::pad::map_card::CLOSE_MAP;
+    let mut h = globe_harness();
+    h.get_by_label(LAYERS_MENU).click();
+    h.run_steps(2);
+    let state = h.state_mut();
+    let project = &mut state.doc.project;
+    let travel = project.add_collection("Travel").unwrap();
+    let isles = project.atlas.add_map();
+    project.atlas.map_mut(isles).unwrap().name = "Isles".to_owned();
+    assert!(project.set_map_stack(isles, vec![travel]));
+    h.run_steps(2);
+    h.get_by_label(COLLECTION_MENU).click();
+    h.run_steps(2);
+    h.get_by_label(&map_row("Isles")).click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe_map, Some(isles));
+    let stack = h.state().doc.project.globe_collections().to_vec();
+    assert_eq!(stack.last(), Some(&travel));
+    // The card has the name of the map, and its button keeps the checks.
+    assert!(h.query_by_label("Isles").is_some());
+    h.get_by_label(CLOSE_MAP).click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe_map, None);
+    assert_eq!(h.state().doc.project.globe_collections(), stack);
+    assert!(h.query_by_label(CLOSE_MAP).is_none());
+}
+
+#[test]
+fn edit_on_globe_in_the_desktop_frame_tab_shows_the_map() {
+    use vale_app::ui::pad::atlas::EDIT_ON_GLOBE;
+    let mut h = harness();
+    let state = h.state_mut();
+    vale_app::ui::atlas::add_frame(state);
+    let frame = state.doc.project.atlas.pages[0].frames[0].clone();
+    state.workspace = vale_app::ui::Workspace::Atlas;
+    state.atlas.selection = vale_app::ui::atlas::AtlasSelection::Frame(frame.id);
+    h.run_steps(3);
+    h.get_by_label(EDIT_ON_GLOBE).click();
+    h.run_steps(2);
+    assert_eq!(h.state().workspace, vale_app::ui::Workspace::Globe);
+    assert_eq!(h.state().globe_map, Some(frame.map));
+}

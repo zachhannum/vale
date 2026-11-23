@@ -227,7 +227,7 @@ pub(super) fn popover(
 }
 
 /// The contents of the collection popover: the collections, and on the
-/// globe the Collections | Maps switch, "New collection…", and "Manage
+/// globe the Collections | Maps switch with the maps on its Maps side, "New collection…", and "Manage
 /// collections". In a map, a check puts a collection in the map, and the
 /// check of the last collection of the map does not change.
 fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: View) {
@@ -235,8 +235,15 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: 
     if view == View::Globe {
         let (field, _) = ui.allocate_exact_size(vec2(ui.available_width(), TOUCH), Sense::hover());
         let sides = [COLLECTIONS_SIDE, MAPS_SIDE];
-        widgets::segmented_at(ui, controls, field, &sides, Some(0), |i| i == 0);
+        let active = Some(usize::from(state.pad.maps_side));
+        if let Some(side) = widgets::segmented_at(ui, controls, field, &sides, active, |_| true) {
+            state.pad.maps_side = side == 1;
+        }
         ui.add_space(6.0);
+        if state.pad.maps_side {
+            maps_side(ui, state, controls);
+            return;
+        }
     }
 
     let project = &state.doc.project;
@@ -308,6 +315,47 @@ fn menu(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, view: 
         state.pad.collection_list = list::ListState::default();
         state.pad.manage.open(super::manage::ManagePage::Manage);
     }
+}
+
+/// The Maps side of the collection popover: each map, with a check on the
+/// map on the globe. A tap on another map shows it on the globe.
+fn maps_side(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let shown = state.map_on_globe();
+    let rows: Vec<list::Row<MapId>> = (state.doc.project.atlas.maps.iter())
+        .map(|m| list::Row {
+            label: map_row(&m.name),
+            ..list::Row::new(m.id, m.name.clone())
+        })
+        .collect();
+    let list = &mut state.pad.map_list;
+    let events = list::show(
+        ui,
+        controls,
+        list,
+        list::Spec::default(),
+        &rows,
+        |ui, controls, cell, i| {
+            let look = list::Look {
+                icon: Some(Icon::Map),
+                text: &rows[i].name,
+                check: Some(shown == Some(rows[i].key)),
+                ..list::Look::default()
+            };
+            list::draw(ui, controls, cell, &look)
+        },
+    );
+    for event in events {
+        if let list::Event::Tap(map) = event
+            && shown != Some(map)
+        {
+            state.show_map_on_globe(map);
+        }
+    }
+}
+
+/// The name of the popover row of a map.
+pub fn map_row(name: &str) -> String {
+    format!("Map {name}")
 }
 
 /// The cards of the collections of a view, from the top of the stack.

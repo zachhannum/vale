@@ -60,6 +60,7 @@ pub mod view;
 pub mod vtiles;
 pub mod zoom_test;
 
+use crate::extent::GpuExtent;
 use crate::pen::Pen;
 use basin::Basiner;
 use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
@@ -938,6 +939,8 @@ pub struct Globe {
     raster_masks: Vec<(LayerId, RasterMask)>,
     /// The vector layers that draw from tiles.
     vector_tiles: Vec<LayerId>,
+    /// The extent of a map. The globe shades the ground outside it.
+    pub extent: Option<GpuExtent>,
     /// The raster layers of the masks of the map frames.
     frame_mask_rasters: Vec<RasterId>,
     /// The raster layers and the image layers that the map frames draw.
@@ -1148,6 +1151,7 @@ impl Globe {
             stack: None,
             raster_masks: Vec::new(),
             vector_tiles: Vec::new(),
+            extent: None,
             frame_mask_rasters: Vec::new(),
             map_rasters: (Vec::new(), Vec::new()),
             pending: None,
@@ -4389,6 +4393,7 @@ impl Globe {
             rivers: river_layers.iter().map(|(layer, _)| *layer).collect(),
             images: self.image_keys(),
             vector_tiles: self.vector_tiles.clone(),
+            extent: self.extent.clone(),
             flat,
             epoch: self.epoch,
         })
@@ -5235,9 +5240,17 @@ impl Globe {
             }
         }
         flush(&mut run, &mut out);
+        if self.extent.is_some() {
+            let mut shade = plain(Pass::Extent, false);
+            shade.uniforms.layer[0] = EXTENT_SHADE;
+            out.push(callback(draw_job(shade)));
+        }
         Some(out)
     }
 }
+
+/// The opacity of the shade outside the extent of a map.
+const EXTENT_SHADE: f32 = 0.3;
 
 /// The value range of a raster mask for the shader: the limits as levels
 /// over the highest level, then 1 for each limit inside the range of the

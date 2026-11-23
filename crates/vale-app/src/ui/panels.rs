@@ -2,7 +2,7 @@
 
 use eframe::egui;
 use vale_sphere::{ProjectionKind, ProjectionSpec};
-use vale_store::{CollectionId, GeometryKind, LayerId, World};
+use vale_store::{CollectionId, GeometryKind, LayerId, MapId, World};
 
 use super::export_form::{self, ExportForm};
 use super::number;
@@ -810,7 +810,9 @@ fn collection_layers(ui: &mut egui::Ui, state: &mut AppState, id: CollectionId) 
 /// The collection menu: a checkbox for each collection, with the checked
 /// collections from the top of the stack first, and "New collection…".
 fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
-    use super::pad::collection::{COLLECTION_MENU, NEW_COLLECTION, collection_row};
+    use super::pad::collection::{
+        COLLECTION_MENU, MAPS_SIDE, NEW_COLLECTION, collection_row, map_row,
+    };
     let project = &state.doc.project;
     let checked = project.globe_collections();
     let mut order: Vec<(CollectionId, bool)> = checked.iter().rev().map(|id| (*id, true)).collect();
@@ -833,6 +835,24 @@ fn collection_menu(ui: &mut egui::Ui, state: &mut AppState) {
             );
             if check.changed() {
                 state.check_collection(id, on);
+            }
+        }
+        ui.separator();
+        ui.label(MAPS_SIDE);
+        let shown = state.map_on_globe();
+        let maps: Vec<(MapId, String)> = (state.doc.project.atlas.maps.iter())
+            .map(|m| (m.id, m.name.clone()))
+            .collect();
+        for (map, name) in maps {
+            let row = ui.selectable_label(shown == Some(map), &name);
+            named(
+                &row,
+                egui::WidgetType::Button,
+                shown == Some(map),
+                map_row(&name),
+            );
+            if row.clicked() && shown != Some(map) {
+                state.show_map_on_globe(map);
             }
         }
         ui.separator();
