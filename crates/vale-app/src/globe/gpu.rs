@@ -312,6 +312,8 @@ struct Masks {
     /// Puts the opaque shapes of a translucent stroke on the target of a
     /// group with the alpha of the stroke.
     vector_group: wgpu::RenderPipeline,
+    /// Draws the meshes of the holes of a markers mask into the cover.
+    holes: wgpu::RenderPipeline,
 }
 
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] =
@@ -709,6 +711,7 @@ impl Layouts {
             offset_layout,
             vector: vector_pipeline(&self.device, self.format, &self.vector),
             vector_group: vector_group_pipeline(&self.device, self.format, &self.vector_group),
+            holes: vector_pipeline(&self.device, COVER, &self.vector),
         }
     }
 }
@@ -1813,6 +1816,12 @@ fn write_texels(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, texels
     }
 }
 
+/// The view of the cover of the target `id`.
+fn target_cover(targets: &HashMap<TargetId, Offscreen>, id: TargetId) -> Option<wgpu::TextureView> {
+    let target = targets.get(&id)?;
+    target.cover.as_ref().map(|(_, view)| view.clone())
+}
+
 /// The format of the cover of a raster mask.
 const COVER: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// The format of the cover of a raster mask before its offset: the cover,
@@ -2053,6 +2062,9 @@ pub struct Group {
     /// The distance in pixels that the cover grows by. A negative offset
     /// shrinks it.
     pub cover_offset: f32,
+    /// The holes of a markers mask: opaque meshes that the cover leaves
+    /// out. With holes, the group has a cover of 1 outside them.
+    pub holes: Option<VectorShapes>,
     /// The squares of the pixels of a page on the screen: the left and the top
     /// of the page and the side of a square, in pixels of the screen. Each
     /// square shows the target at its middle. A side of 0 shows each pixel of
@@ -2450,7 +2462,7 @@ impl Resources {
             None => View::Globe,
         };
         self.ensure_offscreen(device, group.target, size);
-        let cover = group.cover.is_some();
+        let cover = group.cover.is_some() || group.holes.is_some();
         self.set_mask(device, queue, group.target, group.mask.as_deref(), cover);
         let target = &self.targets[&group.target];
         let place = [
@@ -2496,7 +2508,8 @@ impl Resources {
         load = wgpu::LoadOp::Load;
         // A masked group draws nothing until the passes of the masks are
         // ready.
-        if (group.vector.is_some() || group.cover.is_some()) && self.masks.get().is_none() {
+        let masked = group.vector.is_some() || group.cover.is_some() || group.holes.is_some();
+        if masked && self.masks.get().is_none() {
             return None;
         }
         for draw in &group.draws {
@@ -2536,7 +2549,19 @@ impl Resources {
             self.draw(&mut pass, &draw, group.target, &view, size);
         }
         if let Some(shapes) = &group.vector {
-            self.draw_vector(device, encoder, &layers, size, shapes);
+            self.draw_vector(device, encoder, &layers, size, shapes, false);
+        }
+        if let Some(holes) = &group.holes {
+            let cover = target_cover(&self.targets, group.target);
+            if let Some(cover) = cover {
+                // The cover is 1 outside the holes.
+                drop(vector_pass(
+                    encoder,
+                    &cover,
+                    wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                ));
+                self.draw_vector(device, encoder, &cover, size, holes, true);
+            }
         }
         if let Some(cover) = &group.cover {
             let offset = group
@@ -2600,7 +2625,9 @@ impl Resources {
 
     /// Draws the meshes of `shapes` on `layers`, a target of `size` pixels,
     /// in their order. A mesh with an alpha below 1 goes to a target of its
-    /// own first, and then to `layers` with that alpha.
+    /// own first, and then to `layers` with that alpha. With `holes`,
+    /// `layers` is the cover of the group, and the opaque meshes take their
+    /// alpha off it.
     fn draw_vector(
         &mut self,
         device: &wgpu::Device,
@@ -2608,12 +2635,14 @@ impl Resources {
         layers: &wgpu::TextureView,
         size: [u32; 2],
         shapes: &VectorShapes,
+        holes: bool,
     ) {
         use wgpu::util::DeviceExt;
         let Some(masks) = self.masks.get() else {
             return;
         };
-        let (vector, vector_group) = (masks.vector.clone(), masks.vector_group.clone());
+        let vector = if holes { &masks.holes } else { &masks.vector };
+        let (vector, vector_group) = (vector.clone(), masks.vector_group.clone());
         let ppp = shapes.pixels_per_point;
         let (mut vertices, mut indices) = (Vec::new(), Vec::new());
         // The first index, the count of indices, the scissor, and the alpha
