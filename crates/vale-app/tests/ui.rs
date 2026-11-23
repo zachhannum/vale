@@ -3665,3 +3665,21 @@ fn the_desktop_label_class_masks_layers() {
     h.run_steps(2);
     assert_eq!(class(&h).masked_layers, vec![rivers]);
 }
+
+#[test]
+fn the_desktop_style_editor_sets_the_reference_scale() {
+    use vale_app::ui::pad::rules::{REFERENCE_SCALE, USE_CURRENT_SCALE};
+    let mut h = globe_harness();
+    let rivers = open_rivers(&mut h);
+    let reference =
+        |h: &Harness<'static, AppState>| h.state().doc.entry(rivers).unwrap().style.reference_scale;
+    type_in(&mut h, REFERENCE_SCALE, "250000");
+    assert_eq!(reference(&h), Some(250_000.0));
+    h.get_by_label(USE_CURRENT_SCALE).click();
+    h.run_steps(2);
+    let state = h.state();
+    let current = vale_style::scale_denominator(
+        state.doc.project.world.radius_km * 1000.0 / state.globe.radius(),
+    );
+    assert_eq!(reference(&h), Some(current.round()));
+}

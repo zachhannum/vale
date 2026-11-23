@@ -2357,3 +2357,24 @@ fn a_saved_draft_adds_a_custom_ramp() {
     assert_eq!(state.ramps.list().last().unwrap().name, "Mine");
     assert_eq!(state.ramps.custom().len(), count + 2);
 }
+
+#[test]
+fn the_reference_scale_is_an_undo_step_and_survives_a_reopen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reference.vale");
+    let roads = unstyled(&path);
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    doc.entry_mut(roads).unwrap().style.reference_scale = Some(2_000_000.0);
+    doc.store_styles();
+    session.flush(&mut doc.project, &mut []).unwrap();
+    assert!(session.can_undo());
+    drop(session);
+
+    let mut doc = Document::empty();
+    let mut session = Session::open(&path, &mut doc).unwrap();
+    let reference = |doc: &Document| doc.entry(roads).unwrap().style.reference_scale;
+    assert_eq!(reference(&doc), Some(2_000_000.0));
+    assert!(session.undo(&mut doc, &mut []).unwrap());
+    assert_eq!(reference(&doc), None);
+}

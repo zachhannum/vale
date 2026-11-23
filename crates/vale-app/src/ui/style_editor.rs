@@ -23,8 +23,9 @@ use super::pad::raster::{DUPLICATE_RAMP, IMPORT_RAMP, NEW_RAMP};
 use super::pad::rules::{
     ADD_RULE, ALL_FEATURES, BAD_RANGE, BRUSH, DASHED, DELETE_RULE, DELETE_RULES, ENDS, EXPRESSION,
     FILL, FILTER, FLAT, FLOW, FLOW_MIN, HEIGHT_LAYER, LENGTHS, LINE, MAX_SCALE, MIN_SCALE,
-    MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, ROUND, SOLID, STROKE, STROKE_WIDTH, TAPER, TAPER_START,
-    WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale, pattern_name, scale_text,
+    MOVE_DOWN, MOVE_UP, NO_LIMIT, PATTERN, REFERENCE_SCALE, ROUND, SOLID, STROKE, STROKE_WIDTH,
+    TAPER, TAPER_START, USE_CURRENT_SCALE, WIDTH_EXPRESSION, WIDTH_FROM_EXPRESSION, parse_scale,
+    pattern_name, scale_text,
 };
 use super::pad::rules::{
     ADD_SYMBOL, APPLY_MASK, BAD_MASK_RANGE, CIRCLE_SIZES, COLOR, MARKER, MARKER_SHAPE, MASK,
@@ -320,6 +321,57 @@ fn selection_rows(
         changed |= rule_edit::apply(rules, picked, kind, change);
     }
     changed
+}
+
+/// The field of the reference scale, and the button that sets it to
+/// `current`, the scale denominator of the view. A blank field has no
+/// reference scale. Returns true if the user changed it.
+pub fn reference_scale_row(
+    ui: &mut egui::Ui,
+    id: LayerId,
+    value: &mut Option<f64>,
+    current: f64,
+) -> bool {
+    let key = egui::Id::new(("reference scale", id));
+    let mut text = ui
+        .data(|d| d.get_temp::<String>(key))
+        .unwrap_or_else(|| value.map_or(String::new(), scale_text));
+    let mut new = None;
+    ui.horizontal(|ui| {
+        ui.label(REFERENCE_SCALE);
+        let edit = egui::TextEdit::singleline(&mut text)
+            .hint_text(NO_LIMIT)
+            .desired_width(100.0);
+        let field = ui.add(edit);
+        field.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::TextEdit, true, REFERENCE_SCALE)
+        });
+        if field.changed() {
+            new = match text.trim() {
+                "" => Some(None),
+                t => parse_scale(t).map(Some),
+            };
+        }
+        if field.has_focus() {
+            ui.data_mut(|d| d.insert_temp(key, text.clone()));
+        } else {
+            ui.data_mut(|d| d.remove::<String>(key));
+        }
+        let can_use = current.is_finite() && current > 0.0;
+        if ui
+            .add_enabled(can_use, egui::Button::new(USE_CURRENT_SCALE))
+            .clicked()
+        {
+            new = Some(Some(current.round()));
+        }
+    });
+    match new {
+        Some(new) if new != *value => {
+            *value = new;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// The mask of a style: a choice of "None" or a layer of `choices`, the range and the offset of a raster mask, and the gap of a markers mask. A blank limit has no limit. Returns true if the user changed the mask.
