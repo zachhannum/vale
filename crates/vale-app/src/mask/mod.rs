@@ -2,6 +2,7 @@
 //! them.
 
 pub mod frame;
+pub mod knockout;
 mod page;
 pub mod trace;
 
