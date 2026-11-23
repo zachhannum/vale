@@ -137,9 +137,16 @@ fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
     let room = rects.screen.right() - rects.bands.right - geometry::MARGIN - left;
     let backdrop = state.globe.backdrop();
     let mut top = rects.column_top;
+    state.pad.scale_rect = None;
+    state.pad.place_rect = None;
     if let Some(scale) = scale {
         let width = (scale_width(ctx, scale) + 2.0 * READOUT_PAD).min(room);
         let rect = Rect::from_min_size(pos2(left, top), vec2(width, PLACE_HEIGHT));
+        top = rect.bottom() + PLACE_GAP;
+        // An open sheet covers the capsules of the canvas.
+        if rects.sheet.is_some_and(|s| s.intersects(rect)) {
+            return;
+        }
         state.pad.scale_rect = Some(rect);
         widgets::card(
             ctx,
@@ -153,7 +160,6 @@ fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
                 paint_scale(ui, at, rect, scale);
             },
         );
-        top = rect.bottom() + PLACE_GAP;
     }
     let now = Instant::now();
     let down = state.pad.canvas_down || state.pad.pen_hover;
@@ -169,12 +175,13 @@ fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
         ctx.request_repaint_after(PLACE_TIME.saturating_sub(now.saturating_duration_since(at)));
     }
     let text = super::readout_line(state);
-    let rect = text_capsule(ctx, backdrop, "pad-place", pos2(left, top), room, &text);
-    state.pad.place_rect = Some(rect);
+    let at = pos2(left, top);
+    state.pad.place_rect = text_capsule(ctx, backdrop, "pad-place", at, room, &text, rects.sheet);
 }
 
 /// A glass capsule with a line of text in the monospace font, with its top
-/// left corner at `at`, at most `room` wide. Returns its place.
+/// left corner at `at`, at most `room` wide. Returns its place. A `sheet`
+/// that overlaps the capsule covers it, and then it does not show.
 pub(super) fn text_capsule(
     ctx: &egui::Context,
     backdrop: Option<eframe::egui_wgpu::wgpu::TextureFormat>,
@@ -182,9 +189,13 @@ pub(super) fn text_capsule(
     at: egui::Pos2,
     room: f32,
     text: &str,
-) -> Rect {
+    sheet: Option<Rect>,
+) -> Option<Rect> {
     let width = (mono_width(ctx, text) + 2.0 * READOUT_PAD).min(room);
     let rect = Rect::from_min_size(at, vec2(width, PLACE_HEIGHT));
+    if sheet.is_some_and(|s| s.intersects(rect)) {
+        return None;
+    }
     widgets::card(
         ctx,
         backdrop,
@@ -194,7 +205,7 @@ pub(super) fn text_capsule(
         theme::CARD_RADIUS.into(),
         |ui| paint_line(ui, rect.shrink2(vec2(READOUT_PAD, 0.0)), text),
     );
-    rect
+    Some(rect)
 }
 
 /// The card of the place, above the card of the readout, while

@@ -16441,6 +16441,19 @@ fn on_a_compact_screen_the_scale_bar_and_the_place_are_capsules_below_the_world_
         touch(&mut h, egui::TouchPhase::End, at, None);
         h.run_steps(2);
         assert_eq!(h.state().pad.place_rect, None, "{what}");
+        // A sheet at its full height covers both capsules, also while a
+        // finger is down on the canvas.
+        h.state_mut().pad.open(Panel::Layers);
+        h.run_steps(3);
+        sheet_up(&mut h);
+        let sheet = h.state().pad.rects.unwrap().sheet.expect(what);
+        assert!(sheet.intersects(scale), "{what}");
+        touch(&mut h, egui::TouchPhase::Start, at, None);
+        h.run_steps(2);
+        assert_eq!(h.state().pad.scale_rect, None, "{what}");
+        assert_eq!(h.state().pad.place_rect, None, "{what}");
+        touch(&mut h, egui::TouchPhase::End, at, None);
+        h.run_steps(2);
     }
 }
 

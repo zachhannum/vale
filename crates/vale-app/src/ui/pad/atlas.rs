@@ -873,7 +873,15 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             let room = rects.screen.right() - rects.bands.right - MARGIN - left;
             let at = pos2(left, rect.bottom() + GAP);
             let backdrop = state.globe.backdrop();
-            readout::text_capsule(ctx, backdrop, "pad-measure", at, room, &readout);
+            readout::text_capsule(
+                ctx,
+                backdrop,
+                "pad-measure",
+                at,
+                room,
+                &readout,
+                rects.sheet,
+            );
         }
         (rect, 0.0)
     } else {
