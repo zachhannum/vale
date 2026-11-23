@@ -892,8 +892,9 @@ fn paint_grip(painter: &egui::Painter, center: Pos2, active: bool, alone: bool) 
     painter.rect_filled(pill, theme::capsule(pill), color);
 }
 
-/// The sheet of a compact screen: the pane of the last focus, with its
-/// tabs and its Close button, and with no drag of its tabs.
+/// The sheet of a compact screen: the panels of all panes as the tabs of
+/// one row, with the panel of the last focus open, and a Close button that
+/// closes that panel. The tabs do not drag, and the panes do not change.
 fn show_sheet(
     ctx: &egui::Context,
     state: &mut AppState,
@@ -902,10 +903,12 @@ fn show_sheet(
     rect: Rect,
     footer: Footer<'_>,
 ) {
-    let Some(i) = state.pad.sheet_pane() else {
+    let Some(panel) = state.pad.sheet_panel() else {
         return;
     };
-    let panel = state.pad.dock().panes[i].panel();
+    let Some((i, _)) = state.pad.dock().find(panel) else {
+        return;
+    };
     let mut head = panel_head(state, panel);
     // In the row layout, the sheet is the floating card of the rows, grown
     // up, and beside the rail it floats on the bottom line of the rail. Its
@@ -998,10 +1001,12 @@ fn show_sheet(
     if let Some(out) = out {
         let dock = state.pad.dock_mut();
         if out.close {
-            dock.close_pane(i);
+            dock.close(panel);
             state.pad.pane_menu = None;
-        } else if let Some(tab) = out.focus {
-            dock.focus(i, tab);
+        } else if let Some(tab) = out.focus
+            && let Some(chosen) = dock.all_tabs().get(tab).copied()
+        {
+            dock.show_in_sheet(chosen);
         }
     }
 }
@@ -1229,7 +1234,12 @@ fn header_row(
     mode: Mode,
     names: bool,
 ) -> HeaderOut {
-    let pane = state.pad.dock().panes[i].clone();
+    // A sheet is one pane with the panels of all panes as its tabs.
+    let dock = state.pad.dock();
+    let pane = match mode {
+        Mode::Sheet => dock.sheet().unwrap_or_else(|| dock.panes[i].clone()),
+        Mode::Dock => dock.panes[i].clone(),
+    };
     let name = panel_name(state, pane.panel());
     // The press that opened a menu does not choose or move a tab.
     let holding = state.pad.pane_menu.is_some_and(|m| m.held);

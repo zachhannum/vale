@@ -621,9 +621,13 @@ impl PadState {
         self.dock().is_open(panel)
     }
 
-    /// The panel is the open tab of its pane.
+    /// The panel is the open tab of its pane. On a compact screen, it is
+    /// the panel of the sheet.
     pub fn shows(&self, panel: Panel) -> bool {
-        self.dock().shows(panel)
+        match self.rects.is_some_and(|r| r.class == WidthClass::Compact) {
+            true => self.sheet_panel() == Some(panel),
+            false => self.dock().shows(panel),
+        }
     }
 
     /// Shows a panel in the dock.
@@ -651,17 +655,10 @@ impl PadState {
         }
     }
 
-    /// The pane that a sheet shows: the pane of the panel of the last
-    /// focus, or else the last pane.
-    pub fn sheet_pane(&self) -> Option<usize> {
-        let dock = self.dock();
-        let focus = dock.focus.and_then(|f| dock.find(f)).map(|(i, _)| i);
-        focus.or_else(|| dock.panes.len().checked_sub(1))
-    }
-
-    /// The panel that a sheet shows.
+    /// The panel that a sheet shows: the panel of the last focus, or else
+    /// the open tab of the last pane.
     pub fn sheet_panel(&self) -> Option<Panel> {
-        self.sheet_pane().map(|i| self.dock().panes[i].panel())
+        self.dock().sheet_panel()
     }
 }
 
@@ -729,7 +726,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
     });
 
     let class = WidthClass::of(screen.width());
-    keep_one_panel(state, class);
     pin_sheet(&mut state.pad);
     let mut input = Input {
         screen,
@@ -786,7 +782,6 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         tool_column(&ctx, state, &mut controls, &rects);
     }
     // A button above can open or close a panel. The panels use the new state.
-    keep_one_panel(state, class);
     input.panel = has_sheet(state, class);
     input.cells = card_cells(&state.globe);
     input.column = column_input(state);
@@ -865,14 +860,6 @@ pub(super) fn pin_sheet(pad: &mut PadState) {
         } else if pad.sheet_offset >= r.sheet_travel - 0.5 {
             pad.sheet_offset = f32::INFINITY;
         }
-    }
-}
-
-/// A compact screen shows one panel at a time, in the sheet. A panel that
-/// opens takes the place of the panel of the sheet.
-pub(super) fn keep_one_panel(state: &mut AppState, class: WidthClass) {
-    if class == WidthClass::Compact {
-        state.pad.dock_mut().keep_focus();
     }
 }
 

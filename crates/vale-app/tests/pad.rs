@@ -5016,6 +5016,7 @@ fn beside_the_rail_the_tool_cells_keep_their_place_in_each_place_of_the_sheet() 
     assert_eq!(sheet.top(), sheet.bottom().min(band) - 8.0 - 52.0);
     toolbox(&mut h);
     h.state_mut().pad.close(Panel::Toolbox);
+    h.state_mut().pad.close(Panel::Layers);
     h.run_steps(30);
     assert_eq!(h.state().pad.rects.unwrap().sheet, None);
     assert_eq!(cells(&h), before);
@@ -5070,26 +5071,26 @@ fn the_layout_follows_the_turn_of_the_ipad() {
     let mut h = pad(BOARDS[0]);
     open_panel(&mut h, "Layers");
     tap(&mut h, "Brush settings");
-    for size in [BOARDS[1], BOARDS[3]] {
+    h.state_mut().pad.dock_mut().panes[0].height = Some(320.0);
+    h.state_mut().pad.dock_mut().panes[1].folded = true;
+    h.run_steps(3);
+    let panes = h.state().pad.dock().panes.clone();
+    assert_eq!(panes.len(), 2);
+    for size in [BOARDS[1], BOARDS[3], BOARDS[2], BOARDS[0]] {
         h.set_size(size.into());
         h.run_steps(3);
         let screen = Rect::from_min_size(Pos2::ZERO, size.into());
         assert_eq!(h.state().globe.rect, screen);
         check_controls(&h, &format!("turned to {size:?}"));
-        // A compact screen keeps one panel, the panel of the focus.
-        let compact = size.0 < 600.0;
-        assert!(h.state().pad.is_open(Panel::Brush), "{size:?}");
-        assert_eq!(h.state().pad.is_open(Panel::Layers), !compact, "{size:?}");
-        if compact {
-            assert_eq!(h.state().pad.dock().panes.len(), 1);
+        // A compact screen does not change the panes: their order, their
+        // tabs, their heights, and their folds.
+        assert_eq!(h.state().pad.dock().panes, panes, "{size:?}");
+        if size.0 < 600.0 {
+            let sheet = h.state().pad.dock().sheet().unwrap();
+            assert_eq!(sheet.tabs, [Panel::Layers, Panel::Brush], "{size:?}");
+            assert_eq!(h.state().pad.panels.len(), 1, "{size:?}");
         }
     }
-    // The panel of the sheet stays open when the screen is wide again.
-    h.set_size(BOARDS[0].into());
-    h.run_steps(3);
-    check_controls(&h, "turned back");
-    assert!(h.state().pad.is_open(Panel::Brush));
-    assert!(!h.state().pad.is_open(Panel::Layers));
 }
 
 #[test]
@@ -16482,7 +16483,8 @@ fn on_an_iphone_you_pull_the_layers_sheet_to_the_full_height_and_back() {
 }
 
 #[test]
-fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
+fn on_an_iphone_a_panel_that_opens_is_a_new_tab_of_the_sheet() {
+    use vale_app::ui::pad::dock_ui::{close_name, tab_name};
     let mut h = phone_pad();
     quick_tap(&mut h, SCULPT);
     h.state_mut().pad.flyouts.open = None;
@@ -16490,21 +16492,27 @@ fn on_an_iphone_a_panel_takes_the_place_of_the_panel_of_the_sheet() {
     quick_tap(&mut h, "Brush settings");
     assert!(h.state().pad.is_open(Panel::Brush));
     open_panel(&mut h, "Layers");
-    // The Layers panel takes the place of the Brush panel in the sheet,
-    // with no tabs.
+    // The Layers panel is a new pane of the dock and a new tab of the
+    // sheet, and the sheet shows it.
     assert!(h.state().pad.is_open(Panel::Layers));
-    assert!(!h.state().pad.is_open(Panel::Brush));
-    let dock = h.state().pad.dock();
-    assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
+    assert!(h.state().pad.is_open(Panel::Brush));
+    assert_eq!(h.state().pad.dock().panes.len(), 2);
     assert_eq!(h.state().pad.panels.len(), 1);
     assert_eq!(h.state().pad.panels[0].0, Panel::Layers);
-    assert!(control(&h, &vale_app::ui::pad::dock_ui::tab_name("Brush")).is_none());
-    // The Brush button below the sheet opens the Brush panel again in its
-    // place.
-    quick_tap(&mut h, "Brush settings");
-    assert!(h.state().pad.is_open(Panel::Brush));
-    assert!(!h.state().pad.is_open(Panel::Layers));
-    assert_eq!(h.state().pad.panels.len(), 1);
+    assert!(control(&h, &tab_name("Brush")).is_some());
+    check_controls(&h, "two tabs");
+    // A tap on a tab shows its panel.
+    quick_tap(&mut h, &tab_name("Brush"));
+    assert_eq!(h.state().pad.panels[0].0, Panel::Brush);
+    // The Close button closes only the panel that shows.
+    tap(&mut h, &close_name("Brush"));
+    assert!(!h.state().pad.is_open(Panel::Brush));
+    assert!(h.state().pad.is_open(Panel::Layers));
+    assert_eq!(h.state().pad.panels[0].0, Panel::Layers);
+    // The sheet closes with the last panel.
+    tap(&mut h, &close_name("Layers"));
+    assert!(h.state().pad.dock().panes.is_empty());
+    assert!(h.state().pad.rects.unwrap().sheet.is_none());
 }
 
 #[test]
@@ -17122,16 +17130,12 @@ fn the_panels_button_opens_a_menu_with_a_tile_for_each_panel() {
         assert_eq!(open_tiles(&h), ["Layers"], "{size:?}");
         open_panel(&mut h, "Toolbox");
         assert!(h.state().pad.is_open(Panel::Toolbox), "{size:?}");
-        // On a compact screen, the panel takes the place of the panel of
-        // the sheet.
-        let compact = size.0 < 600.0;
-        assert_eq!(h.state().pad.is_open(Panel::Layers), !compact, "{size:?}");
+        // On a compact screen, the panel is a new tab of the sheet.
+        assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
         open_panel(&mut h, "Toolbox");
         assert!(!h.state().pad.is_open(Panel::Toolbox), "{size:?}");
-        if !compact {
-            assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
-            open_panel(&mut h, "Layers");
-        }
+        assert!(h.state().pad.is_open(Panel::Layers), "{size:?}");
+        open_panel(&mut h, "Layers");
         assert!(h.state().pad.dock().panes.is_empty(), "{size:?}");
 
         // With a brush, the Brush tile opens the Brush panel.
@@ -17734,38 +17738,34 @@ fn each_workspace_keeps_its_dock_after_a_restart() {
 }
 
 #[test]
-fn on_a_phone_a_panel_is_a_sheet_with_no_tabs() {
+fn on_a_phone_the_panes_are_the_tabs_of_one_sheet() {
     use vale_app::ui::pad::dock_ui::{DOCK_WIDTH, close_name, tab_name};
     let mut h = phone_pad();
-    h.state_mut()
-        .pad
-        .docks
-        .world
-        .open_tabs(&[Panel::Layers, Panel::Toolbox]);
+    h.state_mut().pad.docks.world.open_new(Panel::Layers);
     h.run_steps(3);
-    // The sheet keeps one of the panels, as the one tab of the one pane.
+    // A panel that opens on a compact screen is a new pane of the dock.
+    open_panel(&mut h, TOOLBOX);
+    let panes = h.state().pad.dock().panes.clone();
+    assert_eq!(dock_tabs(&h), [[Panel::Layers], [Panel::Toolbox]]);
+    // The two panes are two tabs of one sheet, and the sheet shows the
+    // panel that opened last.
     let sheet = sheet_panel(&h.state().pad.rects.unwrap());
-    let dock = h.state().pad.dock();
-    assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
-    let shown = dock.panes[0].panel();
-    assert!([Panel::Layers, Panel::Toolbox].contains(&shown));
-    assert_eq!(h.state().pad.panels, vec![(shown, sheet)]);
+    assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
     for name in [tab_name("Layers"), tab_name(TOOLBOX)] {
-        assert!(control(&h, &name).is_none(), "{name}");
+        assert!(control(&h, &name).is_some(), "{name}");
     }
     assert!(control(&h, "Pin Layers").is_none());
     assert!(control(&h, DOCK_WIDTH).is_none());
-    // A tile opens the other panel in place of the panel of the sheet.
-    let (name, other) = match shown {
-        Panel::Layers => (TOOLBOX, Panel::Toolbox),
-        _ => ("Layers", Panel::Layers),
-    };
-    open_panel(&mut h, name);
-    assert_eq!(dock_tabs(&h), [[other]]);
-    assert_eq!(panel(&h, other), Some(sheet));
-    check_controls(&h, &format!("the sheet of the {name} panel"));
-    // The Close button of the sheet closes its pane.
-    tap(&mut h, &close_name(name));
+    check_controls(&h, "the sheet with two tabs");
+    // A tap on a tab shows its panel, and the panes do not change.
+    quick_tap(&mut h, &tab_name("Layers"));
+    assert_eq!(h.state().pad.panels, vec![(Panel::Layers, sheet)]);
+    assert_eq!(h.state().pad.dock().panes, panes);
+    // The Close button of the sheet closes only the panel that shows.
+    tap(&mut h, &close_name("Layers"));
+    assert_eq!(dock_tabs(&h), [[Panel::Toolbox]]);
+    assert_eq!(h.state().pad.panels, vec![(Panel::Toolbox, sheet)]);
+    tap(&mut h, &close_name(TOOLBOX));
     assert!(h.state().pad.docks.world.panes.is_empty());
     assert!(h.state().pad.rects.unwrap().sheet.is_none());
 }

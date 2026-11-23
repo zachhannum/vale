@@ -310,11 +310,15 @@ fn show_tab(h: &mut Pad, name: &str) {
     let panel = FRAME_PANELS[i.unwrap_or_else(|| panic!("no frame tab `{name}`"))];
     // The Frame tab of the desktop is the Properties tab of the iPad.
     let name = if i == Some(0) { PROPERTIES } else { name };
-    // The sheet of a compact screen shows one panel, and its tile opens
-    // another.
+    // The sheet of a compact screen shows the panels of the dock as tabs,
+    // and a tile opens a panel that is not open.
     if h.state().pad.rects.is_some_and(|r| r.top_overlay()) {
-        if !h.state().pad.dock().shows(panel) {
-            open_panel(h, name);
+        if h.state().pad.shows(panel) {
+            return;
+        }
+        match h.state().pad.is_open(panel) {
+            true => quick_tap(h, &tab_name(name)),
+            false => open_panel(h, name),
         }
         return;
     }
@@ -1507,14 +1511,12 @@ fn the_tabs_of_a_frame_work_with_a_finger() {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         check_controls(&h, "frame tab");
+        // The sheet of a compact screen has the tabs of the pane too.
+        assert!(control(&h, &tab_name(FRAME_TABS[3])).is_some());
         if h.state().pad.rects.unwrap().top_overlay() {
-            // The sheet of a compact screen shows one panel, with no tabs.
             let dock = h.state().pad.dock();
-            assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 1));
-            assert!(control(&h, &tab_name(FRAME_TABS[3])).is_none());
+            assert_eq!((dock.panes.len(), dock.panes[0].tabs.len()), (1, 4));
             show_tab(&mut h, FRAME_TABS[0]);
-        } else {
-            assert!(control(&h, &tab_name(FRAME_TABS[3])).is_some());
         }
         tap(&mut h, POLYGON);
         check_controls(&h, "polygon");
@@ -2044,8 +2046,8 @@ fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
 
 #[test]
 fn each_tab_of_a_frame_takes_a_finger_and_the_open_tab_shows_its_name() {
-    // The sheet of a compact screen has no tabs.
-    for size in BOARDS.into_iter().filter(|(w, _)| *w >= 600.0) {
+    // The sheet of a compact screen has the same tabs.
+    for size in BOARDS {
         let mut h = inset_pad(size);
         merge_frame_tabs(&mut h);
         let names = [PROPERTIES, FRAME_TABS[1], FRAME_TABS[2], FRAME_TABS[3]];
@@ -12163,7 +12165,7 @@ fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at
     check_controls(&h, "iphone");
 
     // A selected frame shows its Frame panel as a sheet, above the tools.
-    // The sheet shows one panel, with no tabs.
+    // The sheet shows the panels of the frame as tabs.
     add_frame(&mut h);
     assert!(matches!(
         h.state().atlas.selection,
@@ -12186,10 +12188,10 @@ fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at
         (sheet.top(), footer.top() - 1.0)
     );
     assert_eq!(h.state().pad.dock().panes.len(), 1);
-    assert_eq!(h.state().pad.dock().panes[0].tabs.len(), 1);
+    assert_eq!(h.state().pad.dock().panes[0].tabs.len(), 4);
     assert_eq!(control(&h, FRAME_TOOL), Some(tools[0]));
-    assert!(control(&h, &tab_name(FRAME_TABS[1])).is_none());
-    // A tile opens another panel in place of the panel of the sheet.
+    assert!(control(&h, &tab_name(FRAME_TABS[1])).is_some());
+    // A tile shows another panel of the pane in the sheet.
     open_panel(&mut h, FRAME_TABS[2]);
     let dock = h.state().pad.dock();
     assert_eq!(dock.panes.len(), 1);
