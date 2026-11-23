@@ -2,7 +2,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use kurbo::{Point, Rect};
+use i_overlay::core::fill_rule::FillRule as OverlayFill;
+use i_overlay::core::overlay_rule::OverlayRule;
+use i_overlay::float::single::SingleFloatOverlay;
+use kurbo::{BezPath, Cap, Join, PathEl, Point, Rect, StrokeOpts};
 use vale_labeler::{
     AmbiguousLabels, Caps, Fallback, Fallbacks, Feature, Fonts, Geometry, LabelClass, LabelInput,
     LeaderAnchor, LineAnchor, LineOrientation, LinePlacement, LineSide, Obstacle, Options,
@@ -10,7 +13,7 @@ use vale_labeler::{
     TextStyle, UnplacedReason, Weight, place_labels,
 };
 use vale_render::{Color, FillRule, GlyphRun, Item};
-use vale_store::GeometryKind;
+use vale_store::{GeometryKind, LayerId};
 use vale_style::expr::{Expr, Filter};
 use vale_style::{
     LabelClass as StyleClass, LabelFallback, LabelPlacement as StylePlacement, LabelPosition,
@@ -105,6 +108,14 @@ pub fn text_style(c: &StyleClass, fonts: &mut Fonts) -> TextStyle {
     }
 }
 
+/// The mask of one placed label: the outline of its glyphs, the width of the band around them,
+/// and the layers that the mask cuts.
+pub struct LabelMask {
+    pub outline: BezPath,
+    pub width: f64,
+    pub layers: Vec<LayerId>,
+}
+
 /// Places labels for the visible layers.
 ///
 /// `layers` runs from the bottom of the drawing to the top. `classes` holds the label classes of
@@ -121,12 +132,14 @@ pub fn place(
     obstacles: &[Rect],
     symbols: &[PlacedSymbol],
     parallels: Vec<Vec<Point>>,
-) -> (Vec<Item>, LabelSummary) {
+) -> (Vec<Item>, LabelSummary, Vec<LabelMask>) {
     let mut labeled = HashSet::new();
     let mut label_classes: Vec<LabelClass> = Vec::new();
     let mut class_colors: Vec<Color> = Vec::new();
     // The color and the width of the halo of each class, if it has one.
     let mut class_halos: Vec<Option<(Color, f64)>> = Vec::new();
+    // The mask width and the masked layers of each class that masks layers.
+    let mut class_masks: Vec<Option<(f64, &[LayerId])>> = Vec::new();
     // The style of the leader line of each class, with its line color and its halo color.
     let mut class_leaders: Vec<(LeaderStyle, Color, Color)> = Vec::new();
     let mut features: Vec<Feature> = Vec::new();
@@ -168,6 +181,10 @@ pub fn place(
                 leader.halo_color.unwrap_or(c.halo_color),
             ));
             class_halos.push(c.halo.then_some((c.halo_color, c.halo_width)));
+            class_masks.push(
+                (c.mask && !c.masked_layers.is_empty())
+                    .then_some((c.mask_width.max(0.0), c.masked_layers.as_slice())),
+            );
 
             for (k, f) in pl.features.iter().enumerate() {
                 let Some(feature) = pl.layer.features.get(f.index) else {
@@ -295,6 +312,16 @@ pub fn place(
     };
     let labeling = place_labels(fonts, &input);
 
+    let masks = (labeling.placed.iter())
+        .filter_map(|label| {
+            let (width, layers) = class_masks[label.class]?;
+            Some(LabelMask {
+                outline: label.outlines(),
+                width,
+                layers: layers.to_vec(),
+            })
+        })
+        .collect();
     let mut items = Vec::new();
     for label in &labeling.placed {
         if let Some(leader) = &label.leader {
@@ -343,7 +370,92 @@ pub fn place(
             })
             .collect(),
     };
-    (items, summary)
+    (items, summary, masks)
+}
+
+/// The clip of each layer that `masks` cut: `outer`, with a hole for the glyphs of each label
+/// and a band of the mask width around them. The clip uses the even-odd rule. `tolerance` is
+/// the flattening tolerance in target points.
+pub fn mask_clips(masks: &[LabelMask], outer: Rect, tolerance: f64) -> HashMap<LayerId, BezPath> {
+    let mut by_layer: HashMap<LayerId, Vec<usize>> = HashMap::new();
+    for (i, m) in masks.iter().enumerate() {
+        for layer in &m.layers {
+            let labels = by_layer.entry(*layer).or_default();
+            if labels.last() != Some(&i) {
+                labels.push(i);
+            }
+        }
+    }
+    let mut contours: Vec<Option<Vec<Vec<[f64; 2]>>>> = (0..masks.len()).map(|_| None).collect();
+    let mut clips: HashMap<Vec<usize>, BezPath> = HashMap::new();
+    by_layer
+        .into_iter()
+        .map(|(layer, labels)| {
+            let clip = clips.entry(labels.clone()).or_insert_with(|| {
+                let mut subject = Vec::new();
+                for &i in &labels {
+                    let c = contours[i].get_or_insert_with(|| mask_contours(&masks[i], tolerance));
+                    subject.extend(c.iter().cloned());
+                }
+                let empty: Vec<Vec<[f64; 2]>> = Vec::new();
+                let shapes = subject.overlay(&empty, OverlayRule::Union, OverlayFill::NonZero);
+                let mut path = BezPath::new();
+                path.move_to((outer.x0, outer.y0));
+                path.line_to((outer.x1, outer.y0));
+                path.line_to((outer.x1, outer.y1));
+                path.line_to((outer.x0, outer.y1));
+                path.close_path();
+                for ring in shapes.iter().flatten() {
+                    for (k, &[x, y]) in ring.iter().enumerate() {
+                        match k {
+                            0 => path.move_to((x, y)),
+                            _ => path.line_to((x, y)),
+                        }
+                    }
+                    path.close_path();
+                }
+                path
+            });
+            (layer, clip.clone())
+        })
+        .collect()
+}
+
+/// The flat contours of the mask of one label: its glyphs and the band around their outline.
+/// The contours overlap, so they need the nonzero rule.
+fn mask_contours(mask: &LabelMask, tolerance: f64) -> Vec<Vec<[f64; 2]>> {
+    let mut contours = Vec::new();
+    flat_contours(&mask.outline, tolerance, &mut contours);
+    if mask.width > 0.0 {
+        let style = kurbo::Stroke::new(2.0 * mask.width)
+            .with_join(Join::Round)
+            .with_caps(Cap::Round);
+        let band = kurbo::stroke(&mask.outline, &style, &StrokeOpts::default(), tolerance);
+        flat_contours(&band, tolerance, &mut contours);
+    }
+    contours
+}
+
+/// Adds the closed, flat contours of `path` to `out`.
+fn flat_contours(path: &BezPath, tolerance: f64, out: &mut Vec<Vec<[f64; 2]>>) {
+    let mut ring: Vec<[f64; 2]> = Vec::new();
+    let end = |ring: &mut Vec<[f64; 2]>, out: &mut Vec<Vec<[f64; 2]>>| {
+        if ring.len() > 2 {
+            out.push(std::mem::take(ring));
+        } else {
+            ring.clear();
+        }
+    };
+    kurbo::flatten(path, tolerance, |el| match el {
+        PathEl::MoveTo(p) => {
+            end(&mut ring, out);
+            ring.push([p.x, p.y]);
+        }
+        PathEl::LineTo(p) => ring.push([p.x, p.y]),
+        PathEl::ClosePath => end(&mut ring, out),
+        _ => {}
+    });
+    end(&mut ring, out);
 }
 
 /// The items of a leader line from `anchor` to `end` at the label: the halo, the line, and

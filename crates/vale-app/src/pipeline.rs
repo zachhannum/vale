@@ -1408,6 +1408,8 @@ struct DrawnMap<'a> {
     symbols: Vec<PlacedSymbol>,
     km_per_point: f64,
     cuts: Vec<usize>,
+    /// The items of each layer in the list.
+    spans: Vec<(LayerId, std::ops::Range<usize>)>,
 }
 
 /// The scale of the symbols of a map.
@@ -1418,6 +1420,9 @@ struct SymbolScale {
     /// Target points per point.
     unit: f64,
 }
+
+/// The flattening tolerance of the label masks, in target points.
+const MASK_TOLERANCE: f64 = 0.05;
 
 /// Draws a map in `area`: the background if it has one, the water, the
 /// layers, the graticule, and the outline. Each cut `i` marks the place
@@ -1478,6 +1483,7 @@ fn draw_map<'a>(
         placed: Vec::new(),
     };
     let mut cut_items = Vec::new();
+    let mut spans = Vec::new();
     let mut cut_at = cuts.iter().peekable();
     for pl in &page_layers {
         let index = ids.iter().position(|id| *id == pl.layer.id);
@@ -1488,6 +1494,7 @@ fn draw_map<'a>(
             cut_items.push(list.items.len());
         }
         sd.layer_count = 0;
+        let start = list.items.len();
         // The page mask clips the masked batches of a line or polygon layer.
         // A layer whose page mask is not ready draws none of them. A markers
         // mask clips them with a hole at each marker that the map draws.
@@ -1524,6 +1531,7 @@ fn draw_map<'a>(
             draw_batch(list, pl, &batch, &mut sd);
         }
         close_clip(list, open);
+        spans.push((pl.layer.id, start..list.items.len()));
     }
     cut_items.extend(cut_at.map(|_| list.items.len()));
     let symbols = sd.placed;
@@ -1564,7 +1572,46 @@ fn draw_map<'a>(
         symbols,
         km_per_point,
         cuts: cut_items,
+        spans,
     }
+}
+
+/// Puts the items of each layer of `spans` with a clip in `clips` between a push and a pop of
+/// that clip, and moves `cuts` to the same items. A cut at the start of a span stays before
+/// the push, so that the clip and its items stay in one group.
+fn wrap_layers(
+    list: &mut DisplayList,
+    spans: &[(LayerId, std::ops::Range<usize>)],
+    cuts: &mut [usize],
+    clips: &HashMap<LayerId, BezPath>,
+) {
+    let wrapped: Vec<(&BezPath, &std::ops::Range<usize>)> = (spans.iter())
+        .filter(|(_, span)| !span.is_empty())
+        .filter_map(|(id, span)| Some((clips.get(id)?, span)))
+        .collect();
+    if wrapped.is_empty() {
+        return;
+    }
+    for cut in cuts.iter_mut() {
+        *cut += 2 * wrapped.iter().filter(|(_, span)| span.end <= *cut).count();
+    }
+    let old = std::mem::take(&mut list.items);
+    let mut items = Vec::with_capacity(old.len() + 2 * wrapped.len());
+    let mut next = wrapped.iter().peekable();
+    for (i, item) in old.into_iter().enumerate() {
+        if let Some((path, _)) = next.peek().filter(|(_, span)| span.start == i) {
+            items.push(Item::PushClip {
+                path: (*path).clone(),
+                rule: FillRule::EvenOdd,
+            });
+        }
+        items.push(item);
+        if next.peek().is_some_and(|(_, span)| span.end == i + 1) {
+            items.push(Item::PopClip);
+            next.next();
+        }
+    }
+    list.items = items;
 }
 
 impl Pipeline {
@@ -2011,7 +2058,7 @@ impl Pipeline {
             let classes: Vec<_> = (drawn.layers.iter())
                 .map(|pl| doc.label_classes(None, pl.layer.id))
                 .collect();
-            let (items, summary) = labels::place(
+            let (items, summary, _) = labels::place(
                 &drawn.layers,
                 &classes,
                 page,
@@ -2324,7 +2371,7 @@ impl Pipeline {
                 .filter(|l| !l.outside)
                 .map(|l| edge_labels::quad_bounds(&l.quad))
                 .collect();
-            let (items, summary) = labels::place(
+            let (items, summary, label_masks) = labels::place(
                 &labeled.layers,
                 &classes,
                 full,
@@ -2334,6 +2381,14 @@ impl Pipeline {
                 &labeled.symbols,
                 cache.page_parallels(&vt, full, &classes),
             );
+            if !label_masks.is_empty() {
+                // The outer edge of the clips holds all that the frame draws.
+                let outer = full
+                    .union(Rect::new(0.0, 0.0, list.width, list.height))
+                    .inflate(1.0, 1.0);
+                let clips = labels::mask_clips(&label_masks, outer, MASK_TOLERANCE);
+                wrap_layers(&mut list, &drawn.spans, &mut drawn.cuts, &clips);
+            }
             list.items.extend(items);
             label_summary = summary;
         }
@@ -2531,6 +2586,44 @@ pub(crate) fn frame_area(frame: &FrameRecord, target: FrameTarget) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_label_mask_wraps_its_layer_and_keeps_the_cuts_at_the_same_items() {
+        let fill = |c: u8| Item::Fill {
+            path: Rect::new(0.0, 0.0, 1.0, 1.0).to_path(0.1),
+            color: vale_render::Color::rgb(c, 0, 0),
+            rule: FillRule::NonZero,
+        };
+        let clip = Rect::new(0.0, 0.0, 9.0, 9.0).to_path(0.1);
+        let mut list = DisplayList::new(10.0, 10.0);
+        list.items = vec![fill(0), fill(1), fill(2), fill(3), fill(4), fill(5)];
+        let (a, b, c) = (LayerId(1), LayerId(2), LayerId(3));
+        let spans = vec![(a, 0..2), (b, 2..4), (c, 4..6)];
+        // A raster layer goes before b, and another after c.
+        let mut cuts = vec![2, 6];
+        let clips = HashMap::from([(a, clip.clone()), (c, clip.clone())]);
+        wrap_layers(&mut list, &spans, &mut cuts, &clips);
+        let push = || Item::PushClip {
+            path: clip.clone(),
+            rule: FillRule::EvenOdd,
+        };
+        assert_eq!(
+            list.items,
+            vec![
+                push(),
+                fill(0),
+                fill(1),
+                Item::PopClip,
+                fill(2),
+                fill(3),
+                push(),
+                fill(4),
+                fill(5),
+                Item::PopClip,
+            ]
+        );
+        assert_eq!(cuts, vec![4, 10]);
+    }
     use vale_style::expr::Property;
     use vale_style::{Color, Rule, StrokeSymbolizer, Symbolizer};
 

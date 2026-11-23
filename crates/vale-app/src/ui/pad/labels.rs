@@ -156,6 +156,11 @@ pub const WEIGHT_FREE: &str = "Free";
 pub const WEIGHT_FORBIDDEN: &str = "Forbidden";
 pub const REMOVE_DUPLICATES: &str = "Remove duplicates";
 pub const DUPLICATE_DISTANCE: &str = "Duplicate distance";
+pub const MASK_LAYERS: &str = "Mask layers";
+pub const MASK_WIDTH: &str = "Mask width";
+pub const MASKED_LAYERS: &str = "Masked layers";
+/// The value of the Masked layers row with no layer.
+pub const NO_MASKED_LAYERS: &str = "None";
 /// The row of the fallbacks, and the title of its page.
 pub const FALLBACKS: &str = "Fallbacks";
 /// The hint of the Fallbacks page of a line class.
@@ -242,6 +247,8 @@ pub const END_SIZES: (f64, f64) = (1.0, 12.0);
 pub const LEADER_GAPS: (f64, f64) = (0.0, 10.0);
 /// The smallest and the largest buffer, in points.
 pub const BUFFERS: (f64, f64) = (0.0, 10.0);
+/// The smallest and the largest mask width, in points.
+pub const MASK_WIDTHS: (f64, f64) = (0.0, 10.0);
 /// The smallest and the largest duplicate distance, in points.
 pub const DUPLICATE_DISTANCES: (f64, f64) = (0.0, 2000.0);
 /// The smallest and the largest smallest size of the fallback "Smaller font", in points.
@@ -473,6 +480,7 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
         Some(ClassPage::LeaderLine) => ("pad-atlas-leader", LEADER_LINE, &*class.name),
         Some(ClassPage::Fallbacks) => ("pad-atlas-fallbacks", FALLBACKS, &*class.name),
         Some(ClassPage::Abbreviations) => ("pad-atlas-abbreviations", ABBREVIATIONS, FALLBACKS),
+        Some(ClassPage::MaskedLayers) => ("pad-atlas-masked-layers", MASKED_LAYERS, &*class.name),
         None => (CLASS_KEY, class.name.as_str(), FRAME_TABS[3]),
     };
     let parts = PageParts::new(key, title, Some(back));
@@ -504,6 +512,7 @@ pub(super) fn class_head(state: &mut AppState, id: FrameId) -> Option<Head> {
             Some(ClassPage::LeaderLine) => leader_page(ui, state, controls, at, &class),
             Some(ClassPage::Fallbacks) => fallbacks_page(ui, state, controls, at, kind, &class),
             Some(ClassPage::Abbreviations) => abbreviations_page(ui, state, controls, at, &class),
+            Some(ClassPage::MaskedLayers) => masked_layers_page(ui, state, controls, at, &class),
             None => {
                 match segment {
                     ClassSegment::Text => text_segment(ui, state, controls, at, &class),
@@ -1499,6 +1508,23 @@ fn conflicts_segment(
             state.edit_label_class(map, layer, i, |c| c.duplicate_distance = distance);
         }
     }
+    let mut mask = class.mask;
+    if widgets::switch_row(ui, controls, MASK_LAYERS, MASK_LAYERS, &mut mask) {
+        state.label_class_step(map, layer, i, |c| c.mask = mask);
+    }
+    if class.mask {
+        let width = Number::new(MASK_WIDTH, class.mask_width, MASK_WIDTHS.0..=MASK_WIDTHS.1)
+            .step(0.25)
+            .unit("pt")
+            .stepper(ui, controls);
+        if let Some(width) = width {
+            state.edit_label_class(map, layer, i, |c| c.mask_width = width);
+        }
+        let value = masked_layers_value(state, class);
+        if widgets::open_row(ui, controls, MASKED_LAYERS, &value).clicked() {
+            state.atlas.label_page = Some(ClassPage::MaskedLayers);
+        }
+    }
     let fits = |r: &&vale_style::FallbackRank| fallback_applies(kind, r.fallback);
     let all = class.fallbacks.iter().filter(fits).count();
     let on = class.fallbacks.iter().filter(fits).filter(|r| r.on).count();
@@ -1513,6 +1539,54 @@ fn conflicts_segment(
         && widgets::open_row(ui, controls, AMBIGUOUS, class.ambiguous.name()).clicked()
     {
         state.atlas.label_page = Some(ClassPage::Ambiguous);
+    }
+}
+
+/// The value of the Masked layers row: the name of the one masked layer, the number of the
+/// masked layers, or "None". Only the vector layers of the project count.
+pub fn masked_layers_value(state: &AppState, class: &LabelClass) -> String {
+    let masked: Vec<LayerId> = (state.label_layers().into_iter())
+        .map(|(id, _)| id)
+        .filter(|id| class.masked_layers.contains(id))
+        .collect();
+    match masked.as_slice() {
+        [] => NO_MASKED_LAYERS.to_owned(),
+        [one] => layer_name(state, *one),
+        more => format!("{} layers", more.len()),
+    }
+}
+
+/// Each vector layer of the project, top first, with a mark on each layer that the labels of
+/// the class cut. A tap on a row adds or removes its layer.
+fn masked_layers_page(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    (_, map, layer, i): ClassAt,
+    class: &LabelClass,
+) {
+    let layers = state.label_layers();
+    if layers.is_empty() {
+        hint(ui, NO_VECTOR_LAYERS);
+        return;
+    }
+    for (to, kind) in layers.into_iter().rev() {
+        let name = layer_name(state, to);
+        let lines = [kind_name(kind).to_owned()];
+        let on = class.masked_layers.contains(&to);
+        let row = ui.push_id(("masked-layer", to.0), |ui| {
+            widgets::option_row(ui, controls, &name, &name, &lines, on)
+        });
+        if row.inner.clicked() {
+            state.label_class_step(map, layer, i, |c| {
+                match c.masked_layers.iter().position(|l| *l == to) {
+                    Some(k) => {
+                        c.masked_layers.remove(k);
+                    }
+                    None => c.masked_layers.push(to),
+                }
+            });
+        }
     }
 }
 
