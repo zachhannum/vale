@@ -16,6 +16,7 @@ use vale_app::headless;
 use vale_app::pen::{PenEvent, PenPhase, PenQueue};
 use vale_app::projects::Locations;
 use vale_app::session::Session;
+use vale_app::ui::collection_choice::CollectionChoice;
 use vale_app::ui::export_form::{self, EXPORT, ExportForm};
 use vale_app::ui::gradient::{band_row, widest_gap_value};
 use vale_app::ui::pad::collection_choice;
@@ -22297,4 +22298,24 @@ fn a_popover_from_the_sheet_stays_in_its_room_on_each_compact_screen() {
         tap(&mut h, "Polygons");
         assert_eq!(h.state().doc.project.layers().len(), layers + 1, "{what}");
     }
+}
+
+#[test]
+fn a_long_collection_name_stops_before_the_label() {
+    let mut h = painted_pad(BOARDS[0]);
+    let long = "Settlements & Roads of the Northern Kingdoms and the Western Isles";
+    let rivers = vector(&h, "Rivers");
+    let id = h.state_mut().add_collection_with(long, rivers).unwrap();
+    h.state_mut().pad.add_collection = Some(CollectionChoice::Existing(id));
+    open_panel(&mut h, "Layers");
+    tap(&mut h, ADD_LAYER);
+    h.run_steps(2);
+    let texts = painted_texts(&h);
+    let (_, label) = (texts.iter())
+        .find(|(t, _)| t == collection_choice::COLLECTION)
+        .unwrap();
+    let (_, value) = (texts.iter())
+        .find(|(t, r)| t == long && (r.center().y - label.center().y).abs() < 4.0)
+        .unwrap();
+    assert!(value.left() > label.right(), "{label:?} {value:?}");
 }
