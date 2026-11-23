@@ -2412,10 +2412,30 @@ impl AppState {
         }
     }
 
-    /// True if the style of a layer in a map differs from the
+    /// Makes a copy of the style of a layer in a map or a map style the
+    /// globe style of the layer, as one undo step.
+    pub fn copy_to_globe_style(&mut self, target: Target, layer: LayerId) {
+        self.sync_raster_style(layer);
+        self.save_edit();
+        if !self.doc.copy_to_globe_style(target, layer) {
+            return;
+        }
+        let raster = self.doc.project.layer(layer).and_then(|l| l.raster());
+        if let Some(record) = raster.and_then(|id| self.doc.project.raster(id)) {
+            let bands = session::bands_of(record);
+            if let Some(live) = self.globe.bands_mut(record.id) {
+                *live = bands;
+            }
+        }
+        self.sync_globe();
+        self.touch();
+        self.save_edit();
+    }
+
+    /// True if the style of a layer in a target differs from the
     /// globe style.
-    pub fn differs_from_globe(&self, map: MapId, layer: LayerId) -> bool {
-        self.doc.map_style(Target::Map(map), layer) != self.doc.layer_style(layer)
+    pub fn differs_from_globe(&self, target: impl Into<Target>, layer: LayerId) -> bool {
+        self.doc.map_style(target, layer) != self.doc.layer_style(layer)
     }
 
     /// Puts the live bands of a raster layer into its record and its style.

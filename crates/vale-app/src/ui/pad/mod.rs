@@ -38,6 +38,7 @@ pub mod chip_popover;
 pub mod classify;
 pub mod collection;
 pub mod collection_choice;
+pub mod copy_style;
 pub mod dock_ui;
 pub mod edge_labels;
 pub mod expression;
@@ -453,6 +454,8 @@ pub enum Page {
     DashPattern(Option<usize>),
     /// The collections of the layer.
     Collections,
+    /// The maps and the map styles that the globe style can copy from.
+    CopyStyle,
 }
 
 /// The state of the iPad layout.
@@ -2128,7 +2131,7 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
     };
     let layer_back = manage::layer_back(state);
     let fits = match (layer, state.pad.page) {
-        (Some(_), Some(Page::Collections)) => true,
+        (Some(_), Some(Page::Collections | Page::CopyStyle)) => true,
         (
             Some(LayerRef::Raster(_)),
             Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
@@ -2189,6 +2192,9 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Panel::Brush, _) => (panel.key(), panel_name(state, panel), None),
         (Panel::Layers, Some(_)) if page == Some(Page::Collections) => {
             ("pad-collections", collection::COLLECTIONS, Some(name))
+        }
+        (Panel::Layers, Some(_)) if page == Some(Page::CopyStyle) => {
+            ("pad-copy-style", copy_style::TITLE, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Ramps) => {
             ("pad-ramps", raster::COLOR_RAMPS, Some(raster::COLOR_STOPS))
@@ -2508,6 +2514,13 @@ pub(super) fn panel_body(
         && let Some(id) = layer.and_then(|l| layer_id(state, l))
     {
         collection::page_body(ui, state, controls, id);
+        return;
+    }
+    if panel == Panel::Layers
+        && page == Some(Page::CopyStyle)
+        && let Some(id) = layer.and_then(|l| layer_id(state, l))
+    {
+        copy_style::page_body(ui, state, controls, id);
         return;
     }
     match (panel, layer) {
@@ -3790,6 +3803,7 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
         state.open_table(id);
     }
     rules::section(ui, state, controls, id);
+    copy_style::open_row(ui, state, controls);
     if kind != "Polygons" {
         fonts::section(ui, state, controls, id);
     }
@@ -3935,6 +3949,7 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     export_row(ui, state, controls, id);
     raster::style(ui, state, controls, id, None);
+    copy_style::open_row(ui, state, controls);
 }
 
 /// The panel of an image layer: its name, its size, its opacity, its blend
@@ -3975,6 +3990,7 @@ fn image_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, 
     if widgets::open_row(ui, controls, raster::BLEND, label).clicked() {
         state.pad.page = Some(Page::Blend);
     }
+    copy_style::open_row(ui, state, controls);
     image_note(ui, state, Some(id));
 }
 

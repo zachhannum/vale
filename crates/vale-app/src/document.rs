@@ -11,8 +11,8 @@ use vale_import::geojson::{self, Imported};
 use vale_render::{Symbol, Symbols};
 use vale_sphere::ProjectionSpec;
 use vale_store::{
-    Field, FieldType, GeometryKind, Layer, LayerId, MapId, MapRecord, MapStyleId, MapStyleRecord,
-    Project, ProjectionPreset, Units, World,
+    Field, FieldType, GeometryKind, Layer, LayerId, LayerKind, MapId, MapRecord, MapStyleId,
+    MapStyleRecord, Project, ProjectionPreset, Units, World,
 };
 use vale_style::{Color, LabelClass, LayerStyle, MapStyle, Stroke, Weights};
 
@@ -884,6 +884,41 @@ impl Document {
             return false;
         };
         self.set_map_style(target, layer, &globe)
+    }
+
+    /// Makes a copy of the style of a layer in a target the globe style of
+    /// the layer. The record of a raster layer or an image layer takes the
+    /// colors and the look of the style. Returns false if nothing changed.
+    pub fn copy_to_globe_style(&mut self, target: impl Into<Target>, layer: LayerId) -> bool {
+        let Some(style) = self.map_style(target, layer) else {
+            return false;
+        };
+        if self.layer_style(layer).as_ref() == Some(&style) {
+            return false;
+        }
+        if let Some(entry) = self.entry_mut(layer) {
+            entry.style = style.clone();
+        }
+        let Some(kind) = self.project.layer(layer).map(|l| l.kind) else {
+            return false;
+        };
+        match kind {
+            LayerKind::Raster(id) => {
+                let record = self.project.raster_mut(id);
+                if let (Some(record), Some(s)) = (record, style.raster_symbolizer()) {
+                    crate::raster_style::apply_symbolizer(record, s, true);
+                }
+            }
+            LayerKind::Image(id) => {
+                if let Some(&look) = style.image_symbolizer() {
+                    self.project.set_image_opacity(id, look.opacity);
+                    self.project.set_image_blend(id, look.blend);
+                }
+            }
+            LayerKind::Vector(_) => {}
+        }
+        self.project.set_layer_style(layer, Some(style.to_json()));
+        true
     }
 
     /// True if a target shows a layer. A map shows a layer that one of its
