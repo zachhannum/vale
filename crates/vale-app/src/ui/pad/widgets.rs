@@ -1307,9 +1307,18 @@ pub fn open_row(ui: &mut egui::Ui, controls: &mut Controls, name: &str, value: &
     let resp = text_row(ui, controls, name, 0.0, false, true);
     let row = resp.rect;
     if !value.is_empty() {
-        let at = pos2(row.right() - ICON - 8.0, row.center().y);
-        ui.painter()
-            .text(at, Align2::RIGHT_CENTER, value, theme::body(), theme::MUTE);
+        // The value ends with "…" where it would reach the name.
+        let right = row.right() - ICON - 8.0;
+        let left = row.left() + text_width(ui, name, theme::body()) + 16.0;
+        let mut job =
+            egui::text::LayoutJob::simple_singleline(value.to_owned(), theme::body(), theme::MUTE);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - left).max(0.0));
+        let galley = ui.painter().layout_job(job);
+        let at = pos2(
+            right - galley.size().x,
+            row.center().y - galley.size().y / 2.0,
+        );
+        ui.painter().galley(at, galley, theme::MUTE);
     }
     paint_open(ui, row);
     resp
