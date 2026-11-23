@@ -8991,6 +8991,85 @@ fn a_tapered_stroke_of_a_masked_layer_has_round_pieces() {
     assert!(drawn > 1000 && wrong * 100 < drawn, "{wrong} of {drawn}");
 }
 
+/// The canvas image of the globe at zoom 2 over 0 degrees east and north,
+/// with the layers of `masked::marker_masked`, a markers mask of `gap`
+/// points, and a stroke that applies the mask or not. Returns the image and
+/// the town in it.
+fn marker_globe(gap: f32, apply: bool) -> (image::RgbaImage, Pos2) {
+    let mut state = state();
+    state.globe.set_face_size(BRUSH_FACE_SIZE);
+    state.add_height();
+    state.doc.frame.labels = false;
+    let (line, _) = masked::add_marker_masked(&mut state.doc);
+    let style = &mut state.doc.entry_mut(line).unwrap().style.style;
+    style.mask = Some(match style.mask {
+        Some(vale_style::Mask::Markers { layer, .. }) => vale_style::Mask::Markers { layer, gap },
+        _ => unreachable!("the line has a markers mask"),
+    });
+    masked::set_applies_mask(&mut state.doc, line, false, apply);
+    state.globe.preview.graticule = false;
+    state.globe.view = GlobeView::centered(0.0, 0.0);
+    state.globe.view.zoom = 2.0;
+    state.sync_globe();
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (640.0, 480.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    let image = canvas_image(&mut h);
+    let globe = &h.state().globe;
+    let town = globe
+        .view
+        .project(globe.rect, lonlat_to_dir(0.0, 0.0))
+        .unwrap();
+    let min = globe.rect.min;
+    (image, town - egui::vec2(min.x.ceil(), min.y.ceil()))
+}
+
+#[test]
+fn a_markers_mask_of_a_hidden_point_layer_cuts_no_hole() {
+    use vale_app::ui::globe::{marker_holes, marker_masks};
+    let (mut doc, line, point) = masked::marker_masked();
+    let pipeline = vale_app::pipeline::Pipeline::new();
+    let project = |d: V3| Some(Pos2::new(d[0] as f32, d[1] as f32));
+    assert_eq!(marker_masks(&doc), vec![line]);
+    assert!(!marker_holes(&doc, line, 1e6, &pipeline, project).is_empty());
+    doc.set_visible(point, false);
+    assert!(marker_masks(&doc).is_empty());
+    assert!(marker_holes(&doc, line, 1e6, &pipeline, project).is_empty());
+}
+
+#[test]
+fn a_markers_mask_cuts_no_hole_for_a_rule_outside_its_scale_range() {
+    use vale_app::ui::globe::marker_holes;
+    let (mut doc, line, point) = masked::marker_masked();
+    let pipeline = vale_app::pipeline::Pipeline::new();
+    let project = |d: V3| Some(Pos2::new(d[0] as f32, d[1] as f32));
+    doc.entry_mut(point).unwrap().style.style.rules[0].max_scale = Some(1e5);
+    assert!(marker_holes(&doc, line, 1e6, &pipeline, project).is_empty());
+    assert!(!marker_holes(&doc, line, 1e4, &pipeline, project).is_empty());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_markers_mask_stops_a_line_short_of_each_marker_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let (image, town) = marker_globe(6.0, true);
+    masked::save_images("mask-markers-globe", &image, &image);
+    // The hole reaches the radius, the stroke, and the gap: 11 points.
+    let start = masked::line_start(&image, town, 100);
+    assert!(start.is_some_and(|s| (10..=13).contains(&s)), "{start:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_line_that_does_not_apply_a_markers_mask_crosses_the_marker_on_the_globe() {
+    let _gpu = one_gpu_test();
+    let (image, town) = marker_globe(6.0, false);
+    // The line shows next to the stroke of the marker, at 5 points.
+    let start = masked::line_start(&image, town, 100);
+    assert!(start.is_some_and(|s| s <= 7), "{start:?}");
+}
+
 #[test]
 #[ignore = "gpu"]
 fn manual_pictures_of_a_river_that_the_polygon_brush_cuts() {

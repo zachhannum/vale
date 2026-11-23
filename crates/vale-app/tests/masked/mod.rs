@@ -48,6 +48,13 @@ pub fn marker_masked() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     let mut doc = Document::empty();
     doc.frame.labels = false;
     doc.frame.graticule = false;
+    let (line, point) = add_marker_masked(&mut doc);
+    (doc, line, point)
+}
+
+/// Adds the line layer and the point layer of `marker_masked` to `doc`.
+/// Returns the line layer and the point layer.
+pub fn add_marker_masked(doc: &mut Document) -> (vale_store::LayerId, vale_store::LayerId) {
     let line = r#"{"type":"Feature","properties":{"name":"Marker River"},"geometry":{"type":"LineString","coordinates":[[-40,0],[40,0]]}}"#;
     let point = r#"{"type":"Point","coordinates":[0,0]}"#;
     let line = doc.add_imported(geojson::read_str("river", line).unwrap(), None)[0];
@@ -72,7 +79,18 @@ pub fn marker_masked() -> (Document, vale_store::LayerId, vale_store::LayerId) {
     let style = &mut doc.entry_mut(line).unwrap().style;
     style.set_stroke(Some(Stroke::solid(MASK_STROKE, 2.0)));
     style.style.mask = Some(vale_style::Mask::Markers { layer: point, gap });
-    (doc, line, point)
+    (line, point)
+}
+
+/// The distance in pixels from `center` to the first pixel of the line of
+/// `marker_masked` east of it in `image`, on the three rows around
+/// `center`, up to `reach` pixels. `None`: no line pixel.
+pub fn line_start(image: &image::RgbaImage, center: Pos2, reach: u32) -> Option<u32> {
+    let (cx, cy) = (center.x.round() as u32, center.y.round() as u32);
+    let as32 = |c: Color| [c.r, c.g, c.b];
+    let line = as32(MASK_STROKE);
+    let is_line = |p: &image::Rgba<u8>| (0..3).all(|k| p.0[k].abs_diff(line[k]) < 40);
+    (1..=reach).find(|dx| (cy - 1..=cy + 1).any(|y| is_line(image.get_pixel(cx + dx, y))))
 }
 
 /// Sets whether the mask cuts the fill and the stroke of `masked_square`.

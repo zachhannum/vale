@@ -1099,6 +1099,61 @@ fn the_cut_of_a_raster_mask_draws_at_its_place_in_the_draw_order_of_the_flat_vie
     );
 }
 
+/// The canvas image of the flat view with the layers of
+/// `masked::marker_masked` and a markers mask of `gap` points. Returns the
+/// image and the town in it.
+fn marker_flat(gap: f32) -> (image::RgbaImage, Pos2) {
+    let mut h = flat_harness();
+    let state = h.state_mut();
+    state.globe.tool = Tool::Pan;
+    state.globe.flat.zoom = 2.0;
+    state.doc.frame.labels = false;
+    let (line, _) = masked::add_marker_masked(&mut state.doc);
+    let style = &mut state.doc.entry_mut(line).unwrap().style.style;
+    style.mask = Some(match style.mask {
+        Some(vale_style::Mask::Markers { layer, .. }) => vale_style::Mask::Markers { layer, gap },
+        _ => unreachable!("the line has a markers mask"),
+    });
+    state.sync_globe();
+    h.run_steps(3);
+    let image = canvas_image(&mut h);
+    let globe = &h.state().globe;
+    let town = globe
+        .flat
+        .project(globe.rect, lonlat_to_dir(0.0, 0.0))
+        .unwrap();
+    let min = globe.rect.min;
+    (image, town - egui::vec2(min.x.ceil(), min.y.ceil()))
+}
+
+/// The distance from the town to the line in the flat view, with a markers
+/// mask of `gap` points.
+fn marker_flat_start(gap: f32) -> Option<u32> {
+    let (image, town) = marker_flat(gap);
+    masked::save_images(&format!("mask-markers-flat-{gap}"), &image, &image);
+    masked::line_start(&image, town, 100)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_markers_mask_stops_a_line_short_of_each_marker_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    // The hole reaches the radius, the stroke, and the gap: 9 points.
+    let start = marker_flat_start(4.0);
+    assert!(start.is_some_and(|s| (8..=11).contains(&s)), "{start:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_markers_mask_gap_moves_the_end_of_the_line_in_the_flat_view() {
+    let _gpu = one_gpu_test();
+    let (near, far) = (marker_flat_start(2.0), marker_flat_start(10.0));
+    let (Some(near), Some(far)) = (near, far) else {
+        panic!("{near:?} {far:?}");
+    };
+    assert!((6..=10).contains(&(far - near)), "{near} {far}");
+}
+
 #[test]
 #[ignore = "gpu"]
 fn a_raster_mask_offset_moves_the_edge_of_the_fill_in_the_flat_view() {
