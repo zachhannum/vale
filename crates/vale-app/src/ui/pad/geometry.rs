@@ -327,6 +327,10 @@ pub fn display_corners(screen: Rect, camera: Option<Rect>) -> DisplayCorners {
 /// the space between the highlights of the two rows. The radius of the
 /// card is the radius of the highlight plus this space.
 pub const BAR_PAD: f32 = 8.0;
+/// The space between the top of the floating card of the rows and the
+/// highlights of its first row. The space below the last row also holds
+/// the bottom band, so the top has more than `BAR_PAD`.
+pub const BAR_TOP_PAD: f32 = 12.0;
 /// The space between a cell and its highlight.
 pub const CELL_INSET: f32 = 2.0;
 /// The space between the edge of the floating card and the cells inside.
@@ -543,14 +547,26 @@ impl Rects {
         }
     }
 
-    /// The part of the tool column that holds its controls: the rail
-    /// keeps them above the bottom band.
+    /// The part of the tool column that holds its controls, with
+    /// `COLUMN_INSET` around them: the rail keeps them above the bottom
+    /// band.
     pub fn tools_content(&self) -> Rect {
         let mut rect = self.tools;
         if self.rail {
-            rect.max.y = rect.max.y.min(self.screen.bottom() - self.bands.bottom);
+            let band = self.screen.bottom() - self.bands.bottom;
+            rect.max.y = rect.max.y.min(band + COLUMN_INSET);
         }
         rect
+    }
+
+    /// The left edge of the cards at the left of a compact screen: the
+    /// World menu, the capsules below it, and the sheet.
+    pub fn left_margin(&self) -> f32 {
+        let inset = match self.rail {
+            true => self.inset,
+            false => MARGIN,
+        };
+        self.screen.left() + self.bands.left + inset
     }
 }
 
@@ -723,7 +739,28 @@ pub fn strip_width(cells: usize) -> f32 {
 pub fn layout(input: &Input) -> Rects {
     let Input { screen, bands, .. } = *input;
     let class = WidthClass::of(screen.width());
-    let left = screen.left() + bands.left + MARGIN;
+    let row = input.row && class == WidthClass::Compact && screen.width() < RAIL_FROM;
+    let rail = class == WidthClass::Compact && !row;
+    // The floating cards at the bottom are concentric with the corners of
+    // the display. The rows keep the margin of the top row. The rail is a
+    // capsule, so its inset is the radius of the display corner less the
+    // radius of the capsule. The sheet beside it, the top row, and the
+    // capsules at the left have the same inset, so the left side is one line.
+    let corners = display_corners(screen, input.camera);
+    let largest = [corners.left, corners.right]
+        .into_iter()
+        .flatten()
+        .fold(0.0, f32::max);
+    let inset = match rail {
+        true => (largest - COLUMN / 2.0).max(MARGIN),
+        false => MARGIN,
+    };
+    let left = screen.left()
+        + bands.left
+        + match rail {
+            true => inset,
+            false => MARGIN,
+        };
     let right = screen.right() - bands.right - MARGIN;
     let top = screen.top() + bands.top + TOP_GAP;
     let bottom = screen.bottom() - bands.bottom;
@@ -771,25 +808,13 @@ pub fn layout(input: &Input) -> Rects {
         }
     }
 
-    let row = input.row && class == WidthClass::Compact && screen.width() < RAIL_FROM;
-    let rail = class == WidthClass::Compact && !row;
-    // The floating cards at the bottom are concentric with the corners of
-    // the display. The rows keep the margin of the top row. The rail is a
-    // capsule, so its inset is the radius of the display corner less the
-    // radius of the capsule, and the sheet beside it has the same inset.
-    let corners = display_corners(screen, input.camera);
-    let largest = [corners.left, corners.right]
-        .into_iter()
-        .flatten()
-        .fold(0.0, f32::max);
-    let inset = match rail {
-        true => (largest - COLUMN / 2.0).max(MARGIN),
-        false => MARGIN,
-    };
     // The bottom of the floating cards. It can be in the bottom band, and
     // the controls stay above `floor`.
     let card_bottom = screen.bottom() - inset;
     let floor = bottom.min(card_bottom);
+    // The cells of the rows and of the rail end on the line of the bottom
+    // band, and at least `BAR_CELL_INSET` above the bottom of the card.
+    let cells_end = bottom.min(card_bottom - BAR_CELL_INSET);
     // The rail stands in the column at the right inset. The actions card
     // ends `ROW_GAP` at the left of that column, so the right edge is one
     // column: the camera, then the rail.
@@ -804,16 +829,15 @@ pub fn layout(input: &Input) -> Rects {
             input,
             left,
             right,
-            bottom: floor,
+            bottom: cells_end,
         };
         let places = rows.layout();
         let (tools, mut tool_cells, brush_card, mut brush, mut card_cells, readout) = places.rects;
         let first = brush.unwrap_or(tools);
-        // The floating card of the rows: `BAR_PAD` around the highlights
-        // of the cells, so a highlight is concentric with the corners of
-        // the card.
+        // The floating card of the rows: `BAR_PAD` at the sides of the
+        // highlights of the cells, and `BAR_TOP_PAD` above them.
         let bar = Rect::from_min_max(
-            pos2(left, first.top() + PAD - BAR_CELL_INSET),
+            pos2(left, first.top() + PAD + CELL_INSET - BAR_TOP_PAD),
             pos2(right, card_bottom),
         );
         // In a sheet, the line above the rows is at the top of the card.
@@ -891,8 +915,10 @@ pub fn layout(input: &Input) -> Rects {
         Some(camera) if rail => top.max(camera.bottom() + ROW_GAP),
         _ => top,
     };
+    // The cells of the rail end on the line of the bottom band.
+    let rail_floor = (cells_end + COLUMN_INSET).min(card_bottom);
     let room = if rail {
-        floor - rail_top
+        rail_floor - rail_top
     } else {
         bottom - DOCK_FOOT - column_top
     };
@@ -916,7 +942,7 @@ pub fn layout(input: &Input) -> Rects {
         let mut track = fill.min(TRACK);
         // A rail that reaches up beside the top row reaches its top, so
         // its top is on the line of the top row or of the camera region.
-        if rail && fixed + c.sliders as f32 * (track + space) > floor - column_top {
+        if rail && fixed + c.sliders as f32 * (track + space) > rail_floor - column_top {
             track = fill;
         }
         while gap.is_some() && track >= track_min && !fits(track + space) {
@@ -960,7 +986,7 @@ pub fn layout(input: &Input) -> Rects {
     // the bottom band, it reaches down to the bottom inset.
     let tools = if rail {
         Rect::from_min_max(
-            pos2(rail_left, floor - height),
+            pos2(rail_left, rail_floor - height),
             pos2(rail_right, card_bottom),
         )
     } else {
@@ -1168,9 +1194,8 @@ impl Rows<'_> {
         let tool_cells = input.tools.min(most);
         let grid = Grid::new(self.left, self.right, tool_cells);
         let height = row_height();
-        // The cells of the strip end `BAR_CELL_INSET` above the bottom of
-        // the floating card, which sits on the bottom band.
-        let floor = self.bottom + PAD - BAR_CELL_INSET;
+        // The cells of the strip end at `bottom`.
+        let floor = self.bottom + PAD;
         let tools = Rect::from_min_size(pos2(self.left, floor - height), vec2(width, height));
         let cells = row_cells(input, tool_cells);
         let brush_card = if cells.sliders {
@@ -1321,7 +1346,7 @@ mod tests {
         assert_eq!(r.menu, pos2(16.0, 84.0));
         // The rail is a capsule at the right margin, `MARGIN` from the
         // bottom edge, with bare sliders of the full length.
-        assert_eq!(r.tools, rect(525.0, 209.0, COLUMN, 609.0));
+        assert_eq!(r.tools, rect(525.0, 213.0, COLUMN, 605.0));
         assert_eq!(r.actions.right(), 525.0 - ROW_GAP);
         assert_eq!(r.brush_card, BrushCard::Bare(TRACK));
         assert_eq!(r.readout, None);
@@ -1386,12 +1411,12 @@ mod tests {
         // The rail reaches into the bottom band, 22 points from the
         // bottom edge, and its controls stay above the band.
         assert_eq!(r.tools.bottom(), 678.0 - 22.0);
-        assert_eq!(r.tools_content().bottom(), 678.0 - 34.0);
+        assert_eq!(r.tools_content().bottom(), 678.0 - 34.0 + COLUMN_INSET);
         assert_eq!(r.tools.right(), 450.0 - 22.0);
         // The rail reaches up beside the top row, so it reaches the top of
         // the top row, and the tracks fill it.
         assert_eq!(r.tools.top(), r.actions.top());
-        assert_eq!(r.brush_card, BrushCard::Bare(125.5));
+        assert_eq!(r.brush_card, BrushCard::Bare(128.5));
         // A panel and a tool with no controls do not move the bottom of
         // the rail.
         input.panel = true;
@@ -1428,9 +1453,8 @@ mod tests {
         assert!(r.row);
         assert_eq!(r.workspace.top(), 63.0);
         // The strip is inside the margins. Its cells are icons alone, and
-        // they end `BAR_CELL_INSET` above the bottom band, at the bottom of
-        // the floating card.
-        assert_eq!(r.tools, rect(16.0, 764.0, 361.0, 52.0));
+        // they end on the line of the bottom band.
+        assert_eq!(r.tools, rect(16.0, 770.0, 361.0, 52.0));
         assert_eq!(r.tool_cells, TOOLS);
         // The cells are on six columns. The first column is on the line
         // of the first button of a card, and the last on the line of the
@@ -1442,18 +1466,19 @@ mod tests {
         assert_eq!(grid.pitch, 61.0);
         // The two sliders and the Brush button are a row above the strip.
         // The sliders span three columns and two columns.
-        assert_eq!(r.brush, Some(rect(16.0, 716.0, 361.0, 52.0)));
+        assert_eq!(r.brush, Some(rect(16.0, 722.0, 361.0, 52.0)));
         assert_eq!(r.brush_card, BrushCard::Full(61.0));
         assert_eq!(r.slider_spans, [3, 2]);
         assert_eq!(r.row_grid, r.grid);
-        // The rows are in one floating card, `BAR_PAD` around the
-        // highlights of the cells, and the card reaches into the bottom
+        // The rows are in one floating card, `BAR_PAD` at the sides of the
+        // highlights of the cells and `BAR_TOP_PAD` above them, and the
+        // card reaches into the bottom
         // band, `MARGIN` from the bottom edge. In a sheet, the line above
         // the rows is at the top of the card. A compact screen has no
         // readout card.
-        assert_eq!(r.bar, Some(rect(16.0, 714.0, 361.0, 122.0)));
+        assert_eq!(r.bar, Some(rect(16.0, 716.0, 361.0, 120.0)));
         assert_eq!(r.footer, r.bar);
-        assert_eq!(r.panel_bottom, 706.0);
+        assert_eq!(r.panel_bottom, 708.0);
         assert_eq!(r.readout, None);
         // With the View button before Undo, the top row is one button and
         // one divider wider. Its buttons are `BAR_CELL_INSET` inside the
@@ -1494,7 +1519,7 @@ mod tests {
         // the offset `sheet_closed`, it is the floating card.
         input.sheet_offset = travel;
         let r = layout(&input);
-        assert_eq!(r.sheet.unwrap().top(), 714.0 - ROW);
+        assert_eq!(r.sheet.unwrap().top(), 716.0 - ROW);
         input.sheet_offset = r.sheet_closed;
         assert_eq!(layout(&input).sheet, bar.bar);
     }
@@ -1562,9 +1587,12 @@ mod tests {
         input.column.cells = 0;
         let r = layout(&input);
         assert_eq!(r.brush, None);
-        // With no card, the bar is the strip alone, `BAR_CELL_INSET` around
-        // its cells.
-        assert_eq!(r.bar.unwrap().top(), r.tools.top() + PAD - BAR_CELL_INSET);
+        // With no card, the bar is the strip alone, `BAR_TOP_PAD` above its
+        // highlights.
+        assert_eq!(
+            r.bar.unwrap().top(),
+            r.tools.top() + PAD + CELL_INSET - BAR_TOP_PAD
+        );
     }
 
     #[test]
@@ -1658,7 +1686,7 @@ mod tests {
         // The rows are the footer of the sheet, and the sheet covers the
         // readout. The footer starts a gap above the control row.
         assert_eq!((r.tool_cells, r.readout), (TOOLS, None));
-        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD - BAR_CELL_INSET);
+        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD);
         // The highlights of the two rows are `BAR_PAD` apart.
         let brush = r.brush.unwrap();
         assert_eq!(
@@ -1667,7 +1695,7 @@ mod tests {
         );
         // The line of the footer is at the top of the floating card.
         let footer = r.footer.unwrap();
-        assert_eq!(footer.top(), brush.top() + PAD - BAR_CELL_INSET);
+        assert_eq!(footer.top(), brush.top() + PAD + CELL_INSET - BAR_TOP_PAD);
         assert_eq!(footer.bottom(), 852.0 - MARGIN);
         // At the full height, the sheet is below the top row.
         assert_eq!(r.sheet_rise, 273.0);
@@ -1681,7 +1709,7 @@ mod tests {
         let sheet = r.sheet.unwrap();
         assert_eq!(sheet.top(), r.footer.unwrap().top() - ROW);
         assert_eq!(r.tool_cells, TOOLS);
-        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD - BAR_CELL_INSET);
+        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD);
         assert_eq!(r.readout, None);
         // A tool with no controls has the strip alone in the footer, and
         // the strip does not move.
@@ -1691,10 +1719,10 @@ mod tests {
         };
         let r = layout(&input);
         assert_eq!(r.brush, None);
-        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD - BAR_CELL_INSET);
+        assert_eq!(r.tools.bottom(), 852.0 - 34.0 + PAD);
         assert_eq!(
             r.footer.unwrap().top(),
-            r.tools.top() + PAD - BAR_CELL_INSET
+            r.tools.top() + PAD + CELL_INSET - BAR_TOP_PAD
         );
         assert_eq!(r.sheet.unwrap().bottom(), 852.0 - MARGIN);
     }
@@ -1878,7 +1906,16 @@ mod tests {
         assert_eq!(radius.sw, crate::ui::pad::theme::HINGE_RADIUS as u8);
         assert_eq!(radius.se, crate::ui::pad::theme::CARD_RADIUS as u8);
         // The controls stay above the bottom band.
-        assert_eq!(r.tools_content().bottom(), 678.0 - 34.0);
+        assert_eq!(r.tools_content().bottom(), 678.0 - 34.0 + COLUMN_INSET);
+        // The World menu and the cards at the left have the inset of the
+        // sheet, so the left side is one line.
+        input.glass = true;
+        let r = layout(&input);
+        assert_eq!(r.left_margin(), 22.0);
+        assert_eq!(r.workspace.left(), 22.0);
+        assert_eq!(r.menu.x, 22.0);
+        assert_eq!(r.sheet.unwrap().left(), 22.0);
+        assert!(r.actions.left() - r.workspace.right() >= ROW_GAP);
         // In Split View, the corner at the left is round.
         let mut input = board(475.0, 669.0);
         input.panel = true;
@@ -1904,7 +1941,7 @@ mod tests {
         // its tracks are shorter.
         assert_eq!(before.tools.top(), before.actions.top());
         assert_eq!(r.tools.top(), camera.bottom() + ROW_GAP);
-        assert_eq!(r.brush_card, BrushCard::Bare(116.0));
+        assert_eq!(r.brush_card, BrushCard::Bare(119.0));
         assert_eq!(r.tools.bottom(), before.tools.bottom());
         assert_eq!(r.actions.right(), r.tools.left() - ROW_GAP);
         let inset = 2.0 * (BAR_CELL_INSET - PAD);

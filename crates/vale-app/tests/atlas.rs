@@ -12106,7 +12106,8 @@ fn in_split_view_the_page_and_its_card_are_at_the_left_of_the_rail() {
     // The rail is 22 points from the edges, and its controls stay above
     // the bottom band.
     assert_eq!((rail.right(), rail.bottom()), (475.0 - 22.0, 669.0 - 22.0));
-    assert_eq!(rects.tools_content().bottom(), 669.0 - 34.0);
+    // The cells end on the line of the bottom band.
+    assert_eq!(rects.tools_content().bottom(), 669.0 - 34.0 + 6.0);
     // The page ends at the left of the rail, and the page card is at the
     // middle of the page, below the top row.
     let page = place(&h).rect;
@@ -12154,9 +12155,10 @@ fn on_an_iphone_the_page_card_is_below_the_top_row_and_the_tools_are_one_card_at
             "{tool:?}"
         );
     }
-    // The card reaches into the bottom band, and the tools stay above it.
+    // The card reaches into the bottom band, and the tools end on its
+    // line.
     assert_eq!(bar.bottom(), height - 16.0);
-    assert!(tools[0].bottom() < height - bottom, "{:?}", tools[0]);
+    assert_eq!(tools[0].bottom(), height - bottom, "{:?}", tools[0]);
     assert!(bar.contains_rect(tools[0]), "{bar:?}");
     assert_eq!((bar.left(), bar.right()), (16.0, width - 16.0));
     // The page is between the page pill and the card of the tools.

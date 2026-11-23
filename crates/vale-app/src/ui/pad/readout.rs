@@ -133,7 +133,7 @@ fn scale_overlay(ctx: &egui::Context, state: &mut AppState, rects: &Rects) {
     let scale = km_per_point(&state.globe, world.radius_km)
         .and_then(|km| crate::scale_bar::readout_scale(km, world.units));
     state.pad.readout_scale = scale.map(|s| s.label());
-    let left = rects.screen.left() + rects.bands.left + geometry::MARGIN;
+    let left = rects.left_margin();
     let room = rects.screen.right() - rects.bands.right - geometry::MARGIN - left;
     let backdrop = state.globe.backdrop();
     let mut top = rects.column_top;

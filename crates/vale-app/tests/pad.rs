@@ -2358,13 +2358,13 @@ fn the_tool_strip_has_six_cells_on_each_screen() {
             assert_eq!(sculpt.size(), vec2(44.0, 44.0), "{what}");
         } else if rects.rail {
             // The rail stands at the right inset, with the six tools at
-            // its bottom, above the bottom band.
+            // its bottom, on the line of the bottom band.
             let inset = rects.inset;
             assert_eq!(rects.tools.right(), size.0 - safe[1] - inset, "{what}");
             assert_eq!(rects.tools.bottom(), size.1 - inset, "{what}");
-            let floor = (size.1 - safe[2].max(20.0)).min(size.1 - inset);
-            assert_eq!(rects.tools_content().bottom(), floor, "{what}");
-            let top = floor - 6.0 - 6.0 * 44.0;
+            let cells = (size.1 - safe[2].max(20.0)).min(size.1 - inset - 6.0);
+            assert_eq!(rects.tools_content().bottom(), cells + 6.0, "{what}");
+            let top = cells - 6.0 * 44.0;
             assert_eq!(control(&h, SCULPT).unwrap().top(), top, "{what}");
         } else {
             // The tool column has the six tools at its top, and below them
@@ -16296,8 +16296,8 @@ fn on_an_iphone_the_tool_strip_is_a_row_above_the_home_indicator() {
     assert!(!disabled(&h, VECTOR) && disabled(&h, SCULPT));
     assert_eq!(row(&h), 4);
     let strip = h.state().pad.rects.unwrap().tools;
-    assert!(strip.bottom() <= PHONE_BOTTOM);
-    assert!(PHONE_BOTTOM - strip.bottom() <= 12.0);
+    // The cells end on the line of the bottom band.
+    assert_eq!(strip.bottom() - 4.0, PHONE_BOTTOM);
     assert_eq!(strip.center().x, 393.0 / 2.0);
     quick_tap(&mut h, VECTOR);
     assert_eq!(h.state().globe.tool, Tool::Line);
@@ -16400,8 +16400,11 @@ fn on_a_compact_screen_the_scale_bar_and_the_place_are_capsules_below_the_world_
         assert!(rects.top_overlay(), "{what}");
         // The capsule of the scale bar is at the left margin, below the
         // World menu, as high as the card of the place.
+        // Beside the rail, the left side is on the line of the sheet.
         let scale = h.state().pad.scale_rect.expect(what);
-        assert_eq!(scale.left(), 16.0, "{what}");
+        let left = if what == "duo" { 22.0 } else { 16.0 };
+        assert_eq!(scale.left(), left, "{what}");
+        assert_eq!(rects.left_margin(), left, "{what}");
         assert_eq!(scale.top(), rects.column_top, "{what}");
         assert!(scale.top() > rects.workspace.bottom(), "{what}");
         assert_eq!(scale.height(), 34.0, "{what}");
@@ -18161,7 +18164,7 @@ fn the_inner_screen_of_iphone_duo_has_the_layout_of_its_width() {
                 let rail = rects.tools;
                 assert_eq!(sheet.top(), screen.height() / 2.0, "{what}");
                 assert_eq!(sheet.bottom(), screen.bottom() - 22.0, "{what}");
-                assert!(rects.tools_content().bottom() <= screen.bottom() - bottom);
+                assert!(rects.tools_content().bottom() <= screen.bottom() - bottom + 6.0);
                 assert_eq!(rail.bottom(), sheet.bottom(), "{what}");
                 assert_eq!(rail.right(), screen.right() - right - 22.0, "{what}");
                 assert_eq!(sheet.right(), rail.left() - 8.0, "{what}");
@@ -18611,7 +18614,11 @@ fn the_outer_screen_of_iphone_duo_keeps_the_controls_off_the_camera() {
                 let sheet = rects.sheet.expect(&what);
                 assert_eq!(sheet.top(), size.1 / 2.0, "{what}");
                 assert_eq!(sheet.bottom(), size.1 - 22.0, "{what}");
-                assert_eq!(rects.tools_content().bottom(), size.1 - bottom, "{what}");
+                assert_eq!(
+                    rects.tools_content().bottom(),
+                    size.1 - bottom + 6.0,
+                    "{what}"
+                );
                 assert_eq!(sheet.right(), rail.left() - 8.0, "{what}");
                 assert_eq!(rail.bottom(), sheet.bottom(), "{what}");
             } else {

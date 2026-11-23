@@ -385,7 +385,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
 /// the dock.
 fn page_space(rects: &Rects) -> Rect {
     let left = match rects.top_overlay() {
-        true => rects.screen.left() + rects.bands.left + MARGIN,
+        true => rects.left_margin(),
         false => rects.tools.right() + GAP,
     };
     let right = match rects.class {
@@ -868,7 +868,7 @@ fn page_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
             vec2(pages, ROW),
         );
         if !readout.is_empty() {
-            let left = rects.screen.left() + rects.bands.left + MARGIN;
+            let left = rects.left_margin();
             let room = rects.screen.right() - rects.bands.right - MARGIN - left;
             let at = pos2(left, rect.bottom() + GAP);
             let backdrop = state.globe.backdrop();
