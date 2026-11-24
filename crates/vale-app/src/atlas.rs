@@ -169,6 +169,83 @@ pub fn rotate(frame: &mut FrameRecord, projection: &Projection, at: Point, degre
     moved
 }
 
+/// The page box of the outline of the projection in a frame, in
+/// millimeters, after the rotation of the frame.
+pub fn outline_box(frame: &FrameRecord, projection: &Projection) -> Rect {
+    let vt = frame_transform(projection, frame, FrameTarget::MM);
+    let points: Vec<[f64; 2]> = projection
+        .outline()
+        .into_iter()
+        .map(|p| {
+            let q = vt.to_page(p);
+            [q.x, q.y]
+        })
+        .collect();
+    bbox_of(&points)
+}
+
+/// Whether two numbers are the same within a small tolerance.
+fn near(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9 * a.abs().max(b.abs()).max(1.0)
+}
+
+/// Moves the map so that the outline box is in the middle of the frame. The
+/// scale and the rotation stay. Returns false if nothing changed.
+pub fn center_map(frame: &mut FrameRecord, projection: &Projection) -> bool {
+    let b = outline_box(frame, projection);
+    if b.area() <= 0.0 || b.center().distance(anchor(&frame.shape)) < 1e-6 {
+        return false;
+    }
+    let vt = frame_transform(projection, frame, FrameTarget::MM);
+    set_center(frame, projection, vt.from_page(b.center()))
+}
+
+/// Sets the scale so that the outline box fits in the box of the frame and
+/// touches two opposite edges, and centers the map. Returns false if nothing
+/// changed.
+pub fn fit_map(frame: &mut FrameRecord, projection: &Projection) -> bool {
+    let b = outline_box(frame, projection);
+    let f = shape_bbox(&frame.shape);
+    if b.area() <= 0.0 || f.area() <= 0.0 {
+        return false;
+    }
+    let factor = (b.width() / f.width()).max(b.height() / f.height());
+    let scale = (frame.scale * factor).clamp(SCALE_RANGE.0, SCALE_RANGE.1);
+    let mut fitted = frame.clone();
+    fitted.scale = scale;
+    center_map(&mut fitted, projection);
+    let changed = !near(fitted.scale, frame.scale) || fitted.center != frame.center;
+    if changed {
+        *frame = fitted;
+    }
+    changed
+}
+
+/// Moves the edges of the frame to the outline box. The map keeps its
+/// place on the page and its scale. Returns false if nothing changed.
+pub fn fit_frame(frame: &mut FrameRecord, projection: &Projection) -> bool {
+    let b = outline_box(frame, projection);
+    let f = shape_bbox(&frame.shape);
+    if b.area() <= 0.0 {
+        return false;
+    }
+    let c = b.center();
+    let half = Vec2::new(b.width().max(MIN_SIZE_MM), b.height().max(MIN_SIZE_MM)) / 2.0;
+    let to = Rect::from_points(c - half, c + half);
+    let same = [(to.x0, f.x0), (to.y0, f.y0), (to.x1, f.x1), (to.y1, f.y1)];
+    if same.iter().all(|&(a, b)| (a - b).abs() < 1e-6) {
+        return false;
+    }
+    let vt = frame_transform(projection, frame, FrameTarget::MM);
+    let mut fitted = frame.clone();
+    if !set_center(&mut fitted, projection, vt.from_page(c)) {
+        return false;
+    }
+    scale_shape(&mut fitted.shape, to);
+    *frame = fitted;
+    true
+}
+
 /// The smallest scale of 1, 2, or 5 times a power of ten at which `bounds`
 /// in projected meters fits in a box of millimeters.
 pub fn fit_scale(bounds: Rect, width_mm: f64, height_mm: f64) -> f64 {
@@ -534,8 +611,16 @@ pub fn resize(shape: &mut FrameShape, handle: usize, to: Point) -> bool {
     if matches!(handle, 4..=6) {
         y1 = to.y.max(y0 + MIN_SIZE_MM);
     }
+    scale_shape(shape, Rect::new(x0, y0, x1, y1));
+    true
+}
+
+/// Scales a shape so that the box of ring 0 becomes `to`. A polygon scales
+/// all its rings with its box.
+pub fn scale_shape(shape: &mut FrameShape, to: Rect) {
+    let b = shape_bbox(shape);
     match shape {
-        FrameShape::Rectangle(r) => *r = [x0, y0, x1, y1],
+        FrameShape::Rectangle(r) => *r = [to.x0, to.y0, to.x1, to.y1],
         FrameShape::Polygon(rings) => {
             let scale = |v: f64, a0: f64, a1: f64, n0: f64, n1: f64| {
                 if a1 > a0 {
@@ -546,13 +631,12 @@ pub fn resize(shape: &mut FrameShape, handle: usize, to: Point) -> bool {
             };
             for p in rings.iter_mut().flatten() {
                 *p = [
-                    scale(p[0], b.x0, b.x1, x0, x1),
-                    scale(p[1], b.y0, b.y1, y0, y1),
+                    scale(p[0], b.x0, b.x1, to.x0, to.x1),
+                    scale(p[1], b.y0, b.y1, to.y0, to.y1),
                 ];
             }
         }
     }
-    true
 }
 
 /// Moves a shape by `d` page millimeters.
@@ -935,6 +1019,104 @@ mod tests {
             panic!("a polygon stays a polygon");
         };
         assert_eq!(rings[1][0], [120.0, 5.0]);
+    }
+
+    fn assert_near(a: f64, b: f64) {
+        assert!((a - b).abs() < 1e-6, "{a} is not {b}");
+    }
+
+    fn page_of(frame: &FrameRecord, p: &Projection, lonlat: [f64; 2]) -> Point {
+        let vt = frame_transform(p, frame, FrameTarget::MM);
+        vt.to_page(p.forward(lonlat).unwrap())
+    }
+
+    #[test]
+    fn center_map_puts_the_outline_in_the_middle_at_the_same_scale() {
+        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let mut f = frame(2e8);
+        assert!(center_map(&mut f, &p));
+        let b = outline_box(&f, &p);
+        let a = anchor(&f.shape);
+        assert_near(b.center().x, a.x);
+        assert_near(b.center().y, a.y);
+        assert_eq!((f.scale, f.rotation), (2e8, 30.0));
+        assert!(!center_map(&mut f, &p));
+    }
+
+    #[test]
+    fn fit_map_touches_two_edges_of_the_frame() {
+        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let mut f = frame(5e7);
+        assert!(fit_map(&mut f, &p));
+        let b = outline_box(&f, &p);
+        let r = shape_bbox(&f.shape);
+        assert_near(b.center().x, r.center().x);
+        assert_near(b.center().y, r.center().y);
+        assert!(b.width() <= r.width() + 1e-6 && b.height() <= r.height() + 1e-6);
+        let touches_x = (b.width() - r.width()).abs() < 1e-6;
+        let touches_y = (b.height() - r.height()).abs() < 1e-6;
+        assert!(touches_x || touches_y);
+        assert_eq!(f.rotation, 30.0);
+        assert!(!fit_map(&mut f, &p));
+    }
+
+    #[test]
+    fn fit_frame_moves_the_edges_to_the_outline_and_keeps_the_map() {
+        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let mut f = frame(2e8);
+        let place = [40.0, -10.0];
+        let before = page_of(&f, &p, place);
+        assert!(fit_frame(&mut f, &p));
+        let b = outline_box(&f, &p);
+        let r = shape_bbox(&f.shape);
+        for (x, y) in [(b.x0, r.x0), (b.y0, r.y0), (b.x1, r.x1), (b.y1, r.y1)] {
+            assert_near(x, y);
+        }
+        assert_eq!((f.scale, f.rotation), (2e8, 30.0));
+        let after = page_of(&f, &p, place);
+        assert_near(after.x, before.x);
+        assert_near(after.y, before.y);
+        assert!(!fit_frame(&mut f, &p));
+    }
+
+    #[test]
+    fn fit_frame_scales_a_polygon_frame_to_the_new_box() {
+        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let mut f = frame(2e8);
+        f.shape = notched();
+        assert!(fit_frame(&mut f, &p));
+        let mut expected = notched();
+        scale_shape(&mut expected, outline_box(&f, &p));
+        assert_eq!(f.shape.rings().len(), 2);
+        for (a, b) in f.shape.rings().iter().flatten().zip(expected.rings().iter().flatten()) {
+            assert_near(a[0], b[0]);
+            assert_near(a[1], b[1]);
+        }
+    }
+
+    #[test]
+    fn the_outline_box_turns_with_the_frame() {
+        let p = projection(ProjectionKind::EqualEarth, 6_371_000.0);
+        let mut f = frame(2e8);
+        f.rotation = 0.0;
+        let flat = outline_box(&f, &p);
+        f.rotation = 90.0;
+        let turned = outline_box(&f, &p);
+        assert!(flat.width() > 1.5 * flat.height());
+        assert_near(turned.width(), flat.height());
+        assert_near(turned.height(), flat.width());
+    }
+
+    #[test]
+    fn a_mercator_outline_stops_at_the_latitude_limit() {
+        let p = projection(ProjectionKind::Mercator, 6_371_000.0);
+        let mut f = frame(2e8);
+        f.rotation = 0.0;
+        let b = outline_box(&f, &p);
+        let north = page_of(&f, &p, [0.0, 85.0]);
+        let south = page_of(&f, &p, [0.0, -85.0]);
+        assert_near(b.y0, north.y);
+        assert_near(b.y1, south.y);
     }
 
     #[test]
