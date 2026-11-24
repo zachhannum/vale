@@ -16,6 +16,16 @@ pub const TAP_SECONDS: f64 = 0.3;
 /// The largest move of a finger in a tap, in points.
 pub const TAP_SLOP: f32 = 10.0;
 
+/// The longest time from the end of a tap to the next touch of a double
+/// tap, in seconds.
+pub const DOUBLE_TAP: f64 = 0.4;
+
+/// The largest distance between the two taps of a double tap, in points.
+const DOUBLE_TAP_REACH: f32 = 40.0;
+
+/// The drag of a double tap and drag that zooms by 2, in points.
+const DRAG_ZOOM: f32 = 100.0;
+
 struct Finger {
     pos: Pos2,
     prev: Pos2,
@@ -36,6 +46,8 @@ struct Touching {
     start: f64,
     /// The largest number of fingers that were down together.
     count: usize,
+    /// The middle of the places where those fingers came down.
+    center: Pos2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,6 +99,19 @@ pub struct Nav {
     pub finger_paints: bool,
     /// The touches that the pen queue named as a pen.
     pens: Vec<u64>,
+    /// The end of the last tap of one finger, and its place.
+    one_tap: Option<(f64, Pos2)>,
+    /// The end of a tap of two fingers that can still be the first tap of
+    /// a double tap, and the middle of its fingers.
+    two_tap: Option<(f64, Pos2)>,
+    /// The finger of a double tap and drag, and the place where it came
+    /// down.
+    zoom_drag: Option<(u64, Pos2)>,
+    /// The zoom that the taps ask for: the place that stays and the factor.
+    zoom: Option<(Pos2, f64)>,
+    /// A double tap of one finger zooms in. It is off while the tool takes
+    /// the taps.
+    pub double_tap_zooms: bool,
 }
 
 /// The largest count of touches in `Nav::pens`.
@@ -166,26 +191,53 @@ impl Nav {
                 if !on_canvas || self.pen.is_some() || self.painting.finger == Some(id) {
                     return;
                 }
+                let second = self.one_tap.take().is_some_and(|(time, at)| {
+                    self.time - time <= DOUBLE_TAP && at.distance(pos) <= DOUBLE_TAP_REACH
+                });
                 if pen {
                     self.pen = Some(id);
                     self.palms += self.fingers.len() as u32;
                     self.fingers.clear();
                     self.touching = None;
+                    self.zoom_drag = None;
                     if self.painting.pen {
                         return;
                     }
                 } else if self.fingers.is_empty() {
-                    let (start, count) = (self.time, 0);
-                    self.touching = Some(Touching { start, count });
+                    let (start, count, center) = (self.time, 0, pos);
+                    self.touching = Some(Touching {
+                        start,
+                        count,
+                        center,
+                    });
+                    if second && !self.painting.fingers {
+                        self.zoom_drag = Some((id, pos));
+                    }
+                } else {
+                    self.zoom_drag = None;
                 }
                 let (prev, start) = (pos, pos);
                 self.fingers.insert(id, Finger { pos, prev, start });
-                if let Some(touching) = &mut self.touching {
-                    touching.count = touching.count.max(self.fingers.len());
+                if let Some(touching) = &mut self.touching
+                    && self.fingers.len() > touching.count
+                {
+                    let n = self.fingers.len();
+                    let sum = self
+                        .fingers
+                        .values()
+                        .fold(Vec2::ZERO, |s, f| s + f.start.to_vec2());
+                    touching.count = n;
+                    touching.center = (sum / n as f32).to_pos2();
                 }
             }
             egui::TouchPhase::Move => {
                 if let Some(finger) = self.fingers.get_mut(&id) {
+                    if let Some((_, at)) = self.zoom_drag.filter(|(z, _)| *z == id) {
+                        let dy = pos.y - finger.pos.y;
+                        let factor = 2f64.powf(f64::from(dy / DRAG_ZOOM));
+                        let f = self.zoom.map_or(1.0, |(_, f)| f);
+                        self.zoom = Some((at, f * factor));
+                    }
                     finger.pos = pos;
                     if (pos - finger.start).length() > TAP_SLOP {
                         self.touching = None;
@@ -193,6 +245,10 @@ impl Nav {
                 }
             }
             egui::TouchPhase::End | egui::TouchPhase::Cancel => {
+                let zoom_drag = self.zoom_drag.filter(|(z, _)| *z == id);
+                if zoom_drag.is_some() {
+                    self.zoom_drag = None;
+                }
                 self.fingers.remove(&id);
                 self.pens.retain(|pen| *pen != id);
                 if self.pen == Some(id) {
@@ -205,13 +261,60 @@ impl Nav {
                     && let Some(touching) = self.touching.take()
                     && self.time - touching.start <= TAP_SECONDS
                 {
-                    self.tap = match touching.count {
-                        2 => Some(Tap::Two),
-                        3 => Some(Tap::Three),
-                        _ => None,
-                    };
+                    match (touching.count, zoom_drag) {
+                        (1, Some((_, at))) if self.double_tap_zooms => self.add_zoom(at, 2.0),
+                        (1, Some(_)) => {}
+                        (1, None) => self.one_tap = Some((self.time, pos)),
+                        (2, _) => match self.two_tap.take() {
+                            Some((time, _)) if touching.start - time <= DOUBLE_TAP => {
+                                self.add_zoom(touching.center, 0.5);
+                            }
+                            _ => self.two_tap = Some((self.time, touching.center)),
+                        },
+                        (3, _) => self.tap = Some(Tap::Three),
+                        _ => {}
+                    }
                 }
             }
+        }
+    }
+
+    fn add_zoom(&mut self, at: Pos2, factor: f64) {
+        let f = self.zoom.map_or(1.0, |(_, f)| f);
+        self.zoom = Some((at, f * factor));
+    }
+
+    /// Takes the zoom that the taps asked for after the last call: the place
+    /// that stays and the factor. A canvas that moves its own view calls
+    /// this.
+    pub fn take_zoom(&mut self) -> Option<(Pos2, f64)> {
+        self.zoom.take()
+    }
+
+    /// The finger of a double tap and drag. It zooms the view and belongs
+    /// to no tool.
+    pub fn zoom_finger(&self) -> Option<u64> {
+        self.zoom_drag.map(|(id, _)| id)
+    }
+
+    /// The place where the finger of a double tap and drag came down.
+    pub fn zoom_start(&self) -> Option<Pos2> {
+        self.zoom_drag.map(|(_, at)| at)
+    }
+
+    /// True after the finger of a double tap and drag moves.
+    pub fn zooming(&self) -> bool {
+        self.zoom_drag
+            .and_then(|(id, _)| self.fingers.get(&id))
+            .is_some_and(|f| f.pos != f.start)
+    }
+
+    /// Asks for a frame when a tap of two fingers can no longer be the
+    /// first tap of a double tap.
+    fn wake(&self, ctx: &egui::Context) {
+        if let Some((time, _)) = self.two_tap {
+            let wait = (time + DOUBLE_TAP - self.time).max(0.0) + 0.01;
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
     }
 
@@ -234,6 +337,7 @@ impl Nav {
                 self.touch(id.0, *phase, *pos, on_canvas, pen);
             }
         }
+        self.wake(ui.ctx());
     }
 
     /// Gives a finger to a tool. The finger stops to move the view, and the
@@ -241,6 +345,10 @@ impl Nav {
     pub fn forget(&mut self, id: u64) {
         self.fingers.remove(&id);
         self.touching = None;
+        if self.zoom_finger() == Some(id) {
+            self.zoom_drag = None;
+            self.zoom = None;
+        }
     }
 
     /// Takes a finger from a tool at `pos`. The finger moves the view, and
@@ -251,8 +359,20 @@ impl Nav {
         self.touching = None;
     }
 
-    /// Takes the tap that ended after the last call.
+    /// Takes the tap that ended after the last call. A tap of two fingers
+    /// comes when it can no longer be the first tap of a double tap: no
+    /// touch started in time, or the touch that did is not a tap.
     pub fn take_tap(&mut self) -> Option<Tap> {
+        if let Some((time, _)) = self.two_tap
+            && self.time - time > DOUBLE_TAP
+            && !self
+                .touching
+                .as_ref()
+                .is_some_and(|t| t.start - time <= DOUBLE_TAP)
+        {
+            self.two_tap = None;
+            return Some(Tap::Two);
+        }
         self.tap.take()
     }
 
@@ -266,13 +386,18 @@ impl Nav {
     }
 
     /// Moves the view with the fingers. One finger rotates. Two fingers rotate,
-    /// zoom, and twist, and the place under their middle stays there.
+    /// zoom, and twist, and the place under their middle stays there. The
+    /// zoom of the taps comes first.
     pub fn move_fingers(&mut self, view: &mut impl Camera, rect: Rect) {
+        if let Some((at, factor)) = self.zoom.take() {
+            view.zoom_at(rect, at, factor);
+        }
         if self.waits_for_tap() {
             return;
         }
         let mut fingers = self.fingers.values();
         match (fingers.next(), fingers.next()) {
+            (Some(_), None) if self.zoom_drag.is_some() => {}
             (Some(a), None) if !self.painting.fingers => {
                 if a.prev != a.pos {
                     view.gesture(rect, a.prev, a.pos, 1.0, 0.0);
@@ -400,6 +525,7 @@ impl Nav {
         } else {
             self.pointer(ui, rect, resp, view);
         }
+        self.wake(ui.ctx());
     }
 }
 
@@ -530,7 +656,134 @@ mod tests {
         for id in 0..count {
             nav.touch(id, End, pos(id), true, false);
         }
+        nav.time += DOUBLE_TAP + 0.01;
         nav.take_tap()
+    }
+
+    #[test]
+    fn a_double_tap_and_drag_down_zooms_in_about_the_taps() {
+        let mut nav = Nav::default();
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let (at, second) = (Pos2::new(300.0, 250.0), Pos2::new(305.0, 255.0));
+        let place = view.unproject(rect(), second).unwrap();
+        nav.touch(1, Start, at, true, false);
+        nav.touch(1, End, at, true, false);
+        nav.time += 0.2;
+        nav.touch(2, Start, second, true, false);
+        nav.touch(2, Move, at + Vec2::new(5.0, 105.0), true, false);
+        nav.move_fingers(&mut view, rect());
+        assert!((view.zoom - 2.0).abs() < 1e-6, "{}", view.zoom);
+        // The place of the second touch stays, and the finger does not turn
+        // the globe.
+        let after = view.project(rect(), place).unwrap();
+        assert!((after - second).length() < 0.01, "{after:?}");
+        nav.touch(2, Move, at + Vec2::new(5.0, 5.0), true, false);
+        nav.move_fingers(&mut view, rect());
+        assert!((view.zoom - 1.0).abs() < 1e-6, "{}", view.zoom);
+        nav.touch(2, End, at, true, false);
+        assert_eq!(nav.zoom_finger(), None);
+    }
+
+    #[test]
+    fn a_slow_or_far_second_touch_turns_the_globe() {
+        let mut nav = Nav::default();
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let at = Pos2::new(300.0, 250.0);
+        for (id, wait, to) in [
+            (1, DOUBLE_TAP + 0.1, at),
+            (3, 0.1, at + Vec2::new(100.0, 0.0)),
+        ] {
+            nav.touch(id, Start, at, true, false);
+            nav.touch(id, End, at, true, false);
+            nav.time += wait;
+            nav.touch(id + 1, Start, to, true, false);
+            assert_eq!(nav.zoom_finger(), None);
+            nav.touch(id + 1, End, to, true, false);
+            nav.time += 1.0;
+        }
+        // A finger that paints is no double tap.
+        nav.painting.fingers = true;
+        nav.touch(5, Start, at, true, false);
+        nav.touch(5, End, at, true, false);
+        nav.touch(6, Start, at, true, false);
+        assert_eq!(nav.zoom_finger(), None);
+        nav.touch(6, End, at, true, false);
+        nav.move_fingers(&mut view, rect());
+        assert_eq!(view.zoom, 1.0);
+    }
+
+    #[test]
+    fn a_double_tap_zooms_in_only_where_the_tool_has_no_taps() {
+        let mut nav = Nav::default();
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let at = Pos2::new(300.0, 250.0);
+        let double_tap = |nav: &mut Nav, view: &mut GlobeView| {
+            nav.time += 1.0;
+            for id in [1, 2] {
+                nav.touch(id, Start, at, true, false);
+                nav.touch(id, End, at, true, false);
+                nav.time += 0.1;
+            }
+            nav.move_fingers(view, rect());
+        };
+        double_tap(&mut nav, &mut view);
+        assert_eq!(view.zoom, 1.0);
+        nav.double_tap_zooms = true;
+        double_tap(&mut nav, &mut view);
+        assert!((view.zoom - 2.0).abs() < 1e-6, "{}", view.zoom);
+        let after = view
+            .project(rect(), view.unproject(rect(), at).unwrap())
+            .unwrap();
+        assert!((after - at).length() < 0.01, "{after:?}");
+    }
+
+    #[test]
+    fn a_second_tap_of_two_fingers_that_ends_late_still_zooms_out() {
+        let mut nav = Nav::default();
+        let pos = |id: u64| Pos2::new(300.0 + 60.0 * id as f32, 250.0);
+        let fingers = |nav: &mut Nav, phase| {
+            for id in [1, 2] {
+                nav.touch(id, phase, pos(id), true, false);
+            }
+        };
+        fingers(&mut nav, Start);
+        nav.time += 0.1;
+        fingers(&mut nav, End);
+        nav.time += 0.3;
+        fingers(&mut nav, Start);
+        // The undo waits while the second tap is down, also after 0.4
+        // seconds.
+        nav.time += 0.15;
+        assert_eq!(nav.take_tap(), None);
+        fingers(&mut nav, End);
+        assert_eq!(nav.take_zoom().map(|(_, f)| f), Some(0.5));
+        nav.time += 1.0;
+        assert_eq!(nav.take_tap(), None);
+    }
+
+    #[test]
+    fn a_double_tap_of_two_fingers_zooms_out_and_does_not_undo() {
+        let mut nav = Nav::default();
+        let mut view = GlobeView::centered(15.0, 25.0);
+        let pos = |id: u64| Pos2::new(300.0 + 60.0 * id as f32, 250.0);
+        for _ in 0..2 {
+            for id in [1, 2] {
+                nav.touch(id, Start, pos(id), true, false);
+            }
+            nav.time += 0.1;
+            for id in [1, 2] {
+                nav.touch(id, End, pos(id), true, false);
+            }
+            // The first tap waits, so it is not undo yet.
+            assert_eq!(nav.take_tap(), None);
+            nav.time += 0.1;
+        }
+        let (at, factor) = nav.take_zoom().unwrap();
+        assert_eq!((at, factor), (Pos2::new(390.0, 250.0), 0.5));
+        nav.time += 1.0;
+        assert_eq!(nav.take_tap(), None);
+        nav.move_fingers(&mut view, rect());
+        assert_eq!(view.zoom, 1.0);
     }
 
     #[test]

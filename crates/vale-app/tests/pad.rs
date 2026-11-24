@@ -4222,7 +4222,12 @@ fn tap_fingers(h: &mut Pad, count: u64) {
         }
         h.step();
     }
-    h.run_steps(3);
+    // A tap of two fingers waits until it cannot be the first tap of a
+    // double tap.
+    let end = h.ctx.input(|i| i.time) + vale_app::globe::nav::DOUBLE_TAP + 0.05;
+    while h.ctx.input(|i| i.time) < end {
+        h.step();
+    }
 }
 
 /// Paints three pen strokes over the middle of the canvas. Returns the level

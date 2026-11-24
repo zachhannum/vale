@@ -2043,6 +2043,62 @@ fn a_double_tap_off_the_page_fits_the_page_again() {
 }
 
 #[test]
+fn a_double_tap_and_drag_zooms_the_page_where_a_drag_pans_it() {
+    use egui::TouchPhase::{End, Move, Start};
+    let double_tap_and_drag = |h: &mut Pad, at: Pos2| {
+        touch(h, 1, Start, at, None);
+        h.step();
+        touch(h, 1, End, at, None);
+        h.step();
+        touch(h, 1, Start, at, None);
+        h.step();
+        // A drag down zooms in.
+        for i in 1..=10 {
+            touch(h, 1, Move, at + vec2(0.0, 10.0 * i as f32), None);
+            h.step();
+        }
+        touch(h, 1, End, at + vec2(0.0, 100.0), None);
+        h.run_steps(3);
+    };
+    let mut h = inset_pad(BOARDS[0]);
+    let at = margin(&h);
+    // On the paper, the drag of the Frame tool draws a frame.
+    assert_eq!(h.state().atlas.tool, AtlasTool::Frame);
+    double_tap_and_drag(&mut h, at);
+    assert_eq!(h.state().atlas.view.zoom, 1.0);
+    h.state_mut().atlas.tool = AtlasTool::Pan;
+    h.run_steps(3);
+    let before = place(&h).rect;
+    double_tap_and_drag(&mut h, at);
+    assert!((h.state().atlas.view.zoom - 2.0).abs() < 1e-6);
+    // The page does not pan, so the place of the taps stays.
+    let min = at + (before.min - at) * 2.0;
+    assert!(
+        place(&h).rect.min.distance(min) < 0.5,
+        "{:?}",
+        place(&h).rect
+    );
+}
+
+#[test]
+fn a_double_tap_of_two_fingers_zooms_the_page_out() {
+    use egui::TouchPhase::{End, Start};
+    let mut h = inset_pad(BOARDS[0]);
+    let c = margin(&h);
+    let (a, b) = (c, c + vec2(40.0, 0.0));
+    for _ in 0..2 {
+        touch(&mut h, 1, Start, a, None);
+        touch(&mut h, 2, Start, b, None);
+        h.step();
+        touch(&mut h, 2, End, b, None);
+        touch(&mut h, 1, End, a, None);
+        h.step();
+    }
+    h.run_steps(3);
+    assert!((h.state().atlas.view.zoom - 0.5).abs() < 1e-6);
+}
+
+#[test]
 fn at_a_page_zoom_of_20_the_texture_of_a_frame_is_no_larger_than_the_canvas() {
     let mut h = inset_pad(BOARDS[0]);
     h.state_mut().atlas.view.zoom = 20.0;
@@ -3274,7 +3330,12 @@ fn fingers_tap(h: &mut Pad, count: u64, center: Pos2) {
     for id in (1..=count).rev() {
         touch(h, id, egui::TouchPhase::End, at(id), None);
     }
-    h.run_steps(3);
+    // A tap of two fingers waits until it cannot be the first tap of a
+    // double tap.
+    let end = h.ctx.input(|i| i.time) + vale_app::globe::nav::DOUBLE_TAP + 0.05;
+    while h.ctx.input(|i| i.time) < end {
+        h.step();
+    }
 }
 
 #[test]

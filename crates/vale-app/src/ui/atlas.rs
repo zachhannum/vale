@@ -1880,8 +1880,8 @@ pub fn canvas(ui: &mut egui::Ui, state: &mut AppState, area: Rect, free: Rect, b
     let place = fit.viewed(state.atlas.view).snapped(ppp);
     state.atlas.place = Some(place);
     super::globe::measure_keys(ui, state);
-    input(ui, state, &resp, place);
     state.atlas.nav.track_taps(ui, area);
+    input(ui, state, &resp, place);
     match super::globe::history_input(ui, &mut state.atlas.nav) {
         Some(true) => state.redo(),
         Some(false) => state.undo(),
@@ -1947,6 +1947,21 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             }
         }
     });
+    // A double tap and drag zooms the page where a drag pans it, and a
+    // double tap of two fingers zooms the page out. The finger of the drag
+    // does nothing else after it moves.
+    if let (Some(id), Some(pos)) = (state.atlas.nav.zoom_finger(), state.atlas.nav.zoom_start())
+        && !drag_pans_page(state, &page, place, pos)
+    {
+        state.atlas.nav.forget(id);
+    }
+    if let Some((at, factor)) = state.atlas.nav.take_zoom() {
+        zoom_page(state, at, factor);
+    }
+    if state.atlas.nav.zooming() {
+        state.atlas.drag = None;
+        return;
+    }
     let mut fingers = ui.input(|i| i.multi_touch());
     let touches = fingers.is_some();
     // In the entered frame of the Select tool, a finger that holds still
@@ -2387,6 +2402,30 @@ fn element_drag(
         // A drag on the empty paper draws a frame.
         None if draw && place.rect.contains(pos) => Drag::Draw(pos),
         None => Drag::Page,
+    }
+}
+
+/// True if a drag of a finger from `pos` pans the page, as `start_drag`
+/// decides.
+fn drag_pans_page(state: &AppState, page: &PageRecord, place: PagePlace, pos: Pos2) -> bool {
+    let at = place.to_mm(pos);
+    let handle = handle_at(state, pos).is_some();
+    match state.atlas.tool {
+        AtlasTool::Move => selected_at(state, page, place, pos).is_none(),
+        AtlasTool::Pan | AtlasTool::Measure => true,
+        AtlasTool::Select if state.atlas.entered.is_some() => true,
+        AtlasTool::Select => {
+            let selected = match state.atlas.selection {
+                AtlasSelection::Item(id) => item_at(page, at) == Some(id),
+                AtlasSelection::Frame(id) => {
+                    item_at(page, at).is_none() && frame_at(page, at) == Some(id)
+                }
+                _ => false,
+            };
+            !selected && !handle
+        }
+        AtlasTool::Vertex => !handle,
+        AtlasTool::Frame | AtlasTool::Furniture(_) => !handle && !place.rect.contains(pos),
     }
 }
 

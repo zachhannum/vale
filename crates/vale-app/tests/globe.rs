@@ -52,11 +52,17 @@ fn state() -> AppState {
 
 /// A harness of a world with a height layer that the brush paints.
 fn harness() -> Harness<'static, AppState> {
+    harness_with_step(1.0 / 4.0)
+}
+
+/// A harness with steps of `dt` seconds. A double tap needs short steps.
+fn harness_with_step(dt: f32) -> Harness<'static, AppState> {
     let mut state = state();
     state.add_height();
     let mut h = Harness::builder()
         .with_size(egui::vec2(1280.0, 800.0))
         .with_pixels_per_point(1.0)
+        .with_step_dt(dt)
         .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
     h.run_steps(2);
     h
@@ -335,6 +341,59 @@ fn two_fingers_zoom_and_twist() {
         .rot
         .inv_mul_vec([0.0, 1.0, 0.0]);
     assert!(angle(right, up_before) < 1e-6);
+}
+
+/// Two taps of one finger at `pos`. The second touch drags by `drag` before
+/// it lifts.
+fn double_tap_and_drag(h: &mut Harness<'static, AppState>, pos: Pos2, drag: Vec2) {
+    use egui::TouchPhase::{End, Move, Start};
+    first_finger(h, Start, pos);
+    h.run_steps(1);
+    first_finger(h, End, pos);
+    h.run_steps(1);
+    first_finger(h, Start, pos);
+    h.run_steps(1);
+    for i in 1..=4 {
+        first_finger(h, Move, pos + drag * (i as f32 / 4.0));
+        h.run_steps(1);
+    }
+    first_finger(h, End, pos + drag);
+    h.run_steps(2);
+}
+
+#[test]
+fn a_double_tap_zooms_in_and_a_double_tap_and_drag_up_zooms_out() {
+    let mut h = harness_with_step(0.01);
+    let grabbed = place(&h, A);
+    double_tap_and_drag(&mut h, A, Vec2::ZERO);
+    assert!((h.state().globe.view.zoom - 2.0).abs() < 1e-6);
+    assert!(off(&h, grabbed, A) < 0.05);
+    double_tap_and_drag(&mut h, A, Vec2::new(0.0, -100.0));
+    assert!((h.state().globe.view.zoom - 1.0).abs() < 1e-6);
+    // The finger of the drag does not turn the globe.
+    assert!(off(&h, grabbed, A) < 0.05);
+}
+
+#[test]
+fn a_double_tap_does_not_zoom_with_the_measure_tool_and_a_drag_does() {
+    let mut h = harness_with_step(0.01);
+    h.state_mut().globe.tool = Tool::Measure;
+    double_tap_and_drag(&mut h, A, Vec2::ZERO);
+    assert_eq!(h.state().globe.view.zoom, 1.0);
+    h.run_steps(50);
+    double_tap_and_drag(&mut h, A, Vec2::new(0.0, 100.0));
+    assert!((h.state().globe.view.zoom - 2.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_double_tap_and_drag_zooms_the_flat_view() {
+    let mut h = harness_with_step(0.01);
+    h.state_mut().globe.world_view = vale_app::globe::WorldView::Flat;
+    h.run_steps(2);
+    let before = h.state().globe.flat.zoom;
+    double_tap_and_drag(&mut h, A, Vec2::new(0.0, 100.0));
+    let zoom = h.state().globe.flat.zoom;
+    assert!((zoom / before - 2.0).abs() < 1e-6, "{before} {zoom}");
 }
 
 #[test]
