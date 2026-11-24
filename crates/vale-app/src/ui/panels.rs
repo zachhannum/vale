@@ -134,6 +134,10 @@ pub fn toolbar(ui: &mut egui::Ui, state: &mut AppState) {
                 let form = WorldForm::properties(&state.doc.project.world);
                 state.world_form = Some(form);
             }
+            if state.workspace == Workspace::Atlas {
+                ui.separator();
+                super::atlas::clip::edit_menu(ui, state);
+            }
             if state.workspace == Workspace::Globe {
                 ui.separator();
                 select::edit_menu(ui, state);

@@ -139,6 +139,12 @@ pub enum Icon {
     Lock,
     /// A vertical arrow with a head at each end.
     UpDown,
+    /// Scissors.
+    Cut,
+    /// Two sheets that overlap.
+    Copy,
+    /// A clipboard.
+    Paste,
 }
 
 impl Icon {
@@ -200,6 +206,13 @@ impl Icon {
             Icon::Plus => "M12 5v14M5 12h14",
             Icon::Lock => "M6 11h12v9H6zM8.5 11V8c0-4.67 7-4.67 7 0v3",
             Icon::UpDown => "M12 3v18M8 7l4-4 4 4M8 17l4 4 4-4",
+            Icon::Cut => {
+                "M9 6c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3z\
+                 M9 18c0 1.66-1.34 3-3 3s-3-1.34-3-3 1.34-3 3-3 3 1.34 3 3z\
+                 M20 4L8.12 15.88M14.47 14.48L20 20M8.12 8.12L12 12"
+            }
+            Icon::Copy => "M9 9h11v11H9zM5 15H4V4h11v1",
+            Icon::Paste => "M8 4H6v17h12V4h-2M9 2h6v4H9z",
             Icon::TextCursor => "M9 4h6M9 20h6M12 4v16",
             Icon::Center => "M12 3v5M12 16v5M3 12h5M16 12h5",
             Icon::World => {
@@ -647,6 +660,9 @@ mod tests {
             Icon::Clip,
             Icon::Lock,
             Icon::UpDown,
+            Icon::Cut,
+            Icon::Copy,
+            Icon::Paste,
         ] {
             let lines = parse(icon.path());
             let circles = icon.circles();

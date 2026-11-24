@@ -37,6 +37,7 @@ use crate::region::{Region, RegionKind, fit, suggest};
 use crate::view::ViewTransform;
 use vale_style::{LabelFallback, LabelPosition};
 
+pub mod clip;
 pub mod features;
 pub mod measure;
 mod shown;
@@ -705,6 +706,8 @@ pub struct AtlasState {
     pub(crate) shown: Option<(AtlasSelection, FrameTab, bool)>,
     /// The page of the panel of the selected item of furniture.
     pub item_page: Option<ItemPage>,
+    /// The copied frame or item of furniture.
+    pub clip: Option<clip::Clip>,
     /// The thumbnails of the kinds of scale bar in the style gallery: the
     /// key of what each shows, and its texture.
     bar_previews: HashMap<vale_store::ScaleBarKind, (u64, egui::TextureHandle)>,
@@ -924,6 +927,7 @@ impl Default for AtlasState {
             border_sides: false,
             shown: None,
             item_page: None,
+            clip: None,
             bar_previews: HashMap::new(),
             entry_name: String::new(),
             handles_of: None,
@@ -2190,6 +2194,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
     match state.atlas.tool {
         _ if typing => {}
         AtlasTool::Frame | AtlasTool::Furniture(_) => {
+            clip::keys(ui, state);
             if delete {
                 delete_selection(state);
             }
@@ -2206,6 +2211,7 @@ fn input(ui: &egui::Ui, state: &mut AppState, resp: &egui::Response, place: Page
             }
         }
         AtlasTool::Select => {
+            clip::keys(ui, state);
             if delete {
                 delete_selection(state);
             }
@@ -4278,7 +4284,7 @@ pub fn rename_map_style(state: &mut AppState, id: MapStyleId, name: &str) -> boo
 pub fn desktop(ui: &mut egui::Ui, state: &mut AppState) {
     let typing = ui.ctx().memory(|m| m.focused().is_some());
     if !typing {
-        let key = |k| ui.input(|i| i.key_pressed(k));
+        let key = |k| ui.input(|i| i.key_pressed(k) && !i.modifiers.command);
         let (f, a, h) = (key(egui::Key::F), key(egui::Key::A), key(egui::Key::H));
         if f {
             state.atlas.tool = AtlasTool::Frame;

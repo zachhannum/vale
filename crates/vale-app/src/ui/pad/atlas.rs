@@ -17,12 +17,12 @@ use super::number::Number;
 use super::panes;
 use super::readout;
 use super::text_style;
-use super::widgets::{self, Controls, Keys, PANEL_ROW, keypad_below};
+use super::widgets::{self, COPY, CUT, Controls, Keys, PANEL_ROW, PASTE, keypad_below};
 use super::{GRATICULE, Head, PageParts, Panel, WORKSPACES, WORLDS_ROW};
 use super::{NO_LAYERS, export_form_row, rule, theme, toggle_worlds, worlds_menu};
 use crate::atlas::{self as math, PAGE_PRESETS};
 use crate::distortion::{self, ScaleError};
-use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor};
+use crate::ui::atlas::{self, AtlasSelection, AtlasTool, ClassColor, clip};
 use crate::ui::{AppState, Workspace};
 use crate::ui::{region, select};
 
@@ -589,7 +589,10 @@ fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can).clicked() {
             atlas::delete_vertices(state);
         }
-    } else if places && can_delete(state) {
+    } else if places {
+        clip_cells(ui, state, controls);
+    }
+    if places && can_delete(state) {
         let name = select::DELETE;
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true).clicked() {
             atlas::delete_selection(state);
@@ -607,6 +610,36 @@ fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         }
     }
     selectable_cell
+}
+
+/// Cut and Copy while a frame or an item is selected, and Paste while the
+/// app holds a copy.
+fn clip_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
+    let ctx = ui.ctx().clone();
+    if can_delete(state) {
+        if widgets::tool_cell(ui, controls, CUT, CUT, Icon::Cut, false, true).clicked() {
+            clip::cut(&ctx, state);
+        }
+        if widgets::tool_cell(ui, controls, COPY, COPY, Icon::Copy, false, true).clicked() {
+            clip::copy(&ctx, state);
+        }
+    }
+    if can_paste(state)
+        && widgets::tool_cell(ui, controls, PASTE, PASTE, Icon::Paste, false, true).clicked()
+    {
+        clip::paste(state);
+    }
+}
+
+/// Paste shows in the context strip of the tools of "Delete selection"
+/// while the app holds a copied frame or item.
+fn can_paste(state: &AppState) -> bool {
+    let places = match state.atlas.tool {
+        AtlasTool::Frame | AtlasTool::Furniture(_) => true,
+        AtlasTool::Select => state.atlas.entered.is_none(),
+        _ => false,
+    };
+    places && state.atlas.can_paste()
 }
 
 /// "Delete selection" shows in the context strip of the Frame tool, an item
@@ -642,12 +675,17 @@ fn context_cells(state: &AppState) -> usize {
     let deselect = usize::from(can_deselect(state));
     match state.atlas.tool {
         AtlasTool::Vertex => 2 + 2 * deselect,
-        AtlasTool::Frame | AtlasTool::Furniture(_) => 2 + usize::from(can_delete(state)) + deselect,
+        AtlasTool::Frame | AtlasTool::Furniture(_) => 2 + clip_and_delete(state) + deselect,
         AtlasTool::Pan | AtlasTool::Move => deselect,
         AtlasTool::Select if state.atlas.entered.is_some() => 3 + deselect,
-        AtlasTool::Select => 2 + usize::from(can_delete(state)) + deselect,
+        AtlasTool::Select => 2 + clip_and_delete(state) + deselect,
         _ => 0,
     }
+}
+
+/// The number of cells of Cut, Copy, Paste, and "Delete selection".
+fn clip_and_delete(state: &AppState) -> usize {
+    3 * usize::from(can_delete(state)) + usize::from(can_paste(state))
 }
 
 /// The cells of the tool strip, in a row that fills `ui`.

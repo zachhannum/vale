@@ -14356,3 +14356,124 @@ fn the_mask_switch_of_a_class_shows_the_width_and_the_masked_layers() {
     tap(&mut h, "Rivers");
     assert!(class(&h).masked_layers.is_empty());
 }
+
+#[test]
+fn copy_and_paste_put_a_frame_on_another_page_with_a_copy_of_its_map() {
+    let mut h = pad();
+    add_frame(&mut h);
+    let first = frame(&h, 0);
+    tap(&mut h, "Copy");
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    assert!(open_page(&h).frames.is_empty());
+    tap(&mut h, "Paste");
+    let pasted = frame(&h, 0);
+    assert_eq!(pasted.shape, first.shape);
+    assert_eq!(pasted.center, first.center);
+    assert_eq!(pasted.scale, first.scale);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Frame(pasted.id));
+    // The pasted frame shows a new map that is a copy of the first map.
+    let atlas = &h.state().doc.project.atlas;
+    assert_ne!(pasted.map, first.map);
+    let (map, copy) = (atlas.map(first.map).unwrap(), atlas.map(pasted.map).unwrap());
+    assert_eq!(copy.name, format!("{} copy", map.name));
+    assert_eq!(copy.style, map.style);
+    assert_eq!(copy.projection, map.projection);
+    assert_eq!(copy.shown, map.shown);
+}
+
+#[test]
+fn a_paste_on_a_page_with_the_same_frame_at_the_same_place_moves_it() {
+    let mut h = pad();
+    add_frame(&mut h);
+    let first = frame(&h, 0);
+    tap(&mut h, "Copy");
+    tap(&mut h, "Paste");
+    tap(&mut h, "Paste");
+    let at = shape_bbox(&first.shape);
+    for (i, step) in [(1, 5.0), (2, 10.0)] {
+        let moved = shape_bbox(&frame(&h, i).shape);
+        assert!((moved.x0 - at.x0 - step).abs() < 1e-9);
+        assert!((moved.y0 - at.y0 - step).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn a_pasted_item_keeps_its_frame_on_the_page_and_else_links_to_the_largest_frame() {
+    let mut h = pad();
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let small = frame(&h, 1).id;
+    add_item(&mut h, ItemKind::ScaleBar);
+    let bar = item(&h, 0);
+    let page = open_page(&h).id;
+    h.state_mut()
+        .doc
+        .project
+        .atlas
+        .furniture_mut(bar.id)
+        .unwrap()
+        .item
+        .set_frame(Some(small));
+    tap(&mut h, "Copy");
+    tap(&mut h, "Paste");
+    let pasted = item(&h, 1);
+    assert_eq!(pasted.item.frame(), Some(small));
+    assert_eq!(pasted.rect[0], bar.rect[0] + 5.0);
+    assert_eq!(h.state().atlas.selection, AtlasSelection::Item(pasted.id));
+    // On another page, the item links to the largest frame.
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    tap(&mut h, "Paste");
+    assert_eq!(item(&h, 0).item.frame(), None);
+    assert_eq!(item(&h, 0).rect, bar.rect);
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    let largest = atlas::largest_frame(&open_page(&h));
+    tap(&mut h, "Paste");
+    assert_eq!(item(&h, 0).item.frame(), largest);
+    assert_ne!(open_page(&h).id, page);
+}
+
+#[test]
+fn cut_removes_the_frame_and_paste_puts_it_back_each_in_one_undo_step() {
+    let (_dir, s) = session_state();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let first = frame(&h, 0);
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, "Cut");
+    h.state_mut().save_waiting().unwrap();
+    assert!(open_page(&h).frames.is_empty());
+    assert!(control(&h, "Copy").is_none());
+    tap(&mut h, "Paste");
+    let pasted = frame(&h, 0);
+    assert_eq!(pasted.shape, first.shape);
+    assert!(h.state().doc.project.atlas.map(pasted.map).is_some());
+    undo(&mut h);
+    assert!(open_page(&h).frames.is_empty());
+    undo(&mut h);
+    assert_eq!(open_page(&h).frames, vec![first]);
+}
+
+#[test]
+fn the_keys_cut_copy_and_paste_a_frame() {
+    let mut h = pad();
+    add_frame(&mut h);
+    let first = frame(&h, 0);
+    h.event(egui::Event::Copy);
+    h.run_steps(2);
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    h.event(egui::Event::Paste("Map".to_string()));
+    h.run_steps(2);
+    assert_eq!(frame(&h, 0).shape, first.shape);
+    h.event(egui::Event::Cut);
+    h.run_steps(2);
+    assert!(open_page(&h).frames.is_empty());
+    h.event(egui::Event::Paste("Map".to_string()));
+    h.run_steps(2);
+    assert_eq!(open_page(&h).frames.len(), 1);
+}
