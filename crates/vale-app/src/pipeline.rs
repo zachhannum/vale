@@ -1307,6 +1307,14 @@ pub(crate) fn graticule_window(
 }
 
 /// A closed path through rings of page millimeters, in target points.
+/// The stroke of the world outline of `frame`, if the frame shows it.
+fn world_outline(frame: &FrameRecord) -> Option<Stroke> {
+    let line = &frame.world_outline;
+    let [r, g, b, a] = line.color;
+    line.on
+        .then(|| Stroke::solid(vale_render::Color::rgba(r, g, b, a), line.width))
+}
+
 fn shape_path(rings: &[Vec<[f64; 2]>], target: FrameTarget) -> BezPath {
     polylines_path(&target_rings(rings, target), true)
 }
@@ -1464,6 +1472,7 @@ fn draw_map<'a>(
     water: bool,
     (ids, cuts): (&[LayerId], &[usize]),
     graticule: Option<(&[Vec<Point>], Stroke)>,
+    outline: Option<Stroke>,
     scatter: &mut ScatterCache,
     rasters: &'a RasterCache,
     symbol_scale: SymbolScale,
@@ -1479,8 +1488,7 @@ fn draw_map<'a>(
             rule: FillRule::NonZero,
         });
     }
-    let outline: Vec<Point> = map_pts(vt, &cache.outline);
-    let outline_path = polylines_path([&outline], true);
+    let outline_path = polylines_path([&map_pts(vt, &cache.outline)], true);
     if water {
         list.push(Item::Fill {
             path: outline_path.clone(),
@@ -1594,12 +1602,14 @@ fn draw_map<'a>(
     }
 
     // 5: outline.
-    list.push(Item::Stroke {
-        path: outline_path,
-        color: style.outline.color,
-        width: style.outline.width,
-        round: false,
-    });
+    if let Some(outline) = outline {
+        list.push(Item::Stroke {
+            path: outline_path,
+            color: outline.color,
+            width: outline.width,
+            round: false,
+        });
+    }
 
     DrawnMap {
         layers: page_layers,
@@ -2080,6 +2090,7 @@ impl Pipeline {
             true,
             (&ids, &[]),
             graticule,
+            Some(doc.frame.style.outline),
             &mut self.scatter,
             &self.rasters,
             symbol_scale,
@@ -2272,6 +2283,7 @@ impl Pipeline {
             true,
             (&ids, &[]),
             graticule,
+            world_outline(frame),
             &mut self.scatter,
             &self.rasters,
             symbol_scale,
@@ -2366,6 +2378,7 @@ impl Pipeline {
             water,
             (&ids, &cuts),
             graticule,
+            world_outline(frame),
             &mut self.scatter,
             &self.rasters,
             symbol_scale,
@@ -2392,6 +2405,7 @@ impl Pipeline {
                     false,
                     false,
                     (&ids, &[]),
+                    None,
                     None,
                     &mut self.scatter,
                     &self.rasters,

@@ -799,7 +799,8 @@ fn world(r: &mut Reader) -> Option<World> {
 /// furniture. An image that ends after the furniture has white paper, and
 /// frames with no border. An image that ends after the borders has the
 /// default layout grid. An image that ends after the layout grid has no map
-/// styles.
+/// styles. An image that ends after the resolutions has the default world
+/// outlines.
 fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     put_u32(out, atlas.maps.len());
     for map in &atlas.maps {
@@ -920,6 +921,20 @@ fn put_atlas(out: &mut Vec<u8>, atlas: &Atlas) {
     }
     put_map_styles(out, atlas);
     put_resolutions(out, atlas);
+    put_world_outlines(out, atlas);
+}
+
+/// The world outline of each frame.
+fn put_world_outlines(out: &mut Vec<u8>, atlas: &Atlas) {
+    let frames: Vec<_> = atlas.pages.iter().flat_map(|p| &p.frames).collect();
+    put_u32(out, frames.len());
+    for frame in frames {
+        put_u32(out, frame.id.0 as usize);
+        let outline = &frame.world_outline;
+        out.push(outline.on as u8);
+        out.extend_from_slice(&outline.color);
+        put_f64(out, outline.width);
+    }
 }
 
 /// The resolution of each page.
@@ -1070,6 +1085,7 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
                     color: opaque(r.take::<3>()?),
                     width: r.f64()?,
                 },
+                world_outline: Neatline::world_outline(),
                 border: Border::default(),
             });
         }
@@ -1198,6 +1214,18 @@ fn atlas(r: &mut Reader) -> Option<AtlasImage> {
             let id = PageId(r.u32()?);
             let dpi = r.u32()?;
             pages.iter_mut().find(|p| p.id == id)?.dpi = dpi;
+        }
+    }
+    if !r.0.is_empty() {
+        for _ in 0..count(r)? {
+            let id = FrameId(r.u32()?);
+            let outline = Neatline {
+                on: flag(r)?,
+                color: r.take::<4>()?,
+                width: r.f64()?,
+            };
+            let mut frames = pages.iter_mut().flat_map(|p| &mut p.frames);
+            frames.find(|f| f.id == id)?.world_outline = outline;
         }
     }
     let image = (maps, pages, presets, grid, styles, next_style);
@@ -1709,6 +1737,15 @@ mod tests {
                     width: 3.5,
                 }
             },
+            world_outline: if graticule.on {
+                Neatline::world_outline()
+            } else {
+                Neatline {
+                    on: false,
+                    color: [0x30, 0x40, 0x50, 0x60],
+                    width: 2.25,
+                }
+            },
             border: Border {
                 on: !graticule.on,
                 style: crate::atlas::BorderStyle::Graduated,
@@ -1798,6 +1835,7 @@ mod tests {
         put_atlas(&mut out, atlas);
         put_map_styles(&mut styles, atlas);
         put_resolutions(&mut styles, atlas);
+        put_world_outlines(&mut styles, atlas);
         out.truncate(out.len() - styles.len());
         out
     }
@@ -1914,6 +1952,7 @@ mod tests {
         // An image of an older build ends after the map styles.
         let mut resolutions = Vec::new();
         put_resolutions(&mut resolutions, &before);
+        put_world_outlines(&mut resolutions, &before);
         out.truncate(out.len() - resolutions.len());
         assert_eq!(atlas(&mut Reader(&out)).unwrap().1[0].dpi, DEFAULT_DPI);
     }
@@ -1931,6 +1970,7 @@ mod tests {
             rotation: 0.0,
             graticule: Graticule::default(),
             neatline: Neatline::default(),
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         };
         let id = before.add_frame(page, frame).unwrap();
@@ -1943,6 +1983,39 @@ mod tests {
         out.truncate(out.len() - tail);
         let image = atlas(&mut Reader(&out)).unwrap();
         assert_eq!(image.1, before.pages);
+    }
+
+    #[test]
+    fn an_atlas_image_without_world_outlines_reads_the_default() {
+        let mut before = Atlas::new(Units::Metric);
+        let page = before.pages[0].id;
+        let frame = FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape: FrameShape::Rectangle([10.0, 10.0, 100.0, 80.0]),
+            center: [0.0, 0.0],
+            scale: 1e7,
+            rotation: 0.0,
+            graticule: Graticule::default(),
+            neatline: Neatline::default(),
+            world_outline: Neatline {
+                on: false,
+                color: [1, 2, 3, 4],
+                width: 2.5,
+            },
+            border: Border::default(),
+        };
+        let id = before.add_frame(page, frame).unwrap();
+        let mut out = Vec::new();
+        put_atlas(&mut out, &before);
+        assert_eq!(atlas(&mut Reader(&out)).unwrap().1, before.pages);
+        // An image of an older build ends after the resolutions.
+        let mut outlines = Vec::new();
+        put_world_outlines(&mut outlines, &before);
+        out.truncate(out.len() - outlines.len());
+        let image = atlas(&mut Reader(&out)).unwrap();
+        let frame = image.1[0].frames.iter().find(|f| f.id == id).unwrap();
+        assert_eq!(frame.world_outline, Neatline::world_outline());
     }
 
     #[test]
@@ -1964,6 +2037,7 @@ mod tests {
                 color: [5, 6, 7, 8],
                 ..Neatline::default()
             },
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         };
         let id = before.add_frame(page, frame).unwrap();

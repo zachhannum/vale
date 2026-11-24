@@ -153,6 +153,8 @@ fn the_desktop_frame_panel_sets_the_neatline_the_border_and_the_grid() {
     h.run_steps(2);
     assert!(h.get_all_by_label("Grid labels").next().is_some());
     assert!(h.get_all_by_label("Border gap").next().is_some());
+    h.get_by_label("Numbers").scroll_to_me();
+    h.run();
     h.get_by_label("Numbers").click();
     h.run_steps(2);
     let f = h.state().doc.project.atlas.frame(frame).unwrap();

@@ -171,6 +171,8 @@ pub struct FrameRecord {
     pub rotation: f64,
     pub graticule: Graticule,
     pub neatline: Neatline,
+    /// The line along the edge of the projection.
+    pub world_outline: Neatline,
     pub border: Border,
 }
 
@@ -186,6 +188,15 @@ pub struct Neatline {
 impl Neatline {
     /// The line widths in points that the app offers.
     pub const WIDTHS: RangeInclusive<f64> = 0.1..=6.0;
+
+    /// The default world outline of a frame.
+    pub fn world_outline() -> Self {
+        Neatline {
+            on: true,
+            color: [90, 100, 105, 255],
+            width: 0.8,
+        }
+    }
 }
 
 impl Default for Neatline {
@@ -1955,6 +1966,7 @@ mod tests {
             rotation: 15.0,
             graticule: Graticule::default(),
             neatline: Neatline::default(),
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         }
     }

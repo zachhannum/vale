@@ -43,6 +43,7 @@ use vale_app::ui::pad::atlas::{
     NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE, UPDATE_MAP_STYLE, map_style_row,
 };
 use vale_app::ui::pad::atlas::{PIXEL_PREVIEW, RESOLUTION};
+use vale_app::ui::pad::atlas::{WORLD_OUTLINE, WORLD_OUTLINE_COLOR, WORLD_OUTLINE_WIDTH};
 use vale_app::ui::pad::dock_ui::tab_name;
 use vale_app::ui::pad::edge_labels::{
     EDGE_LABELS, HALO as EDGE_HALO, HALO_WIDTH as EDGE_HALO_WIDTH, OFFSET as EDGE_OFFSET,
@@ -2993,6 +2994,46 @@ fn the_neatline_controls_work_with_a_finger() {
         assert_eq!(width, 3.6, "{size:?}");
         check_controls(&h, "neatline width");
     }
+}
+
+#[test]
+fn the_world_outline_controls_turn_it_off_and_set_its_width() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    add_frame(&mut h);
+    h.state_mut().save_waiting().unwrap();
+    let first = frame(&h, 1).world_outline;
+    assert!(first.on);
+    assert!(strokes(&mut h, 1, first.color, first.width) > 0);
+    scroll_to(&mut h, WORLD_OUTLINE);
+    check_controls(&h, "world outline");
+    tap(&mut h, WORLD_OUTLINE);
+    assert!(!frame(&h, 1).world_outline.on);
+    assert!(control(&h, WORLD_OUTLINE_COLOR).is_none());
+    assert!(control(&h, &field(WORLD_OUTLINE_WIDTH)).is_none());
+    assert_eq!(strokes(&mut h, 1, first.color, first.width), 0);
+    assert_eq!(frame(&h, 0).world_outline, first);
+    h.state_mut().save_waiting().unwrap();
+
+    tap(&mut h, WORLD_OUTLINE);
+    assert!(frame(&h, 1).world_outline.on);
+    h.state_mut().save_waiting().unwrap();
+    scroll_to(&mut h, &field(WORLD_OUTLINE_WIDTH));
+    type_value(&mut h, WORLD_OUTLINE_WIDTH, "2.4");
+    assert_eq!(frame(&h, 1).world_outline.width, 2.4);
+    assert!(strokes(&mut h, 1, first.color, 2.4) > 0);
+    check_controls(&h, "world outline width");
+
+    // Each edit is one undo step.
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, "Undo");
+    assert_eq!(frame(&h, 1).world_outline, first);
+    tap(&mut h, "Undo");
+    assert!(!frame(&h, 1).world_outline.on);
 }
 
 #[test]

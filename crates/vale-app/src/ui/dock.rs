@@ -26,7 +26,8 @@ use super::pad::atlas::{
     PIXEL_PREVIEW, POLYGON, PROJECTION_NAME, RECTANGLE, REFERENCE_GRID, RESET_TO_MAP_STYLE,
     RESOLUTION, ROTATION, SAVE_AS_MAP_STYLE, SAVE_PROJECTION, SCALE, SECOND_COLOR, SECOND_PARALLEL,
     SHAPE, SIZE, STROKE_COLOR, STROKE_WIDTH, TISSOT_CIRCLES, UNIT_NAMES, UPDATE_MAP_STYLE, WIDTH,
-    custom_row, edited_value, length_text, unit_name,
+    WORLD_OUTLINE, WORLD_OUTLINE_COLOR, WORLD_OUTLINE_WIDTH, custom_row, edited_value, length_text,
+    unit_name,
 };
 use super::pad::atlas::{
     BORDER_GAP, CENTER_MAP, DISTANCE_BY_SIDE, FIT_FRAME_TO_MAP, FIT_MAP_TO_FRAME,
@@ -202,6 +203,13 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
     }
     if frame.neatline.on {
         neatline_rows(ui, state, frame);
+    }
+    let mut world_outline = frame.world_outline.on;
+    if ui.checkbox(&mut world_outline, WORLD_OUTLINE).changed() {
+        atlas::set_world_outline(state, frame.id, world_outline);
+    }
+    if frame.world_outline.on {
+        world_outline_rows(ui, state, frame);
     }
     let mut border = frame.border.on;
     if ui.checkbox(&mut border, BORDER).changed() {
@@ -411,6 +419,31 @@ fn neatline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 .suffix(" pt");
             if stepper.row(ui).changed() {
                 atlas::set_neatline_width(state, id, width);
+            }
+        });
+}
+
+/// The color and the width of the world outline of a frame.
+fn world_outline_rows(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
+    let (id, b) = (frame.id, &frame.world_outline);
+    egui::Grid::new("atlas-world-outline")
+        .num_columns(2)
+        .show(ui, |ui| {
+            ui.label(WORLD_OUTLINE_COLOR);
+            let mut color = b.color;
+            let button = ui.color_edit_button_srgba_unmultiplied(&mut color);
+            named(&button, egui::WidgetType::ColorButton, WORLD_OUTLINE_COLOR);
+            if button.changed() {
+                atlas::set_world_outline_color(state, id, color);
+            }
+            ui.end_row();
+            let mut width = b.width;
+            let stepper = number::stepper(WORLD_OUTLINE_WIDTH, &mut width)
+                .range(Neatline::WIDTHS)
+                .decimals(2)
+                .suffix(" pt");
+            if stepper.row(ui).changed() {
+                atlas::set_world_outline_width(state, id, width);
             }
         });
 }

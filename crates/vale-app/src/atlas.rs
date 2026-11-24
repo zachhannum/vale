@@ -677,6 +677,7 @@ pub fn new_frame(page: &PageRecord, map: &MapRecord, projection: &Projection) ->
         rotation: 0.0,
         graticule: Graticule::default(),
         neatline: Neatline::default(),
+        world_outline: Neatline::world_outline(),
         border: Border::default(),
     }
 }
@@ -743,6 +744,7 @@ mod tests {
                 ..Graticule::default()
             },
             neatline: Neatline::default(),
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         }
     }

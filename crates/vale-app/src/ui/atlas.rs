@@ -616,6 +616,10 @@ pub struct AtlasState {
     pub neatline_color: bool,
     /// The color picker of the neatline showed in this frame.
     pub(crate) neatline_shown: bool,
+    /// The color picker of the world outline is open.
+    pub world_outline_color: bool,
+    /// The color picker of the world outline showed in this frame.
+    pub(crate) world_outline_shown: bool,
     /// The text of the name field of the custom projections.
     pub preset_name: String,
     /// The gestures of the rows of the custom projections, by place.
@@ -891,6 +895,8 @@ impl Default for AtlasState {
             graticule_shown: false,
             neatline_color: false,
             neatline_shown: false,
+            world_outline_color: false,
+            world_outline_shown: false,
             preset_name: String::new(),
             preset_list: Default::default(),
             every_tab: false,
@@ -2998,7 +3004,10 @@ fn frames(ui: &egui::Ui, state: &mut AppState, place: PagePlace, area: Rect) {
             state.map_generation,
             frame.map,
             &frame.graticule,
-            neatline_key(&frame.neatline),
+            (
+                neatline_key(&frame.neatline),
+                neatline_key(&frame.world_outline),
+            ),
             &frame.border,
             page.paper,
             ppp.to_bits(),
@@ -4359,6 +4368,33 @@ pub fn set_neatline_width(state: &mut AppState, id: FrameId, width: f64) {
     let width = stepped(width, range, 0.05);
     edit_frame(state, id, |f, _| {
         f.neatline.width = width;
+        true
+    });
+}
+
+/// Turns the world outline of a frame on or off.
+pub fn set_world_outline(state: &mut AppState, id: FrameId, on: bool) {
+    edit_frame(state, id, |f, _| {
+        f.world_outline.on = on;
+        true
+    });
+}
+
+pub fn set_world_outline_color(state: &mut AppState, id: FrameId, color: Rgba) {
+    edit_frame(state, id, |f, _| {
+        f.world_outline.color = color;
+        true
+    });
+}
+
+/// Sets the world outline width of a frame, in points, rounded to 0.05.
+pub fn set_world_outline_width(state: &mut AppState, id: FrameId, width: f64) {
+    if !width.is_finite() {
+        return;
+    }
+    let width = stepped(width, Neatline::WIDTHS, 0.05);
+    edit_frame(state, id, |f, _| {
+        f.world_outline.width = width;
         true
     });
 }
