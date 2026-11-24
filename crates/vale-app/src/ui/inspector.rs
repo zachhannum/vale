@@ -86,6 +86,13 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
     let font_warning = (state.doc.entry(info.id))
         .and_then(|e| crate::fonts::missing(e.style.label.font.as_deref(), &state.font_families));
     let mut pick_font = false;
+    // The scale of the selected frame. Only a frame has a scale.
+    let current = match state.atlas.selection {
+        super::atlas::AtlasSelection::Frame(f) => {
+            state.doc.project.atlas.frame(f).map_or(0.0, |f| f.scale)
+        }
+        _ => 0.0,
+    };
     let Some(entry) = state.doc.entry_mut(info.id) else {
         return;
     };
@@ -102,6 +109,8 @@ fn layer_section(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(4.0);
         changed |= style_editor::mask_rows(ui, info.id, &mut style.style.mask, &masks);
     }
+    ui.add_space(4.0);
+    changed |= style_editor::reference_scale_row(ui, info.id, &mut style.reference_scale, current);
     let polygon = info.kind == GeometryKind::Polygon;
     let classes = style_editor::classify(ui, info.id, &fields, &ramps, &mut library, polygon);
 

@@ -68,6 +68,8 @@ pub struct PageLayer<'a> {
     pub features: Vec<PageFeature>,
     /// The scale denominator of the view.
     pub scale: f64,
+    /// The factor of the sizes of the symbols, from the reference scale of the style.
+    pub size: f64,
     /// The radius of the world, in kilometers.
     pub radius_km: f64,
     /// The values of the raster layers under the features.
@@ -94,9 +96,19 @@ impl PageLayer<'_> {
         }
     }
 
+    /// The paints of feature `index` at the size factor of the layer.
+    pub fn paints(&self, index: usize, out: &mut Vec<Paint>) {
+        let start = out.len();
+        self.entry.style.style.paints(&self.context(index), out);
+        let scaled: Vec<_> = out.drain(start..).map(|p| p.scaled(self.size)).collect();
+        out.extend(scaled);
+    }
+
     /// How far the paint of feature `index` reaches.
     pub fn extent(&self, index: usize) -> Extent {
-        self.entry.style.style.extent(&self.context(index))
+        let mut paints = Vec::new();
+        self.paints(index, &mut paints);
+        vale_style::extent_of(&paints)
     }
 }
 
@@ -440,6 +452,7 @@ fn build_page_layers<'a>(
     area: Rect,
     ids: &[LayerId],
     scale: f64,
+    nominal: f64,
     rasters: &'a RasterCache,
 ) -> Vec<PageLayer<'a>> {
     let page = area.inflate(8.0, 8.0);
@@ -489,6 +502,7 @@ fn build_page_layers<'a>(
             largest_flow = layer_rasters.flow_largest(height, &layer.features);
         }
         out.push(PageLayer {
+            size: entry.style.size_factor(nominal),
             entry,
             layer,
             kind,
@@ -620,17 +634,22 @@ fn paint_key(paint: &Paint) -> [u64; 8] {
 
 /// The batches of a layer, in draw order: rule by rule, and symbolizer by symbolizer. Features with the same paint share a batch, in the order of the features.
 fn batches(pl: &PageLayer<'_>) -> Vec<Batch> {
-    style_batches(&pl.entry.style.style, pl.scale, pl.features.len(), |i| {
-        pl.context(pl.features[i].index)
-    })
+    style_batches(
+        &pl.entry.style.style,
+        pl.scale,
+        pl.size,
+        pl.features.len(),
+        |i| pl.context(pl.features[i].index),
+    )
 }
 
-/// The batches of `count` features with `style` at the scale denominator `scale`, as `batches` gives them. `context` gives the style context of feature `i`.
+/// The batches of `count` features with `style` at the scale denominator `scale`, as `batches` gives them, with each size times `size`. `context` gives the style context of feature `i`.
 ///
 /// The masked batches draw as one group, at the place of the first masked batch, so that one clip holds them.
 pub(crate) fn style_batches<'a>(
     style: &vale_style::Style,
     scale: f64,
+    size: f64,
     count: usize,
     context: impl Fn(usize) -> Context<'a>,
 ) -> Vec<Batch> {
@@ -640,7 +659,7 @@ pub(crate) fn style_batches<'a>(
             .enumerate()
             .map(|(i, (paint, masked))| Batch {
                 order: (0, i),
-                paint,
+                paint: paint.scaled(size),
                 features: (0..count).collect(),
                 masked,
             })
@@ -665,6 +684,7 @@ pub(crate) fn style_batches<'a>(
                 let Some(paint) = symbolizer.resolve(&ctx) else {
                     continue;
                 };
+                let paint = paint.scaled(size);
                 let at = *index.entry((*r, k, paint_key(&paint))).or_insert_with(|| {
                     out.push(Batch {
                         order: (*r, k),
@@ -1096,10 +1116,11 @@ fn draw_batch(list: &mut DisplayList, pl: &PageLayer<'_>, batch: &Batch, sd: &mu
             let Some(fill) = ScatterFill::of(&batch.paint) else {
                 return;
             };
-            let size = fill.size * sd.unit;
+            // The spacing stays on the ground at the reference scale.
+            let size = fill.size * sd.unit * pl.size;
             let reach = size / 2.0;
             let shown = sd.area.inflate(reach, reach);
-            let (scale, radius) = (sd.scale, sd.radius);
+            let (scale, radius) = (sd.scale * pl.size, sd.radius);
             let view = sd.view().to_vec();
             let mut instances = Vec::new();
             for f in features() {
@@ -1468,7 +1489,17 @@ fn draw_map<'a>(
     // 3: layers.
     let km_per_point = km_per_point(cache, vt);
     let scale = scale_denominator(km_per_point * 1000.0);
-    let page_layers = build_page_layers(doc, map, cache, vt, area, ids, scale, rasters);
+    let page_layers = build_page_layers(
+        doc,
+        map,
+        cache,
+        vt,
+        area,
+        ids,
+        scale,
+        symbol_scale.nominal,
+        rasters,
+    );
     let mut sd = SymbolDraw {
         symbols: doc.symbols(),
         scatter,
@@ -1687,7 +1718,8 @@ impl Pipeline {
                         radius_km * 1000.0,
                         pixels_per_point,
                     );
-                    let batches = style_batches(style, scale, features.len(), |i| Context {
+                    let size = entry.style.size_factor(scale);
+                    let batches = style_batches(style, scale, size, features.len(), |i| Context {
                         attributes: &features[i].attributes,
                         scale,
                         geometry: features[i].geometry.kind(),
@@ -1707,7 +1739,7 @@ impl Pipeline {
                 .collect::<Option<Vec<_>>>()
         };
         let world = (pixels_per_point, radius_km * 1000.0);
-        self.vtiles.show(layer, style, world, paints)
+        self.vtiles.show(layer, &entry.style, world, paints)
     }
 
     /// The levels of detail of the vector layers.
@@ -2000,6 +2032,7 @@ impl Pipeline {
             vt.page_rect(),
             &ids,
             scale,
+            scale_denominator(1.0 / view.scale),
             &self.rasters,
         );
         Ok(pick::pick(&layers, at))
@@ -2518,6 +2551,7 @@ pub(crate) fn swatch(
         kind,
         features: vec![feature],
         scale: 0.0,
+        size: 1.0,
         radius_km: doc.project.world.radius_km,
         rasters: None,
         largest_flow: None,
@@ -2652,7 +2686,7 @@ mod tests {
     /// The order and the mask flag of the batches of one feature.
     fn order(style: &vale_style::Style) -> Vec<(usize, bool)> {
         let none = BTreeMap::new();
-        let batches = style_batches(style, 1.0, 1, |i| Context {
+        let batches = style_batches(style, 1.0, 1.0, 1, |i| Context {
             attributes: &none,
             scale: 1.0,
             geometry: GeometryKind::Polygon,

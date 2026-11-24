@@ -3993,7 +3993,10 @@ fn vector_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     if widgets::open_row(ui, controls, table::FEATURES, &features).clicked() {
         state.open_table(id);
     }
-    rules::section(ui, state, controls, id);
+    let current = vale_style::scale_denominator(
+        state.doc.project.world.radius_km * 1000.0 / state.globe.radius(),
+    );
+    rules::section(ui, state, controls, id, current);
     copy_style::open_row(ui, state, controls);
     if kind != "Polygons" {
         fonts::section(ui, state, controls, id);

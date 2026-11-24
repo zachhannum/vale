@@ -531,3 +531,55 @@ fn a_flow_tributary_meets_the_main_river_with_no_step_on_the_globe() {
         .unwrap();
     assert!(end.1 <= beside.1 + 1e-3, "{end:?} {beside:?}");
 }
+
+/// The widths of the drawn paths.
+fn path_widths(shapes: &[egui::Shape]) -> Vec<f32> {
+    (shapes.iter())
+        .filter_map(|s| match s {
+            egui::Shape::Path(p) => Some(p.stroke.width),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_reference_scale_keeps_the_width_of_a_line_on_the_ground_at_each_zoom() {
+    let mut doc = Document::empty();
+    let id = import(
+        &mut doc,
+        "roads",
+        r#"{"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {},
+          "geometry": {"type": "LineString", "coordinates": [[-10, 0], [10, 5]]}}]}"#,
+    );
+    let width = 2.0;
+    let rule = &mut doc.entry_mut(id).unwrap().style.style.rules[0];
+    let vale_style::Symbolizer::Stroke(s) = &mut rule.symbolizers[0] else {
+        panic!("a stroke");
+    };
+    s.width = vale_style::expr::Property::constant(width);
+    let mut pipeline = Pipeline::new();
+    let radius_m = doc.project.world.radius_km * 1000.0;
+    let mut view = GlobeView::centered(0.0, 0.0);
+    view.zoom = 2.0;
+    let scale = vale_style::scale_denominator(radius_m / view.radius(RECT));
+
+    // With no reference scale, the width stays on the screen.
+    let widths = |doc: &Document, pipeline: &mut Pipeline, zoom: f64| {
+        let mut v = view;
+        v.zoom = zoom;
+        path_widths(&draw(doc, pipeline, &v, id))
+    };
+    assert_eq!(widths(&doc, &mut pipeline, 2.0), vec![width as f32]);
+    assert_eq!(widths(&doc, &mut pipeline, 4.0), vec![width as f32]);
+
+    // With a reference scale, the width grows with the zoom.
+    doc.entry_mut(id).unwrap().style.reference_scale = Some(scale);
+    for (zoom, expected) in [(2.0, width), (4.0, width * 2.0), (1.0, width / 2.0)] {
+        let drawn = widths(&doc, &mut pipeline, zoom);
+        assert_eq!(drawn.len(), 1);
+        assert!(
+            (f64::from(drawn[0]) - expected).abs() < 1e-3,
+            "{drawn:?} {expected}"
+        );
+    }
+}

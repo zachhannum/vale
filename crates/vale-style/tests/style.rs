@@ -3,9 +3,10 @@ use std::collections::BTreeMap;
 use vale_store::{BlendMode, GeometryKind, LayerId};
 use vale_style::expr::{Context, Filter, Property, Value};
 use vale_style::{
-    Color, DashPattern, DashPreset, Extent, Hatch, ImageSymbolizer, LayerStyle, MarkerShape, Mask,
-    Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer, Stroke, StrokeKind,
-    StrokeSymbolizer, Style, StyleError, Symbolizer, Weights, extent_of, scale_denominator,
+    Color, DashPattern, DashPreset, Extent, HAIRLINE, Hatch, ImageSymbolizer, LayerStyle,
+    MarkerShape, Mask, Paint, PointSymbolizer, Rule, STYLE_VERSION, ScatterSymbolizer, Stroke,
+    StrokeKind, StrokeSymbolizer, Style, StyleError, Symbolizer, Weights, extent_of,
+    scale_denominator,
 };
 
 fn river(kind: &str, flow: f64) -> BTreeMap<String, Value> {
@@ -1389,4 +1390,89 @@ fn a_style_with_no_opacity_and_no_blend_mode_reads_as_opaque_and_normal() {
     // The defaults are not in the JSON.
     let plain = LayerStyle::default_for(GeometryKind::Line, 0, &[]).to_json();
     assert!(!plain.contains("opacity") && !plain.contains("blend"));
+}
+
+#[test]
+fn the_reference_scale_round_trips() {
+    let mut style = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    assert_eq!(style.reference_scale, None);
+    assert!(!style.to_json().contains("reference_scale"));
+    style.reference_scale = Some(5_000_000.0);
+    let back = LayerStyle::from_json(&style.to_json()).unwrap();
+    assert_eq!(back.reference_scale, Some(5_000_000.0));
+    assert_eq!(back, style);
+
+    // A value that is not a positive number reads as none.
+    let mut json: serde_json::Value = serde_json::from_str(&style.to_json()).unwrap();
+    json["reference_scale"] = (-1.0).into();
+    let back = LayerStyle::from_json(&json.to_string()).unwrap();
+    assert_eq!(back.reference_scale, None);
+}
+
+#[test]
+fn the_size_factor_follows_the_reference_scale_in_its_range() {
+    let mut style = LayerStyle::default_for(GeometryKind::Line, 0, &[]);
+    assert_eq!(style.size_factor(1_000.0), 1.0);
+    style.reference_scale = Some(1_000_000.0);
+    assert_eq!(style.size_factor(1_000_000.0), 1.0);
+    assert_eq!(style.size_factor(500_000.0), 2.0);
+    assert_eq!(style.size_factor(4_000_000.0), 0.25);
+    assert_eq!(style.size_factor(1.0), 16.0);
+    assert_eq!(style.size_factor(1e12), 1.0 / 64.0);
+}
+
+#[test]
+fn a_scaled_paint_scales_each_size() {
+    let red = Color::rgb(255, 0, 0);
+    let stroke = Paint::Stroke(Stroke::solid(red, 2.0));
+    assert_eq!(
+        stroke.clone().scaled(1.5),
+        Paint::Stroke(Stroke::solid(red, 3.0))
+    );
+    // A stroke gets no thinner than a hairline, and a thinner stroke keeps its width.
+    assert_eq!(
+        stroke.scaled(0.01),
+        Paint::Stroke(Stroke::solid(red, HAIRLINE))
+    );
+    assert_eq!(
+        Paint::Stroke(Stroke::solid(red, 0.1)).scaled(0.5),
+        Paint::Stroke(Stroke::solid(red, 0.1))
+    );
+
+    let marker = Paint::Marker {
+        radius: 4.0,
+        shape: MarkerShape::Circle,
+        fill: None,
+        hatch: Some(Hatch {
+            cross: false,
+            angle: 45.0,
+            spacing: 3.0,
+            line_width: 1.0,
+        }),
+        stroke: Some(Stroke::solid(red, 1.0)),
+    };
+    let Paint::Marker {
+        radius,
+        hatch: Some(h),
+        stroke: Some(s),
+        ..
+    } = marker.scaled(2.0)
+    else {
+        panic!("a marker");
+    };
+    assert_eq!(
+        (radius, h.spacing, h.line_width, h.angle, s.width),
+        (8.0, 6.0, 2.0, 45.0, 2.0)
+    );
+
+    let symbol = Paint::Symbol {
+        symbol: "tree".into(),
+        size: 10.0,
+        rotation: 30.0,
+        tint: None,
+    };
+    let Paint::Symbol { size, rotation, .. } = symbol.scaled(0.5) else {
+        panic!("a symbol");
+    };
+    assert_eq!((size, rotation), (5.0, 30.0));
 }

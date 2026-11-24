@@ -161,6 +161,9 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
     let help = super::expr_help::ExprHelp::for_layer(state, id);
     let rules = (state.doc.entry(id)).map_or(Vec::new(), |e| e.style.style.rules.clone());
     let counts = style_editor::filter_counts(state, id, &rules);
+    let current = vale_style::scale_denominator(
+        state.doc.project.world.radius_km * 1000.0 / state.globe.radius(),
+    );
     let Some(entry) = state.doc.entry_mut(id) else {
         return;
     };
@@ -180,6 +183,9 @@ fn vector_style(ui: &mut egui::Ui, state: &mut AppState, id: LayerId) {
                 ui.add_space(4.0);
                 changed |= style_editor::mask_rows(ui, id, &mut style.style.mask, &masks);
             }
+            ui.add_space(4.0);
+            changed |=
+                style_editor::reference_scale_row(ui, id, &mut style.reference_scale, current);
             (
                 changed,
                 style_editor::classify(

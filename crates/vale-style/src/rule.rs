@@ -403,6 +403,55 @@ pub enum Paint {
     },
 }
 
+/// The thinnest line that a reference scale gives, in points. A line that is styled thinner keeps its width.
+pub const HAIRLINE: f64 = 0.25;
+
+impl Paint {
+    /// The paint with each size times `k`: the widths of the strokes and of the hatch lines, the spacing of a hatch, the radius of a marker, and the size of a symbol. A stroke or a hatch line is never thinner than `HAIRLINE`, unless it is styled thinner. A scatter keeps its sizes, because its spacing is on the ground.
+    pub fn scaled(self, k: f64) -> Paint {
+        if k == 1.0 {
+            return self;
+        }
+        let width = |w: f64| (w * k).max(w.min(HAIRLINE));
+        let stroke = |s: Stroke| Stroke {
+            width: width(s.width),
+            ..s
+        };
+        match self {
+            Paint::Fill(_) | Paint::Scatter { .. } => self,
+            Paint::Stroke(s) => Paint::Stroke(stroke(s)),
+            Paint::Marker {
+                radius,
+                shape,
+                fill,
+                hatch,
+                stroke: outline,
+            } => Paint::Marker {
+                radius: radius * k,
+                shape,
+                fill,
+                hatch: hatch.map(|h| Hatch {
+                    spacing: h.spacing * k,
+                    line_width: width(h.line_width),
+                    ..h
+                }),
+                stroke: outline.map(stroke),
+            },
+            Paint::Symbol {
+                symbol,
+                size,
+                rotation,
+                tint,
+            } => Paint::Symbol {
+                symbol,
+                size: size * k,
+                rotation,
+                tint,
+            },
+        }
+    }
+}
+
 /// How far the paint of a feature reaches out from its geometry, in points.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct Extent {

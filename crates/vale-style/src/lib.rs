@@ -18,9 +18,9 @@ pub use label::{
 };
 pub use overrides::Overrides;
 pub use rule::{
-    Extent, Hatch, ImageSymbolizer, METERS_PER_POINT, MarkerShape, Mask, Paint, PointSymbolizer,
-    RasterSymbolizer, Rule, ScatterSymbolizer, StrokeSymbolizer, Style, Symbolizer, extent_of,
-    scale_denominator,
+    Extent, HAIRLINE, Hatch, ImageSymbolizer, METERS_PER_POINT, MarkerShape, Mask, Paint,
+    PointSymbolizer, RasterSymbolizer, Rule, ScatterSymbolizer, StrokeSymbolizer, Style,
+    Symbolizer, extent_of, scale_denominator,
 };
 pub use vale_render::Color;
 use vale_store::{BlendMode, GeometryKind};
@@ -267,12 +267,27 @@ pub struct LayerStyle {
     pub label: LabelStyle,
     /// The name of the height layer that the Flow strokes read. `None`, or a name that no height layer has, reads the first height layer.
     pub flow_height: Option<String>,
+    /// The scale denominator at which the sizes of the symbols are as styled. At another scale, each size changes with the scale, so the symbols keep their size on the ground. `None` keeps each size on the screen or the page at each scale.
+    pub reference_scale: Option<f64>,
     /// How much the labels of the map avoid the features of the layer.
     pub weights: Weights,
     /// The opacity of a vector layer, from 0 to 1. The layer draws as one group, and the group mixes with the layers below it. A raster layer and an image layer keep their opacity in their symbolizer.
     pub opacity: f32,
     /// How a vector layer mixes with the layers below it.
     pub blend: BlendMode,
+}
+
+/// The smallest and the largest factor that a reference scale gives to the sizes of a layer.
+pub const SIZE_FACTOR_RANGE: (f64, f64) = (1.0 / 64.0, 16.0);
+
+impl LayerStyle {
+    /// The factor of the sizes of the layer in a view at the scale denominator `scale`. It is 1 with no reference scale.
+    pub fn size_factor(&self, scale: f64) -> f64 {
+        match self.reference_scale {
+            Some(r) if scale > 0.0 => (r / scale).clamp(SIZE_FACTOR_RANGE.0, SIZE_FACTOR_RANGE.1),
+            _ => 1.0,
+        }
+    }
 }
 
 /// The weight that forbids labels over a feature. A weight is from 0, free, to this.
@@ -425,6 +440,7 @@ impl LayerStyle {
             },
             label,
             flow_height: None,
+            reference_scale: None,
             weights: Weights::default(),
             opacity: 1.0,
             blend: BlendMode::Normal,
@@ -453,6 +469,7 @@ impl LayerStyle {
                 font: None,
             },
             flow_height: None,
+            reference_scale: None,
             weights: Weights::default(),
             opacity: 1.0,
             blend: BlendMode::Normal,
@@ -776,6 +793,7 @@ mod tests {
             style: Style::default(),
             label: l.label.clone(),
             flow_height: None,
+            reference_scale: None,
             weights: Weights::default(),
             opacity: 1.0,
             blend: BlendMode::Normal,

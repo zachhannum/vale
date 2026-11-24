@@ -8355,6 +8355,7 @@ fn a_scatter_stays_on_the_ground_when_the_globe_turns() {
             radius_m,
             places: &places,
             count: 0,
+            size: 1.0,
         };
         on_globe.instances(forest, 0, feature, &fill)
     };
