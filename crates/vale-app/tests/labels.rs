@@ -996,7 +996,8 @@ fn a_label_avoids_a_symbol_outside_the_part() {
     let labels = halos(&c);
     assert_eq!(labels.len(), halos(&whole).len());
     assert!(castles.iter().any(|s| !s.overlaps(part)));
-    for label in labels {
+    // A label can touch the symbol of its own point by less than a point.
+    for label in labels.iter().map(|l| l.inflate(-1.0, -1.0)) {
         for castle in &castles {
             assert!(!label.overlaps(*castle), "{label:?} {castle:?}");
         }
@@ -1394,6 +1395,7 @@ fn place_halos(
         &[],
         &[],
         Vec::new(),
+        &[],
     );
     let halos: Vec<Rect> = (items.iter())
         .filter_map(|i| match i {
@@ -1650,4 +1652,86 @@ fn a_label_mask_cuts_the_pixels_and_is_a_vector_clip_in_a_pdf() {
     let pdf = vale_render::render_pdf(&list).unwrap();
     let before = vale_render::render_pdf(&plain).unwrap();
     assert_eq!(masked::pdf_clips(&pdf).1, masked::pdf_clips(&before).1 + 1);
+}
+
+/// The points of the halo outlines of the labels that `labels::place` places for `layers`, with
+/// each label inside each region of `visible`.
+fn halo_points(
+    layers: &[PageLayer<'_>],
+    classes: &[Vec<vale_style::LabelClass>],
+    page: Rect,
+    visible: &[Vec<Vec<Point>>],
+) -> Vec<Point> {
+    let mut f = fonts().unwrap();
+    let (items, summary, _) = vale_app::labels::place(
+        layers,
+        classes,
+        page,
+        &mut f,
+        Quality::Final,
+        &[],
+        &[],
+        Vec::new(),
+        visible,
+    );
+    assert!(summary.unplaced.is_empty(), "{:?}", summary.unplaced);
+    (items.iter())
+        .filter_map(|i| match i {
+            Item::Stroke { path, .. } => Some(path),
+            _ => None,
+        })
+        .flat_map(|path| path.elements().iter().filter_map(|el| el.end_point()))
+        .collect()
+}
+
+#[test]
+fn a_polygon_label_with_overrun_stays_inside_the_horizon() {
+    let page = Rect::new(0.0, 0.0, 600.0, 600.0);
+    let (center, radius) = (Point::new(300.0, 300.0), 250.0);
+    let disc: Vec<Point> = (0..360)
+        .map(|k| {
+            let a = f64::from(k).to_radians();
+            center + kurbo::Vec2::new(a.cos(), a.sin()) * radius
+        })
+        .collect();
+    // A narrow island that the horizon cuts, so that its east edge is the horizon.
+    let mut island = vec![Point::new(535.0, 380.0), Point::new(535.0, 220.0)];
+    island.extend(
+        (disc.iter().copied())
+            .filter(|p| p.x >= 535.0 && p.y > 220.0 && p.y < 380.0)
+            .rev(),
+    );
+    let land = named_layer(
+        GeometryKind::Polygon,
+        Geometry::Polygons(vec![vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]]]),
+        Some("Oraneia"),
+    );
+    let mut class = vale_style::LabelClass::new("Lands", GeometryKind::Polygon, 0).unwrap();
+    class.overrun = 20.0;
+    class.size = 30.0;
+    class.halo = true;
+    let classes = [vec![class]];
+    let layer = || {
+        page_layer(
+            &land,
+            GeometryKind::Polygon,
+            pf(0, vec![], vec![island.clone()], vec![island.clone()]),
+        )
+    };
+    let reach = |points: Vec<Point>| {
+        assert!(!points.is_empty());
+        (points.iter())
+            .map(|p| p.distance(center))
+            .fold(0.0, f64::max)
+    };
+    let free = reach(halo_points(&[layer()], &classes, page, &[]));
+    let held = reach(halo_points(
+        &[layer()],
+        &classes,
+        page,
+        &[vec![disc.clone()]],
+    ));
+    // With no horizon, the overrun takes the ink past it.
+    assert!(free > radius, "{free}");
+    assert!(held <= radius, "{held}");
 }

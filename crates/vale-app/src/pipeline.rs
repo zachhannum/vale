@@ -1308,14 +1308,17 @@ pub(crate) fn graticule_window(
 
 /// A closed path through rings of page millimeters, in target points.
 fn shape_path(rings: &[Vec<[f64; 2]>], target: FrameTarget) -> BezPath {
-    let rings: Vec<Vec<Point>> = rings
+    polylines_path(&target_rings(rings, target), true)
+}
+
+fn target_rings(rings: &[Vec<[f64; 2]>], target: FrameTarget) -> Vec<Vec<Point>> {
+    rings
         .iter()
         .map(|r| {
             let points = r.iter().map(|&[x, y]| target.to_target(Point::new(x, y)));
             points.collect()
         })
-        .collect();
-    polylines_path(&rings, true)
+        .collect()
 }
 
 impl Cache {
@@ -2100,6 +2103,7 @@ impl Pipeline {
                 &[bar_rect],
                 &drawn.symbols,
                 cache.page_parallels(&vt, page, &classes),
+                &[vec![map_pts(&vt, &cache.outline)]],
             );
             list.items.extend(items);
             label_summary = summary;
@@ -2413,6 +2417,10 @@ impl Pipeline {
                 &obstacles,
                 &labeled.symbols,
                 cache.page_parallels(&vt, full, &classes),
+                &[
+                    vec![map_pts(&vt, &cache.outline)],
+                    target_rings(&frame.shape.rings(), target),
+                ],
             );
             if !label_masks.is_empty() {
                 // The outer edge of the clips holds all that the frame draws.
