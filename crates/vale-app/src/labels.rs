@@ -121,7 +121,8 @@ pub struct LabelMask {
 /// `layers` runs from the bottom of the drawing to the top. `classes` holds the label classes of
 /// each layer of `layers`. Each class whose filter matches a feature gives the feature a label.
 /// Labels do not overlap `obstacles` or a point symbol. A label over a scatter symbol has a cost.
-/// `parallels` are the lines of constant latitude on the page, each from west to east.
+/// `parallels` are the lines of constant latitude on the page, each from west to east. Each
+/// label stays inside each region of `visible`, which is a list of rings with the even-odd rule.
 #[allow(clippy::too_many_arguments)]
 pub fn place(
     layers: &[PageLayer<'_>],
@@ -132,6 +133,7 @@ pub fn place(
     obstacles: &[Rect],
     symbols: &[PlacedSymbol],
     parallels: Vec<Vec<Point>>,
+    visible: &[Vec<Vec<Point>>],
 ) -> (Vec<Item>, LabelSummary, Vec<LabelMask>) {
     let mut labeled = HashSet::new();
     let mut label_classes: Vec<LabelClass> = Vec::new();
@@ -302,6 +304,7 @@ pub fn place(
         obstacles: {
             let mut all = symbol_obstacles(obstacles, symbols, &labeled, &symbol_weights, page);
             all.extend(layer_obstacles);
+            all.extend(visible.iter().map(|rings| outside(rings, page)));
             all
         },
         parallels,
@@ -827,6 +830,23 @@ pub fn point_position(p: LabelPosition) -> PointPosition {
 /// none, has its symbol as its geometry, so its symbol is not an obstacle.
 /// The symbol of a layer in `weights` has that weight, and the symbol of
 /// another layer is forbidden.
+/// A forbidden obstacle over the part of `page` outside `rings`.
+fn outside(rings: &[Vec<Point>], page: Rect) -> Obstacle {
+    let r = page.inflate(page.width() + 1.0, page.height() + 1.0);
+    let mut all = vec![vec![
+        Point::new(r.x0, r.y0),
+        Point::new(r.x1, r.y0),
+        Point::new(r.x1, r.y1),
+        Point::new(r.x0, r.y1),
+    ]];
+    all.extend(rings.iter().cloned());
+    Obstacle::Polygon {
+        rings: all,
+        inside: Weight::Forbidden,
+        outline: Weight::Forbidden,
+    }
+}
+
 fn symbol_obstacles(
     hard: &[Rect],
     symbols: &[PlacedSymbol],

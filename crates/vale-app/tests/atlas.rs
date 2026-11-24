@@ -6973,6 +6973,14 @@ fn path_ends(path: &kurbo::BezPath) -> (Point, Point) {
     (point(&els[0]), point(&els[els.len() - 1]))
 }
 
+/// The ends of the leader line in `items` that starts nearest to `anchor`.
+fn leader_from(items: &[Item], anchor: Point) -> (Point, Point) {
+    (strokes_in(items, LEADER_COLOR).iter())
+        .map(|(path, _)| path_ends(path))
+        .min_by(|a, b| a.0.distance(anchor).total_cmp(&b.0.distance(anchor)))
+        .unwrap()
+}
+
 /// The number of subpaths of a path.
 fn subpaths(path: &kurbo::BezPath) -> usize {
     (path.elements().iter())
@@ -7021,7 +7029,17 @@ fn the_leader_line_style_reaches_the_display_list() {
     let items = leader_frame(&mut h, map, base);
     let lines = strokes_in(&items, LEADER_COLOR);
     assert!(!lines.is_empty());
-    let (anchor, end) = path_ends(&lines[0].0);
+    // The longest leader, so that an end mark is shorter than it.
+    let k = (0..lines.len())
+        .max_by(|&a, &b| {
+            let len = |i: usize| {
+                let (a, e) = path_ends(&lines[i].0);
+                a.distance(e)
+            };
+            len(a).total_cmp(&len(b))
+        })
+        .unwrap();
+    let (anchor, end) = path_ends(&lines[k].0);
     let length = anchor.distance(end);
     assert!(length > 0.0);
     assert!(fills_in(&items, LEADER_COLOR).is_empty());
@@ -7039,7 +7057,7 @@ fn the_leader_line_style_reaches_the_display_list() {
     assert!(label_runs(&mut h, 0).iter().any(|g| g.text == "LAND"));
 
     let items = leader_frame(&mut h, map, LeaderStyle { width: 2.0, ..base });
-    assert_eq!(strokes_in(&items, LEADER_COLOR)[0].1, 2.0);
+    assert_eq!(strokes_in(&items, LEADER_COLOR)[k].1, 2.0);
 
     // The alpha of the leader color reaches the strokes.
     let half = vale_render::Color {
@@ -7060,7 +7078,7 @@ fn the_leader_line_style_reaches_the_display_list() {
         ..base
     };
     let items = leader_frame(&mut h, map, dashed);
-    let (path, _) = &strokes_in(&items, LEADER_COLOR)[0];
+    let (path, _) = &strokes_in(&items, LEADER_COLOR)[k];
     assert!(subpaths(path) > 2, "{}", subpaths(path));
 
     let halo = LeaderStyle {
@@ -7071,7 +7089,7 @@ fn the_leader_line_style_reaches_the_display_list() {
     let items = leader_frame(&mut h, map, halo);
     let halos = strokes_in(&items, LEADER_HALO);
     assert_eq!(halos.len(), lines.len());
-    assert_eq!(halos[0].1, base.width + 3.0);
+    assert_eq!(halos[k].1, base.width + 3.0);
     assert_eq!(strokes_in(&items, LEADER_COLOR).len(), lines.len());
     // The halo is under the line.
     let at =
@@ -7086,7 +7104,7 @@ fn the_leader_line_style_reaches_the_display_list() {
     let items = leader_frame(&mut h, map, dot);
     let marks = fills_in(&items, LEADER_COLOR);
     assert_eq!(marks.len(), lines.len());
-    let bounds = kurbo::Shape::bounding_box(&marks[0]);
+    let bounds = kurbo::Shape::bounding_box(&marks[k]);
     assert!(bounds.center().distance(anchor) < 0.01, "{bounds:?}");
     assert!((bounds.width() - 4.0).abs() < 0.05, "{bounds:?}");
 
@@ -7098,10 +7116,10 @@ fn the_leader_line_style_reaches_the_display_list() {
     let items = leader_frame(&mut h, map, arrow);
     let marks = fills_in(&items, LEADER_COLOR);
     assert_eq!(marks.len(), lines.len());
-    let bounds = kurbo::Shape::bounding_box(&marks[0]);
+    let bounds = kurbo::Shape::bounding_box(&marks[k]);
     assert!(bounds.inflate(0.01, 0.01).contains(anchor), "{bounds:?}");
     // The line stops at the base of the arrow.
-    let (from, to) = path_ends(&strokes_in(&items, LEADER_COLOR)[0].0);
+    let (from, to) = leader_from(&items, anchor);
     assert!((from.distance(anchor) - 4.0).abs() < 1e-6);
     assert!(to.distance(end) < 1e-6);
 
@@ -7111,7 +7129,7 @@ fn the_leader_line_style_reaches_the_display_list() {
         ..base
     };
     let items = leader_frame(&mut h, map, gaps);
-    let (from, to) = path_ends(&strokes_in(&items, LEADER_COLOR)[0].0);
+    let (from, to) = leader_from(&items, anchor);
     assert!((from.distance(anchor) - 2.0).abs() < 1e-6);
     // The default gap at the label is 1 point.
     assert!((from.distance(to) - (length - 4.0)).abs() < 1e-6);
