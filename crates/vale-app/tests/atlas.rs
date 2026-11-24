@@ -10,7 +10,7 @@ use eframe::egui::{self, Modifiers, Pos2, Rect, Vec2, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use kurbo::Point;
-use vale_app::atlas::{Handle, anchor, frame_transform, shape_bbox};
+use vale_app::atlas::{Handle, anchor, frame_transform, outline_box, shape_bbox};
 use vale_app::atlas_export::{ExportOptions, PdfExport};
 use vale_app::document::{Document, Target};
 use vale_app::furniture::rect_of;
@@ -37,6 +37,7 @@ use vale_app::ui::pad::atlas::{
     CENTER_LONGITUDE, EXIT_FRAME, GRID, GRID_COLOR, GRID_SPACING, LAYOUT_GRID, SECOND_PARALLEL,
     SNAP_TO_LAYOUT, TISSOT_CIRCLES,
 };
+use vale_app::ui::pad::atlas::{CENTER_MAP, FIT_FRAME_TO_MAP, FIT_MAP_TO_FRAME};
 use vale_app::ui::pad::atlas::{
     CUSTOM_PROJECTION_NAME, DELETE_MAP_STYLES, EDITED, MAP_STYLE, MAP_STYLE_NAME, NO_MAP_STYLE,
     NO_MAP_STYLE_ROW, RESET_TO_MAP_STYLE, SAVE_AS_MAP_STYLE, UPDATE_MAP_STYLE, map_style_row,
@@ -14520,4 +14521,67 @@ fn a_pasted_frame_gives_its_new_map_the_collections_of_the_map() {
     assert_eq!(project.map_stack(pasted.map), vec![coast, world]);
     undo(&mut h);
     assert!(open_page(&h).frames.is_empty());
+}
+
+/// The page box of the outline of the projection in a frame.
+fn outline_of(h: &mut Pad, index: usize) -> kurbo::Rect {
+    let f = frame(h, index);
+    let s = h.state_mut();
+    outline_box(&f, s.pipeline.projection(&s.doc, f.map).unwrap())
+}
+
+fn assert_near_mm(a: f64, b: f64) {
+    assert!((a - b).abs() < 1e-6, "{a} is not {b}");
+}
+
+#[test]
+fn the_frame_tab_centers_and_fits_the_map_and_the_frame_in_one_undo_step_each() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let mut s = state();
+    s.session = Some(Session::open(&path, &mut s.doc).unwrap());
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let id = frame(&h, 0).id;
+    let scale = frame(&h, 0).scale * 2.0;
+    atlas::set_scale(h.state_mut(), id, scale);
+    atlas::set_longitude(h.state_mut(), id, 40.0);
+    atlas::set_rotation(h.state_mut(), id, 20.0);
+    h.state_mut().save_waiting().unwrap();
+    let start = frame(&h, 0);
+
+    scroll_to(&mut h, CENTER_MAP);
+    tap(&mut h, CENTER_MAP);
+    h.state_mut().save_waiting().unwrap();
+    let (b, a) = (outline_of(&mut h, 0), anchor(&frame(&h, 0).shape));
+    assert_near_mm(b.center().x, a.x);
+    assert_near_mm(b.center().y, a.y);
+    assert_eq!((frame(&h, 0).scale, frame(&h, 0).rotation), (scale, 20.0));
+
+    scroll_to(&mut h, FIT_MAP_TO_FRAME);
+    tap(&mut h, FIT_MAP_TO_FRAME);
+    h.state_mut().save_waiting().unwrap();
+    let (b, r) = (outline_of(&mut h, 0), shape_bbox(&frame(&h, 0).shape));
+    assert!(b.width() <= r.width() + 1e-6 && b.height() <= r.height() + 1e-6);
+    assert!((b.width() - r.width()).abs() < 1e-6 || (b.height() - r.height()).abs() < 1e-6);
+
+    let zoomed = frame(&h, 0).scale * 2.0;
+    atlas::set_scale(h.state_mut(), id, zoomed);
+    h.state_mut().save_waiting().unwrap();
+    let before = frame(&h, 0);
+    scroll_to(&mut h, FIT_FRAME_TO_MAP);
+    tap(&mut h, FIT_FRAME_TO_MAP);
+    h.state_mut().save_waiting().unwrap();
+    let (b, r) = (outline_of(&mut h, 0), shape_bbox(&frame(&h, 0).shape));
+    for (x, y) in [(b.x0, r.x0), (b.y0, r.y0), (b.x1, r.x1), (b.y1, r.y1)] {
+        assert_near_mm(x, y);
+    }
+    assert_eq!(frame(&h, 0).scale, before.scale);
+
+    tap(&mut h, "Undo");
+    assert_eq!(frame(&h, 0), before);
+    tap(&mut h, "Undo");
+    tap(&mut h, "Undo");
+    tap(&mut h, "Undo");
+    assert_eq!(frame(&h, 0), start);
 }

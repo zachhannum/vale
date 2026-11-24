@@ -1088,7 +1088,13 @@ mod tests {
         let mut expected = notched();
         scale_shape(&mut expected, outline_box(&f, &p));
         assert_eq!(f.shape.rings().len(), 2);
-        for (a, b) in f.shape.rings().iter().flatten().zip(expected.rings().iter().flatten()) {
+        for (a, b) in f
+            .shape
+            .rings()
+            .iter()
+            .flatten()
+            .zip(expected.rings().iter().flatten())
+        {
             assert_near(a[0], b[0]);
             assert_near(a[1], b[1]);
         }

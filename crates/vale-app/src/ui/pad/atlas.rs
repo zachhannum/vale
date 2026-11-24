@@ -74,6 +74,9 @@ pub const SCALE: &str = "Scale";
 pub const LONGITUDE: &str = "Longitude";
 pub const LATITUDE: &str = "Latitude";
 pub const ROTATION: &str = "Rotation";
+pub const CENTER_MAP: &str = "Center map";
+pub const FIT_MAP_TO_FRAME: &str = "Fit map to frame";
+pub const FIT_FRAME_TO_MAP: &str = "Fit frame to map";
 pub const AUTO_INTERVAL: &str = "Auto interval";
 pub const INTERVAL: &str = "Interval";
 pub const GRATICULE_COLOR: &str = "Graticule color";
@@ -1297,6 +1300,15 @@ fn frame_tab(
         atlas::set_latitude(state, id, lat);
     }
     keypad_below(ui, controls, LATITUDE);
+    if widgets::text_row(ui, controls, CENTER_MAP, 0.0, false, true).clicked() {
+        atlas::center_map(state, id);
+    }
+    if widgets::text_row(ui, controls, FIT_MAP_TO_FRAME, 0.0, false, true).clicked() {
+        atlas::fit_map(state, id);
+    }
+    if widgets::text_row(ui, controls, FIT_FRAME_TO_MAP, 0.0, false, true).clicked() {
+        atlas::fit_frame(state, id);
+    }
 
     let mut rotation = frame.rotation as f32;
     if widgets::compass_row(ui, controls, ROTATION, ROTATION, &mut rotation) {
