@@ -87,6 +87,9 @@ pub const LABEL_FORMATS: [&str; 2] = ["DMS", "Decimal"];
 pub const NEATLINE: &str = "Neatline";
 pub const NEATLINE_COLOR: &str = "Neatline color";
 pub const NEATLINE_WIDTH: &str = "Neatline width";
+pub const WORLD_OUTLINE: &str = "World outline";
+pub const WORLD_OUTLINE_COLOR: &str = "World outline color";
+pub const WORLD_OUTLINE_WIDTH: &str = "World outline width";
 pub const BORDER: &str = "Border";
 pub const BORDER_STYLE: &str = "Border style";
 /// The choices of the border style, in the order of `BorderStyle::ALL`.
@@ -326,6 +329,7 @@ pub fn draw(ui: &mut egui::Ui, state: &mut AppState) {
         .or_else(|| state.pad.panels.first().map(|&(_, rect)| rect));
     graticule_color_frame(&ctx, state);
     neatline_color_frame(&ctx, state);
+    world_outline_color_frame(&ctx, state);
     super::labels::color_frame(&ctx, state);
     super::rules::picker_frame(&ctx, state);
     if state.pad.shows(Panel::Layers) {
@@ -1326,6 +1330,19 @@ fn frame_tab(
     if frame.neatline.on {
         neatline_rows(ui, state, controls, &frame);
     }
+    let mut world_outline = frame.world_outline.on;
+    if widgets::switch_row(
+        ui,
+        controls,
+        WORLD_OUTLINE,
+        WORLD_OUTLINE,
+        &mut world_outline,
+    ) {
+        atlas::set_world_outline(state, id, world_outline);
+    }
+    if frame.world_outline.on {
+        world_outline_rows(ui, state, controls, &frame);
+    }
     let mut border = frame.border.on;
     if widgets::switch_row(ui, controls, BORDER, BORDER, &mut border) {
         atlas::set_border(state, id, border);
@@ -1617,6 +1634,43 @@ fn neatline_rows(
     }
 }
 
+/// The rows of the world outline of a frame: the color and the width. A tap
+/// on the color opens a color picker below it.
+fn world_outline_rows(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    controls: &mut Controls,
+    frame: &vale_store::FrameRecord,
+) {
+    let id = frame.id;
+    let b = &frame.world_outline;
+    let open = state.atlas.world_outline_color;
+    let row = widgets::color_row(ui, controls, WORLD_OUTLINE_COLOR, b.color, open);
+    if row.clicked() {
+        state.atlas.world_outline_color = !open;
+        if open {
+            widgets::close_keypad(ui.ctx());
+        }
+    }
+    if state.atlas.world_outline_color {
+        ui.add_space(4.0);
+        let mut color = b.color;
+        if widgets::color_picker_alpha(ui, controls, WORLD_OUTLINE_COLOR, &mut color) {
+            atlas::set_world_outline_color(state, id, color);
+        }
+        state.atlas.world_outline_shown = true;
+    }
+
+    if let Some(w) = Number::new(WORLD_OUTLINE_WIDTH, b.width, Neatline::WIDTHS)
+        .nice()
+        .step(0.05)
+        .unit("pt")
+        .stepper(ui, controls)
+    {
+        atlas::set_world_outline_width(state, id, w);
+    }
+}
+
 /// The rows of the border of a frame: the style, the colors, the width,
 /// the distance, and the stroke.
 fn border_rows(
@@ -1704,6 +1758,15 @@ fn border_rows(
 fn neatline_color_frame(ctx: &egui::Context, state: &mut AppState) {
     let shown = std::mem::take(&mut state.atlas.neatline_shown);
     if !shown && std::mem::take(&mut state.atlas.neatline_color) {
+        widgets::close_keypad(ctx);
+    }
+}
+
+/// Closes the color picker of the world outline when it did not show in this
+/// frame, with the keypad of its field.
+fn world_outline_color_frame(ctx: &egui::Context, state: &mut AppState) {
+    let shown = std::mem::take(&mut state.atlas.world_outline_shown);
+    if !shown && std::mem::take(&mut state.atlas.world_outline_color) {
         widgets::close_keypad(ctx);
     }
 }

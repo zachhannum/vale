@@ -734,6 +734,37 @@ fn the_neatline_follows_each_ring_of_the_shape_and_stays_vector() {
     assert!(neatline_items(&list, [200, 10, 20, 255], 3.0).is_empty());
 }
 
+#[test]
+fn the_world_outline_of_a_frame_has_its_color_and_width_and_can_be_off() {
+    let mut doc = plain();
+    let mut pipeline = Pipeline::new();
+    let page = doc.project.atlas.pages[0].id;
+    let id = frame_on(&mut doc, &mut pipeline, page);
+    let frame = doc.project.atlas.frame_mut(id).unwrap();
+    frame.graticule.on = false;
+    frame.neatline.on = false;
+    frame.world_outline.color = [30, 140, 60, 200];
+    frame.world_outline.width = 2.45;
+    let outline = doc.frame.style.outline;
+    let style_strokes = |items: &[Item]| {
+        (items.iter())
+            .filter(|i| {
+                matches!(i, Item::Stroke { color, width, .. }
+                    if *color == outline.color && *width == outline.width)
+            })
+            .count()
+    };
+
+    let list = compose_frame_full(&doc, &mut pipeline, id).list;
+    assert_eq!(neatline_items(&list, [30, 140, 60, 200], 2.45).len(), 1);
+    assert_eq!(style_strokes(&list.items), 0);
+
+    doc.project.atlas.frame_mut(id).unwrap().world_outline.on = false;
+    let list = compose_frame_full(&doc, &mut pipeline, id).list;
+    assert!(neatline_items(&list, [30, 140, 60, 200], 2.45).is_empty());
+    assert_eq!(style_strokes(&list.items), 0);
+}
+
 /// The page as a list, with one rectangle frame from 40, 40 to 200, 160 mm.
 /// The frame has no graticule and no neatline.
 fn bordered() -> (Document, Pipeline, FrameId) {

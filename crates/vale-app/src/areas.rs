@@ -251,6 +251,7 @@ pub fn frame_levels(map: &Heightmap, key: &FrameKey) -> FrameBins {
         rotation: key.rotation,
         graticule: Default::default(),
         neatline: Default::default(),
+        world_outline: vale_store::Neatline::world_outline(),
         border: Default::default(),
     };
     let bbox = shape_bbox(&frame.shape);
