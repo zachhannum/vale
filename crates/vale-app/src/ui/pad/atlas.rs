@@ -543,7 +543,8 @@ fn selectable_menu(
 /// The controls of the tool. With the Frame tool, an item tool, and the
 /// Select tool outside an entered frame, the switch that snaps a frame to
 /// the layout of the page, the switch of the layout grid, and with a
-/// selection "Delete selection" and Deselect. With the Vertex tool, the two
+/// selection "Delete selection" and Deselect, and then Cut, Copy, and
+/// Paste. With the Vertex tool, the two
 /// switches, and with a frame "Delete vertex" and Deselect. In an entered
 /// frame, Selectable, Add, "Exit frame", and with selected features
 /// Deselect. With the Pan tool or the Move tool and a selection, Deselect. Returns the place
@@ -589,25 +590,24 @@ fn frame_cells(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls)
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Delete, false, can).clicked() {
             atlas::delete_vertices(state);
         }
-    } else if places {
-        clip_cells(ui, state, controls);
-    }
-    if places && can_delete(state) {
+    } else if places && can_delete(state) {
         let name = select::DELETE;
         if widgets::tool_cell(ui, controls, name, "Delete", Icon::Trash, false, true).clicked() {
             atlas::delete_selection(state);
         }
     }
-    if !can_deselect(state) {
-        return selectable_cell;
-    }
     let name = super::DESELECT;
-    if widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked() {
+    if can_deselect(state)
+        && widgets::tool_cell(ui, controls, name, name, Icon::Close, false, true).clicked()
+    {
         if matches!(tool, AtlasTool::Vertex | AtlasTool::Select) {
             atlas::deselect(state);
         } else {
             atlas::clear_selection(state);
         }
+    }
+    if places {
+        clip_cells(ui, state, controls);
     }
     selectable_cell
 }

@@ -14375,7 +14375,10 @@ fn copy_and_paste_put_a_frame_on_another_page_with_a_copy_of_its_map() {
     // The pasted frame shows a new map that is a copy of the first map.
     let atlas = &h.state().doc.project.atlas;
     assert_ne!(pasted.map, first.map);
-    let (map, copy) = (atlas.map(first.map).unwrap(), atlas.map(pasted.map).unwrap());
+    let (map, copy) = (
+        atlas.map(first.map).unwrap(),
+        atlas.map(pasted.map).unwrap(),
+    );
     assert_eq!(copy.name, format!("{} copy", map.name));
     assert_eq!(copy.style, map.style);
     assert_eq!(copy.projection, map.projection);

@@ -3683,3 +3683,25 @@ fn the_desktop_style_editor_sets_the_reference_scale() {
     );
     assert_eq!(reference(&h), Some(current.round()));
 }
+
+#[test]
+fn the_edit_menu_of_the_atlas_copies_and_pastes_a_frame_on_another_page() {
+    let mut h = harness();
+    h.run_steps(3);
+    let first = vale_app::ui::atlas::open_page(h.state()).frames[0].clone();
+    h.state_mut().atlas.selection = AtlasSelection::Frame(first.id);
+    h.get_by_label("Edit").click();
+    h.run_steps(2);
+    h.get_by_label_contains("Copy").click();
+    h.run_steps(2);
+    vale_app::ui::atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    h.get_by_label("Edit").click();
+    h.run_steps(2);
+    h.get_by_label_contains("Paste").click();
+    h.run_steps(2);
+    let page = vale_app::ui::atlas::open_page(h.state()).clone();
+    assert_eq!(page.frames.len(), 1);
+    assert_eq!(page.frames[0].shape, first.shape);
+    assert_ne!(page.frames[0].map, first.map);
+}

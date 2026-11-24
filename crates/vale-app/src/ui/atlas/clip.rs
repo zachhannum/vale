@@ -31,7 +31,8 @@ impl AtlasState {
 /// and "Delete selection".
 pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
     let ctx = ui.ctx().clone();
-    let keys = |key| ctx.format_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key));
+    let keys =
+        |key| ctx.format_shortcut(&egui::KeyboardShortcut::new(egui::Modifiers::COMMAND, key));
     ui.menu_button("Edit", |ui| {
         let any = super::has_selection(state);
         let button = |label, key| egui::Button::new(label).shortcut_text(keys(key));
@@ -44,7 +45,10 @@ pub fn edit_menu(ui: &mut egui::Ui, state: &mut AppState) {
             ui.close();
         }
         let paste_on = state.atlas.can_paste();
-        if ui.add_enabled(paste_on, button(PASTE, egui::Key::V)).clicked() {
+        if ui
+            .add_enabled(paste_on, button(PASTE, egui::Key::V))
+            .clicked()
+        {
             paste(state);
             ui.close();
         }
