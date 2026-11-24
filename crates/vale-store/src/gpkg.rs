@@ -36,7 +36,7 @@ use crate::{
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 43;
+pub const FORMAT_VERSION: u32 = 44;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -84,6 +84,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v41,
     v42,
     v43,
+    v44,
 ];
 
 /// `GPKG` in ASCII.
@@ -923,6 +924,25 @@ fn v43(tx: &Transaction) -> rusqlite::Result<()> {
         return Ok(());
     }
     tx.execute_batch("ALTER TABLE vale_collection ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
+}
+
+/// The world outline of a frame. The frames of an older file get the
+/// default world outline.
+fn v44(tx: &Transaction) -> rusqlite::Result<()> {
+    for (column, kind) in [
+        ("world_outline", "INTEGER NOT NULL DEFAULT 1"),
+        ("world_outline_color", "TEXT NOT NULL DEFAULT '5a6469'"),
+        ("world_outline_width", "REAL NOT NULL DEFAULT 0.8"),
+    ] {
+        let sql = "SELECT count(*) FROM pragma_table_info('vale_frame') WHERE name = ?1";
+        let count: i64 = tx.query_row(sql, [column], |r| r.get(0))?;
+        if count == 0 {
+            tx.execute_batch(&format!(
+                "ALTER TABLE vale_frame ADD COLUMN {column} {kind}"
+            ))?;
+        }
+    }
+    Ok(())
 }
 
 /// Adds the seed of the world.
@@ -2219,9 +2239,10 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
         "INSERT INTO vale_frame (id, page_id, position, map_id, shape, rings, center_lon,
            center_lat, scale, rotation, graticule, graticule_interval, graticule_color,
            graticule_width, border, border_color, border_width, graticule_format,
-           meridian_labels, parallel_labels, frame_border)
+           meridian_labels, parallel_labels, frame_border, world_outline, world_outline_color,
+           world_outline_width)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-           ?18, ?19, ?20, ?21)",
+           ?18, ?19, ?20, ?21, ?22, ?23, ?24)",
     )?;
     let mut furniture = tx.prepare(
         "INSERT INTO vale_furniture (id, page_id, position, kind, x0, y0, x1, y1, frame_id,
@@ -2263,6 +2284,9 @@ fn write_atlas(tx: &Transaction, project: &Project) -> Result<(), StoreError> {
                 f.graticule.meridians.to_json(),
                 f.graticule.parallels.to_json(),
                 f.border.to_json(),
+                f.world_outline.on,
+                hex_rgba(f.world_outline.color),
+                f.world_outline.width,
             ])?;
         }
         for (position, f) in p.furniture.iter().enumerate() {
@@ -3458,7 +3482,8 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
         "SELECT id, page_id, map_id, shape, rings, center_lon, center_lat, scale, rotation,
            graticule, graticule_interval, graticule_color, graticule_width,
            border, border_color, border_width, graticule_format, meridian_labels,
-           parallel_labels, frame_border
+           parallel_labels, frame_border, world_outline, world_outline_color,
+           world_outline_width
          FROM vale_frame ORDER BY page_id, position",
     )?;
     let mut rows = rows.query([])?;
@@ -3498,6 +3523,16 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             color: parse_rgba(&border_color).ok_or_else(bad)?,
             width: border_width,
         };
+        let outline_color: String = r.get(21)?;
+        let outline_width: f64 = r.get(22)?;
+        if !positive(outline_width) {
+            return Err(bad());
+        }
+        let world_outline = Neatline {
+            on: r.get(20)?,
+            color: parse_rgba(&outline_color).ok_or_else(bad)?,
+            width: outline_width,
+        };
         let border: String = r.get(19)?;
         let frame = FrameRecord {
             id: FrameId(id),
@@ -3508,6 +3543,7 @@ fn load_atlas(conn: &Connection, units: Units) -> Result<Atlas, StoreError> {
             rotation: r.get(8)?,
             graticule,
             neatline,
+            world_outline,
             border: Border::from_json(&border).ok_or_else(bad)?,
         };
         if atlas.map(map).is_none() {
@@ -4197,6 +4233,7 @@ mod tests {
             rotation: 45.0,
             graticule: Graticule::default(),
             neatline: Neatline::default(),
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         };
         atlas.add_frame(first, frame.clone()).unwrap();
@@ -4290,6 +4327,7 @@ mod tests {
             rotation: 0.0,
             graticule: Graticule::default(),
             neatline: Neatline::default(),
+            world_outline: Neatline::world_outline(),
             border: Border::default(),
         };
         let frame = atlas.add_frame(page, frame).unwrap();
@@ -4583,9 +4621,105 @@ mod tests {
         assert!(!file.can_undo());
     }
 
+    /// A frame on the first page with a world outline that is off, with
+    /// another color and another width.
+    fn outline_edit(project: &mut Project) -> FrameId {
+        let page = project.atlas.pages[0].id;
+        let frame = FrameRecord {
+            id: FrameId(0),
+            map: MapId(0),
+            shape: FrameShape::Rectangle([10.0, 10.0, 200.0, 150.0]),
+            center: [0.0, 0.0],
+            scale: 50_000_000.0,
+            rotation: 0.0,
+            graticule: Graticule::default(),
+            neatline: Neatline::default(),
+            world_outline: Neatline {
+                on: false,
+                color: [0x12, 0x34, 0x56, 0x78],
+                width: 2.5,
+            },
+            border: Border::default(),
+        };
+        project.atlas.add_frame(page, frame).unwrap()
+    }
+
+    #[test]
+    fn a_world_outline_survives_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let id = outline_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+
+        let (_, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(
+            loaded.atlas.frame(id).unwrap().world_outline,
+            project.atlas.frame(id).unwrap().world_outline
+        );
+        assert_eq!(loaded.atlas, project.atlas);
+    }
+
+    #[test]
+    fn a_frame_of_version_43_gets_the_default_world_outline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let id = outline_edit(&mut project);
+        file.save(&project).unwrap();
+        drop(file);
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_frame DROP COLUMN world_outline;
+             ALTER TABLE vale_frame DROP COLUMN world_outline_color;
+             ALTER TABLE vale_frame DROP COLUMN world_outline_width;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 43);
+
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let frame = loaded.atlas.frame(id).unwrap();
+        assert_eq!(frame.world_outline, Neatline::world_outline());
+    }
+
+    #[test]
+    fn undo_and_redo_restore_a_world_outline() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut project = Project::new(World::default());
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        let id = outline_edit(&mut project);
+        file.save(&project).unwrap();
+        let before = project.clone();
+        let outline = Neatline {
+            on: true,
+            color: [0xaa, 0xbb, 0xcc, 0xff],
+            width: 4.0,
+        };
+        project.atlas.frame_mut(id).unwrap().world_outline = outline.clone();
+        file.save(&project).unwrap();
+
+        assert!(file.undo().unwrap().is_some());
+        assert_eq!(file.project().atlas, before.atlas);
+        drop(file);
+        let (mut file, _) = ProjectFile::open(&path(&dir)).unwrap();
+        assert!(file.redo().unwrap().is_some());
+        assert_eq!(
+            file.project().atlas.frame(id).unwrap().world_outline,
+            outline
+        );
+    }
+
     #[test]
     fn a_bad_border_is_corrupt() {
-        for update in ["border_width = 0", "border_color = 'blue'"] {
+        for update in [
+            "border_width = 0",
+            "border_color = 'blue'",
+            "world_outline_width = 0",
+            "world_outline_color = 'blue'",
+        ] {
             let dir = tempfile::tempdir().unwrap();
             let mut project = Project::new(World::default());
             project.add_layer("Towns".into(), GeometryKind::Point, None, vec![]);
