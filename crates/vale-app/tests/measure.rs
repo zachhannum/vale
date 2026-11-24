@@ -232,7 +232,12 @@ fn fingers_tap(h: &mut Pad, count: u64, center: Pos2) {
     for id in (1..=count).rev() {
         touch(h, id, egui::TouchPhase::End);
     }
-    h.run_steps(3);
+    // A tap of two fingers waits until it cannot be the first tap of a
+    // double tap.
+    let end = h.ctx.input(|i| i.time) + vale_app::globe::nav::DOUBLE_TAP + 0.05;
+    while h.ctx.input(|i| i.time) < end {
+        h.step();
+    }
 }
 
 fn key(h: &mut Pad, modifiers: egui::Modifiers, key: egui::Key) {

@@ -509,6 +509,10 @@ fn select_input(
             None => {}
         }
     }
+    // The finger of a double tap and drag zooms, so it is not a hold.
+    if let Some(id) = globe.nav.zoom_finger() {
+        globe.select_press.cancel(id);
+    }
     let hover = globe.pen.hover.filter(|pos| on(*pos));
     globe.input.pos = resp.hover_pos().or(hover);
     let held = globe.select_press.held();
@@ -2048,6 +2052,7 @@ pub(super) fn canvas_input(
         state.refresh_targets();
     }
     state.globe.nav.finger_paints = state.finger_paints();
+    state.globe.nav.double_tap_zooms = !state.globe.measuring();
     let globe = &mut state.globe;
     globe.world_km = state.doc.project.world.radius_km;
     globe.world_seed = state.doc.project.world.seed;
