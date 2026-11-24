@@ -3,7 +3,9 @@
 //! short text, so that ⌘V sends a paste.
 
 use eframe::egui;
-use vale_store::{FrameId, FrameRecord, FrameShape, Furniture, FurnitureRecord, MapRecord};
+use vale_store::{
+    CollectionId, FrameId, FrameRecord, FrameShape, Furniture, FurnitureRecord, MapRecord,
+};
 
 use super::{AtlasSelection, AtlasState, open_page};
 use crate::ui::AppState;
@@ -16,7 +18,12 @@ pub const NUDGE_MM: f64 = 5.0;
 /// A copied frame with its map, or a copied item of furniture.
 #[derive(Clone)]
 pub enum Clip {
-    Frame { frame: FrameRecord, map: MapRecord },
+    Frame {
+        frame: FrameRecord,
+        map: MapRecord,
+        /// The collections of the map, from the bottom to the top.
+        stack: Vec<CollectionId>,
+    },
     Item(FurnitureRecord),
 }
 
@@ -95,6 +102,7 @@ pub fn copy(ctx: &egui::Context, state: &mut AppState) -> bool {
             let clip = Clip::Frame {
                 frame: frame.clone(),
                 map: map.clone(),
+                stack: state.doc.project.map_stack(map.id),
             };
             (clip, text)
         }
@@ -138,15 +146,24 @@ pub fn paste(state: &mut AppState) -> bool {
         return false;
     };
     let page = open_page(state).clone();
-    let atlas = &mut state.doc.project.atlas;
+    let project = &mut state.doc.project;
     let selection = match clip {
-        Clip::Frame { mut frame, map } => {
+        Clip::Frame {
+            mut frame,
+            map,
+            stack,
+        } => {
             let taken = |shape: &FrameShape| page.frames.iter().any(|f| f.shape == *shape);
             while taken(&frame.shape) {
                 frame.shape = nudge_shape(&frame.shape);
             }
-            frame.map = atlas.add_map_copy(&map);
-            let Some(id) = atlas.add_frame(page.id, frame) else {
+            frame.map = project.atlas.add_map_copy(&map);
+            // A collection that was deleted after the copy drops out.
+            let stack: Vec<_> = (stack.into_iter())
+                .filter(|c| project.collection(*c).is_some())
+                .collect();
+            project.set_map_stack(frame.map, stack);
+            let Some(id) = project.atlas.add_frame(page.id, frame) else {
                 return false;
             };
             AtlasSelection::Frame(id)
@@ -165,7 +182,7 @@ pub fn paste(state: &mut AppState) -> bool {
             let frame = item.item.frame().filter(on_page);
             let frame = frame.or_else(|| super::largest_frame(&page));
             item.item.set_frame(frame);
-            let Some(id) = atlas.add_furniture(page.id, item.rect, item.item) else {
+            let Some(id) = project.atlas.add_furniture(page.id, item.rect, item.item) else {
                 return false;
             };
             state.atlas.item_page = None;

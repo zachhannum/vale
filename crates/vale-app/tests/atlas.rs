@@ -14480,3 +14480,26 @@ fn the_keys_cut_copy_and_paste_a_frame() {
     h.run_steps(2);
     assert_eq!(open_page(&h).frames.len(), 1);
 }
+
+#[test]
+fn a_pasted_frame_gives_its_new_map_the_collections_of_the_map() {
+    let (_dir, s) = session_state();
+    let mut h = pad_with(s, BOARDS[0]);
+    add_frame(&mut h);
+    let first = frame(&h, 0);
+    let project = &mut h.state_mut().doc.project;
+    let world = project.map_stack(first.map)[0];
+    let coast = project.add_collection("Coast").unwrap();
+    assert!(project.set_map_stack(first.map, vec![coast, world]));
+    h.run_steps(2);
+    tap(&mut h, "Copy");
+    atlas::add_page(h.state_mut());
+    h.run_steps(2);
+    h.state_mut().save_waiting().unwrap();
+    tap(&mut h, "Paste");
+    let pasted = frame(&h, 0);
+    let project = &h.state().doc.project;
+    assert_eq!(project.map_stack(pasted.map), vec![coast, world]);
+    undo(&mut h);
+    assert!(open_page(&h).frames.is_empty());
+}
