@@ -7,7 +7,8 @@ use std::time::Instant;
 use vale_terrain::{
     BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
     ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
-    Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level, talus_levels,
+    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level,
+    talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -384,9 +385,18 @@ impl BrushSettings {
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`
     /// is the radius of the globe on screen, in points.
     pub fn radius(&self, globe_radius: f64) -> f64 {
-        match self.lock {
+        let radius = match self.lock {
             Some(angle) => angle.clamp(*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
             None => brush_radius(self.size_points, globe_radius),
+        };
+        radius.min(self.max_radius())
+    }
+
+    /// The largest brush radius of the mode, in radians.
+    fn max_radius(&self) -> f64 {
+        match self.mode {
+            Mode::OceanRidge => MAX_RIDGE_RADIUS,
+            _ => MAX_BRUSH_RADIUS,
         }
     }
 
@@ -430,7 +440,8 @@ impl BrushSettings {
                 brush_radius(*SIZE_POINTS.end(), globe_radius),
             ),
         };
-        min * world_km..=max * world_km
+        let max = max.min(self.max_radius());
+        min.min(max) * world_km..=max * world_km
     }
 
     /// Sets the brush radius on the ground, in kilometers.
@@ -1250,6 +1261,21 @@ mod tests {
         assert_eq!(brush.lock, Some(0.02));
         assert_eq!(brush.radius_km(720.0, 500.0), 10.0);
         assert_eq!(brush.radius_km_range(720.0, 500.0), 0.05..=150.0);
+    }
+
+    #[test]
+    fn the_ocean_ridge_radius_stops_at_its_limit() {
+        let mut brush = BrushSettings {
+            mode: Mode::OceanRidge,
+            ..BrushSettings::default()
+        };
+        let range = brush.radius_km_range(360.0, 6371.0);
+        assert_eq!(*range.end(), MAX_RIDGE_RADIUS * 6371.0);
+        assert!(*range.end() > 1500.0);
+        brush.size_points = 160.0;
+        assert_eq!(brush.radius(360.0), MAX_RIDGE_RADIUS);
+        brush.mode = Mode::Raise;
+        assert_eq!(brush.radius(360.0), MAX_BRUSH_RADIUS);
     }
 
     #[test]
