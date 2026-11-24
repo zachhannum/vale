@@ -29,7 +29,8 @@ use super::pad::atlas::{
     custom_row, edited_value, length_text, unit_name,
 };
 use super::pad::atlas::{
-    BORDER_GAP, DISTANCE_BY_SIDE, GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
+    BORDER_GAP, CENTER_MAP, DISTANCE_BY_SIDE, FIT_FRAME_TO_MAP, FIT_MAP_TO_FRAME,
+    GRID_COLUMN_NAMES, GRID_COLUMNS, SIDE_DISTANCES,
 };
 use super::pad::edge_labels::EDGE_LABELS;
 use super::pad::grid_labels::GRID_LABELS;
@@ -177,6 +178,17 @@ fn frame_tab(ui: &mut egui::Ui, state: &mut AppState, frame: &FrameRecord) {
                 atlas::set_rotation(state, id, rotation);
             }
         });
+    ui.horizontal(|ui| {
+        if ui.button(CENTER_MAP).clicked() {
+            atlas::center_map(state, id);
+        }
+        if ui.button(FIT_MAP_TO_FRAME).clicked() {
+            atlas::fit_map(state, id);
+        }
+        if ui.button(FIT_FRAME_TO_MAP).clicked() {
+            atlas::fit_frame(state, id);
+        }
+    });
     let mut graticule = frame.graticule.on;
     if ui.checkbox(&mut graticule, GRATICULE).changed() {
         atlas::set_graticule(state, id, graticule);

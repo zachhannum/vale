@@ -3908,6 +3908,33 @@ pub fn add_hole(state: &mut AppState, id: FrameId) {
     });
 }
 
+/// Changes a frame with the projection of its map in one undo step.
+fn frame_step(
+    state: &mut AppState,
+    id: FrameId,
+    edit: impl FnOnce(&mut FrameRecord, &Projection) -> bool,
+) {
+    state.save_edit();
+    if edit_frame(state, id, edit) {
+        state.save_edit();
+    }
+}
+
+/// Puts the outline of the projection in the middle of a frame.
+pub fn center_map(state: &mut AppState, id: FrameId) {
+    frame_step(state, id, math::center_map);
+}
+
+/// Fits the outline of the projection in a frame.
+pub fn fit_map(state: &mut AppState, id: FrameId) {
+    frame_step(state, id, math::fit_map);
+}
+
+/// Moves the edges of a frame to the outline of the projection.
+pub fn fit_frame(state: &mut AppState, id: FrameId) {
+    frame_step(state, id, math::fit_frame);
+}
+
 /// Sets the scale of a frame, in the range of the scales.
 pub fn set_scale(state: &mut AppState, id: FrameId, scale: f64) {
     let scale = scale.clamp(math::SCALE_RANGE.0, math::SCALE_RANGE.1);

@@ -1487,6 +1487,33 @@ fn a_typed_scale_sets_the_scale_of_the_frame() {
 }
 
 #[test]
+fn the_frame_tab_centers_and_fits_the_map_and_the_frame() {
+    let mut h = harness();
+    let id = h.state().doc.project.atlas.pages[0].frames[0].id;
+    h.state_mut().atlas.selection = AtlasSelection::Frame(id);
+    let frame = |h: &Harness<'_, AppState>| h.state().doc.project.atlas.frame(id).unwrap().clone();
+    let scale = frame(&h).scale * 2.0;
+    vale_app::ui::atlas::set_scale(h.state_mut(), id, scale);
+    vale_app::ui::atlas::set_longitude(h.state_mut(), id, 40.0);
+    h.run_steps(3);
+    let start = frame(&h);
+    h.get_by_label(vale_app::ui::pad::atlas::CENTER_MAP).click();
+    h.run_steps(2);
+    assert_ne!(frame(&h).center, start.center);
+    assert_eq!(frame(&h).scale, start.scale);
+    h.get_by_label(vale_app::ui::pad::atlas::FIT_MAP_TO_FRAME)
+        .click();
+    h.run_steps(2);
+    assert_ne!(frame(&h).scale, start.scale);
+    let fitted = frame(&h);
+    h.get_by_label(vale_app::ui::pad::atlas::FIT_FRAME_TO_MAP)
+        .click();
+    h.run_steps(2);
+    assert_ne!(frame(&h).shape, fitted.shape);
+    assert_eq!(frame(&h).scale, fitted.scale);
+}
+
+#[test]
 fn a_projection_preset_changes_the_projection() {
     let mut h = harness();
     let frame = h.state().doc.project.atlas.pages[0].frames[0].id;
