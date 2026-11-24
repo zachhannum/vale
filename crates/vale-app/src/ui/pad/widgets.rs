@@ -3140,6 +3140,26 @@ pub fn button_cells(
     controls: &mut Controls,
     buttons: &[(&str, &str)],
 ) -> Option<usize> {
+    button_cells_in(ui, controls, buttons, theme::ACCENT, theme::CANVAS)
+}
+
+/// A `button_cells` row in the raised fill of a control, for commands that
+/// are not the main action of a panel.
+pub fn plain_cells(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    buttons: &[(&str, &str)],
+) -> Option<usize> {
+    button_cells_in(ui, controls, buttons, theme::raise(), theme::TEXT)
+}
+
+fn button_cells_in(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    buttons: &[(&str, &str)],
+    fill: Color32,
+    ink: Color32,
+) -> Option<usize> {
     let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
     let width = row.width() / buttons.len().max(1) as f32;
     let mut tapped = None;
@@ -3150,9 +3170,9 @@ pub fn button_cells(
         );
         let resp = hit(ui, controls, rect, name, Sense::click(), true, None);
         let color = if resp.is_pointer_button_down_on() {
-            theme::ACCENT
+            fill
         } else {
-            theme::ACCENT.gamma_multiply(0.8)
+            fill.gamma_multiply(0.8)
         };
         let back = rect.shrink(HIGHLIGHT_INSET);
         ui.painter().rect_filled(back, theme::capsule(back), color);
@@ -3161,7 +3181,7 @@ pub fn button_cells(
             Align2::CENTER_CENTER,
             text,
             theme::body(),
-            theme::CANVAS,
+            ink,
         );
         if resp.clicked() {
             tapped = Some(i);
