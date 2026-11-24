@@ -3361,6 +3361,7 @@ impl AppState {
             }
         };
         self.doc = doc;
+        self.atlas.clip = None;
         self.status = format!("Opened {}", self.doc.project.world.name);
         if let Some((_, warning)) = self
             .doc

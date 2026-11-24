@@ -1728,6 +1728,17 @@ impl Atlas {
         })
     }
 
+    /// Adds a copy of `map` with a new ID, after the last map. Its name is
+    /// the first free name of "<name> copy", "<name> copy 2", and so on.
+    pub fn add_map_copy(&mut self, map: &MapRecord) -> MapId {
+        let base = format!("{} copy", map.name);
+        let name = free_name(&base, |n| self.maps.iter().any(|m| m.name == n));
+        self.push_map(MapRecord {
+            name,
+            ..map.clone()
+        })
+    }
+
     /// The first map that no frame shows.
     pub fn unshown_map(&self) -> Option<MapId> {
         let free = self
@@ -2010,6 +2021,20 @@ mod tests {
         atlas.map_mut(second).unwrap().name = "Map 4".to_string();
         let fourth = atlas.add_map();
         assert_eq!(atlas.map(fourth).unwrap().name, "Map 2");
+    }
+
+    #[test]
+    fn a_map_copy_gets_a_new_id_and_a_free_name() {
+        let mut atlas = Atlas::new(Units::Metric);
+        let first = atlas.maps[0].id;
+        atlas.map_mut(first).unwrap().projection = "+proj=robin".to_string();
+        let map = atlas.map(first).unwrap().clone();
+        let copy = atlas.add_map_copy(&map);
+        let again = atlas.add_map_copy(&map);
+        assert!(copy > first && again > copy);
+        assert_eq!(atlas.map(copy).unwrap().name, "Map copy");
+        assert_eq!(atlas.map(again).unwrap().name, "Map copy 2");
+        assert_eq!(atlas.map(copy).unwrap().projection, "+proj=robin");
     }
 
     fn style(name: &str) -> MapStyleRecord {

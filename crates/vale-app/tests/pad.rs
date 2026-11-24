@@ -13959,7 +13959,6 @@ fn the_vertex_cell_and_card_fit_in_the_atlas_on_each_screen() {
 fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
     use vale_app::ui::atlas::{AtlasSelection, AtlasTool};
     use vale_app::ui::pad::DESELECT;
-    use vale_app::ui::pad::atlas::SNAP_TO_LAYOUT;
     use vale_app::ui::select::DELETE;
     for (size, safe) in measure_screens() {
         let what = format!("Atlas {size:?}");
@@ -13971,12 +13970,12 @@ fn the_frame_strip_fits_in_the_atlas_on_each_screen() {
         h.state_mut().atlas.tool = AtlasTool::Frame;
         h.run_steps(3);
         scroll_column_to_end(&mut h);
-        let names = [SNAP_TO_LAYOUT, DELETE, DESELECT];
+        let names = [DELETE, DESELECT, "Cut", "Copy"];
         let cells = names.map(|name| control(&h, name).unwrap_or_else(|| panic!("{what}: {name}")));
         for pair in cells.windows(2) {
             assert!(in_order(pair[0], pair[1]), "{what}");
         }
-        let card = cells[0].union(cells[2]);
+        let card = cells[0].union(cells[3]);
         let r = h.state().pad.rects.unwrap();
         let mut cards = vec![r.workspace, r.actions];
         // In the row layout, the cells of the strip are `PAD` inside its
