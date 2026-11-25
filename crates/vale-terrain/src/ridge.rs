@@ -476,7 +476,7 @@ impl RidgePlan {
                         continue;
                     }
                     let tall = THROW_MIN + (1.0 - THROW_MIN) * (-(1.0 - d(4)).ln()).min(THROW_MAX);
-                    let throw = f.hill_height * throw_scale * shown * tall * (length / long);
+                    let units = throw_scale * tall * (length / long);
                     let t = along - middle;
                     let fault = hash(i as u32, j as u32, side * 64 + n * 16 + 9, seed);
                     let links = self.linked(fault, t / (LINK_KM * s) + d(10));
@@ -488,7 +488,7 @@ impl RidgePlan {
                     let vary = 1.0
                         + VARY[0] * wiggle(t / (VARY_KM[0] * s), 3)
                         + fine_vary * wiggle(t / (VARY_KM[1] * s), 4);
-                    let throw = throw * (1.0 - q * q) * vary;
+                    let units = units * (1.0 - q * q) * vary;
                     let back = mix(BACK_TILT[0], BACK_TILT[1], d(5)) * s;
                     let back = back * (1.0 + VARY[0] * wiggle(t / (VARY_KM[0] * s), 5));
                     let scarp = SCARP_KM * (1.0 + SHARP * fine_face * wiggle(t / FACE_KM, 6));
@@ -514,7 +514,10 @@ impl RidgePlan {
                             continue;
                         }
                         let y = y - STEP_KM * s * step;
-                        shape += link
+                        // The throw bends down to `THROW_CAP`, so no crest
+                        // stands out.
+                        let capped = THROW_CAP * (units * link / THROW_CAP).tanh();
+                        shape += capped
                             * if kind < GRABENS {
                                 face(y - half) + face(-y - half)
                             } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
@@ -523,7 +526,7 @@ impl RidgePlan {
                                 face(-y)
                             };
                     }
-                    sum += throw * shape;
+                    sum += f.hill_height * shown * shape;
                 }
             }
         }
@@ -1632,9 +1635,11 @@ const GRABENS: f64 = 0.2;
 const GRABEN: [f64; 2] = [0.3, 2.0];
 
 /// The throw of a fault in height units: a smallest throw plus a part
-/// from an exponential distribution, up to `THROW_MAX`.
+/// from an exponential distribution, up to `THROW_MAX`. With the noise
+/// along the fault, the throw bends down to at most `THROW_CAP`.
 const THROW_MIN: f64 = 0.3;
 const THROW_MAX: f64 = 2.0;
+const THROW_CAP: f64 = 1.1;
 
 /// The patches of the floor: a noise with features of about `PATCH_KM`
 /// kilometers, plus half of a noise with features of `PATCH_FINE` of that.
@@ -1711,13 +1716,13 @@ const GABOR_RMS_UNIT: f64 = 0.336;
 
 /// The RMS height and the mean height of the hills, in height units. See
 /// the test `the_hills_have_their_rms_and_mean_height`.
-const HILL_RMS_UNIT: f64 = 0.71;
+const HILL_RMS_UNIT: f64 = 0.479;
 /// The texture unit over the throw unit, so the texture has its part of
 /// the RMS height.
 const GABOR_PER_THROW: f64 =
     GABOR_SHARE * HILL_RMS_UNIT / (GABOR_RMS_UNIT * 0.942_809_041_582_063_4);
 
-const HILL_MEAN_UNIT: f64 = 0.973;
+const HILL_MEAN_UNIT: f64 = 0.770;
 
 /// The part of the single faults that face the axis.
 const INWARD: f64 = 0.8;

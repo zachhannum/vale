@@ -1178,6 +1178,7 @@ const GRABENS = 0.2;
 const GRABEN = vec2<f32>(0.3, 2.0);
 const THROW_MIN = 0.3;
 const THROW_MAX = 2.0;
+const THROW_CAP = 1.1;
 const PATCH_KM = 80.0;
 const PATCH_FINE = 0.43;
 const PATCH_EDGE = 0.6;
@@ -1211,7 +1212,7 @@ const GABOR_OCTAVES = vec2<f32>(-1.0, 4.0);
 const HURST = 0.9;
 const GABOR_SHARE = 1.0 / 3.0;
 const GABOR_RMS_UNIT = 0.336;
-const HILL_RMS_UNIT = 0.71;
+const HILL_RMS_UNIT = 0.479;
 const GABOR_PER_THROW = GABOR_SHARE * HILL_RMS_UNIT / (GABOR_RMS_UNIT * 0.9428090415820634);
 
 // `patch_of` in `ridge.rs`.
@@ -1752,8 +1753,7 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
                 let vary = 1.0
                     + VARY.x * noise1(t / (VARY_KM.x * s), fault, 3u, seed).x
                     + fine_vary * noise1(t / (VARY_KM.y * s), fault, 4u, seed).x;
-                let fault_throw = ridge.hill_height * area.x * shown * tall * (fault_length / long)
-                    * (1.0 - q * q) * vary;
+                let units = area.x * tall * (fault_length / long) * (1.0 - q * q) * vary;
                 let back = ridge_mix(BACK_TILT.x, BACK_TILT.y, unit(hash(vec3<u32>(at, key + 5u), seed))) * s
                     * (1.0 + VARY.x * noise1(t / (VARY_KM.x * s), fault, 5u, seed).x);
                 let scarp = SCARP_KM * (1.0 + SHARP * fine_face * noise1(t / FACE_KM, fault, 6u, seed).x);
@@ -1781,9 +1781,9 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
                     } else {
                         one = ridge_face(-y, scarp, back, blur, gully);
                     }
-                    shape += link.x * one;
+                    shape += THROW_CAP * tanh_precise(units * link.x / THROW_CAP) * one;
                 }
-                sum += fault_throw * shape;
+                sum += ridge.hill_height * shown * shape;
             }
         }
     }
