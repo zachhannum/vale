@@ -45,6 +45,9 @@ pub struct Ridge {
     /// The height of the abyssal hills, from 0 to 2. At 1 it is the height
     /// of real sea floor at the spreading rate.
     pub hills: f64,
+    /// Whether the abyssal hills grow to the texel size of the map, so they
+    /// show on a coarse map. See `fit_of`.
+    pub fit: bool,
 }
 
 /// The line of one ocean ridge stroke.
@@ -153,8 +156,13 @@ impl RidgePlan {
         RidgeNoise {
             bend: add(wide, scale(fine, 0.5)),
             slow: at(SLOW_SIZE, SALT_SLOW),
-            patch: patch_noise(p, self.ridge.world_km, seed),
+            patch: patch_noise(p, self.ridge.world_km / self.fit(), seed),
         }
+    }
+
+    /// The fit factor of the hills.
+    fn fit(&self) -> f64 {
+        fit_of(0.5 * self.step() * self.ridge.world_km, self.ridge.fit)
     }
 
     /// The crest segments of the settings.
@@ -362,7 +370,13 @@ impl RidgePlan {
         let spec = &self.ridge;
         let full_rate = 2.0 * spec.spread * spec.world_km;
         let half_texel = 0.5 * self.step() * spec.world_km;
-        Faulting::new(full_rate, spec.magma, spec.hills, half_texel, self.relief)
+        Faulting::new(
+            full_rate,
+            spec.magma,
+            spec.hills,
+            [half_texel, fit_of(half_texel, spec.fit)],
+            self.relief,
+        )
     }
 
     /// The abyssal hills of one side of the axis, in kilometers, at `along`
@@ -398,6 +412,8 @@ impl RidgePlan {
         [along, across]: [f64; 2],
         [throw_scale, density]: [f64; 2],
     ) -> f64 {
+        // On a coarse map, the hills are larger by the fit factor.
+        let (along, across) = (along / f.fit, across / f.fit);
         let seed = base ^ SALT_HILL ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let draw = |i: i32, j: i32, channel: u32| {
             unit(hash(i as u32, j as u32, side * 64 + channel, seed))
@@ -418,7 +434,7 @@ impl RidgePlan {
         // A fault is longer by about a texel, and lower by as much, so it
         // keeps its volume and does not alias. Across the fabric, the
         // scarp is the mean over a box one texel wide.
-        let blur = f.half_texel;
+        let blur = f.half_texel / f.fit;
         // Noise with features of less than two texels fades out.
         let fine = |size: f64| smoothstep(2.0 * blur, 4.0 * blur, size);
         let (fine_vary, fine_face) = (VARY[1] * fine(VARY_KM[1] * s), fine(FACE_KM));
@@ -571,13 +587,14 @@ impl RidgePlan {
         [along, across]: [f64; 2],
         scale: f64,
     ) -> f64 {
+        let (along, across) = (along / f.fit, across / f.fit);
         let seed = base ^ SALT_GABOR ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let s = f.hill_scale;
         let cell = GABOR_CELL * s;
         // The place in the stretched plane, in cells.
         let (x, y) = (across / cell, along / (GABOR_ASPECT * cell));
         let (ix, iy) = (x.floor() as i32, y.floor() as i32);
-        let texel = 2.0 * f.half_texel;
+        let texel = 2.0 * f.half_texel / f.fit;
         let corner = TAU * GABOR_WIDTH * s;
         let mut sum = 0.0;
         for i in ix - 1..=ix + 1 {
@@ -1056,6 +1073,7 @@ pub(crate) struct RidgeShape {
     /// The depth of the ends of a crest segment of `SECOND_ORDER_KM`, in
     /// kilometers.
     pub segment_depth: f64,
+    pub fit: f64,
 }
 
 #[cfg(feature = "gpu")]
@@ -1097,6 +1115,7 @@ impl RidgePlan {
             flat_floor: valley_part * FLOOR_KM / km,
             band_km: BAND_KM.min(BAND_RADIUS * r * km),
             segment_depth: self.segment_depth(SECOND_ORDER_KM),
+            fit: f.fit,
         }
     }
 }
@@ -1122,24 +1141,26 @@ pub(crate) struct Faulting {
     pub(crate) hill_mean: f64,
     /// The height unit of the fine texture, in kilometers.
     pub(crate) texture_height: f64,
+    /// The fit factor of `fit_of`.
+    pub(crate) fit: f64,
 }
 
 impl Faulting {
     /// The faults at a full spreading rate in millimeters per year, with a
     /// change of the magma part, a scale of the height of the hills from 0
-    /// to 2, half of the texel step in kilometers, and the 16-bit steps of
-    /// one kilometer.
+    /// to 2, half of the texel step in kilometers and the fit factor, and
+    /// the 16-bit steps of one kilometer.
     pub(crate) fn new(
         full_rate: f64,
         magma: f64,
         hills: f64,
-        half_texel: f64,
+        [half_texel, fit]: [f64; 2],
         level: f64,
     ) -> Faulting {
         let m = magma_share(full_rate) + magma;
         let spacing = lerp_table(&FAULT_SPACING, m);
         let hill_scale = (spacing / HILL_SPACING).clamp(1.0, HILL_SCALE_MAX);
-        let rms = hills.clamp(0.0, 2.0) * hill_rms(full_rate);
+        let rms = hills.clamp(0.0, 2.0) * hill_rms(full_rate) * fit_height(fit);
         let hill_height = rms * (1.0 - GABOR_SHARE * GABOR_SHARE).sqrt() / HILL_RMS_UNIT;
         Faulting {
             magma: m,
@@ -1150,6 +1171,7 @@ impl Faulting {
             hill_scale,
             hill_mean: hill_height * HILL_MEAN_UNIT,
             texture_height: hill_height * GABOR_PER_THROW,
+            fit,
         }
     }
 }
@@ -1563,6 +1585,24 @@ fn depth(age: f64) -> f64 {
     }
 }
 
+/// The fit factor of the abyssal hills at half of the texel step in
+/// kilometers: how much larger the hills are than on real sea floor. A
+/// map with texels larger than `FIT_TEXEL_KM` gets larger hills, so their
+/// scarps are a few texels wide. With `fit` false, the factor is 1.
+pub(crate) fn fit_of(half_texel: f64, fit: bool) -> f64 {
+    if fit {
+        (2.0 * half_texel / FIT_TEXEL_KM).max(1.0)
+    } else {
+        1.0
+    }
+}
+
+/// The scale of the height of the hills at a fit factor: its square root,
+/// so the slopes fall less than the sizes grow, up to `FIT_HEIGHT_MAX`.
+fn fit_height(fit: f64) -> f64 {
+    fit.sqrt().min(FIT_HEIGHT_MAX)
+}
+
 /// The patch noise at a unit direction on a world with a radius in
 /// kilometers: a number from -1.5 to 1.5 that changes over about
 /// `PATCH_KM`.
@@ -1622,6 +1662,11 @@ const DIP_TAN: f64 = 1.2;
 
 /// The 16-bit steps of one kilometer of height.
 pub(crate) const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
+
+/// The texel size up to which the hills have their real size, in
+/// kilometers, and the largest scale of their height on a coarse map.
+const FIT_TEXEL_KM: f64 = 0.5;
+const FIT_HEIGHT_MAX: f64 = 2.5;
 
 /// The RMS height of all abyssal hills times the square root of the full
 /// spreading rate, in kilometers, for rates in millimeters per year from
@@ -1910,6 +1955,7 @@ mod tests {
             seed: 7,
             limits: Limits::default(),
             hills: 1.0,
+            fit: false,
         }
     }
 

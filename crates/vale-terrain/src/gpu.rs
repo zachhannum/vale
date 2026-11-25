@@ -316,12 +316,16 @@ struct RidgeUniforms {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    /// The fit factor of the abyssal hills, and room up to a multiple of 16
+    /// bytes.
+    fit: f32,
+    unused: [f32; 3],
     segments: [[f32; 16]; LINE_SEGMENTS],
 }
 
-// The segments start at the offset of the array of `stamp.wgsl`: 36 numbers
+// The segments start at the offset of the array of `stamp.wgsl`: 40 numbers
 // of 4 bytes, a multiple of 16.
-const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 36 * 4);
+const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 40 * 4);
 
 fn packed(limits: Limits) -> u32 {
     u32::from(limits.floor) | u32::from(limits.ceiling) << 16
@@ -1502,6 +1506,7 @@ impl GpuHeightmap {
             flat_floor: shape.flat_floor as f32,
             band_km: shape.band_km as f32,
             segment_depth: shape.segment_depth as f32,
+            fit: shape.fit as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
@@ -1723,6 +1728,7 @@ impl GpuHeightmap {
             hill_scale: f.hill_scale as f32,
             hill_mean: f.hill_mean as f32,
             half_texel: f.half_texel as f32,
+            fit: f.fit as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         let [origin, along] = plan.frame;

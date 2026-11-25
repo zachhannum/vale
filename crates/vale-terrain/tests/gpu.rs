@@ -3529,6 +3529,7 @@ fn ridge_spec(radius: f64) -> Ridge {
         seed: 7,
         limits: Limits::default(),
         hills: 1.0,
+        fit: false,
     }
 }
 
@@ -3834,6 +3835,21 @@ fn gpu_ridge_matches_cpu_at_a_cube_corner() {
 /// On a large face, the place of a texel needs most of the digits of a
 /// 32-bit number. The line is long, so the distance along it is large, and
 /// it goes in more than one plan.
+/// The hills grow to the texel size of a map of 2048 texels on an Earth.
+#[test]
+#[ignore = "gpu"]
+fn gpu_ridge_with_fit_matches_cpu_on_a_large_face() {
+    let start = smooth_ground(2048);
+    let places = [(-10.0, -6.0), (10.0, 6.0)];
+    let spec = Ridge {
+        fit: true,
+        spread: 55.0 / 6371.0,
+        ..ridge_spec(0.03)
+    };
+    let run = ridge_run(&start, spec, &places, false, false);
+    assert_ridge("large face with fit", &run, &[0]);
+}
+
 #[test]
 #[ignore = "gpu"]
 fn gpu_ridge_matches_cpu_on_a_large_face() {
@@ -4220,6 +4236,7 @@ fn abyssal_run(start: &Heightmap, centers: &[V3], radius: f64) -> AbyssalRun {
     let spec = AbyssalHills {
         rate: 110.0,
         hills: 1.5,
+        fit: true,
         world_km: 1000.0,
         seed: 4,
         limits: Limits::default(),

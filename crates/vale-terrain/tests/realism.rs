@@ -70,6 +70,7 @@ impl Painted {
             seed: RIDGE_SEED,
             limits: Limits::default(),
             hills: 1.0,
+            fit: true,
         };
         let mut line = RidgeLine::new(spec, FACE_SIZE);
         for i in 0..=16 {
@@ -217,6 +218,7 @@ fn abyssal_flank() -> Painted {
     let spec = AbyssalHills {
         rate: 110.0,
         hills: 1.0,
+        fit: true,
         world_km: WORLD_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),

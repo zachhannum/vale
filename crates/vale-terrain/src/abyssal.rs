@@ -13,7 +13,7 @@ use crate::channel::ChannelShape;
 use crate::cube::FACES;
 use crate::heightmap::{Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, TexelRect, brush_rect};
 use crate::math::{V3, angle, cross, dot, length, normalize};
-use crate::ridge::{Faulting, LEVELS_PER_KM, RidgePlan, patch_noise, patch_of};
+use crate::ridge::{Faulting, LEVELS_PER_KM, RidgePlan, fit_of, patch_noise, patch_of};
 use crate::seamount::{FABRIC_COHERENCE, SeaFloor, sea_floor};
 
 /// The settings of an abyssal hills stroke.
@@ -31,6 +31,9 @@ pub struct AbyssalHills {
     /// The seed of the hills.
     pub seed: u32,
     pub limits: Limits,
+    /// Whether the hills grow to the texel size of the map, as for
+    /// `Ridge::fit`.
+    pub fit: bool,
 }
 
 /// The texels that one stamp of an abyssal hills stroke changes.
@@ -134,11 +137,12 @@ impl AbyssalStroke {
             }
         }
         let km = self.spec.world_km;
+        let half_texel = 0.5 * step * km;
         let faulting = Faulting::new(
             self.spec.rate,
             0.0,
             self.spec.hills,
-            0.5 * step * km,
+            [half_texel, fit_of(half_texel, self.spec.fit)],
             LEVELS_PER_KM,
         );
         let rects = match self.frame {
@@ -201,7 +205,7 @@ impl AbyssalPlan {
         let f = &self.faulting;
         let seed = self.stamp.seed;
         let at = self.place(p);
-        let patch = patch_of(patch_noise(p, self.world_km, seed));
+        let patch = patch_of(patch_noise(p, self.world_km / f.fit, seed));
         let height = RidgePlan::hills(seed, f, 0, 0, at, patch)
             + RidgePlan::texture(seed, f, 0, 0, at, patch[0])
             - f.hill_mean * patch[0] * patch[1];
@@ -259,6 +263,7 @@ mod tests {
             world_km: WORLD_KM,
             seed: 3,
             limits: Limits::default(),
+            fit: false,
         }
     }
 
@@ -436,6 +441,7 @@ mod tests {
             seed: 1,
             limits: Limits::default(),
             hills: 0.0,
+            fit: false,
         };
         let mut line = RidgeLine::new(ridge, N);
         for i in 0..=16 {

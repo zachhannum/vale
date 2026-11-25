@@ -222,6 +222,11 @@ struct RidgeLine {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    // The fit factor of the abyssal hills.
+    fit: f32,
+    unused0: f32,
+    unused1: f32,
+    unused2: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
@@ -1485,7 +1490,7 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
 
 // `patch_noise` in `ridge.rs`.
 fn patch_noise(p: vec3<f32>) -> f32 {
-    let km = ridge.world_km;
+    let km = ridge.world_km / ridge.fit;
     return noise3(p * (km / PATCH_KM), ridge.seed ^ SALT_PATCH).x
         + 0.5 * noise3(p * (km / (PATCH_FINE * PATCH_KM)), ridge.seed ^ SALT_PATCH).y;
 }
@@ -1723,7 +1728,9 @@ fn ridge_face(y: f32, scarp: f32, back: f32, blur: f32, gully: f32) -> f32 {
 }
 
 // `RidgePlan::hills`.
-fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec2<f32>) -> f32 {
+fn ridge_hills(band_group: i32, side: u32, along_in: f32, across_fit: f32, area: vec2<f32>) -> f32 {
+    let along = along_in / ridge.fit;
+    let across_in = across_fit / ridge.fit;
     let seed = ridge.seed ^ SALT_HILL ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
     let sp = ridge.spacing;
     let s = ridge.hill_scale;
@@ -1734,7 +1741,7 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
     let across = across_in + HILL_WARP_KM * s * bend.x;
     let cell_along = HILL_CELL.x * s;
     let cell_across = HILL_CELL.y * sp;
-    let blur = ridge.half_texel;
+    let blur = ridge.half_texel / ridge.fit;
     let fine_vary = VARY.y * smooth_between(2.0 * blur, 4.0 * blur, VARY_KM.y * s);
     let fine_face = smooth_between(2.0 * blur, 4.0 * blur, FACE_KM);
     let fine_rough = ROUGH_KM * smooth_between(2.0 * blur, 4.0 * blur, ROUGH_ALONG);
@@ -1832,7 +1839,9 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
 }
 
 // `RidgePlan::texture`.
-fn ridge_texture(band_group: i32, side: u32, along: f32, across: f32, scale: f32) -> f32 {
+fn ridge_texture(band_group: i32, side: u32, along_in: f32, across_in: f32, scale: f32) -> f32 {
+    let along = along_in / ridge.fit;
+    let across = across_in / ridge.fit;
     let seed = ridge.seed ^ SALT_GABOR ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
     let s = ridge.hill_scale;
     let cell = GABOR_CELL * s;
@@ -1840,7 +1849,7 @@ fn ridge_texture(band_group: i32, side: u32, along: f32, across: f32, scale: f32
     let y = along / (GABOR_ASPECT * cell);
     let ix = i32(floor(x));
     let iy = i32(floor(y));
-    let texel = 2.0 * ridge.half_texel;
+    let texel = 2.0 * ridge.half_texel / ridge.fit;
     let corner = 8.0 * PI_4 * GABOR_WIDTH * s;
     var sum = 0.0;
     for (var i = ix - 1; i <= ix + 1; i++) {
