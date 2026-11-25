@@ -402,6 +402,18 @@ pub struct StampPlan {
 /// that makes a copy.
 type Tile = Arc<[u16]>;
 
+/// How `Heightmap::set_range` treats the levels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RangeMode {
+    /// Each texel keeps its elevation in meters, and the levels change. A
+    /// texel out of the new range gets the nearest end.
+    #[default]
+    Keep,
+    /// The levels stay, and each level gets the elevation of the same place
+    /// in the new range.
+    Stretch,
+}
+
 /// One undo or redo step: the base level and the tiles that one stroke
 /// changed. An undo step holds them from before the stroke, and a redo step
 /// holds them from after it. A tile that had no memory is `None`.
@@ -752,6 +764,67 @@ impl Heightmap {
             self.mark_all_dirty();
             self.reset = true;
         }
+    }
+
+    /// Sets the elevation range, and the color stops follow it. With
+    /// `RangeMode::Keep`, each tile with memory and the base level take the
+    /// level of the same elevation in the new range, and the changed tiles
+    /// are marked as changed and dirty. A tile with no memory stays so.
+    ///
+    /// Call it on the full heightmap and not during a stroke. The undo and
+    /// redo steps go, because their levels are in the old range. A snapshot
+    /// keeps the old levels.
+    ///
+    /// Returns `None` and changes nothing if the range is not valid. Else
+    /// returns whether the levels changed.
+    pub fn set_range(&mut self, elevation: Elevation, mode: RangeMode) -> Option<bool> {
+        if !elevation.is_valid() {
+            return None;
+        }
+        let old = self.elevation();
+        let bands = match mode {
+            RangeMode::Keep => self.bands.with_range_kept(elevation.min, elevation.max),
+            RangeMode::Stretch => self
+                .bands
+                .with_range_stretched(elevation.min, elevation.max),
+        }?;
+        self.bands = bands;
+        self.stroke = None;
+        self.undo.clear();
+        self.redo.clear();
+        if mode == RangeMode::Stretch || old == elevation {
+            return Some(false);
+        }
+        let table: Vec<u16> = (0..=u16::MAX)
+            .map(|level| elevation.level(old.meters(level)))
+            .collect();
+        let mut changed = false;
+        let base = table[usize::from(self.base)];
+        if base != self.base {
+            self.base = base;
+            self.changed_all = true;
+            changed = true;
+        }
+        for index in 0..self.tiles.len() {
+            let Some(tile) = &mut self.tiles[index] else {
+                continue;
+            };
+            let mut tile_changed = false;
+            for level in Arc::make_mut(tile).iter_mut() {
+                let new = table[usize::from(*level)];
+                tile_changed |= new != *level;
+                *level = new;
+            }
+            if tile_changed {
+                self.changed.insert(index);
+                changed = true;
+            }
+        }
+        if changed {
+            self.mark_all_dirty();
+            self.reset = true;
+        }
+        Some(changed)
     }
 
     /// The texel index for an equal-angle coordinate.
@@ -5876,5 +5949,91 @@ mod tests {
         assert!(all_levels(&map) != before);
         assert!(map.undo());
         assert!(all_levels(&map) == before);
+    }
+
+    /// The range from -3,000 m to 3,000 m.
+    fn narrow() -> Elevation {
+        Elevation::new(-3000.0, 3000.0).unwrap()
+    }
+
+    #[test]
+    fn a_raise_of_1000_m_on_a_narrow_range_raises_1000_m() {
+        let mut map = Heightmap::new(64, Elevation::default().sea_level());
+        assert!(map.set_range(narrow(), RangeMode::Keep).is_some());
+        let range = map.elevation();
+        assert_eq!(range, narrow());
+        let half = 0.5 * range.meters_per_level();
+        assert!(range.meters(map.base()).abs() <= half);
+        let center = lonlat_to_dir(0.0, 0.0);
+        map.stamp(&Stamp {
+            strength: 1000.0 / range.meters_per_level(),
+            ..raise(center, 0.2)
+        });
+        let raised = range.meters(map.sample(center)) - range.meters(map.base());
+        assert!((raised - 1000.0).abs() <= half + 1e-9, "{raised}");
+    }
+
+    #[test]
+    fn keep_keeps_the_meters_and_clamps_to_the_ends() {
+        let old = Elevation::default();
+        let mut map = Heightmap::with_tile_size(64, 32, old.sea_level());
+        let meters = [-5000.0, -2999.0, -1234.5, 0.3, 2500.0, 5900.0];
+        for (x, &m) in meters.iter().enumerate() {
+            map.set(0, 3 * x, 5, old.level(m));
+        }
+        let stored: Vec<f64> = (0..meters.len())
+            .map(|x| old.meters(map.get(0, 3 * x as i64, 5)))
+            .collect();
+        assert_eq!(map.set_range(narrow(), RangeMode::Keep), Some(true));
+        let range = map.elevation();
+        let half = 0.5 * range.meters_per_level();
+        for (x, &was) in stored.iter().enumerate() {
+            let now = range.meters(map.get(0, 3 * x as i64, 5));
+            let want = was.clamp(range.min, range.max);
+            assert!((now - want).abs() <= half + 1e-9, "{was}: {now}");
+        }
+        assert!(map.changed().count() > 0);
+        assert!(map.take_reset());
+    }
+
+    #[test]
+    fn keep_moves_the_base_level_and_leaves_empty_tiles_empty() {
+        let old = Elevation::default();
+        let mut map = Heightmap::with_tile_size(64, 32, old.level(-1000.0));
+        map.set(0, 1, 1, old.level(500.0));
+        assert_eq!(map.allocated_tiles(), 1);
+        let wide = Elevation::new(-11000.0, 9000.0).unwrap();
+        assert_eq!(map.set_range(wide, RangeMode::Keep), Some(true));
+        let half = 0.5 * wide.meters_per_level();
+        assert!((wide.meters(map.base()) - old.meters(old.level(-1000.0))).abs() <= half);
+        assert!((wide.meters(map.get(0, 1, 1)) - old.meters(old.level(500.0))).abs() <= half);
+        assert_eq!(map.allocated_tiles(), 1);
+        assert!(map.changed_all());
+        assert_eq!(map.bands.min(), wide.min);
+        assert_eq!(map.bands.max(), wide.max);
+    }
+
+    #[test]
+    fn stretch_leaves_each_level() {
+        let old = Elevation::default();
+        let mut map = Heightmap::with_tile_size(64, 32, old.level(-1000.0));
+        map.set(0, 1, 1, old.level(500.0));
+        map.set(3, 40, 7, old.level(5900.0));
+        let before = all_levels(&map);
+        map.clear_changes();
+        assert_eq!(map.set_range(narrow(), RangeMode::Stretch), Some(false));
+        assert_eq!(all_levels(&map), before);
+        assert_eq!(map.elevation(), narrow());
+        assert!(!map.has_changes());
+        assert_eq!(
+            map.set_range(
+                Elevation {
+                    min: 0.0,
+                    max: 100.0
+                },
+                RangeMode::Keep
+            ),
+            None
+        );
     }
 }

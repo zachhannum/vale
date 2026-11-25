@@ -176,4 +176,26 @@ mod tests {
         assert_eq!(half.km_per_pixel, small.km_per_pixel / 2.0);
         assert_eq!((half.map, half.bytes), (small.map, small.bytes));
     }
+
+    #[test]
+    fn a_range_holds_sea_level_inside_the_limits() {
+        assert!(Elevation::default().is_valid());
+        assert!(Elevation::new(-100.0, 100.0).is_some());
+        assert!(Elevation::new(-30000.0, 30000.0).is_some());
+        assert!(Elevation::new(-99.0, 100.0).is_none());
+        assert!(Elevation::new(-100.0, 99.0).is_none());
+        assert!(Elevation::new(-30001.0, 100.0).is_none());
+        assert!(Elevation::new(-100.0, 30001.0).is_none());
+        assert!(Elevation::new(f64::NAN, 100.0).is_none());
+    }
+
+    #[test]
+    fn a_narrow_range_has_sea_level_at_0_m() {
+        let range = Elevation::new(-3000.0, 3000.0).unwrap();
+        let half = 0.5 * range.meters_per_level();
+        assert!(range.meters(range.sea_level()).abs() <= half);
+        assert!((range.meters(range.level(1000.0)) - 1000.0).abs() <= half);
+        assert_eq!(range.level(-5000.0), 0);
+        assert_eq!(range.level(5000.0), u16::MAX);
+    }
 }
