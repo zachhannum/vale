@@ -13,9 +13,9 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
-    Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES,
-    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL, Stamp,
-    TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
+    Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, Elevation, ErodeBrush, ErodeStep,
+    FACES, Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL,
+    Stamp, TexelRect, Window, WindowHeights, max_level, reduced_cap, reduced_face_size,
     smoothing_level,
 };
 
@@ -101,8 +101,15 @@ pub const FACE_SIZE: usize = 1024;
 /// The face size of the app in a window.
 pub const WINDOW_FACE_SIZE: usize = 8192;
 
-/// The elevation of a new height layer, in meters.
+/// The elevation of a new height layer, in meters. A range with a higher
+/// lowest elevation starts at its lowest elevation.
 pub const START_ELEVATION: f64 = -2500.0;
+
+/// The level of a new height layer with this range: `START_ELEVATION`, in
+/// the range and below sea level.
+pub fn start_level(range: Elevation) -> u16 {
+    range.level(START_ELEVATION.clamp(range.min, -1.0))
+}
 
 /// The largest face size of the reduced copy of a raster layer at first.
 pub const DISPLAY_CAP: u32 = 2048;
@@ -377,7 +384,10 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
     let (line, range) = match brush.mode {
         Mode::OceanRidge => {
             let spec = brush.ridge_spec(radius, km, seed);
-            (BrushLine::Ridge(RidgeLine::new(spec, n)), None)
+            (
+                BrushLine::Ridge(RidgeLine::new(spec, n, brush.elevation)),
+                None,
+            )
         }
         Mode::Range => {
             let spec = brush.range_spec(radius, km, seed);
@@ -1093,6 +1103,8 @@ pub struct Globe {
     rivers: Rivers,
     eroder: Eroder,
     basiner: Basiner,
+    /// The elevation range of `map` that the brush and the rivers follow.
+    range: Elevation,
     /// The outline of the next basin. The next basin stroke draws its first
     /// river.
     basin_outline: Option<Vec<V3>>,
@@ -1156,11 +1168,12 @@ impl Default for Globe {
 impl Globe {
     pub fn with_face_size(face_size: usize) -> Globe {
         let (link, events) = Link::new();
-        let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
+        let map = Heightmap::new(face_size, start_level(Elevation::default()));
         let mut globe = Globe {
             rivers: Rivers::new(&map, false),
             eroder: Eroder::new(false),
             basiner: Basiner::new(false),
+            range: Elevation::default(),
             basin_outline: None,
             channels: None,
             chosen: None,
@@ -1260,8 +1273,17 @@ impl Globe {
     /// while the globe shows no raster layer.
     pub fn set_face_size(&mut self, face_size: usize) {
         self.new_face_size = face_size;
-        let mut map = self.empty_map();
-        map.bands = std::mem::take(&mut self.map.bands);
+        let bands = std::mem::take(&mut self.map.bands);
+        let range = Elevation {
+            min: bands.min(),
+            max: bands.max(),
+        };
+        let level = match range.is_valid() && self.height {
+            true => start_level(range),
+            false => self.map.base(),
+        };
+        let mut map = Heightmap::new(self.new_face_size, level);
+        map.bands = bands;
         self.set_map(map);
     }
 
@@ -1277,7 +1299,7 @@ impl Globe {
 
     /// The heightmap of a globe with no raster layer.
     fn empty_map(&self) -> Heightmap {
-        Heightmap::new(self.new_face_size, meters_to_level(START_ELEVATION))
+        Heightmap::new(self.new_face_size, start_level(Elevation::default()))
     }
 
     /// Makes the globe that of a new world: no raster layer, an empty
@@ -2067,7 +2089,31 @@ impl Globe {
         if let Some(test) = self.test.take() {
             self.brush = test.saved;
         }
-        self.brush.value_range = (self.map.bands.min(), self.map.bands.max());
+        self.follow_range();
+    }
+
+    /// Gives the brush the range of `map`.
+    fn follow_range(&mut self) {
+        self.range = self.map.elevation();
+        let range = (self.range.min, self.range.max);
+        self.brush.set_layer(range, self.height);
+    }
+
+    /// Makes the brush, the rivers, and the jobs follow a new range of
+    /// `map`, as a change of the layer does. The levels of the sea and of
+    /// the rivers move with the range.
+    fn range_changed(&mut self) {
+        self.eroder.cancel();
+        self.basiner.cancel();
+        self.basin_outline = None;
+        self.channels = None;
+        self.channels_sent = false;
+        self.window = None;
+        self.rivers = Rivers::new(&self.map, self.rivers.sync());
+        self.follow_range();
+        if self.format.is_some() {
+            self.request_rivers();
+        }
     }
 
     /// Starts a new full heightmap on the GPU for `map`. The GPU gets each
@@ -2919,6 +2965,9 @@ impl Globe {
     /// of the GPU and to the rivers. `attach` gives a new renderer each
     /// texel.
     pub fn sync_maps(&mut self) {
+        if self.map.elevation() != self.range {
+            self.range_changed();
+        }
         let gpu = self.format.is_some();
         let budget = self.uploads.budget;
         let changes = gpu::take_changes(&mut self.map);
@@ -3845,7 +3894,7 @@ impl Globe {
                 };
                 (held.spec, held.flow) = wanted;
                 let scale = held.flow / held.drawn_flow.max(1e-6);
-                let mut line = RidgeLine::new(spec, n);
+                let mut line = RidgeLine::new(spec, n, self.brush.elevation);
                 for &(dir, flow) in &ridge.points {
                     line.push(dir, (flow * scale).min(1.0));
                 }
@@ -5545,7 +5594,7 @@ mod tests {
     fn the_pieces_of_a_ridge_plan_cover_its_rectangles_once() {
         let brush = BrushSettings::default();
         let n = 8192;
-        let mut line = RidgeLine::new(brush.ridge_spec(0.1, 6371.0, 7), n);
+        let mut line = RidgeLine::new(brush.ridge_spec(0.1, 6371.0, 7), n, Elevation::default());
         for i in 0..=30 {
             line.push(lonlat_to_dir(f64::from(i), 0.0), 1.0);
         }

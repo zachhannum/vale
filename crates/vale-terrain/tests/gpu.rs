@@ -777,7 +777,7 @@ fn gpu_carve_with_a_floodplain_matches_cpu() {
 fn equator_valley(d: V3) -> u16 {
     let (lon, lat) = vale_terrain::math::dir_to_lonlat(d);
     let across = (lat - 0.4).abs();
-    vale_terrain::meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
+    vale_terrain::Elevation::default().level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
         100.0 + 20.0 * (lon - 10.0) + 300.0 * across
     } else {
         -1000.0
@@ -787,7 +787,7 @@ fn equator_valley(d: V3) -> u16 {
 /// `equator_valley` on faces 0 and 2, with all other ground deep below the
 /// sea.
 fn valley_faces(n: usize, level: impl Fn(V3) -> u16) -> Heightmap {
-    let mut map = Heightmap::new(n, vale_terrain::meters_to_level(-1000.0));
+    let mut map = Heightmap::new(n, vale_terrain::Elevation::default().level(-1000.0));
     for face in [0, 2] {
         let data: Vec<u16> = (0..n * n)
             .map(|i| level(map.texel_dir(face, i % n, i / n)))
@@ -861,7 +861,7 @@ fn gpu_channel_leaves_no_seam_at_a_face_edge() {
 fn gentle_valley(d: V3) -> u16 {
     let (lon, lat) = vale_terrain::math::dir_to_lonlat(d);
     let across = (lat - 0.4).abs();
-    vale_terrain::meters_to_level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
+    vale_terrain::Elevation::default().level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
         100.0 + 20.0 * (lon - 10.0) + 40.0 * across
     } else {
         -1000.0
@@ -2270,7 +2270,7 @@ fn gpu_erode_matches_cpu_for_a_step_on_the_window_of_a_brush() {
 #[ignore = "gpu"]
 fn gpu_erode_matches_cpu_below_sea_level() {
     let mut cpu = window_land();
-    let sea = vale_terrain::meters_to_level(vale_terrain::SEA_LEVEL);
+    let sea = vale_terrain::Elevation::default().level(vale_terrain::SEA_LEVEL);
     let before = levels(&cpu);
     let mut erosion = Erosion::global(&CoarseHeights::new(&cpu), cpu.face_size());
     let brush = erode_brush(125.0, -15.0, 0.1);
@@ -3554,7 +3554,7 @@ impl LineSpec for Ridge {
     type Line = RidgeLine;
     type Plan = RidgePlan;
     fn line(self, n: usize) -> RidgeLine {
-        RidgeLine::new(self, n)
+        RidgeLine::new(self, n, vale_terrain::Elevation::default())
     }
     fn radius(line: &RidgeLine) -> f64 {
         line.spec().radius

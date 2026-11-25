@@ -372,8 +372,8 @@ pub fn lake_red(
     masked: &image::RgbaImage,
 ) -> (usize, usize) {
     let channels = globe.channels().unwrap();
-    let margin = f64::from(vale_terrain::meters_to_level(150.0))
-        - f64::from(vale_terrain::meters_to_level(0.0));
+    let margin = f64::from(vale_terrain::Elevation::default().level(150.0))
+        - f64::from(vale_terrain::Elevation::default().level(0.0));
     let min = globe.rect.min.ceil();
     let (mut wet, mut red_wet) = (0, 0);
     for (x, y, p) in plain.enumerate_pixels() {
@@ -412,12 +412,13 @@ pub fn ripple(map: &mut vale_terrain::Heightmap) {
             for x in 0..n {
                 let d = map.texel_dir(face, x, y);
                 let wave = (60.0 * d[0]).sin() * (60.0 * d[1]).sin() * (60.0 * d[2]).sin();
-                let meters = vale_terrain::level_to_meters(map.get(face, x as i64, y as i64));
+                let meters =
+                    vale_terrain::Elevation::default().meters(map.get(face, x as i64, y as i64));
                 map.set(
                     face,
                     x,
                     y,
-                    vale_terrain::meters_to_level(meters + 300.0 * wave),
+                    vale_terrain::Elevation::default().level(meters + 300.0 * wave),
                 );
             }
         }

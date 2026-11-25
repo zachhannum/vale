@@ -7,7 +7,7 @@ use egui_kittest::Harness;
 use vale_app::globe::math::{V3, angle, lonlat_to_dir};
 use vale_app::ui::AppState;
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, Heightmap, Stop, StopLine, meters_to_level};
+use vale_terrain::{Bands, Elevation, Heightmap, Stop, StopLine};
 
 pub type App = Harness<'static, AppState>;
 
@@ -200,7 +200,7 @@ pub fn set_heights(map: &mut Heightmap, height: impl Fn(V3) -> f64) {
     for face in 0..6 {
         for y in 0..n {
             for x in 0..n {
-                let level = meters_to_level(height(map.texel_dir(face, x, y)));
+                let level = Elevation::default().level(height(map.texel_dir(face, x, y)));
                 map.set(face, x, y, level);
             }
         }
@@ -354,7 +354,7 @@ pub const CRATER_RADIUS: f64 = 0.08;
 pub fn set_crater(map: &mut vale_terrain::Heightmap, crater: V3, depth: f64) {
     let (lon, lat) = vale_terrain::math::dir_to_lonlat(crater);
     let top = lonlat_to_dir(lon, lat - 17.2);
-    map.fill(meters_to_level(-1000.0));
+    map.fill(Elevation::default().level(-1000.0));
     let n = map.face_size();
     for face in 0..6 {
         let middle = map.texel_dir(face, n / 2, n / 2);
@@ -373,7 +373,7 @@ pub fn set_crater(map: &mut vale_terrain::Heightmap, crater: V3, depth: f64) {
                 if r < 1.0 {
                     meters -= depth * (1.0 - r * r);
                 }
-                map.set(face, x, y, meters_to_level(meters));
+                map.set(face, x, y, Elevation::default().level(meters));
             }
         }
     }

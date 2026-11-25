@@ -18,7 +18,7 @@ use vale_app::ui::pad::{RECENTER, RESET};
 use vale_app::ui::{Action, AppState, draw};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 use vale_store::RasterDisplay;
-use vale_terrain::{Mode, meters_to_level};
+use vale_terrain::{Elevation, Mode};
 
 type App = Harness<'static, AppState>;
 
@@ -175,7 +175,7 @@ fn each_mode_paints_in_the_flat_view_and_the_globe_shows_the_stroke() {
         let flat_before = canvas_image(&mut h);
 
         let base = h.state().globe.map.base();
-        let level = meters_to_level(3000.0);
+        let level = Elevation::default().level(3000.0);
         h.state_mut().globe.brush.flatten_level = Some(level);
         let paint = |h: &mut App, mode: Mode| {
             h.state_mut().globe.brush.mode = mode;
@@ -385,7 +385,7 @@ fn island(d: V3, center: V3) -> f64 {
 /// The number of pixels of the canvas that show a river on land.
 fn river_pixels(h: &App, img: &image::RgbaImage) -> usize {
     let globe = &h.state().globe;
-    let land = meters_to_level(150.0);
+    let land = Elevation::default().level(150.0);
     let min = globe.rect.min.ceil();
     let pixels = img.enumerate_pixels().filter(|(x, y, p)| {
         let [r, g, b, _] = p.0.map(i32::from);
@@ -415,7 +415,9 @@ fn rivers_show_in_the_flat_view_and_a_switch_hides_them() {
         for y in 0..n {
             for x in 0..n {
                 let meters = island(globe.map.texel_dir(face, x, y), center);
-                globe.map.set(face, x, y, meters_to_level(meters));
+                globe
+                    .map
+                    .set(face, x, y, Elevation::default().level(meters));
             }
         }
     }
@@ -453,7 +455,8 @@ fn lakes_show_in_the_flat_view_and_a_switch_hides_them() {
     let channels = globe.channels().unwrap();
     assert!(channels.has_lakes());
     // The pixels of the crater well below the lake level are water.
-    let margin = f64::from(meters_to_level(150.0)) - f64::from(meters_to_level(0.0));
+    let margin =
+        f64::from(Elevation::default().level(150.0)) - f64::from(Elevation::default().level(0.0));
     let min = globe.rect.min.ceil();
     let (mut wet, mut blue) = (0, 0);
     for (x, y, p) in img.enumerate_pixels() {
@@ -491,7 +494,7 @@ fn set_small_island(map: &mut vale_terrain::Heightmap, radius: f64) {
             let cone = 2600.0 * slope * if slope < 0.0 { 4.0 } else { 1.0 };
             let meters = cone + 900.0 * hills(d, 5.0 / radius);
             if meters > -2500.0 {
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
     }

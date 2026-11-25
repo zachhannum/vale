@@ -277,6 +277,7 @@ fn body(ui: &mut egui::Ui, state: &mut AppState) {
         }
     });
     if height {
+        pad::height_range::desktop(ui, state, id);
         rivers(ui, state, &raster);
     }
     ui.separator();

@@ -273,6 +273,32 @@ fn the_worker_exports_the_heightmap_and_gives_a_note() {
 }
 
 #[test]
+fn the_geotiff_has_the_offset_and_the_scale_of_the_range_of_the_layer() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("Range.tif");
+    let mut state = state();
+    let id = state.selected_raster().unwrap();
+    let range = vale_terrain::Elevation::new(-11000.0, 9000.0).unwrap();
+    let keep = vale_terrain::RangeMode::Keep;
+    assert_eq!(state.set_raster_range(id, range, keep), Ok(true));
+    state.run_action(Action::ExportHeightmap(out.clone()));
+    state.globe.wait_export();
+    let (_, levels) = read_tiff(&out);
+    assert!(levels == equirect(&state.globe.map), "the levels differ");
+    let mut decoder = Decoder::new(std::fs::File::open(&out).unwrap()).unwrap();
+    let metadata = decoder.get_tag_ascii_string(Tag::Unknown(42112)).unwrap();
+    assert!(
+        metadata.contains("role=\"offset\">-11000</Item>"),
+        "{metadata}"
+    );
+    let scale = 20000.0 / 65535.0;
+    assert!(
+        metadata.contains(&format!("role=\"scale\">{scale}</Item>")),
+        "{metadata}"
+    );
+}
+
+#[test]
 fn an_export_to_a_path_that_cannot_be_written_gives_a_warning() {
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("file");

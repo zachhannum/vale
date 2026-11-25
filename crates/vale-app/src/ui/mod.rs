@@ -15,7 +15,7 @@ use vale_store::{
     StoreError, World,
 };
 use vale_style::LabelClass;
-use vale_terrain::{Bands, Heightmap, Mode};
+use vale_terrain::{Bands, Elevation, Heightmap, Mode, RangeMode};
 
 use crate::atlas_export::{ExportOptions, ExportStep, PdfExport};
 use crate::document::{Document, Target};
@@ -27,7 +27,7 @@ use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, TargetSet, Targets};
 use crate::globe::split::SplitStroke;
-use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
+use crate::globe::{Globe, Look, StackItem, Tool, brush};
 use crate::globe::{LineStroke, PictureLayer, polygon, reshape, sweep, thumbnail};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
@@ -426,6 +426,10 @@ pub const HEIGHT_NAME: &str = "Height";
 /// The unit of a height layer. A raster layer with this unit has a sea and
 /// rivers.
 pub const HEIGHT_UNIT: &str = "m";
+/// The hint of an elevation range that does not hold sea level or is past
+/// the limits.
+pub const RANGE_NOTE: &str =
+    "Use a lowest elevation from −30,000 to −100 m and a highest from 100 to 30,000 m.";
 
 /// The values of a new raster layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -444,24 +448,32 @@ pub struct RasterSpec {
 impl RasterSpec {
     /// A height layer in meters, with the range and the bands of the app.
     pub fn height(name: &str, face_size: usize) -> RasterSpec {
-        let bands = Bands::default();
+        RasterSpec::height_in(name, face_size, Elevation::default())
+    }
+
+    /// A height layer in meters with this elevation range.
+    pub fn height_in(name: &str, face_size: usize, range: Elevation) -> RasterSpec {
         RasterSpec {
             name: name.to_string(),
             unit: HEIGHT_UNIT.to_string(),
-            min: bands.min(),
-            max: bands.max(),
+            min: range.min,
+            max: range.max,
             face_size,
         }
     }
 
-    /// The first bands of the layer. `None`: the range is empty or not
-    /// finite.
+    /// The first bands of the layer. A height layer gets the stops of the
+    /// app that are in its range. `None`: the range is empty or not finite,
+    /// or a height layer has a range that is not valid.
     fn bands(&self) -> Option<Bands> {
-        let height = Bands::default();
-        if self.unit == HEIGHT_UNIT && (self.min, self.max) == (height.min(), height.max()) {
-            return Some(height);
+        if self.unit == HEIGHT_UNIT {
+            let range = Elevation::new(self.min, self.max)?;
+            return match range == Elevation::default() {
+                true => Some(Bands::default()),
+                false => Bands::default().with_range_kept(range.min, range.max),
+            };
         }
-        Bands::with_range(self.min, self.max, self.unit == HEIGHT_UNIT)
+        Bands::with_range(self.min, self.max, false)
     }
 }
 
@@ -1408,8 +1420,15 @@ impl AppState {
         let height = spec.unit == HEIGHT_UNIT;
         // A height starts as a sea. Each other layer starts at the minimum
         // of its range.
-        let start = if height { START_ELEVATION } else { bands.min() };
-        let mut map = Heightmap::new(face_size, bands.level(start));
+        let range = Elevation {
+            min: bands.min(),
+            max: bands.max(),
+        };
+        let start = match height {
+            true => crate::globe::start_level(range),
+            false => bands.level(bands.min()),
+        };
+        let mut map = Heightmap::new(face_size, start);
         map.bands = bands;
         let project = &mut self.doc.project;
         let id = project.add_raster(spec.name, face_size as u32, spec.unit, spec.min, spec.max);
@@ -1560,6 +1579,90 @@ impl AppState {
         raster_style::store_raster_styles(&mut self.doc.project);
         self.sync_globe();
         set
+    }
+
+    /// True if a change of the elevation range of a raster layer with
+    /// `RangeMode::Keep` makes an undo step larger than the undo limit. Such
+    /// a change has no undo step.
+    pub fn range_change_too_large(&self, id: RasterId) -> bool {
+        let Some(session) = self.session.as_ref().filter(|_| self.file_log()) else {
+            return false;
+        };
+        // The tiles in the main memory that the file does not hold yet.
+        let memory = self.globe.raster_map(id).map_or(0, |map| {
+            let texels = map.changed().count() * map.tile_size() * map.tile_size();
+            2 * texels as u64
+        });
+        let file = session.raster_tile_bytes(id).unwrap_or(0);
+        file + memory > session.undo_limit()
+    }
+
+    /// Changes the elevation range of a height layer as one undo step, with
+    /// the levels, the base level, and the color stops. A step that is
+    /// larger than the undo limit goes, so such a change has no undo step.
+    /// Returns whether the range changed, or a text for the user.
+    pub fn set_raster_range(
+        &mut self,
+        id: RasterId,
+        range: Elevation,
+        mode: RangeMode,
+    ) -> Result<bool, String> {
+        let raster = self.doc.project.raster(id).filter(|r| is_height(r));
+        let Some(raster) = raster.cloned() else {
+            return Err("The layer is not a height layer.".into());
+        };
+        if !range.is_valid() {
+            return Err(RANGE_NOTE.into());
+        }
+        if (raster.value_min, raster.value_max) == (range.min, range.max) {
+            return Ok(false);
+        }
+        if self.globe.busy() || self.globe.importing() {
+            return Err("Wait for the brush to finish.".into());
+        }
+        self.save_edit();
+        if let Some(map) = self.globe.raster_map_mut(id) {
+            map.set_range(range, mode);
+            map.mark_reset();
+            let record = self.doc.project.raster_mut(id).expect("checked above");
+            session::sync_record(record, map);
+            raster_style::store_raster_styles(&mut self.doc.project);
+            self.save_edit();
+        } else {
+            self.set_saved_range(&raster, range, mode)
+                .map_err(|e| format!("Could not change the range: {e}"))?;
+        }
+        self.sync_globe();
+        self.touch();
+        Ok(true)
+    }
+
+    /// `set_raster_range` for a layer with only its reduced heightmap in the
+    /// main memory: the whole heightmap comes from the file, and the globe
+    /// gets a new reduced heightmap.
+    fn set_saved_range(
+        &mut self,
+        raster: &Raster,
+        range: Elevation,
+        mode: RangeMode,
+    ) -> Result<(), StoreError> {
+        let Some(session) = &mut self.session else {
+            return Err(StoreError::Corrupt("the layer has no file".into()));
+        };
+        let mut map = session.load_map(raster)?;
+        map.set_range(range, mode);
+        let project = &mut self.doc.project;
+        let record = project.raster_mut(raster.id).expect("checked above");
+        session::sync_record(record, &map);
+        raster_style::store_raster_styles(project);
+        let mut maps = self.globe.raster_maps();
+        maps.push((raster.id, &mut map));
+        session.flush(project, &mut maps)?;
+        drop(map);
+        let record = project.raster(raster.id).expect("checked above");
+        let reduced = session.load_display_map(record)?;
+        self.globe.set_reduced(raster.id, reduced);
+        Ok(())
     }
 
     /// Sets how much an image layer hides the layers below it, from 0 to 1,

@@ -112,7 +112,7 @@ pub(crate) fn lake_at(lakes: &[u16], m: usize, face: usize, x: f64, y: f64) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
+    use crate::cube::Elevation;
     use crate::flow::tests::{OCEAN, WORLD_KM, from_cells};
     use crate::flow::{
         CoarseHeights, CubeGrid, FlowMap, cell_at, cell_dir, drain, sea, solid_angles,
@@ -154,7 +154,7 @@ mod tests {
     fn a_pit_fills_to_its_rim_as_a_lake() {
         let (m, radius) = (64, 5.0);
         let flow = FlowMap::new(&bowl(m, radius));
-        let rim = meters_to_level(500.0);
+        let rim = Elevation::default().level(500.0);
         for y in 0..m {
             for x in 0..m {
                 if in_bowl(m, radius, x, y) {
@@ -171,7 +171,7 @@ mod tests {
     fn the_cells_beside_a_lake_get_its_level() {
         let (m, radius) = (64, 5.0);
         let flow = FlowMap::new(&bowl(m, radius));
-        let rim = meters_to_level(500.0);
+        let rim = Elevation::default().level(500.0);
         let c = m / 2;
         // The cells in a ring around the pit.
         for y in 0..m {
@@ -204,7 +204,10 @@ mod tests {
     fn a_larger_lake_area_hides_a_lake() {
         let heights = bowl(64, 5.0);
         let c = 32;
-        assert_eq!(FlowMap::new(&heights).lake(0, c, c), meters_to_level(500.0));
+        assert_eq!(
+            FlowMap::new(&heights).lake(0, c, c),
+            Elevation::default().level(500.0)
+        );
         // The pit covers about 0.05 steradians.
         let flow = FlowMap::with_lake_area(&heights, 0.2);
         assert_eq!(flow.lake(0, c, c), 0);
@@ -218,7 +221,7 @@ mod tests {
         let c = m / 2;
         assert_eq!(small.lake(0, c, c), 0);
         let large = FlowMap::new(&bowl(m, 3.0));
-        assert_eq!(large.lake(0, c, c), meters_to_level(500.0));
+        assert_eq!(large.lake(0, c, c), Elevation::default().level(500.0));
     }
 
     /// The heights of a pit at 200 m inside land at 800 m, centered at `at`.
@@ -232,7 +235,7 @@ mod tests {
             } else {
                 OCEAN
             };
-            meters_to_level(meters)
+            Elevation::default().level(meters)
         })
     }
 
@@ -264,7 +267,7 @@ mod tests {
         let limit = 0.75 * area(None);
         assert!(area(Some(face_a)) < limit && area(Some(face_b)) < limit);
         let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea(), limit);
-        let rim = meters_to_level(800.0);
+        let rim = Elevation::default().level(800.0);
         for i in raised {
             assert_eq!(lakes[i], rim);
         }
@@ -298,12 +301,17 @@ mod tests {
     /// 200 m. The bowl has no outlet, so its rim is at 800 m.
     fn fine_bowl(at: [f64; 3]) -> Heightmap {
         let n = 2048;
-        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        let mut map = Heightmap::new(n, Elevation::default().level(OCEAN));
         for (face, x, y) in texels_near(n, at, 420.0) {
             let from = angle(cell_dir(n, face, x, y), at);
             if from < 0.3 {
                 let t = (from / 0.05).min(1.0);
-                map.set(face, x, y, meters_to_level(200.0 + 600.0 * t * t));
+                map.set(
+                    face,
+                    x,
+                    y,
+                    Elevation::default().level(200.0 + 600.0 * t * t),
+                );
             }
         }
         map
@@ -314,7 +322,7 @@ mod tests {
     fn assert_shore(at: [f64; 3]) {
         let map = fine_bowl(at);
         let channels = FlowMap::new(&CoarseHeights::new(&map)).channels(WORLD_KM);
-        let rim = meters_to_level(800.0);
+        let rim = Elevation::default().level(800.0);
         let n = map.face_size();
         let mut wet = 0;
         for (face, x, y) in texels_near(n, at, 100.0) {

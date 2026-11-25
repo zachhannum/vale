@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::bands::SEA_LEVEL;
 use crate::channel::{ChannelBuffers, ChannelLines, ChannelShape};
-use crate::cube::{FACES, meters_to_level};
+use crate::cube::FACES;
 use crate::erode::{ErodeGrid, ErodeStep};
 use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window};
 use crate::heightmap::{
@@ -126,8 +126,8 @@ impl FaceStamp {
             motion: stamp.motion.map(|m| m as f32),
             ridged: u32::from(stamp.ridged) * (1 + u32::from(stamp.invert)),
             relief: stamp.relief.clamp(0.0, 1.0) as f32,
-            relief_span: f32::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M))
-                - f32::from(meters_to_level(SEA_LEVEL)),
+            relief_span: f32::from(plan.elevation.level(SEA_LEVEL + NOISE_RELIEF_M))
+                - f32::from(plan.elevation.level(SEA_LEVEL)),
             octaves: noise_octaves(stamp.scale, size as usize),
             lower: stamp.lower as f32,
             grain_axis: grain_axis(stamp).map_or([0.0; 3], |a| a.map(|c| c as f32)),
@@ -1045,7 +1045,7 @@ impl GpuHeightmap {
                 reach: first.reach as i32,
                 size: self.face_size as i32,
                 count: 0,
-                sea: u32::from(meters_to_level(SEA_LEVEL)),
+                sea: u32::from(first.elevation.level(SEA_LEVEL)),
                 channel_size: self.channels.width(),
                 window_on: u32::from(window.is_some()),
                 window_face: window.map_or(0, |w| w.face as u32),

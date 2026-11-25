@@ -136,7 +136,7 @@ fn fill(meshes: &[Mesh], size: u32) -> Vec<[f32; 4]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vale_terrain::meters_to_level;
+    use vale_terrain::Elevation;
 
     #[test]
     fn the_picture_is_a_disc_with_the_color_of_the_ground() {
@@ -145,7 +145,10 @@ mod tests {
             [t.rgba[at], t.rgba[at + 1], t.rgba[at + 2], t.rgba[at + 3]]
         };
         let view = GlobeView::centered(0.0, 0.0);
-        let (low, high) = (meters_to_level(-3000.0), meters_to_level(2000.0));
+        let (low, high) = (
+            Elevation::default().level(-3000.0),
+            Elevation::default().level(2000.0),
+        );
         let (low, high) = (Heightmap::new(64, low), Heightmap::new(64, high));
         let sea = render(&[Layer::Raster(&low, 1.0)], &view, 64);
         let land = render(&[Layer::Raster(&high, 1.0)], &view, 64);
@@ -174,7 +177,7 @@ mod tests {
             [t.rgba[at], t.rgba[at + 1], t.rgba[at + 2]].map(i32::from)
         };
         let view = GlobeView::centered(0.0, 0.0);
-        let low = Heightmap::new(64, meters_to_level(-3000.0));
+        let low = Heightmap::new(64, Elevation::default().level(-3000.0));
         let sea = middle(&render(&[Layer::Raster(&low, 1.0)], &view, 64));
         let red = render(&[Layer::Raster(&low, 1.0), square(20.0, 255)], &view, 64);
         let [r, g, b] = middle(&red);
@@ -202,8 +205,8 @@ mod tests {
             [t.rgba[at], t.rgba[at + 1], t.rgba[at + 2]].map(i32::from)
         };
         let view = GlobeView::centered(0.0, 0.0);
-        let low = Heightmap::new(64, meters_to_level(-3000.0));
-        let high = Heightmap::new(64, meters_to_level(2000.0));
+        let low = Heightmap::new(64, Elevation::default().level(-3000.0));
+        let high = Heightmap::new(64, Elevation::default().level(2000.0));
         let ground = crate::ui::pad::theme::GROUND;
         let ground = [ground.r(), ground.g(), ground.b()].map(i32::from);
         let near = |a: [i32; 3], b: [i32; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 2);

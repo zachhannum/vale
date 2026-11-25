@@ -79,7 +79,7 @@ impl Basiner {
 mod tests {
     use std::time::Duration;
 
-    use vale_terrain::{BasinSpec, ChannelShape, Limits, Rain, meters_to_level};
+    use vale_terrain::{BasinSpec, ChannelShape, Elevation, Limits, Rain};
 
     use super::*;
     use crate::globe::math::lonlat_to_dir;
@@ -88,7 +88,7 @@ mod tests {
 
     fn line() -> BasinLine {
         let spec = BasinSpec {
-            height: f64::from(meters_to_level(1500.0) - meters_to_level(0.0)),
+            height: f64::from(Elevation::default().level(1500.0) - Elevation::default().level(0.0)),
             density: 0.02,
             seed: 7,
             erosion: 0.5,
@@ -109,7 +109,7 @@ mod tests {
     }
 
     fn ground() -> Heightmap {
-        Heightmap::new(N, meters_to_level(300.0))
+        Heightmap::new(N, Elevation::default().level(300.0))
     }
 
     fn wait(basiner: &mut Basiner) -> BasinCut {

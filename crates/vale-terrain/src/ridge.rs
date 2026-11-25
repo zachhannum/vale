@@ -9,7 +9,7 @@
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Deref;
 
-use crate::cube::{ELEV_MAX, ELEV_MIN};
+use crate::cube::Elevation;
 use crate::heightmap::{Limits, hash, noise3};
 use crate::line::{LinePlan, LinePoint, REACH, StrokeLine, TAPER, bump, noise1, smoothstep, unit};
 use crate::math::{V3, add, scale};
@@ -75,8 +75,9 @@ impl Deref for RidgePlan {
 
 impl RidgeLine {
     /// Starts a line with no points on a heightmap with `face_size` texels
-    /// along one side of a face. The settings go inside their limits.
-    pub fn new(spec: Ridge, face_size: usize) -> RidgeLine {
+    /// along one side of a face and the range `elevation`. The settings go
+    /// inside their limits.
+    pub fn new(spec: Ridge, face_size: usize, elevation: Elevation) -> RidgeLine {
         let step = FRAC_PI_2 / face_size as f64;
         let radius = spec.radius.max(4.0 * step).min(MAX_RIDGE_RADIUS);
         let spec = Ridge {
@@ -91,7 +92,7 @@ impl RidgeLine {
         };
         RidgeLine {
             spec,
-            relief: LEVELS_PER_KM,
+            relief: 1000.0 / elevation.meters_per_level(),
             line: StrokeLine::new(radius, face_size),
         }
     }
@@ -1407,9 +1408,6 @@ const KAPPA: f64 = 0.42;
 /// Slides off the scarp make the hills lower.
 const HILL_RELIEF: f64 = 0.6;
 
-/// The 16-bit steps of one kilometer of height.
-const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
-
 /// The smallest throw of a fault as a part of the mean throw, and the
 /// largest exponential part, in mean throws.
 const THROW_MIN: f64 = 0.6;
@@ -1615,14 +1613,14 @@ mod tests {
 
     /// A plan with no segments and no relief, for the formula of the rise.
     fn shape(spec: Ridge, n: usize) -> RidgePlan {
-        let mut line = RidgeLine::new(spec, n);
+        let mut line = RidgeLine::new(spec, n, Elevation::default());
         line.relief = 0.0;
         line.plan(0)
     }
 
     /// A plan with no segments, for the formula.
     fn rough(spec: Ridge, n: usize) -> RidgePlan {
-        RidgeLine::new(spec, n).plan(0)
+        RidgeLine::new(spec, n, Elevation::default()).plan(0)
     }
 
     fn at(u: f64, across: f64) -> LinePoint {
@@ -2125,16 +2123,21 @@ mod tests {
             radius: 1500.0 / km,
             ..spec()
         };
-        let line = RidgeLine::new(wide, 1024);
+        let line = RidgeLine::new(wide, 1024, Elevation::default());
         assert!((line.spec().radius * km - 1500.0).abs() < 1e-9);
         let wider = Ridge {
             radius: 1.0,
             ..spec()
         };
-        assert_eq!(RidgeLine::new(wider, 1024).spec().radius, MAX_RIDGE_RADIUS);
+        assert_eq!(
+            RidgeLine::new(wider, 1024, Elevation::default())
+                .spec()
+                .radius,
+            MAX_RIDGE_RADIUS
+        );
         // A stroke of the largest radius at a cube corner reaches each of
         // the three faces at the corner.
-        let mut line = RidgeLine::new(wider, 1024);
+        let mut line = RidgeLine::new(wider, 1024, Elevation::default());
         let corner = normalize([1.0, 1.0, 1.0]);
         line.push(corner, 1.0);
         line.push(normalize([1.0, 1.0, 0.9]), 1.0);
@@ -2151,7 +2154,7 @@ mod tests {
             segment: 100.0 / km,
             ..spec()
         };
-        let line = RidgeLine::new(spec, 4096);
+        let line = RidgeLine::new(spec, 4096, Elevation::default());
         assert!((line.spec().segment * km - 100.0).abs() < 1e-9);
         // A slow ridge has crest segments of about 50 km between the
         // transform faults.
@@ -2161,6 +2164,7 @@ mod tests {
                 ..spec
             },
             4096,
+            Elevation::default(),
         );
         let sg = wide.plan(0).segmenting();
         assert_eq!(sg.group, 7);
@@ -2304,6 +2308,7 @@ mod tests {
                 ..spec()
             },
             FINE,
+            Elevation::default(),
         );
         assert_eq!(wide.spec().offset, 0.5 * r);
     }
@@ -2597,7 +2602,7 @@ mod tests {
 
     #[test]
     fn a_segment_goes_to_the_shader_as_16_numbers() {
-        let mut line = RidgeLine::new(spec(), 128);
+        let mut line = RidgeLine::new(spec(), 128, Elevation::default());
         for lon in [0.0, 3.0, 6.0] {
             line.push(lonlat_to_dir(lon, 0.0), 0.5);
         }
@@ -2628,7 +2633,7 @@ mod tests {
 
     #[test]
     fn a_place_has_the_distances_along_and_across_the_line() {
-        let mut line = RidgeLine::new(spec(), 128);
+        let mut line = RidgeLine::new(spec(), 128, Elevation::default());
         for i in 0..=10 {
             line.push(lonlat_to_dir(3.0 * f64::from(i), 0.0), f64::from(i) / 10.0);
         }
@@ -2673,7 +2678,7 @@ mod tests {
     fn a_place_has_no_step_at_a_turn_and_at_an_end() {
         // The line turns by 60 degrees at the middle point.
         let corner = lonlat_to_dir(0.0, 0.0);
-        let mut line = RidgeLine::new(spec(), 128);
+        let mut line = RidgeLine::new(spec(), 128, Elevation::default());
         let dirs = path(&[(-9.0, 0.0), (0.0, 0.0), (4.5, 7.8)], 0.05);
         for &dir in &dirs {
             line.push(dir, 1.0);
@@ -2753,7 +2758,7 @@ mod tests {
     /// Starts a stroke and lays a ridge point by point, as the app does.
     /// The flow changes along the line.
     fn lay(map: &mut Heightmap, spec: Ridge, dirs: &[V3]) -> RidgeLine {
-        let mut line = RidgeLine::new(spec, map.face_size());
+        let mut line = RidgeLine::new(spec, map.face_size(), map.elevation());
         map.begin_stroke();
         for (i, &dir) in dirs.iter().enumerate() {
             let from = line.len();
@@ -2918,7 +2923,8 @@ mod tests {
         // down, by no more than their depth.
         let plan = rough(full(), 128);
         let (valley, _) = plan.axial(&plan.faulting());
-        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + valley) * LEVELS_PER_KM;
+        let deepest = (TROUGH_MAX + 2.0 * NODAL_MAX + valley)
+            * (1000.0 / Elevation::default().meters_per_level());
         assert!(
             free.iter()
                 .all(|l| f64::from(*l) >= f64::from(START) - deepest)

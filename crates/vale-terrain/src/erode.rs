@@ -10,7 +10,7 @@ use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
 use crate::basin::fractal;
 use crate::channel::{ChannelCut, ChannelLines, ChannelShape};
-use crate::cube::{FACES, face_dir, face_of, unwarp, warp};
+use crate::cube::{Elevation, FACES, face_dir, face_of, unwarp, warp};
 use crate::flow::{
     CoarseHeights, CubeGrid, Drain, FlowMap, Grid, NONE, OUT, RIVER_MIN_AREA, RIVER_MIN_CELLS,
     STEPS, Window, WindowHeights, cell_past_edge, drain, drop_curves, index_corners, index_dir,
@@ -546,6 +546,8 @@ pub struct Erosion {
     /// The noise of the flow of each cell, from about -1 to 1. NaN: not
     /// computed.
     route: Vec<f32>,
+    /// The elevation range of the levels.
+    elevation: Elevation,
 }
 
 /// The effect of the brushes of one step.
@@ -577,6 +579,7 @@ impl Erosion {
             [flat.clone(), flat],
             RIVER_MIN_AREA,
             &heights.levels,
+            heights.elevation,
         )
     }
 
@@ -623,6 +626,7 @@ impl Erosion {
             [flat_u, flat_v],
             min_area,
             &heights.levels,
+            heights.elevation,
         )
     }
 
@@ -663,7 +667,11 @@ impl Erosion {
             *height = top * (1.0 - tv) + bottom * tv;
         }
         let levels: Vec<u16> = kept.iter().map(|h| h.round() as u16).collect();
-        let heights = WindowHeights { window, levels };
+        let heights = WindowHeights {
+            window,
+            levels,
+            elevation: heights.elevation,
+        };
         let inflow = outer.map_or_else(Vec::new, |outer| outer.inflow(&heights));
         let mut erosion = Erosion::of_window(&heights, inflow);
         erosion.heights = kept;
@@ -681,6 +689,7 @@ impl Erosion {
         [flat_u, flat_v]: [Vec<f64>; 2],
         min_area: f64,
         levels: &[u16],
+        elevation: Elevation,
     ) -> Erosion {
         Erosion {
             cells,
@@ -704,6 +713,7 @@ impl Erosion {
             route_seed: 0,
             route_amount: 0.0,
             route: Vec::new(),
+            elevation,
         }
     }
 
@@ -815,7 +825,12 @@ impl Erosion {
             let mut corner = Vec::with_capacity(us.len() * vs.len());
             for &v in &vs {
                 for &u in &us {
-                    corner.push(self.rain.at(dir(u, v), step * TRACE_SPACING, level));
+                    corner.push(self.rain.at(
+                        dir(u, v),
+                        step * TRACE_SPACING,
+                        self.elevation,
+                        level,
+                    ));
                 }
             }
             // The corner before a place and the part of the way to the next.
@@ -1334,7 +1349,7 @@ impl Erosion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
+    use crate::cube::Elevation;
     use crate::flow::tests::{OCEAN, equator_valley, from_cells, lumpy};
     use crate::flow::{FLOW_SIZE, cell_at, cell_dir, sea};
     use crate::heightmap::{Heightmap, Mode, Stamp};
@@ -1423,7 +1438,7 @@ mod tests {
         let middle = lonlat_to_dir(-20.0, 10.0);
         let heights = CoarseHeights::from_fn(m, |d| {
             let r = angle(d, middle);
-            meters_to_level(if r < 0.5 {
+            Elevation::default().level(if r < 0.5 {
                 2500.0 - 8000.0 * (r - 0.25).abs()
             } else {
                 OCEAN
@@ -1539,7 +1554,7 @@ mod tests {
         for x in 2..8 {
             assert!(erosion.levels[cell(x)] < heights.levels[cell(x)], "{x}");
         }
-        let flat = meters_to_level(OCEAN);
+        let flat = Elevation::default().level(OCEAN);
         let mut under_the_brush = 0;
         for (i, (&old, &new)) in heights.levels.iter().zip(&erosion.levels).enumerate() {
             assert!(new >= flat && new <= old, "cell {i}");
@@ -1611,7 +1626,9 @@ mod tests {
         let window = Window::centered(center, n, 2, 128);
         let heights = WindowHeights::from_fn(window, equator_valley);
         let global = FlowMap::new(&coarse);
-        let dry = FlowMap::new(&CoarseHeights::from_fn(64, |_| meters_to_level(OCEAN)));
+        let dry = FlowMap::new(&CoarseHeights::from_fn(64, |_| {
+            Elevation::default().level(OCEAN)
+        }));
         // The sum of the heights that 5 steps take away.
         let lowered = |global: &FlowMap| {
             let mut near = Erosion::window(&heights, global);
@@ -1858,7 +1875,7 @@ mod tests {
     fn gentle_valley(d: V3) -> u16 {
         let (lon, lat) = crate::math::dir_to_lonlat(d);
         let across = (lat - 0.4).abs();
-        meters_to_level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
+        Elevation::default().level(if lon > 10.0 && lon < 80.0 && across < 10.0 {
             100.0 + 20.0 * (lon - 10.0) + 40.0 * across
         } else {
             OCEAN
@@ -1868,7 +1885,7 @@ mod tests {
     #[test]
     fn a_global_step_lowers_a_channel_much_more_than_the_slopes() {
         let n = 2048;
-        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        let mut map = Heightmap::new(n, Elevation::default().level(OCEAN));
         for face in [0, 2] {
             let levels: Vec<u16> = (0..n * n)
                 .map(|i| gentle_valley(map.texel_dir(face, i % n, i / n)))
@@ -1974,8 +1991,8 @@ mod tests {
     #[test]
     fn raise_lifts_the_cells_and_a_step_cuts_only_the_lifted_land() {
         let m = 64;
-        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
-        let floor = meters_to_level(OCEAN);
+        let flat = CoarseHeights::from_fn(m, |_| Elevation::default().level(OCEAN));
+        let floor = Elevation::default().level(OCEAN);
         let center = lonlat_to_dir(10.0, 5.0);
         let brush = ErodeBrush {
             center,
@@ -2101,7 +2118,7 @@ mod tests {
     #[test]
     fn lift_sets_the_cells_under_the_brushes_once() {
         let m = 64;
-        let floor = meters_to_level(OCEAN);
+        let floor = Elevation::default().level(OCEAN);
         let flat = CoarseHeights::from_fn(m, |_| floor);
         let center = lonlat_to_dir(10.0, 5.0);
         let brush = ErodeBrush {
@@ -2252,7 +2269,7 @@ mod tests {
     #[test]
     fn raise_with_a_ceiling_stops_the_cells_at_it() {
         let m = 64;
-        let floor = meters_to_level(OCEAN);
+        let floor = Elevation::default().level(OCEAN);
         let flat = CoarseHeights::from_fn(m, |_| floor);
         let center = lonlat_to_dir(10.0, 5.0);
         let brush = ErodeBrush {
@@ -2292,7 +2309,7 @@ mod tests {
     #[test]
     fn a_moved_erosion_keeps_the_heights_of_the_stroke() {
         let n = 1024;
-        let floor = meters_to_level(OCEAN);
+        let floor = Elevation::default().level(OCEAN);
         let ground = |window: Window| WindowHeights::from_fn(window, |_| floor);
         // The window is near the edge of its face.
         let first = Window::centered(lonlat_to_dir(38.0, 0.0), n, 1, 128);
@@ -2366,7 +2383,9 @@ mod tests {
 
     /// The ocean on all of the sphere.
     fn dry() -> FlowMap {
-        FlowMap::new(&CoarseHeights::from_fn(64, |_| meters_to_level(OCEAN)))
+        FlowMap::new(&CoarseHeights::from_fn(64, |_| {
+            Elevation::default().level(OCEAN)
+        }))
     }
 
     #[test]
@@ -2557,7 +2576,7 @@ mod tests {
     #[test]
     fn steps_give_the_sum_of_the_drops_of_each_step() {
         let m = 128;
-        let flat = CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN));
+        let flat = CoarseHeights::from_fn(m, |_| Elevation::default().level(OCEAN));
         let brush = ErodeBrush {
             center: lonlat_to_dir(10.0, 5.0),
             radius: 0.2,
@@ -2804,7 +2823,7 @@ mod tests {
             } else {
                 300.0 + 2500.0 * (1.0 - lon.abs() / 12.0).max(0.0) + 3.0 * lat
             };
-            meters_to_level(meters)
+            Elevation::default().level(meters)
         });
         let mut erosion = Erosion::global(&heights, 8192);
         erosion.set_rain(WEST_WIND);
