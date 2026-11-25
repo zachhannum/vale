@@ -22,7 +22,7 @@ The first time, the window opens on the start screen, which lists your worlds. A
 
 A world opens in the globe workspace. A new world has no raster layer. A raster layer holds one value for each place, and a height layer is a raster layer with the unit `m`. A raster layer is a layer in the same draw order as the vector layers, and it has an opacity. The globe shows each visible raster layer as stepped tints, in that order. Each visible height layer shows its rivers, and its hillshade shades the slopes with a light that you set. You can do these things.
 
-- Click "Layers" in the tool bar, and then "Add raster…", to add a raster layer. In the iPad layout, tap "+" in the Layers panel, and then "Raster…". The form has the presets "Height", "Precipitation", "Temperature", "Pressure", and "Custom". A preset fills the name, the unit, the value range, and the face size. The face size is 1,024, 2,048, 4,096, or 8,192 pixels. Next to each face size, the form shows the ground per pixel, the world map of equal detail, and the memory of a layer that is painted all over.
+- Click "Layers" in the tool bar, and then "Add raster…", to add a raster layer. In the iPad layout, tap "+" in the Layers panel, and then "Raster…". The form has the presets "Height", "Precipitation", "Temperature", "Pressure", and "Custom". A preset fills the name, the unit, the value range, and the face size. The preset "Height" has the lowest and the highest elevation, which must hold sea level. The row "Elevation range" of the panel of a height layer changes the range later. "Keep elevations" keeps the elevation of each place. "Stretch terrain" stretches the relief to the new range. The face size is 1,024, 2,048, 4,096, or 8,192 pixels. Next to each face size, the form shows the ground per pixel, the world map of equal detail, and the memory of a layer that is painted all over.
 
 - Drag the globe to rotate it. On a touch screen, use one finger.
 - Scroll the wheel to zoom. On a trackpad, scroll with two fingers to rotate, and pinch to zoom.
@@ -142,6 +142,7 @@ cargo run --release -p vale-app -- --project path/to/world.gpkg --export-heightm
 | `--export-format <FORMAT>` | With `--export-form`, the format of the form: `pdf` or `png` |
 | `--export-range <PAGES>` | With `--export-form`, the pages of the range of the form, for example `1-4,7`. An atlas with fewer pages gets new pages. |
 | `--stops-page` | With `--panel layers`, open the page of the color stops of the active raster layer |
+| `--range-page` | With `--panel layers`, open the page of the elevation range of the active height layer |
 | `--ramp-editor` | Open the editor of a new ramp. With `--layout pad`, it opens on the page of the color ramps of the active raster layer |
 | `--import-heightmap <FILE>` | Import this equirectangular PNG or TIFF heightmap into the globe |
 | `--export-heightmap <FILE>` | Export the first height layer of the project file of `--project` to this GeoTIFF file, or to a 16-bit PNG file if the name ends in `.png`, and exit |
