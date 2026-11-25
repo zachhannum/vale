@@ -2679,7 +2679,10 @@ impl Globe {
             return None;
         }
         let mut points: Vec<Pos2> = Vec::new();
-        let pen = self.input.pos.filter(|_| !active.ended);
+        let pen = self
+            .input
+            .pos
+            .filter(|_| !active.ended && ridge.guide.is_none());
         for pos in ridge
             .points
             .iter()
@@ -2692,6 +2695,37 @@ impl Globe {
             }
         }
         Some(points)
+    }
+
+    /// The drawn fracture zones of a held ocean ridge in screen points, and
+    /// the one that the pen draws, which ends at the pen.
+    pub fn fracture_preview(&self) -> Vec<Vec<Pos2>> {
+        let active = self.stroke.as_ref().filter(|a| a.held.is_some());
+        let Some(ridge) = active.and_then(|a| a.ridge.as_ref()) else {
+            return Vec::new();
+        };
+        let BrushLine::Ridge(line) = &ridge.line else {
+            return Vec::new();
+        };
+        let screen = |dirs: &[V3], pen: Option<Pos2>| -> Vec<Pos2> {
+            let mut points: Vec<Pos2> = Vec::new();
+            for pos in dirs.iter().filter_map(|&dir| self.project(dir)).chain(pen) {
+                match points.last() {
+                    Some(last) if last.distance(pos) < 1.5 => {}
+                    _ => points.push(pos),
+                }
+            }
+            points
+        };
+        let mut lines: Vec<Vec<Pos2>> = line
+            .guide_strokes()
+            .iter()
+            .map(|g| screen(g, None))
+            .collect();
+        if let Some(guide) = &ridge.guide {
+            lines.push(screen(guide, self.input.pos));
+        }
+        lines
     }
 
     /// The outline of a basin while the pen draws it, in screen points. It
