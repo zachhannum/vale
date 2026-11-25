@@ -5,8 +5,8 @@ use std::path::Path;
 
 use vale_terrain::math::{V3, lonlat_to_dir};
 use vale_terrain::{
-    Heightmap, Limits, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke,
-    Seamounts, meters_to_level, realism,
+    AbyssalHills, AbyssalStroke, Heightmap, Limits, PACIFIC_FLANK, Patch, Realism, Reference,
+    Ridge, RidgeLine, SeamountStroke, Seamounts, meters_to_level, realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -205,17 +205,37 @@ fn flank_spec() -> Seamounts {
     }
 }
 
-fn pacific_flank() -> Painted {
-    let mut painted = Painted::new(BASE_M);
-    painted.ridge_flank();
+/// The mean depth of the reference patch, in meters.
+const REFERENCE_DEPTH_M: f64 = 3286.0;
+
+/// An abyssal hills stroke north over the patch, on flat floor at the mean
+/// depth of the reference, then the seamounts of `flank_spec`. The stroke
+/// sets the fabric, so it runs north. The second stamp covers the patch
+/// with the full hills.
+fn abyssal_flank() -> Painted {
+    let mut painted = Painted::new(REFERENCE_DEPTH_M);
+    let spec = AbyssalHills {
+        rate: 110.0,
+        hills: 1.0,
+        world_km: WORLD_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let start = painted.map.snapshot();
+    let mut stroke = AbyssalStroke::new(spec, FACE_SIZE);
+    painted.map.begin_stroke();
+    for lat in [-2.0, 0.0] {
+        let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.18, 0.95, 1.0);
+        painted.map.abyssal(&plan);
+    }
+    painted.map.end_stroke();
     painted.seamounts(flank_spec());
     painted
 }
 
-#[test]
-fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
-    let reference = Reference::parse(PACIFIC_FLANK).unwrap();
-    let (report, local) = compare(&pacific_flank(), &reference, 0.0);
+/// Asserts that a realism report and a local relief are near those of the
+/// reference.
+fn assert_near(report: &Realism, local: &[f64; 6], reference: &Reference) {
     let r = &reference.realism;
     // The body of the local relief is near the reference, and the
     // seamounts stand above the faults.
@@ -258,6 +278,27 @@ fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
     assert!(apart < 0.5, "a slope histogram {apart} from the reference");
 }
 
+#[test]
+fn abyssal_hills_with_seamounts_are_near_the_pacific_flank() {
+    let reference = Reference::parse(PACIFIC_FLANK).unwrap();
+    let (report, local) = compare(&abyssal_flank(), &reference, 0.0);
+    assert_near(&report, &local, &reference);
+}
+
+fn pacific_flank() -> Painted {
+    let mut painted = Painted::new(BASE_M);
+    painted.ridge_flank();
+    painted.seamounts(flank_spec());
+    painted
+}
+
+#[test]
+fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
+    let reference = Reference::parse(PACIFIC_FLANK).unwrap();
+    let (report, local) = compare(&pacific_flank(), &reference, 0.0);
+    assert_near(&report, &local, &reference);
+}
+
 /// The painted patch and the reference patch side by side, with the same
 /// tints and hillshade. The reference patch comes from
 /// `scripts/gebco-reference.sh pacific-flank`.
@@ -291,6 +332,16 @@ fn manual_seamounts_next_to_the_pacific_flank() {
     }
     let out = root.join("target/realism/pacific-flank.png");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
+    // The abyssal hills brush beside the same reference.
+    let painted = abyssal_flank();
+    compare(&painted, &reference, 0.0);
+    let ours = painted.patch(&reference).heights;
+    for (i, heights) in [&ours, &gebco].into_iter().enumerate() {
+        draw(&mut image, heights, n, reference.cell_m, i * n);
+    }
+    let out = root.join("target/realism/abyssal-flank.png");
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
 }
