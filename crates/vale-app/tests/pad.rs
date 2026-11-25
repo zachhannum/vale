@@ -2774,6 +2774,83 @@ fn the_seamounts_mode_fits_on_the_smallest_ipad() {
 }
 
 #[test]
+fn the_abyssal_hills_mode_is_in_the_terrain_cell_and_has_its_sliders() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Abyssal hills");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::AbyssalHills)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!((brush.abyssal_rate_mm, brush.abyssal_hills), (60.0, 1.0));
+    // The strip has Size and Hills.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip hills").is_some());
+    assert!(control(&h, "Strip rate").is_none());
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush rate",
+        "Brush hills",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    assert!(control(&h, "Brush strength").is_none());
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush rate", "1", 10.0),
+        ("Brush rate", "900", 200.0),
+        ("Brush hills", "0", 0.0),
+        ("Brush hills", "900", 2.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush rate" => brush.abyssal_rate_mm,
+            _ => brush.abyssal_hills,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    // The settings of the other modes stay.
+    let brush = h.state().globe.brush;
+    assert_eq!((brush.flatten_rate, brush.ridge_hills), (0.3, 1.0));
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Abyssal hills mode");
+}
+
+#[test]
+fn the_abyssal_hills_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Abyssal hills").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    screenshot::save(&mut h, "pad-abyssal-modes-744");
+    tap(&mut h, "Abyssal hills");
+    assert_eq!(h.state().globe.brush.mode, Mode::AbyssalHills);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    for row in ["Brush rate value", "Brush hills value", "Brush seed value"] {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Abyssal hills panel");
+    screenshot::save(&mut h, "pad-abyssal-744");
+}
+
+#[test]
 fn the_brush_panel_of_the_push_mode_has_no_strength() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
