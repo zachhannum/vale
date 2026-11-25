@@ -79,7 +79,7 @@ pub use realism::{
     WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
-pub use ridge::{MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
+pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
 pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
 pub use seamount::{
     FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,
