@@ -151,6 +151,16 @@ impl Areas {
         entry.bins.done.clone()
     }
 
+    /// [`Areas::bins`] that waits for the areas of `live`.
+    pub fn bins_now(&mut self, id: RasterId, live: &Heightmap) -> Option<Arc<Vec<f64>>> {
+        // A job of older levels runs to its end before the new job starts.
+        for _ in 0..2 {
+            self.bins(id, live);
+            self.entries.get_mut(&id)?.bins.poll(true);
+        }
+        self.bins(id, live)
+    }
+
     /// The level areas of layer `id` inside the shape of frame `frame`.
     /// Starts a job if the frame or the levels changed since the last job,
     /// unless `wait`.

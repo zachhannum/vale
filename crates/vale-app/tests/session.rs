@@ -456,6 +456,61 @@ fn applying_a_labeled_ramp_names_the_bands() {
     assert_eq!(raster_colors(&stored, climate).names, labels);
 }
 
+/// The values of the stops of layer `id` between its lowest and its
+/// highest value.
+fn inner_stops(state: &mut AppState, id: RasterId) -> Vec<f64> {
+    let stops = state.globe.bands_mut(id).unwrap().stops().to_vec();
+    stops[1..stops.len() - 1].iter().map(|s| s.value).collect()
+}
+
+#[test]
+fn area_spacing_places_round_stops_and_keeps_sea_level() {
+    use vale_terrain::{Part, Round};
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    let height = state.add_height();
+    state.select(Some(LayerRef::Raster(height)));
+    paint(&mut state.globe.map, 45.0, 35.3, 0.6);
+    paint(&mut state.globe.map, -120.0, -40.0, 0.3);
+    let at = (state.ramps.list().iter())
+        .position(|r| r.name == "Topography")
+        .unwrap();
+    let count = 12;
+
+    // Series: each stop is 0, or a value of 1, 2, 5, 10, and so on that is
+    // at least the interval, or the same value below 0.
+    let how = RampApply::Area {
+        count,
+        round: Round::Series,
+        interval: 50.0,
+    };
+    state.apply_ramp(height, at, how, Part::All, None).unwrap();
+    let values = inner_stops(&mut state, height);
+    assert!(values.contains(&0.0), "{values:?}");
+    for v in values.iter().map(|v| v.abs()).filter(|v| *v != 0.0) {
+        let scale = 10f64.powf(v.log10().floor());
+        let m = v / scale;
+        let series = [1.0, 2.0, 5.0].iter().any(|s| (m - s).abs() < 1e-9);
+        assert!(series && v >= 50.0, "{v} in {values:?}");
+    }
+    assert!(values.windows(2).all(|w| w[0] < w[1]), "{values:?}");
+    // Stops that round to the same value become one stop.
+    let bands = state.globe.bands_mut(height).unwrap();
+    assert!(bands.colors().len() <= count);
+    assert_eq!(bands.colors().len(), values.len() + 1);
+
+    // Interval: each stop is a multiple of the interval.
+    let how = RampApply::Area {
+        count,
+        round: Round::Interval,
+        interval: 250.0,
+    };
+    state.apply_ramp(height, at, how, Part::All, None).unwrap();
+    let values = inner_stops(&mut state, height);
+    assert!(values.contains(&0.0), "{values:?}");
+    assert!(values.iter().all(|v| v % 250.0 == 0.0), "{values:?}");
+}
+
 #[test]
 fn a_save_after_one_stroke_writes_only_the_changed_tiles() {
     let dir = tempfile::tempdir().unwrap();

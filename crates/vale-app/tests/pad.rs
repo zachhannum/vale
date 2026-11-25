@@ -8158,6 +8158,66 @@ fn duplicate_from_classify_returns_to_its_ramps() {
 }
 
 #[test]
+fn the_ramp_card_offers_spacing_by_area_under_new() {
+    use vale_app::ui::pad::raster::{COLOR_RAMPS, INTERVAL, ROUND_TO, SPACING};
+    let mut h = painted_pad(BOARDS[0]);
+    open_height(&mut h);
+    open_stops(&mut h);
+    scroll_to_row(&mut h, COLOR_RAMPS);
+    tap(&mut h, COLOR_RAMPS);
+    scroll_to_control(&mut h, "Viridis");
+    tap(&mut h, "Viridis");
+    assert!(h.state().pad.style.ramp_card.is_some());
+    // Keep has no spacing.
+    assert!(control(&h, "Area").is_none());
+
+    // New shows the spacing, on Even.
+    tap(&mut h, "New");
+    assert!(control(&h, "Even").is_some() && control(&h, "Area").is_some());
+    assert!(control(&h, "Series").is_none());
+    assert!(control(&h, &format!("{INTERVAL} value")).is_none());
+    check_controls(&h, &format!("with {SPACING} on the card of a ramp"));
+
+    // Area shows the rounding and the interval.
+    tap(&mut h, "Area");
+    for name in ["Series", "Interval"] {
+        assert!(control(&h, name).is_some(), "{ROUND_TO}: {name}");
+    }
+    for name in ["Increase", "Decrease"] {
+        assert!(control(&h, &format!("{name} {INTERVAL}")).is_some());
+    }
+    assert!(control(&h, &format!("{INTERVAL} value")).is_some());
+    check_controls(&h, "with Area on the card of a ramp");
+    // The interval starts on the value of 1, 2, 5, 10, and so on that is
+    // nearest to 1/200 of the range.
+    let bands = h.state().globe.map.bands.clone();
+    let start = vale_terrain::default_interval(bands.min(), bands.max());
+    assert_eq!(start, 50.0);
+    let card = h.state().pad.style.ramp_card.unwrap();
+    let texts = painted_texts(&h);
+    assert!(
+        texts
+            .iter()
+            .any(|(t, r)| t == "50 m" && card.contains_rect(*r)),
+        "{texts:?}"
+    );
+    screenshot::save(&mut h, "pad-ramp-card-area");
+
+    // Make places round stops.
+    tap(&mut h, "Interval");
+    let make = (h.state().pad.controls.iter())
+        .map(|c| c.name.clone())
+        .find(|n| n.starts_with("Make "))
+        .unwrap();
+    tap(&mut h, &make);
+    assert_eq!(h.state().pad.style.ramp_card, None);
+    let stops = h.state().globe.map.bands.stops().to_vec();
+    let inner = &stops[1..stops.len() - 1];
+    assert!(!inner.is_empty());
+    assert!(inner.iter().all(|s| s.value % 50.0 == 0.0), "{inner:?}");
+}
+
+#[test]
 fn an_imported_ramp_stays_in_the_list_and_applies_from_its_card() {
     use vale_app::ui::pad::raster::{
         BAND_COUNT, COLOR_RAMPS, DELETE_RAMP, EDIT_RAMP, IMPORT_RAMP, REVERSE_RAMP,
