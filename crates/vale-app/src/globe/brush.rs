@@ -347,6 +347,7 @@ impl BrushSettings {
             world_km,
             seed,
             limits: self.limits(),
+            hills: 1.0,
         }
     }
 

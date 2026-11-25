@@ -55,6 +55,7 @@ impl Painted {
             world_km: WORLD_KM,
             seed: 11,
             limits: Limits::default(),
+            hills: 1.0,
         };
         let mut line = RidgeLine::new(spec, FACE_SIZE);
         for i in 0..=16 {

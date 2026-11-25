@@ -5241,6 +5241,7 @@ mod tests {
             world_km: 6371.0,
             seed: 7,
             limits: Limits::default(),
+            hills: 1.0,
         };
         let mut line = RidgeLine::new(spec, map.face_size());
         map.begin_stroke();

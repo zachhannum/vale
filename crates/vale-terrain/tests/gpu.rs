@@ -3528,6 +3528,7 @@ fn ridge_spec(radius: f64) -> Ridge {
         world_km: 6371.0,
         seed: 7,
         limits: Limits::default(),
+        hills: 1.0,
     }
 }
 
