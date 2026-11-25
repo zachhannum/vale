@@ -5,14 +5,14 @@ use std::sync::Arc;
 
 use eframe::egui::{self, Rect, pos2, vec2};
 use vale_store::World;
-use vale_terrain::{Bands, face_size_values};
+use vale_terrain::{Bands, Elevation, face_size_values};
 
 use super::collection_choice::CollectionChoice;
 use super::pad::collection_choice;
 use super::pad::geometry::{GAP, MARGIN, ROW, Rects, TOUCH};
 use super::pad::theme;
 use super::pad::widgets::{self, BODY_PAD, Controls, PANEL_ROW};
-use super::{Action, AppState, HEIGHT_UNIT, LayerRef, RasterSpec};
+use super::{Action, AppState, HEIGHT_UNIT, LayerRef, RANGE_NOTE, RasterSpec};
 use crate::globe::import::{Mapping, Probe, Source, file_name};
 use crate::world;
 
@@ -26,6 +26,11 @@ pub const NAME: &str = "Raster name";
 pub const UNIT: &str = "Unit";
 pub const MINIMUM: &str = "Minimum";
 pub const MAXIMUM: &str = "Maximum";
+/// The fields of the elevation range of a height layer.
+pub const LOWEST: &str = "Lowest";
+pub const HIGHEST: &str = "Highest";
+/// The row with the meters of one level of a height layer.
+pub const LEVEL_STEP: &str = "Level step";
 /// The name of the choice of the preset.
 pub const KIND: &str = "Kind";
 /// The choice between an empty layer and a layer from an image file.
@@ -87,8 +92,9 @@ pub const PRESETS: [Preset; 5] = [
         face_size: 2048,
     },
 ];
-/// The index of the height preset. Its unit and its range are fixed, because
-/// the sea, the rivers, and some brush modes need heights in meters.
+/// The index of the height preset. Its unit is fixed, because the sea, the
+/// rivers, and some brush modes need heights in meters, and its range must
+/// hold sea level.
 pub const HEIGHT: usize = 0;
 /// The index of the preset with no unit.
 pub const CUSTOM: usize = 4;
@@ -364,20 +370,30 @@ impl RasterForm {
         })
     }
 
-    /// The value range of the layer. `None`: a text is not a number, or the
-    /// range is empty.
+    /// The value range of the layer. `None`: a text is not a number, the
+    /// range is empty, or the range of a height does not hold sea level.
     fn range(&self) -> Option<(f64, f64)> {
-        if self.height() {
-            return Some(PRESETS[HEIGHT].range);
-        }
         let (min, max) = (number(&self.min)?, number(&self.max)?);
+        if self.height() {
+            return Elevation::new(min, max).map(|_| (min, max));
+        }
         Bands::with_range(min, max, false).map(|_| (min, max))
+    }
+
+    /// The meters of one level of a height layer, as a text. `None`: the
+    /// range is not valid.
+    pub fn level_step(&self) -> Option<String> {
+        let (min, max) = self.range()?;
+        Some(level_step_text(Elevation::new(min, max)?))
     }
 
     /// The text that tells what is wrong with the form.
     pub fn note(&self) -> Option<String> {
         if self.name.trim().is_empty() {
             return Some("Enter a name.".into());
+        }
+        if self.range().is_none() && self.height() {
+            return Some(RANGE_NOTE.into());
         }
         if self.range().is_none() {
             return Some("Maximum must be greater than minimum.".into());
@@ -418,10 +434,11 @@ impl RasterForm {
             return None;
         }
         let name = self.name.trim();
-        if self.height() {
-            return Some(RasterSpec::height(name, self.face_size));
-        }
         let (min, max) = self.range()?;
+        if self.height() {
+            let range = Elevation::new(min, max)?;
+            return Some(RasterSpec::height_in(name, self.face_size, range));
+        }
         Some(RasterSpec {
             name: name.to_string(),
             unit: self.unit.trim().to_string(),
@@ -430,16 +447,11 @@ impl RasterForm {
             face_size: self.face_size,
         })
     }
+}
 
-    /// The fixed range of a height layer, as a text with its unit.
-    fn fixed_range(&self) -> String {
-        let (min, max) = PRESETS[HEIGHT].range;
-        format!(
-            "{} to {}",
-            world::value_text(min, max - min, ""),
-            world::value_text(max, max - min, HEIGHT_UNIT)
-        )
-    }
+/// The meters of one level of a height layer, as a text.
+pub fn level_step_text(range: Elevation) -> String {
+    format!("{:.2} m", range.meters_per_level())
 }
 
 /// Acts on what the user did, and keeps or closes the form. Returns the new
@@ -514,8 +526,16 @@ pub fn desktop(ctx: &egui::Context, state: &mut AppState) {
                 ui.end_row();
 
                 if form.height() {
-                    ui.label("Values");
-                    ui.label(form.fixed_range());
+                    for (label, text) in [(LOWEST, &mut form.min), (HIGHEST, &mut form.max)] {
+                        ui.label(label);
+                        ui.horizontal(|ui| {
+                            ui.add(egui::TextEdit::singleline(text).desired_width(90.0));
+                            ui.label(HEIGHT_UNIT);
+                        });
+                        ui.end_row();
+                    }
+                    ui.label(LEVEL_STEP);
+                    ui.label(form.level_step().unwrap_or_else(|| "–".into()));
                     ui.end_row();
                 } else {
                     for (label, text) in [
@@ -632,7 +652,7 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
     // the face size. The first frame of the form has an estimate of the
     // height of the rows, and each later frame has the height of the frame
     // before it.
-    let kind_rows = if form.height() { 1.0 } else { 3.0 };
+    let kind_rows = 3.0;
     let file_rows = match (form.from_file, form.probe().is_some()) {
         (false, _) => 0.0,
         (true, false) => 1.0,
@@ -725,7 +745,13 @@ pub fn pad(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls, r
                 let valid = !form.name.trim().is_empty();
                 widgets::text_field(ui, controls, NAME, "Name", None, &mut form.name, valid);
                 if form.height() {
-                    widgets::value_row(ui, "Values", &form.fixed_range());
+                    let range_ok = form.range().is_some();
+                    let unit = Some(HEIGHT_UNIT);
+                    for (name, text) in [(LOWEST, &mut form.min), (HIGHEST, &mut form.max)] {
+                        widgets::text_field(ui, controls, name, name, unit, text, range_ok);
+                    }
+                    let step = form.level_step().unwrap_or_else(|| "–".into());
+                    widgets::value_row(ui, LEVEL_STEP, &step);
                 } else {
                     let range_ok = form.range().is_some();
                     widgets::text_field(ui, controls, UNIT, UNIT, None, &mut form.unit, true);

@@ -1137,6 +1137,42 @@ fn each_preset_adds_a_layer_with_its_unit_and_its_range() {
 }
 
 #[test]
+fn the_height_preset_sets_the_elevation_range() {
+    let mut h = empty_pad(BOARDS[0]);
+    h.state_mut().form_face_size = Some(64);
+    open_panel(&mut h, "Layers");
+    open_raster_form(&mut h);
+    tap(&mut h, "Height");
+    for name in [raster_form::LOWEST, raster_form::HIGHEST] {
+        assert!(control(&h, name).is_some(), "{name}");
+    }
+    let texts: Vec<String> = painted_texts(&h).into_iter().map(|t| t.0).collect();
+    assert!(texts.iter().any(|t| t == "0.18 m"), "{texts:?}");
+    check_controls(&h, "the form of a height layer");
+
+    // A range that does not hold sea level is refused.
+    type_text(&mut h, raster_form::LOWEST, "50");
+    assert!(control(&h, raster_form::ADD).is_none());
+    assert!(h.query_by_label(vale_app::ui::RANGE_NOTE).is_some());
+    type_text(&mut h, raster_form::LOWEST, "-31000");
+    assert!(control(&h, raster_form::ADD).is_none());
+
+    // The meters of one level follow the range.
+    type_text(&mut h, raster_form::LOWEST, "-11000");
+    type_text(&mut h, raster_form::HIGHEST, "9000");
+    let texts: Vec<String> = painted_texts(&h).into_iter().map(|t| t.0).collect();
+    assert!(texts.iter().any(|t| t == "0.31 m"), "{texts:?}");
+    form_tap(&mut h, raster_form::ADD);
+    let raster = h.state().doc.project.rasters()[0].clone();
+    assert_eq!((raster.value_min, raster.value_max), (-11000.0, 9000.0));
+    let map = h.state().globe.raster_map(raster.id).unwrap();
+    let range = map.elevation();
+    assert_eq!((range.min, range.max), (-11000.0, 9000.0));
+    assert_eq!(map.base(), range.level(-2500.0));
+    assert!(h.state().globe.is_height());
+}
+
+#[test]
 fn the_form_shows_the_values_next_to_each_face_size() {
     for size in [BOARDS[0], BOARDS[3]] {
         let what = format!("{size:?}");
