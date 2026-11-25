@@ -4686,11 +4686,20 @@ fn a_new_stroke_or_another_mode_applies_a_held_ocean_ridge() {
 
     // The second stroke applies the first one, so one undo takes away the
     // second stroke only.
+    // The second stroke starts far from the line of the first one.
     h.state_mut().globe.brush.mode = Mode::OceanRidge;
     h.state_mut().globe.brush.ridge_crest_m = -1500.0;
     pen_line(&mut h, |_| {});
     wait_held(&mut h);
-    pen_line(&mut h, |_| {});
+    let far = ridge_samples().into_iter().map(|mut sample| {
+        let [x, y, z] = sample.dir.unwrap();
+        sample.dir = Some(lonlat_to_dir(
+            y.atan2(x).to_degrees(),
+            z.asin().to_degrees() + 40.0,
+        ));
+        sample
+    });
+    pen_line_of(&mut h, far.collect(), |_| {});
     settle(&mut h);
     assert!(all_levels(&h) != ridge);
     assert!(h.state_mut().globe.undo());
@@ -4698,6 +4707,136 @@ fn a_new_stroke_or_another_mode_applies_a_held_ocean_ridge() {
     assert!(h.state_mut().globe.undo());
     h.run_steps(2);
     assert!(all_levels(&h) == ridge);
+}
+
+/// The samples of a stroke across the line of `ridge_samples`, which
+/// starts and ends within 1.5 brush radii of it.
+fn fracture_samples() -> Vec<vale_app::globe::brush::Sample> {
+    let places = (0..=28).map(|i| (40.0, -10.0 + 0.5 * f64::from(i)));
+    places
+        .map(|(lon, lat)| vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, lat)),
+            flow: 0.5,
+            radius: 0.1,
+        })
+        .collect()
+}
+
+/// The largest difference between two lists of levels.
+fn worst_difference(a: &[u16], b: &[u16]) -> u16 {
+    a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap()
+}
+
+/// The levels of the ridge of `pen_line` with this crest, applied, with the
+/// fracture zone of `fracture_samples` or without it.
+fn fracture_levels(crest_m: f64, fracture: bool) -> Vec<u16> {
+    let mut h = ridge_harness(7);
+    h.state_mut().globe.brush.ridge_crest_m = crest_m;
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    if fracture {
+        pen_line_of(&mut h, fracture_samples(), |_| {});
+        wait_held(&mut h);
+    }
+    settle(&mut h);
+    all_levels(&h)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_fracture_zone_across_a_held_ocean_ridge_deepens_the_ground_along_it() {
+    let _gpu = one_gpu_test();
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let plain: Vec<u16> = fracture_samples()
+        .iter()
+        .map(|s| h.state().globe.map.sample(s.dir.unwrap()))
+        .collect();
+    drop(h);
+
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    let held = canvas_image(&mut h);
+    pen_line_of(&mut h, fracture_samples(), |_| {});
+    wait_held(&mut h);
+    // The ridge stays held, with the new fracture zone.
+    let globe = &h.state().globe;
+    assert_eq!(globe.holding(), Some(Mode::OceanRidge));
+    assert_eq!(globe.fracture_preview().len(), 1);
+    assert!(canvas_image(&mut h).as_raw() != held.as_raw());
+    settle(&mut h);
+    let along: Vec<u16> = fracture_samples()
+        .iter()
+        .map(|s| h.state().globe.map.sample(s.dir.unwrap()))
+        .collect();
+    // The trough of the transform fault follows the drawn line.
+    let sum = |levels: &[u16]| levels.iter().map(|&l| u64::from(l)).sum::<u64>();
+    assert!(sum(&along) < sum(&plain), "{along:?} {plain:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_fracture_zone_of_a_held_ocean_ridge_stays_after_a_settings_change() {
+    let _gpu = one_gpu_test();
+    let direct = fracture_levels(-1500.0, true);
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    pen_line_of(&mut h, fracture_samples(), |_| {});
+    wait_held(&mut h);
+    h.state_mut().globe.brush.ridge_crest_m = -1500.0;
+    wait_held(&mut h);
+    assert_eq!(h.state().globe.fracture_preview().len(), 1);
+    settle(&mut h);
+    let applied = all_levels(&h);
+    let worst = worst_difference(&applied, &direct);
+    assert!(worst <= 2, "{worst}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn undo_takes_away_the_last_fracture_zone_of_a_held_ocean_ridge() {
+    let _gpu = one_gpu_test();
+    let plain = fracture_levels(-500.0, false);
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    pen_line_of(&mut h, fracture_samples(), |_| {});
+    wait_held(&mut h);
+    assert!(h.state().globe.can_undo());
+    assert!(h.state_mut().globe.undo());
+    wait_held(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.holding(), Some(Mode::OceanRidge));
+    assert!(globe.fracture_preview().is_empty());
+    settle(&mut h);
+    let worst = worst_difference(&all_levels(&h), &plain);
+    assert!(worst <= 2, "{worst}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_short_stroke_far_from_a_held_ocean_ridge_applies_it() {
+    let _gpu = one_gpu_test();
+    let plain = fracture_levels(-500.0, false);
+    let mut h = ridge_harness(7);
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    let far = (0..5).map(|i| vale_app::globe::brush::Sample {
+        dir: Some(lonlat_to_dir(50.0 + 0.5 * f64::from(i), 40.0)),
+        flow: 0.5,
+        radius: 0.1,
+    });
+    pen_line_of(&mut h, far.collect(), |_| {});
+    run_until_idle(&mut h);
+    assert!(h.state().globe.fracture_preview().is_empty());
+    // The new stroke is held or changed nothing. Without it, the levels
+    // are those of the first ridge.
+    h.state_mut().globe.discard_held();
+    run_until_idle(&mut h);
+    assert!(all_levels(&h) == plain);
 }
 
 /// A harness in the range mode on the empty world, with this seed and this
