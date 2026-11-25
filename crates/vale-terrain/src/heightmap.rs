@@ -17,6 +17,7 @@ use crate::line::{LinePlace, LinePlan, LinePoint};
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
+use crate::seamount::SeamountPlan;
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -103,6 +104,9 @@ pub enum Mode {
     /// The mode of the basin brush. A stamp of this mode changes nothing.
     /// `Heightmap::basin` makes the change.
     Basin,
+    /// The mode of the seamounts brush. A stamp of this mode changes
+    /// nothing. `Heightmap::seamounts` makes the change.
+    Seamounts,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1155,7 +1159,7 @@ impl Heightmap {
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
         if matches!(
             stamp.mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Seamounts
         ) {
             return 0;
         }
@@ -1304,7 +1308,11 @@ impl Heightmap {
                             Mode::Terrace => {
                                 old + (terrace_level(old, sea, stamp.level) - old) * amount.min(1.0)
                             }
-                            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
+                            Mode::Erode
+                            | Mode::OceanRidge
+                            | Mode::Range
+                            | Mode::Basin
+                            | Mode::Seamounts => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1577,6 +1585,32 @@ impl Heightmap {
     /// that changed.
     pub fn range(&mut self, plan: &RangePlan) -> usize {
         self.lay(&plan.line, |start, at, _| plan.level(start, at))
+    }
+
+    /// Grows the volcanoes of a plan on the ground from before the stroke.
+    /// Call this in a stroke. Returns the number of texels that changed.
+    pub fn seamounts(&mut self, plan: &SeamountPlan) -> usize {
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        let mut changed = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let p = self.texel_dir(face, x, y);
+                    let new = plan.level(self.level_before(face, x, y), p);
+                    if new != self.texel(face, x, y) {
+                        self.set(face, x, y, new);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// The level at a direction, from the 4 texels around it.
+    pub(crate) fn level_at(&self, d: V3) -> f64 {
+        self.level_between(d, true)
     }
 
     /// Writes the texels of a basin. Returns the number of texels that it

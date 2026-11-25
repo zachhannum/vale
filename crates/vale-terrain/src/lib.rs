@@ -28,6 +28,7 @@ mod range;
 mod reduce;
 mod ridge;
 mod route;
+mod seamount;
 mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
@@ -71,6 +72,10 @@ pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, 
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
 pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
+pub use seamount::{
+    FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,
+    VOLCANO_FLOATS, Volcano, elastic_km, gdh1_age, sea_floor,
+};
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
 };
