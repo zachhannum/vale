@@ -1161,6 +1161,7 @@ const INWARD = 0.8;
 const PIECE_JITTER = 0.15;
 const OVERLAP = 0.3;
 const HILL_TOP = 4.0;
+const FIT_HEIGHT_MAX = 2.5;
 const GROW = 1.5;
 const HILL_FADE = 0.8;
 const MAX_SMOOTH = 0.3;
@@ -2111,7 +2112,7 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let u = bent - cells * cell_len;
     let across = at.across + BEND_ACROSS * r * hold * noise.bend.y;
     let lift = max(ridge.crest - old, 0.0);
-    let low = min(lift / (HILL_TOP * ridge.hill_height * ridge.level + 1.0), 1.0);
+    let low = min(lift / (HILL_TOP * ridge.hill_height / min(ridge.fit, FIT_HEIGHT_MAX) * ridge.level + 1.0), 1.0);
     let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
     let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
     let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area);

@@ -794,7 +794,9 @@ impl RidgePlan {
         let patch = patch_of(noise.patch);
         let local = patch[0] * patch[1];
         // Ground at the crest level gets no hills.
-        let low = (lift / (HILL_TOP * f.hill_height * f.level + 1.0)).min(1.0);
+        // The test uses the throws at the real size, so the fit does not lower
+        // the hills.
+        let low = (lift / (HILL_TOP * f.hill_height / fit_height(f.fit) * f.level + 1.0)).min(1.0);
         // The blocks and the troughs fade toward the reach.
         let fade = 1.0 - smoothstep(HILL_FADE, REACH, far);
         let sg = self.segmenting();
@@ -1597,10 +1599,10 @@ pub(crate) fn fit_of(half_texel: f64, fit: bool) -> f64 {
     }
 }
 
-/// The scale of the height of the hills at a fit factor: its square root,
-/// so the slopes fall less than the sizes grow, up to `FIT_HEIGHT_MAX`.
+/// The scale of the height of the hills at a fit factor: the factor, so
+/// the slopes stay, up to `FIT_HEIGHT_MAX`, so the relief stays plausible.
 fn fit_height(fit: f64) -> f64 {
-    fit.sqrt().min(FIT_HEIGHT_MAX)
+    fit.min(FIT_HEIGHT_MAX)
 }
 
 /// The patch noise at a unit direction on a world with a radius in

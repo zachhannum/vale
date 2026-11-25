@@ -330,7 +330,7 @@ fn manual_seamounts_next_to_the_pacific_flank() {
     let n = reference.size;
     let mut image = image::RgbImage::new(2 * n as u32, n as u32);
     for (i, heights) in [&ours, &gebco].into_iter().enumerate() {
-        draw(&mut image, heights, n, reference.cell_m, i * n);
+        draw(&mut image, heights, n, reference.cell_m, [i * n, 0]);
     }
     let out = root.join("target/realism/pacific-flank.png");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
@@ -341,16 +341,16 @@ fn manual_seamounts_next_to_the_pacific_flank() {
     compare(&painted, &reference, 0.0);
     let ours = painted.patch(&reference).heights;
     for (i, heights) in [&ours, &gebco].into_iter().enumerate() {
-        draw(&mut image, heights, n, reference.cell_m, i * n);
+        draw(&mut image, heights, n, reference.cell_m, [i * n, 0]);
     }
     let out = root.join("target/realism/abyssal-flank.png");
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
 }
 
-/// Draws a patch with row 0 at the south into `image` from column `x0`,
-/// with tints by depth and a hillshade from the northwest.
-fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, x0: usize) {
+/// Draws a patch with row 0 at the south into `image` from column `x0` and
+/// row `y0`, with tints by depth and a hillshade from the northwest.
+fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, [x0, y0]: [usize; 2]) {
     let at = |x: usize, y: usize| f64::from(heights[y.min(n - 1) * n + x.min(n - 1)]);
     for y in 0..n {
         for x in 0..n {
@@ -363,7 +363,154 @@ fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, x0:
             let tint = [30.0 + 140.0 * t, 60.0 + 140.0 * t, 130.0 + 100.0 * t];
             let k = (0.35 + 0.9 * shade).clamp(0.0, 1.3);
             let pixel = tint.map(|c| (c * k).clamp(0.0, 255.0) as u8);
-            image.put_pixel((x0 + x) as u32, (n - 1 - y) as u32, image::Rgb(pixel));
+            image.put_pixel((x0 + x) as u32, (y0 + n - 1 - y) as u32, image::Rgb(pixel));
         }
     }
+}
+
+/// The radius of an Earth, in kilometers.
+const EARTH_KM: f64 = 6371.0;
+
+/// The side of the patch of the coarse maps, in kilometers.
+const COARSE_PATCH_KM: f64 = 312.0;
+
+/// The flank of an ocean ridge on an Earth with faces of `n` texels, with
+/// the hills fit to the map or at their real size. The axis is a meridian
+/// east of the patch, as in `ridge_flank`.
+fn coarse_ridge(n: usize, fit: bool) -> Heightmap {
+    let mut map = Heightmap::new(n, meters_to_level(-BASE_M));
+    let spec = Ridge {
+        radius: 0.06,
+        crest: meters_to_level(-2600.0),
+        segment: 400.0 / EARTH_KM,
+        offset: 0.0,
+        spread: 55.0 / EARTH_KM,
+        magma: 0.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+        hills: 1.0,
+        fit,
+    };
+    let mut line = RidgeLine::new(spec, n);
+    let lon = 200.0 / EARTH_KM * 180.0 / std::f64::consts::PI;
+    for i in 0..=16 {
+        line.push(lonlat_to_dir(lon, -10.0 + 20.0 * f64::from(i) / 16.0), 1.0);
+    }
+    map.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        map.ridge(&plan);
+        from = plan.end;
+    }
+    map.end_stroke();
+    map
+}
+
+/// An abyssal hills stroke north over the patch on flat floor, on an Earth
+/// with faces of `n` texels.
+fn coarse_abyssal(n: usize, fit: bool) -> Heightmap {
+    let mut map = Heightmap::new(n, meters_to_level(-REFERENCE_DEPTH_M));
+    let spec = AbyssalHills {
+        rate: 110.0,
+        hills: 1.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+        fit,
+    };
+    let start = map.snapshot();
+    let mut stroke = AbyssalStroke::new(spec, n);
+    map.begin_stroke();
+    for lat in [-0.5, 0.0] {
+        let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.04, 0.95, 1.0);
+        map.abyssal(&plan);
+    }
+    map.end_stroke();
+    map
+}
+
+/// The patch of a coarse map, with `size` cells.
+fn coarse_patch(map: &Heightmap, size: usize) -> Patch {
+    let cell_m = COARSE_PATCH_KM * 1000.0 / size as f64;
+    Patch::from_heightmap(map, lonlat_to_dir(0.0, 0.0), EARTH_KM, size, cell_m)
+}
+
+/// The anisotropy and the part of the slopes above 2 degrees of the patch
+/// of a coarse map, sampled at the texel of the map.
+fn coarse_fabric(map: &Heightmap) -> (f64, f64) {
+    let texel_km = EARTH_KM * std::f64::consts::FRAC_PI_2 / map.face_size() as f64;
+    let size = ((COARSE_PATCH_KM / texel_km) as usize).next_power_of_two() / 2;
+    let patch = coarse_patch(map, size);
+    let report = realism(&patch, (4.0 * patch.cell_m, 150_000.0), 0.0);
+    let steep: f64 = report.slope_histogram[2..].iter().sum();
+    (report.anisotropy, steep)
+}
+
+/// On an Earth with faces of 4,096 texels, a texel is 2.4 km, wider than a
+/// scarp. With the fit, the fabric of the hills shows at the texel of the
+/// map, as clearly as at the real scale. At the real size, it is faint.
+#[test]
+fn fit_hills_show_on_a_coarse_map() {
+    for (name, paint) in [
+        ("ridge", coarse_ridge as fn(usize, bool) -> Heightmap),
+        ("abyssal", coarse_abyssal),
+    ] {
+        let (on, off) = (
+            coarse_fabric(&paint(4096, true)),
+            coarse_fabric(&paint(4096, false)),
+        );
+        eprintln!(
+            "{name} at 4096: fit anisotropy {:.2}, slopes above 2 degrees {:.3}; \
+             real size {:.2}, {:.3}",
+            on.0, on.1, off.0, off.1
+        );
+        assert!(on.0 > 2.0, "{name}: an anisotropy of {}", on.0);
+        assert!(
+            on.1 > 0.15,
+            "{name}: {} of the slopes above 2 degrees",
+            on.1
+        );
+        assert!(
+            off.1 < 0.5 * on.1,
+            "{name}: {} of the slopes above 2 degrees",
+            off.1
+        );
+    }
+}
+
+/// The patches of the coarse maps with the fit off and on, at 4,096 and
+/// 8,192 texels on a face: the ridge flank, then the abyssal hills.
+#[test]
+#[ignore = "manual"]
+fn manual_fit_on_coarse_maps() {
+    let size = 256;
+    let mut image = image::RgbImage::new(4 * size as u32, 2 * size as u32);
+    let cell_m = COARSE_PATCH_KM * 1000.0 / size as f64;
+    for (row, n) in [4096, 8192].into_iter().enumerate() {
+        let maps = [
+            coarse_ridge(n, false),
+            coarse_ridge(n, true),
+            coarse_abyssal(n, false),
+            coarse_abyssal(n, true),
+        ];
+        for (column, map) in maps.iter().enumerate() {
+            let (anisotropy, steep) = coarse_fabric(map);
+            eprintln!("{n} column {column}: anisotropy {anisotropy:.2}, steep {steep:.3}");
+            let heights = coarse_patch(map, size).heights;
+            draw(
+                &mut image,
+                &heights,
+                size,
+                cell_m,
+                [column * size, row * size],
+            );
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/fit.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
 }
