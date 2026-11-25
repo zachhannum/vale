@@ -2691,6 +2691,84 @@ fn the_shape_mode_is_in_the_terrain_cell_and_has_a_shape() {
 }
 
 #[test]
+fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush density").is_none());
+    choose_mode(&mut h, "Seamounts");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Seamounts)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (brush.seamount_density, brush.seamount_height_m),
+        (50.0, 400.0)
+    );
+    // The strip has Size and Density.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip density").is_some());
+    assert!(control(&h, "Strip height").is_none());
+    // The panel has the size, the hardness, the flow, the height, the
+    // density, and the seed.
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush strength",
+        "Brush density",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    let label = vale_app::ui::pad::slider_label(Mode::Seamounts, vale_app::strip::Slider::Strength);
+    assert_eq!(label, "Height");
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush density", "0", 1.0),
+        ("Brush density", "9000", 500.0),
+        ("Brush strength", "10", 50.0),
+        ("Brush strength", "9000", 3000.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush density" => brush.seamount_density,
+            _ => brush.seamount_height_m,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    // The height does not change the strength of the other modes.
+    assert_eq!(h.state().globe.brush.strength_m, 1500.0);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Seamounts mode");
+}
+
+#[test]
+fn the_seamounts_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Seamounts").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    tap(&mut h, "Seamounts");
+    assert_eq!(h.state().globe.brush.mode, Mode::Seamounts);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    check_controls(&h, "744 high with the Seamounts panel");
+}
+
+#[test]
 fn the_brush_panel_of_the_push_mode_has_no_strength() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
