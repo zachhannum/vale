@@ -150,12 +150,10 @@ impl RidgePlan {
         let (r, seed) = (self.ridge.radius, self.ridge.seed);
         let at = |size: f64, salt: u32| noise3(p.map(|c| c / (size * r)), seed ^ salt);
         let (wide, fine) = (at(BEND_SIZE, SALT_BEND), at(BEND_FINE_SIZE, SALT_BEND_FINE));
-        let km = self.ridge.world_km;
-        let patch = |size: f64| noise3(p.map(|c| c * km / size), seed ^ SALT_PATCH);
         RidgeNoise {
             bend: add(wide, scale(fine, 0.5)),
             slow: at(SLOW_SIZE, SALT_SLOW),
-            patch: patch(PATCH_KM)[0] + 0.5 * patch(PATCH_FINE * PATCH_KM)[1],
+            patch: patch_noise(p, self.ridge.world_km, seed),
         }
     }
 
@@ -363,21 +361,8 @@ impl RidgePlan {
     fn faulting(&self) -> Faulting {
         let spec = &self.ridge;
         let full_rate = 2.0 * spec.spread * spec.world_km;
-        let m = magma_share(full_rate) + spec.magma;
-        let spacing = lerp_table(&FAULT_SPACING, m);
-        let hill_scale = (spacing / HILL_SPACING).clamp(1.0, HILL_SCALE_MAX);
-        let rms = spec.hills.clamp(0.0, 2.0) * hill_rms(full_rate);
-        let hill_height = rms * (1.0 - GABOR_SHARE * GABOR_SHARE).sqrt() / HILL_RMS_UNIT;
-        Faulting {
-            magma: m,
-            spacing,
-            half_texel: 0.5 * self.step() * spec.world_km,
-            level: self.relief,
-            hill_height,
-            hill_scale,
-            hill_mean: hill_height * HILL_MEAN_UNIT,
-            texture_height: hill_height * GABOR_PER_THROW,
-        }
+        let half_texel = 0.5 * self.step() * spec.world_km;
+        Faulting::new(full_rate, spec.magma, spec.hills, half_texel, self.relief)
     }
 
     /// The abyssal hills of one side of the axis, in kilometers, at `along`
@@ -393,27 +378,27 @@ impl RidgePlan {
     /// throw scale and the part of the faults that show, from `patch_of`. A
     /// fault is zero outside its window, so the sum does not depend on the
     /// cells that the search starts from.
-    fn hills(
-        &self,
+    pub(crate) fn hills(
+        base: u32,
         f: &Faulting,
         group: i32,
         side: u32,
         [along, across]: [f64; 2],
         patch: [f64; 2],
     ) -> f64 {
-        self.hill_sum(f, [group, 0], side, [along, across], patch)
+        Self::hill_sum(base, f, [group, 0], side, [along, across], patch)
     }
 
     /// `hills`, with a search of `extra` more cells on each side.
     fn hill_sum(
-        &self,
+        base: u32,
         f: &Faulting,
         [group, extra]: [i32; 2],
         side: u32,
         [along, across]: [f64; 2],
         [throw_scale, density]: [f64; 2],
     ) -> f64 {
-        let seed = self.ridge.seed ^ SALT_HILL ^ (group as u32).wrapping_mul(0x9e37_79b9);
+        let seed = base ^ SALT_HILL ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let draw = |i: i32, j: i32, channel: u32| {
             unit(hash(i as u32, j as u32, side * 64 + channel, seed))
         };
@@ -479,7 +464,7 @@ impl RidgePlan {
                     let units = throw_scale * tall * (length / long);
                     let t = along - middle;
                     let fault = hash(i as u32, j as u32, side * 64 + n * 16 + 9, seed);
-                    let links = self.linked(fault, t / (LINK_KM * s) + d(10));
+                    let links = Self::linked(base, fault, t / (LINK_KM * s) + d(10));
                     // Noise along the fault at a few scales: the throw, the
                     // back tilt, the width of a graben, the sharpness and the
                     // place of the scarp, and the spurs and the gullies of
@@ -552,8 +537,8 @@ impl RidgePlan {
     /// throw, so the throw has several maxima, and a few segments are gaps.
     /// The ends of two segments overlap by `RELAY` of a segment, en echelon,
     /// and their throws taper there: a relay ramp.
-    fn linked(&self, fault: u32, z: f64) -> [(f64, f64); 3] {
-        let seed = self.ridge.seed ^ SALT_LINK;
+    fn linked(base: u32, fault: u32, z: f64) -> [(f64, f64); 3] {
+        let seed = base ^ SALT_LINK;
         let k = z.floor();
         let rest = z - k;
         let k = k as i32;
@@ -578,15 +563,15 @@ impl RidgePlan {
     /// weight of a kernel is the root of the power of its octave. Waves of
     /// less than two texels fade out. `scale` is the throw scale of the
     /// patch.
-    fn texture(
-        &self,
+    pub(crate) fn texture(
+        base: u32,
         f: &Faulting,
         group: i32,
         side: u32,
         [along, across]: [f64; 2],
         scale: f64,
     ) -> f64 {
-        let seed = self.ridge.seed ^ SALT_GABOR ^ (group as u32).wrapping_mul(0x9e37_79b9);
+        let seed = base ^ SALT_GABOR ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let s = f.hill_scale;
         let cell = GABOR_CELL * s;
         // The place in the stretched plane, in cells.
@@ -918,7 +903,7 @@ impl RidgePlan {
             // past a boundary with no offset.
             let hill_across = from_crest * km;
             let at = [group_along, hill_across];
-            let hills = grow * grown * self.hills(&f, group, side, at, patch);
+            let hills = grow * grown * Self::hills(spec.seed, &f, group, side, at, patch);
             // Sediment ponds in the lows between the hills, up to twice its
             // thickness above the low of the hills: `HILL_LOW` of their mean
             // height. It fills `POND` of the depth of a low below that
@@ -929,7 +914,7 @@ impl RidgePlan {
             let fill = (2.0 * SEDIMENT_RATE * tau - HILL_LOW * held).max(0.0);
             let blocks = pond(hills, fill) - (pond(held, fill) - held);
             // The fine texture, which sediment buries.
-            let texture = self.texture(&f, group, side, at, patch[0]);
+            let texture = Self::texture(spec.seed, &f, group, side, at, patch[0]);
             let buried = f.hill_height / (f.hill_height + fill).max(1e-9);
             let blocks = blocks + grow * grown * texture * buried;
             // More magma gives a thicker crust, so the bands of the magma
@@ -1117,7 +1102,7 @@ impl RidgePlan {
 }
 
 /// The faults and the abyssal hills of a stroke.
-struct Faulting {
+pub(crate) struct Faulting {
     /// The magma part of the spreading.
     magma: f64,
     /// The mean distance between two faults, in kilometers.
@@ -1136,6 +1121,36 @@ struct Faulting {
     hill_mean: f64,
     /// The height unit of the fine texture, in kilometers.
     texture_height: f64,
+}
+
+impl Faulting {
+    /// The faults at a full spreading rate in millimeters per year, with a
+    /// change of the magma part, a scale of the height of the hills from 0
+    /// to 2, half of the texel step in kilometers, and the 16-bit steps of
+    /// one kilometer.
+    pub(crate) fn new(
+        full_rate: f64,
+        magma: f64,
+        hills: f64,
+        half_texel: f64,
+        level: f64,
+    ) -> Faulting {
+        let m = magma_share(full_rate) + magma;
+        let spacing = lerp_table(&FAULT_SPACING, m);
+        let hill_scale = (spacing / HILL_SPACING).clamp(1.0, HILL_SCALE_MAX);
+        let rms = hills.clamp(0.0, 2.0) * hill_rms(full_rate);
+        let hill_height = rms * (1.0 - GABOR_SHARE * GABOR_SHARE).sqrt() / HILL_RMS_UNIT;
+        Faulting {
+            magma: m,
+            spacing,
+            half_texel,
+            level,
+            hill_height,
+            hill_scale,
+            hill_mean: hill_height * HILL_MEAN_UNIT,
+            texture_height: hill_height * GABOR_PER_THROW,
+        }
+    }
 }
 
 /// The fracture zone along the trace of a boundary.
@@ -1547,9 +1562,17 @@ fn depth(age: f64) -> f64 {
     }
 }
 
+/// The patch noise at a unit direction on a world with a radius in
+/// kilometers: a number from -1.5 to 1.5 that changes over about
+/// `PATCH_KM`.
+pub(crate) fn patch_noise(p: V3, km: f64, seed: u32) -> f64 {
+    let patch = |size: f64| noise3(p.map(|c| c * km / size), seed ^ SALT_PATCH);
+    patch(PATCH_KM)[0] + 0.5 * patch(PATCH_FINE * PATCH_KM)[1]
+}
+
 /// The throw scale and the part of the faults that show, at the patch
 /// noise of `RidgeNoise`.
-fn patch_of(noise: f64) -> [f64; 2] {
+pub(crate) fn patch_of(noise: f64) -> [f64; 2] {
     let w = smoothstep(-PATCH_EDGE, PATCH_EDGE, noise);
     [
         mix(PATCH_THROW[0], PATCH_THROW[1], w),
@@ -1597,7 +1620,7 @@ const FAULT_SPACING: [(f64, f64); 5] = [(0.5, 8.0), (0.6, 5.0), (0.7, 4.0), (0.8
 const DIP_TAN: f64 = 1.2;
 
 /// The 16-bit steps of one kilometer of height.
-const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
+pub(crate) const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
 
 /// The RMS height of all abyssal hills times the square root of the full
 /// spreading rate, in kilometers, for rates in millimeters per year from
@@ -2468,12 +2491,20 @@ mod tests {
                 for c in 0..200 {
                     let across = f64::from(c) * 0.37;
                     let patch = [1.0, f64::from(c % 7) / 6.0];
-                    let sum = plan.hills(&f, group, 1, [along, across], patch);
+                    let sum =
+                        RidgePlan::hills(plan.ridge.seed, &f, group, 1, [along, across], patch);
                     assert!(sum >= 0.0);
                     positive += usize::from(sum > 0.0);
                     // A search that starts from more cells gives the same
                     // sum.
-                    let more = plan.hill_sum(&f, [group, 2], 1, [along, across], patch);
+                    let more = RidgePlan::hill_sum(
+                        plan.ridge.seed,
+                        &f,
+                        [group, 2],
+                        1,
+                        [along, across],
+                        patch,
+                    );
                     assert_eq!(sum, more, "{group} {along} {across}");
                 }
             }
@@ -2522,8 +2553,10 @@ mod tests {
     fn the_texture_has_its_rms_height() {
         let plan = fast();
         let f = plan.faulting();
-        let (mean, rms) =
-            moments(|at| plan.texture(&f, 0, 0, at, patch_at(&plan, at)[0]) / f.texture_height);
+        let (mean, rms) = moments(|at| {
+            RidgePlan::texture(plan.ridge.seed, &f, 0, 0, at, patch_at(&plan, at)[0])
+                / f.texture_height
+        });
         assert!(mean.abs() < 0.02, "a mean of {mean}");
         assert!((rms - GABOR_RMS_UNIT).abs() < 0.01, "an RMS of {rms}");
     }
@@ -2534,8 +2567,12 @@ mod tests {
         let f = plan.faulting();
         // Where half of the faults show at full throw, the mean is half of
         // the mean of all faults.
-        let (mean, _) = moments(|at| plan.hills(&f, 0, 0, at, [1.0, 0.5]) / f.hill_height);
-        let (_, rms) = moments(|at| plan.hills(&f, 0, 0, at, patch_at(&plan, at)) / f.hill_height);
+        let (mean, _) = moments(|at| {
+            RidgePlan::hills(plan.ridge.seed, &f, 0, 0, at, [1.0, 0.5]) / f.hill_height
+        });
+        let (_, rms) = moments(|at| {
+            RidgePlan::hills(plan.ridge.seed, &f, 0, 0, at, patch_at(&plan, at)) / f.hill_height
+        });
         assert!(
             (2.0 * mean - HILL_MEAN_UNIT).abs() < 0.01,
             "a mean of {}, an RMS of {rms}",
