@@ -58,7 +58,9 @@ pub use flow::{
     WINDOW_MARGIN, Window, WindowHeights, channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS, StampPipeline};
+pub use gpu::{
+    GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, SEAMOUNT_SLOTS, STAMP_SLOTS, StampPipeline,
+};
 pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
