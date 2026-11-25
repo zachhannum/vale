@@ -2075,7 +2075,7 @@ fn limited(old: f32, next: f32) -> f32 {
 // `Volcano`.
 const VOLCANO_FLOATS = 56u;
 const RIFT_WIDTH = 0.3;
-const CONE_FOOT = 0.15;
+const CONE_FOOT = 0.35;
 const SLIDE_APRON = 1.9;
 const V_CENTER = 0u;
 const V_AXIS = 3u;
@@ -2153,6 +2153,17 @@ fn wrap_angle(a: f32) -> f32 {
     return t - turn * floor(t / turn) - 4.0 * PI_4;
 }
 
+// The steps of `foot` of `seamount.rs`.
+fn volcano_foot(u: f32) -> f32 {
+    if u >= CONE_FOOT {
+        return u;
+    }
+    if u > -CONE_FOOT {
+        return (u + CONE_FOOT) * (u + CONE_FOOT) / (4.0 * CONE_FOOT);
+    }
+    return 0.0;
+}
+
 // The steps of `Volcano::profile`.
 fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     var outline = 1.0;
@@ -2171,14 +2182,13 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     var re = r / (outline * star);
     let around = volcano(v, V_GULLIES) / (8.0 * PI_4);
     let seed = u32(volcano(v, V_SEED)) + index;
-    let q = vec3<f32>(cos_any(theta) * around, sin_any(theta) * around, re * 1.5);
+    let q = vec3<f32>(cos_any(theta) * around, sin_any(theta) * around, re * 3.0);
     let n = noise3(q, seed);
-    re = re * (1.0 + 0.05 * n.x);
-    let x = max(1.0 - re, 0.0);
-    let cone = x * smooth_between(0.0, CONE_FOOT, x);
-    let shield_curve = x * sqrt(x) * smooth_between(0.0, 0.5 * CONE_FOOT, x);
-    var f = cone + (shield_curve - cone) * shield;
-    f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * x;
+    let fade = 1.0 - smooth_between(1.0 - CONE_FOOT, 1.0 + CONE_FOOT, re);
+    re = re * (1.0 + 0.05 * n.x * fade);
+    let x = volcano_foot(1.0 - re);
+    var f = x + (x * sqrt(x) - x) * shield;
+    f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * max(1.0 - re, 0.0);
     let top = volcano(v, V_TOP);
     f = min(f, top) / top;
     let crater_radius = volcano(v, V_CRATER_RADIUS);

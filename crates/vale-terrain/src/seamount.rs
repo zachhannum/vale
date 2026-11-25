@@ -140,8 +140,9 @@ const RIDGES: f64 = 0.15;
 /// The width of a rift zone, as an angle around the summit.
 const RIFT_WIDTH: f64 = 0.3;
 
-/// The part of the base radius where the foot of a flank curves.
-const FOOT: f64 = 0.15;
+/// The foot of a flank curves into the floor from this part of the base
+/// radius inside the base to the same part outside it.
+const FOOT: f64 = 0.35;
 
 /// The farthest reach of a debris apron, in base radii.
 const APRON: f64 = 1.9;
@@ -283,14 +284,15 @@ impl Volcano {
         // its features are lava ridges and gullies.
         let around = self.get(GULLIES) / TAU;
         let seed = (self.0[SEED] as u32).wrapping_add(cone);
-        let q = [theta.cos() * around, theta.sin() * around, re * 1.5];
+        let q = [theta.cos() * around, theta.sin() * around, re * 3.0];
         let n = noise3(q, seed);
-        let re = re * (1.0 + 0.05 * n[0]);
-        let x = (1.0 - re).max(0.0);
-        let cone = x * smoothstep(0.0, FOOT, x);
-        let shield_curve = x.powf(1.5) * smoothstep(0.0, 0.5 * FOOT, x);
-        let mut f = cone + (shield_curve - cone) * shield;
-        f *= 1.0 + self.get(GULLY_SIZE) * n[1] * 4.0 * re.min(1.0) * x;
+        // The fine noise of the outline fades over the foot, so the foot
+        // meets the floor in a smooth curve.
+        let fade = 1.0 - smoothstep(1.0 - FOOT, 1.0 + FOOT, re);
+        let re = re * (1.0 + 0.05 * n[0] * fade);
+        let x = foot(1.0 - re);
+        let mut f = x + (x.powf(1.5) - x) * shield;
+        f *= 1.0 + self.get(GULLY_SIZE) * n[1] * 4.0 * re.min(1.0) * (1.0 - re).max(0.0);
         let top = self.get(TOP);
         f = f.min(top) / top;
         let crater_radius = self.get(CRATER_RADIUS);
@@ -561,6 +563,18 @@ fn tangent_frame(center: V3) -> (V3, V3) {
     (east, cross(center, east))
 }
 
+/// The height of a flank at `u` base radii inside the base, as a part of
+/// the height: `u` itself, with a curve into the floor near the base.
+fn foot(u: f64) -> f64 {
+    if u >= FOOT {
+        u
+    } else if u > -FOOT {
+        (u + FOOT) * (u + FOOT) / (4.0 * FOOT)
+    } else {
+        0.0
+    }
+}
+
 /// An angle in the range from -pi to pi.
 fn wrap(a: f64) -> f64 {
     (a + PI).rem_euclid(TAU) - PI
@@ -754,7 +768,7 @@ fn volcano(
     // The farthest place of the volcano, in base radii.
     let along = (0..cones).fold(0.0f64, |m, i| m.max(offsets[i].hypot(sides[i])));
     let slides = shield >= 0.5;
-    let foot = if slides { APRON } else { 1.1 };
+    let foot = if slides { APRON } else { 1.05 + FOOT };
     let outline_max = 1.0 + outline.iter().sum::<f64>() + 0.05;
     let extent = (along + stretch * foot * outline_max * (1.0 + rift_size * shield)) * radius;
     let fit = 0.85 * reach / extent;
@@ -829,7 +843,7 @@ fn volcano(
         }
     }
     put(&mut v, GULLIES, 24.0 + 16.0 * r(42) + 16.0 * shield);
-    put(&mut v, GULLY_SIZE, 0.1 + 0.08 * r(43));
+    put(&mut v, GULLY_SIZE, 0.07 + 0.06 * r(43));
     // A whole number below 2^24 is exact as a 32-bit float.
     put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));
     put(&mut v, FLEX, moat_m * LEVELS_PER_M);
@@ -988,6 +1002,23 @@ mod tests {
             .map(|i| edifice(v, i as f64 * 0.01, 0.0))
             .fold(0.0, f64::max);
         assert!(edifice(v, 0.0, 0.0) < rim - 0.05 * h);
+    }
+
+    #[test]
+    fn the_foot_of_a_flank_curves_into_the_floor() {
+        // The slope falls with no step from the flank to the floor.
+        let step = 0.001;
+        let slope = |u: f64| (foot(u + step) - foot(u - step)) / (2.0 * step);
+        let mut last = slope(1.0);
+        let mut u = 1.0;
+        while u > -1.0 {
+            let s = slope(u);
+            assert!((s - last).abs() < 0.01, "a step of the slope at {u}");
+            last = s;
+            u -= step;
+        }
+        assert_eq!(foot(-FOOT), 0.0);
+        assert!((slope(0.0) - 0.5).abs() < 0.01);
     }
 
     #[test]
