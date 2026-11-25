@@ -14,6 +14,17 @@ use vale_terrain::{
 const WORLD_KM: f64 = 1000.0;
 const FACE_SIZE: usize = 3328;
 
+/// The distance of the ridge axis east of the middle of the patch, in
+/// kilometers, and its longitude in degrees.
+const AXIS_KM: f64 = 160.0;
+const AXIS_LON: f64 = AXIS_KM / WORLD_KM * 180.0 / std::f64::consts::PI;
+
+/// The seed of the ridge.
+const RIDGE_SEED: u32 = 7;
+
+/// The depth of the ground past the ridge, in meters.
+const BASE_M: f64 = 3550.0;
+
 /// A heightmap at the scale of a reference region and the place of its
 /// patch: the middle of face 0.
 struct Painted {
@@ -43,7 +54,10 @@ impl Painted {
 
     /// An ocean ridge along a meridian east of the patch, so the patch is
     /// on its west flank and the fabric runs north. The line is long, so the
-    /// patch is far from the taper at its ends.
+    /// patch is far from the taper at its ends. The crest depth and the
+    /// spreading rate are those of the East Pacific Rise near 11.6 N. The
+    /// axis is `AXIS_KM` east of the east edge of the patch, so the patch
+    /// has the depths of the reference patch.
     fn ridge_flank(&mut self) {
         let spec = Ridge {
             radius: 0.24,
@@ -53,14 +67,14 @@ impl Painted {
             spread: 55.0 / WORLD_KM,
             magma: 0.0,
             world_km: WORLD_KM,
-            seed: 11,
+            seed: RIDGE_SEED,
             limits: Limits::default(),
             hills: 1.0,
         };
         let mut line = RidgeLine::new(spec, FACE_SIZE);
         for i in 0..=16 {
             let lat = -30.0 + 60.0 * f64::from(i) / 16.0;
-            line.push(lonlat_to_dir(8.0, lat), 1.0);
+            line.push(lonlat_to_dir(AXIS_LON, lat), 1.0);
         }
         self.map.begin_stroke();
         let mut from = 0;
@@ -91,9 +105,25 @@ impl Painted {
 /// The realism report of a painted patch, with the fabric along `direction`,
 /// next to the values of the reference region.
 fn compare(painted: &Painted, reference: &Reference, direction: f64) -> Realism {
-    let report = realism(&painted.patch(reference), reference.band_m, direction);
+    let patch = painted.patch(reference);
+    let report = realism(&patch, reference.band_m, direction);
     let r = &reference.realism;
     eprintln!("{}:", reference.region);
+    // The mean depth, and the means of five bands of columns from west to
+    // east.
+    let n = patch.size;
+    let mean = |columns: std::ops::Range<usize>| {
+        let width = columns.len();
+        let sum: f64 = (0..n)
+            .flat_map(|y| columns.clone().map(move |x| y * n + x))
+            .map(|k| f64::from(patch.heights[k]))
+            .sum();
+        sum / (n * width) as f64
+    };
+    let bands: Vec<String> = (0..5)
+        .map(|b| format!("{:.0}", mean(b * n / 5..(b + 1) * n / 5)))
+        .collect();
+    eprintln!("  mean {:.0} m, columns {}", mean(0..n), bands.join(", "));
     eprintln!(
         "  spectral slope {:.3}, reference {:.3}",
         report.spectral_slope, r.spectral_slope
@@ -121,9 +151,7 @@ fn flank_spec() -> Seamounts {
 }
 
 fn pacific_flank() -> Painted {
-    // The ground past the ridge is at the depth of the age curve at the
-    // brush radius: 4.4 million years.
-    let mut painted = Painted::new(3360.0);
+    let mut painted = Painted::new(BASE_M);
     painted.ridge_flank();
     painted.seamounts(flank_spec());
     painted
@@ -140,7 +168,7 @@ fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
         report.spectral_slope
     );
     assert!(
-        report.anisotropy > 0.5 * r.anisotropy,
+        report.anisotropy > 0.5 * r.anisotropy && report.anisotropy < 2.5 * r.anisotropy,
         "an anisotropy of {}",
         report.anisotropy
     );
