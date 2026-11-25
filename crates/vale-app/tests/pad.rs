@@ -678,9 +678,20 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         for group in ModeGroup::ALL {
             open_group(&mut h, group);
             let modes = h.state().pad.flyouts.rect.unwrap();
-            for (name, ..) in group.modes() {
-                let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
-                assert!(modes.contains_rect(row), "{size:?}: {name}");
+            let screen = h.state().pad.rects.unwrap().screen;
+            assert!(screen.contains_rect(modes), "{size:?}: {modes:?}");
+            // A list that is taller than the room scrolls to the rows past
+            // its bottom.
+            let shown =
+                |h: &Pad, name: &str| control(h, name).is_some_and(|r| modes.contains_rect(r));
+            let names = group.modes().iter().map(|(name, ..)| *name);
+            let hidden: Vec<&str> = names.filter(|name| !shown(&h, name)).collect();
+            if !hidden.is_empty() {
+                let from = modes.center();
+                drag(&mut h, from, from - vec2(0.0, modes.height()), None);
+            }
+            for name in hidden {
+                assert!(shown(&h, name), "{size:?}: {name}");
             }
             let what = format!("{size:?} with the {} modes", group.name());
             check_controls(&h, &what);
