@@ -88,6 +88,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Noise => "noise",
         Mode::Basin => "basin",
         Mode::Paint => "paint",
+        Mode::Seamounts => "seamounts",
     }
 }
 

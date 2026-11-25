@@ -24,8 +24,8 @@ use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
     FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
-    needs_height, shape_text,
+    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -40,6 +40,8 @@ pub const OCEAN_RIDGE: &str = "Ocean ridge";
 pub const RANGE: &str = "Range";
 /// The name of the basin mode of the brush.
 pub const BASIN: &str = "Basin";
+/// The name of the seamounts mode of the brush.
+pub const SEAMOUNTS: &str = "Seamounts";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1467,6 +1469,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::OceanRidge, OCEAN_RIDGE),
             (Mode::Range, RANGE),
             (Mode::Basin, BASIN),
+            (Mode::Seamounts, SEAMOUNTS),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1501,13 +1504,18 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
+/// The text of a density of the seamounts mode.
+pub(super) fn density_text(density: f64) -> String {
+    format!("{density:.0} per 10,000 km²")
+}
+
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift, and in the range mode and the basin mode the height
 /// of the ground.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range | Mode::Basin => "Height",
+        Mode::Range | Mode::Basin | Mode::Seamounts => "Height",
         _ => "Strength",
     }
 }
@@ -1652,6 +1660,17 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Shape", &mut brush.shape, SHAPE)
                 .format(shape_text)
                 .show(ui);
+        } else if brush.mode == Mode::Seamounts {
+            number::slider("Height", &mut brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
+            number::slider("Density", &mut brush.seamount_density, SEAMOUNT_DENSITY)
+                .log()
+                .format(density_text)
+                .show(ui);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {
             let name = strength_name(brush.mode);
@@ -1704,6 +1723,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .log()
             .suffix(" km")
             .show(ui);
+        seed(ui, state);
+    }
+    if state.globe.brush.mode == Mode::Seamounts {
         seed(ui, state);
     }
     let globe = &mut state.globe;

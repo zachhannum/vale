@@ -110,6 +110,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::Noise if height => out.push(Relief),
         Mode::Range => out.push(Spacing),
         Mode::Basin => out.extend([Density, Age, Lakes]),
+        Mode::Seamounts => out.push(Density),
         _ => {}
     }
     if matches!(mode, Mode::Uplift | Mode::Range | Mode::Basin) {
@@ -136,6 +137,7 @@ pub fn default_pins(mode: Mode) -> [Slider; 2] {
         Mode::Terrace => Step,
         Mode::Shape => Shape,
         Mode::OceanRidge => Magma,
+        Mode::Seamounts => Density,
         _ => Strength,
     };
     [Size, second]
@@ -252,6 +254,7 @@ mod tests {
             (Mode::OceanRidge, [Size, Magma]),
             (Mode::Range, [Size, Strength]),
             (Mode::Basin, [Strength, Density]),
+            (Mode::Seamounts, [Size, Density]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }

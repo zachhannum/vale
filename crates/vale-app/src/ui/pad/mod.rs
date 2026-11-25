@@ -19,8 +19,9 @@ use crate::globe::Tool;
 use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION, FLATTEN_RATE,
     FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -231,7 +232,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 11] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 12] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -243,6 +244,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 11] = [
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
     (panels::RANGE, Icon::Range, Mode::Range),
     (panels::BASIN, Icon::Basin, Mode::Basin),
+    (panels::SEAMOUNTS, Icon::Seamounts, Mode::Seamounts),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3249,6 +3251,10 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         row(ui, controls, state, Slider::Spacing);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
+    if mode == Mode::Seamounts {
+        row(ui, controls, state, Slider::Density);
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
     if mode == Mode::Basin {
         for slider in [Slider::Density, Slider::Age, Slider::Lakes] {
             row(ui, controls, state, slider);
@@ -3450,6 +3456,12 @@ pub(super) fn brush_slider(
                 let number = km(brush.warp_km, WARP_KM).log().default(defaults.warp_km);
                 set(number, &mut brush.warp_km);
             }
+            Slider::Strength if mode == Mode::Seamounts => {
+                let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
+                    .log()
+                    .default(defaults.seamount_height_m);
+                set(number, &mut brush.seamount_height_m);
+            }
             Slider::Strength => {
                 let number = meters(brush.strength_m, STRENGTH_M)
                     .log()
@@ -3518,6 +3530,14 @@ pub(super) fn brush_slider(
                     .log()
                     .default(defaults.range_spacing_km);
                 set(number, &mut brush.range_spacing_km);
+            }
+            Slider::Density if mode == Mode::Seamounts => {
+                let number = Number::new(name, brush.seamount_density, SEAMOUNT_DENSITY)
+                    .label(label)
+                    .text(panels::density_text)
+                    .log()
+                    .default(defaults.seamount_density);
+                set(number, &mut brush.seamount_density);
             }
             Slider::Density => {
                 let number = km(brush.basin_density_km, BASIN_DENSITY)

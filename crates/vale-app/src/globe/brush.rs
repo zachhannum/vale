@@ -7,7 +7,7 @@ use std::time::Instant;
 use vale_terrain::{
     BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
     ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
-    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level,
+    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Seamounts, Stamp, StampPlan, meters_to_level,
     talus_levels,
 };
 
@@ -62,6 +62,11 @@ pub const RIDGE_OFFSET_KM: std::ops::RangeInclusive<f64> = 0.0..=500.0;
 pub const RANGE_SPACING_KM: std::ops::RangeInclusive<f64> = 5.0..=300.0;
 /// The limits of the density of the basin mode, in kilometers.
 pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BASIN_DENSITY_KM.1;
+/// The limits of the density of the seamounts mode, in seamounts for each
+/// 10,000 km².
+pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
+/// The limits of the characteristic height of the seamounts mode, in meters.
+pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
 /// The limits of the channel width setting, in kilometers.
 pub const CHANNEL_KM: std::ops::RangeInclusive<f64> = CHANNEL_WIDTHS_KM.0..=CHANNEL_WIDTHS_KM.1;
 /// The limits of the floodplain setting, in kilometers.
@@ -168,6 +173,10 @@ pub struct BrushSettings {
     /// old land, and the amount of its lakes, from 0 to 1.
     pub basin_age: f64,
     pub basin_lakes: f64,
+    /// The number of seamounts of the seamounts mode for each 10,000 km².
+    pub seamount_density: f64,
+    /// The characteristic height of the seamounts mode, in meters.
+    pub seamount_height_m: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -222,6 +231,8 @@ impl Default for BrushSettings {
             basin_density_km: 40.0,
             basin_age: 0.5,
             basin_lakes: 0.0,
+            seamount_density: 50.0,
+            seamount_height_m: 400.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -263,6 +274,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | Basin
             | Terrace
             | Shape
+            | Seamounts
     )
 }
 
@@ -371,6 +383,18 @@ impl BrushSettings {
             rain,
             channel: ChannelShape::new(CHANNEL_WIDTH_KM, FLOODPLAIN_KM, world_km),
             world_km,
+            limits: self.limits(),
+        }
+    }
+
+    /// The settings of a seamounts stroke. `world_km` is the radius of the
+    /// world.
+    pub fn seamount_spec(&self, world_km: f64, seed: u32) -> Seamounts {
+        Seamounts {
+            density: self.seamount_density,
+            height_m: self.seamount_height_m,
+            world_km,
+            seed,
             limits: self.limits(),
         }
     }
@@ -550,7 +574,8 @@ impl Tip<'_> {
                 | Mode::Uplift
                 | Mode::Warp
                 | Mode::Push
-                | Mode::Noise => flow,
+                | Mode::Noise
+                | Mode::Seamounts => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
                 Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint => {
@@ -776,6 +801,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::OceanRidge
         | Mode::Range
         | Mode::Basin
+        | Mode::Seamounts
         | Mode::Noise => 1,
     }
 }
