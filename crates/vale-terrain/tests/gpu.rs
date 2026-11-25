@@ -3805,6 +3805,71 @@ fn gpu_ridge_matches_cpu_for_a_straight_stroke() {
     }
 }
 
+/// A stroke through places in degrees of longitude and latitude, with
+/// points `spacing` radians apart.
+fn guide_points(places: &[(f64, f64)], spacing: f64) -> Vec<V3> {
+    let mut dirs = vec![lonlat_to_dir(places[0].0, places[0].1)];
+    for w in places.windows(2) {
+        let (a, b) = (lonlat_to_dir(w[0].0, w[0].1), lonlat_to_dir(w[1].0, w[1].1));
+        let steps = (angle(a, b) / spacing).ceil() as usize;
+        let tangent = cross(normalize(cross(a, b)), a);
+        dirs.extend((1..=steps).map(|i| {
+            let (sin, cos) = (angle(a, b) * i as f64 / steps as f64).sin_cos();
+            add(scale(a, cos), scale(tangent, sin))
+        }));
+    }
+    dirs
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_ridge_with_drawn_fracture_zones_matches_cpu() {
+    let gpu = gpu();
+    let start = smooth_ground(256);
+    let n = start.face_size();
+    let spec = ridge_spec(0.1);
+    let mut line = ridge_line(spec, n, &[(-14.0, 1.0), (14.0, -1.0)]);
+    let spacing = 0.005;
+    for places in [
+        [(-9.0, -7.0), (-5.0, 7.0)],
+        [(1.0, -7.0), (-1.0, 7.0)],
+        [(4.0, 0.2), (8.0, 7.0)],
+    ] {
+        assert!(line.add_guide(&guide_points(&places, spacing)));
+    }
+    let mut plans = vec![line.plan(0)];
+    while plans[plans.len() - 1].end < line.len() {
+        plans.push(line.plan(plans[plans.len() - 1].end));
+    }
+    let mut cpu = Heightmap::new(n, start.base());
+    for (face, rect) in start.allocated_rects() {
+        let mut data = Vec::new();
+        start.read_rect(face, rect, &mut data);
+        cpu.store_rect(face, rect, &data);
+    }
+    cpu.begin_stroke();
+    for plan in &plans {
+        cpu.ridge(plan);
+    }
+    cpu.end_stroke();
+    let map = gpu.copy_of(&start);
+    for plan in &plans {
+        gpu.ridge::<Ridge>(&map, &start, plan);
+    }
+    let faces = gpu.read_all(&map);
+    let (mut worst, mut changed) = (0, 0);
+    let (mut expected, mut before) = (Vec::new(), Vec::new());
+    cpu.read_rect(0, full(n), &mut expected);
+    start.read_rect(0, full(n), &mut before);
+    for (i, (a, b)) in faces[0].iter().zip(&expected).enumerate() {
+        changed += usize::from(*b != before[i]);
+        worst = worst.max(a.abs_diff(*b));
+    }
+    eprintln!("ridge with drawn fracture zones: largest difference {worst}, changed {changed}");
+    assert!(changed > 2000, "{changed}");
+    assert!(worst <= 2, "{worst}");
+}
+
 /// The places of an S-bend from face 0 to face 2. The faces meet at
 /// longitude 45.
 const RIDGE_BEND: [(f64, f64); 5] = [

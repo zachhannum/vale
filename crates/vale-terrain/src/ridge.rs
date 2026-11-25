@@ -8,15 +8,21 @@
 
 use std::f64::consts::{FRAC_PI_2, TAU};
 use std::ops::Deref;
+use std::sync::Arc;
 
-use crate::cube::{ELEV_MAX, ELEV_MIN};
+use crate::cube::{ELEV_MAX, ELEV_MIN, FACES};
 use crate::heightmap::{Limits, hash, noise3};
-use crate::line::{LinePlan, LinePoint, REACH, StrokeLine, TAPER, bump, noise1, smoothstep, unit};
+use crate::line::{
+    LinePlace, LinePlan, LinePoint, REACH, StrokeLine, TAPER, bump, noise1, smoothstep, unit,
+};
 use crate::math::{V3, add, scale};
 
 /// The largest radius of an ocean ridge stroke, in radians. On a world of
 /// the size of the Earth, the ridge is up to 3,060 km wide.
 pub const MAX_RIDGE_RADIUS: f64 = 0.24;
+
+/// The most drawn fracture zones of one ocean ridge line.
+pub const MAX_RIDGE_GUIDES: usize = 16;
 
 /// The settings of an ocean ridge stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -60,6 +66,9 @@ pub struct RidgeLine {
     /// zero for the rise alone.
     relief: f64,
     line: StrokeLine,
+    /// The drawn fracture zones, as unit directions in draw order.
+    strokes: Vec<Vec<V3>>,
+    guides: Arc<Guides>,
 }
 
 /// The part of the heightmap that changes after new points of a line, and
@@ -71,6 +80,8 @@ pub struct RidgePlan {
     /// The 16-bit steps of one kilometer of relief.
     pub(crate) relief: f64,
     pub line: LinePlan,
+    /// The drawn fracture zones.
+    pub(crate) guides: Arc<Guides>,
 }
 
 impl Deref for RidgePlan {
@@ -101,6 +112,8 @@ impl RidgeLine {
             spec,
             relief: LEVELS_PER_KM,
             line: StrokeLine::new(radius, face_size),
+            strokes: Vec::new(),
+            guides: Arc::default(),
         }
     }
 
@@ -145,8 +158,275 @@ impl RidgeLine {
             ridge: self.spec,
             relief: self.relief,
             line,
+            guides: self.guides.clone(),
         }
     }
+
+    /// Adds a drawn fracture zone: the unit directions of a stroke across
+    /// the line, in draw order. Its crossing with the line becomes a
+    /// transform fault, and the trace of that transform fault follows the
+    /// stroke. The traces between two drawn fracture zones bend with them.
+    /// Add the points of the line first.
+    ///
+    /// Returns `false` and changes nothing if the stroke does not cross the
+    /// line inside the reach of the brush, or does not start or end near
+    /// the line. A drawn fracture zone at the boundary of an older one
+    /// takes its place. Past `MAX_RIDGE_GUIDES`, the oldest one goes.
+    pub fn add_guide(&mut self, points: &[V3]) -> bool {
+        let bare = self.bare(Arc::default());
+        if self.drawn(&bare, points).is_none() {
+            return false;
+        }
+        self.strokes.push(points.to_vec());
+        if self.strokes.len() > MAX_RIDGE_GUIDES {
+            self.strokes.remove(0);
+        }
+        self.guides = Arc::new(self.derive());
+        true
+    }
+
+    /// Removes the last drawn fracture zone. Returns `false` if the line
+    /// has none.
+    pub fn pop_guide(&mut self) -> bool {
+        if self.strokes.pop().is_none() {
+            return false;
+        }
+        self.guides = Arc::new(self.derive());
+        true
+    }
+
+    /// The strokes of the drawn fracture zones, in draw order.
+    pub fn guide_strokes(&self) -> &[Vec<V3>] {
+        &self.strokes
+    }
+
+    /// A plan with no segments and the guides `guides`, for the numbers of
+    /// the settings.
+    fn bare(&self, guides: Arc<Guides>) -> RidgePlan {
+        RidgePlan {
+            ridge: self.spec,
+            relief: self.relief,
+            line: LinePlan {
+                face_size: self.line.face_size(),
+                radius: self.line.radius(),
+                rects: [None; FACES],
+                segments: Vec::new(),
+                tail: 0..0,
+                end: 0,
+                length: self.line.length(),
+            },
+            guides,
+        }
+    }
+
+    /// The places of the points of a stroke on the line, as the bent
+    /// distance along the line and across it. A point that the brush does
+    /// not reach, or that is past an end of the line, is left out.
+    fn kept(&self, bare: &RidgePlan, points: &[V3]) -> Vec<(f64, f64)> {
+        let r = self.spec.radius;
+        let mut kept = Vec::new();
+        for &p in points {
+            let (distance, u) = self.line.nearest(p);
+            if distance >= REACH * r {
+                continue;
+            }
+            let LinePlace::On(at) = self.line.plan_between(u - r..u + r).place(p) else {
+                continue;
+            };
+            if at.past > 0.0 {
+                continue;
+            }
+            kept.push(bare.bent_place(at, bare.noise(p)));
+        }
+        kept
+    }
+
+    /// The fracture zone of a stroke, before the snap to a boundary.
+    fn drawn(&self, bare: &RidgePlan, points: &[V3]) -> Option<Drawn> {
+        let r = self.spec.radius;
+        let kept = self.kept(bare, points);
+        if kept.len() < 2 {
+            return None;
+        }
+        // The crossing: a place on the polyline, and the index of the first
+        // point past it.
+        let mut crossing = None;
+        for (i, w) in kept.windows(2).enumerate() {
+            let ((u0, a0), (u1, a1)) = (w[0], w[1]);
+            if a0 * a1 <= 0.0 && a0 != a1 {
+                let t = a0 / (a0 - a1);
+                crossing = Some((u0 + t * (u1 - u0), i + 1));
+                break;
+            }
+        }
+        let n = kept.len();
+        let crossing = crossing.or_else(|| {
+            if kept[0].1.abs() < 0.1 * r {
+                Some((kept[0].0, 0))
+            } else if kept[n - 1].1.abs() < 0.1 * r {
+                Some((kept[n - 1].0, n))
+            } else {
+                None
+            }
+        })?;
+        let (u0, split) = crossing;
+        if u0 <= 0.0 || u0 >= self.line.length() {
+            return None;
+        }
+        let after: Vec<(f64, f64)> = kept[split..].to_vec();
+        let before: Vec<(f64, f64)> = kept[..split].iter().rev().copied().collect();
+        // The move along the line at the distances across it of each side.
+        let mut sides: [Option<Vec<(f64, f64)>>; 2] = [None, None];
+        for half in [after, before] {
+            let Some(&(_, first)) = half.iter().find(|(_, a)| *a != 0.0) else {
+                continue;
+            };
+            let side = usize::from(first < 0.0);
+            let mut walk = vec![(0.0, 0.0)];
+            for (u, a) in half {
+                if (a < 0.0) == (side == 1) && a.abs() > walk[walk.len() - 1].0 {
+                    walk.push((a.abs(), u - u0));
+                }
+            }
+            if sides[side].is_none() {
+                sides[side] = Some(walk);
+            }
+        }
+        let reaches = |walk: &Option<Vec<(f64, f64)>>| {
+            walk.as_ref()
+                .is_some_and(|walk| walk[walk.len() - 1].0 >= 0.05 * r)
+        };
+        let h = REACH * r / (GUIDE_SAMPLES - 1) as f64;
+        let mut m = [[0.0; GUIDE_SAMPLES]; 2];
+        match (reaches(&sides[0]), reaches(&sides[1])) {
+            (false, false) => return None,
+            (left, right) => {
+                for side in 0..2 {
+                    if [left, right][side] {
+                        m[side] = samples(sides[side].as_ref()?, h, r);
+                    }
+                }
+                // A stroke on one side goes on straight across the line.
+                if !left {
+                    m[0] = m[1].map(|x| -x);
+                } else if !right {
+                    m[1] = m[0].map(|x| -x);
+                }
+            }
+        }
+        Some(Drawn { u0, m })
+    }
+
+    /// The guides of the strokes.
+    fn derive(&self) -> Guides {
+        let bare = self.bare(Arc::default());
+        let sg = bare.segmenting();
+        let mut list: Vec<Guide> = Vec::new();
+        for (order, points) in self.strokes.iter().enumerate() {
+            let Some(drawn) = self.drawn(&bare, points) else {
+                continue;
+            };
+            // The guide snaps to the nearest boundary.
+            let near = (drawn.u0 / sg.length).floor() as i32;
+            let j = (near - 1..=near + 2)
+                .min_by(|&a, &b| {
+                    let da = (bare.boundary(&sg, a) - drawn.u0).abs();
+                    let db = (bare.boundary(&sg, b) - drawn.u0).abs();
+                    da.total_cmp(&db)
+                })
+                .unwrap_or(near);
+            list.retain(|guide| guide.j != j);
+            list.push(Guide {
+                j,
+                u0: bare.boundary(&sg, j),
+                drawn: drawn.u0,
+                m: drawn.m,
+                order,
+                part: 0.0,
+            });
+        }
+        list.sort_by_key(|guide| guide.j);
+        // The traces of two guides do not cross: they keep a quarter of
+        // their distance at the crest. The guide drawn later moves.
+        for i in 1..list.len() {
+            let (head, tail) = list.split_at_mut(i);
+            let (a, b) = (&mut head[i - 1], &mut tail[0]);
+            let d = b.u0 - a.u0;
+            for side in 0..2 {
+                for k in 0..GUIDE_SAMPLES {
+                    if b.u0 + b.m[side][k] - (a.u0 + a.m[side][k]) < 0.25 * d {
+                        if b.order > a.order {
+                            b.m[side][k] = a.m[side][k] - 0.75 * d;
+                        } else {
+                            a.m[side][k] = b.m[side][k] + 0.75 * d;
+                        }
+                    }
+                }
+            }
+        }
+        // The seeded transform faults near a guide are plain offsets.
+        let mut excluded = Vec::new();
+        let half = 0.5 * self.spec.segment;
+        for guide in &list {
+            let from = ((guide.u0 - half) / sg.length).floor() as i32 - 2;
+            let to = ((guide.u0 + half) / sg.length).floor() as i32 + 2;
+            for s in from..=to {
+                let near = s == guide.j || (bare.boundary(&sg, s) - guide.u0).abs() < half;
+                if near && bare.seeded_transform(&sg, s) {
+                    excluded.push(s);
+                }
+            }
+        }
+        excluded.sort_unstable();
+        excluded.dedup();
+        excluded.truncate(GUIDE_EXCLUDED);
+        // The group of a guide has a shift to the other side of the crest
+        // from the group before it, so the offset at the guide is large.
+        let step = REACH * self.spec.radius / (GUIDE_SAMPLES - 1) as f64;
+        let mut guides = Guides {
+            list,
+            excluded,
+            step,
+        };
+        for i in 0..guides.list.len() {
+            let plan = self.bare(Arc::new(guides.clone()));
+            let j = guides.list[i].j;
+            let before = plan.group_part(plan.group(&sg, j - 1));
+            let size = 0.5 + 0.5 * unit(hash(j as u32, 6, 0, self.spec.seed));
+            guides.list[i].part = if before < 0.0 { size } else { -size };
+        }
+        guides
+    }
+}
+
+/// The move along the line of one side of a drawn fracture zone at each
+/// sample. `walk` holds the distance across the line and the move, with the
+/// distance across the line growing. `h` is the step of the samples.
+fn samples(walk: &[(f64, f64)], h: f64, r: f64) -> [f64; GUIDE_SAMPLES] {
+    let (last_a, last_m) = walk[walk.len() - 1];
+    // Past the stroke, the move goes on straight.
+    let back = walk
+        .iter()
+        .rev()
+        .find(|(a, _)| *a <= last_a - 0.15 * r)
+        .unwrap_or(&walk[0]);
+    let slope = if last_a > back.0 {
+        ((last_m - back.1) / (last_a - back.0)).clamp(-GUIDE_SLOPE, GUIDE_SLOPE)
+    } else {
+        0.0
+    };
+    std::array::from_fn(|k| {
+        let a = k as f64 * h;
+        if k == 0 {
+            0.0
+        } else if a >= last_a {
+            last_m + slope * (a - last_a)
+        } else {
+            let i = walk.partition_point(|(x, _)| *x <= a);
+            let ((a0, m0), (a1, m1)) = (walk[i - 1], walk[i]);
+            m0 + (m1 - m0) * (a - a0) / (a1 - a0)
+        }
+    })
 }
 
 impl RidgePlan {
@@ -196,28 +476,71 @@ impl RidgePlan {
         (f64::from(j) + JITTER * jitter) * sg.length
     }
 
-    /// The boundary that starts group `c` of crest segments. It is a
-    /// transform fault. The other boundaries are offsets with no transform
-    /// fault. A group has `sg.group` segments as a mean.
-    fn group_start(&self, sg: &Segmenting, c: i32) -> i32 {
+    /// The boundary that starts seeded group `c` of crest segments. It is
+    /// a transform fault. The other boundaries are offsets with no
+    /// transform fault. A group has `sg.group` segments as a mean.
+    fn seeded_start(&self, sg: &Segmenting, c: i32) -> i32 {
         let choices = (sg.group / 2 + 1) as u32;
         let h = hash(c as u32, 1, 0, self.ridge.seed);
         c.wrapping_mul(sg.group).wrapping_add((h % choices) as i32)
     }
 
-    /// The group of crest segment `k`.
-    fn group(&self, sg: &Segmenting, k: i32) -> i32 {
+    /// The seeded group of crest segment `k`.
+    fn seeded_group(&self, sg: &Segmenting, k: i32) -> i32 {
         let c = k.div_euclid(sg.group);
-        if k >= self.group_start(sg, c) {
+        if k >= self.seeded_start(sg, c) {
             c
         } else {
             c - 1
         }
     }
 
+    /// Boundary `j` starts a seeded group.
+    fn seeded_transform(&self, sg: &Segmenting, j: i32) -> bool {
+        j == self.seeded_start(sg, self.seeded_group(sg, j))
+    }
+
+    /// The boundary that starts group `c`. A guide starts group
+    /// `GUIDE_GROUP` plus its index.
+    fn group_start(&self, sg: &Segmenting, c: i32) -> i32 {
+        match self.guides.of_group(c) {
+            Some(guide) => guide.j,
+            None => self.seeded_start(sg, c),
+        }
+    }
+
+    /// The group of crest segment `k`. Without guides, it is the seeded
+    /// group. A seeded group that starts near a guide joins the group
+    /// before it, and a guide starts a group.
+    fn group(&self, sg: &Segmenting, k: i32) -> i32 {
+        let mut c = self.seeded_group(sg, k);
+        let guides = &self.guides;
+        if guides.list.is_empty() {
+            return c;
+        }
+        for _ in 0..GUIDE_JOINS {
+            if !guides.excluded.contains(&self.seeded_start(sg, c)) {
+                break;
+            }
+            c -= 1;
+        }
+        let (mut start, mut id) = (self.seeded_start(sg, c), c);
+        for (n, guide) in guides.list.iter().enumerate() {
+            if guide.j <= k && guide.j > start {
+                (start, id) = (guide.j, GUIDE_GROUP + n as i32);
+            }
+        }
+        id
+    }
+
     /// Boundary `j` is a transform fault.
     fn transform(&self, sg: &Segmenting, j: i32) -> bool {
-        j == self.group_start(sg, self.group(sg, j))
+        let guides = &self.guides;
+        if guides.list.is_empty() {
+            return self.seeded_transform(sg, j);
+        }
+        guides.list.iter().any(|guide| guide.j == j)
+            || (self.seeded_transform(sg, j) && !guides.excluded.contains(&j))
     }
 
     /// The shift of crest segment `k` across the line. Most of it is the
@@ -227,10 +550,17 @@ impl RidgePlan {
         self.group_shift(self.group(sg, k)) + self.ridge.offset * (1.0 - GROUP_SHIFT) * own
     }
 
+    /// The shift of group `c` as a part of its largest shift, from -1 to 1.
+    fn group_part(&self, c: i32) -> f64 {
+        match self.guides.of_group(c) {
+            Some(guide) => guide.part,
+            None => 2.0 * unit(hash(c as u32, 3, 0, self.ridge.seed)) - 1.0,
+        }
+    }
+
     /// The part of the shift of a crest segment that its group `c` gives.
     fn group_shift(&self, c: i32) -> f64 {
-        let part = 2.0 * unit(hash(c as u32, 3, 0, self.ridge.seed)) - 1.0;
-        self.ridge.offset * GROUP_SHIFT * part
+        self.ridge.offset * GROUP_SHIFT * self.group_part(c)
     }
 
     /// The move along the line that the history of the spreading direction
@@ -366,6 +696,15 @@ impl RidgePlan {
         let far = at.across.hypot(at.past) / (REACH * r);
         let curve = 0.5 * (noise.slow[1] - noise.slow[2]);
         at.u + r * (BEND_ALONG * noise.bend[0] + CURVE * curve * far * far)
+    }
+
+    /// The bent distance along the line and across it. Near the reach, the
+    /// distance across has no bend.
+    fn bent_place(&self, at: LinePoint, noise: RidgeNoise) -> (f64, f64) {
+        let r = self.ridge.radius;
+        let hold = 1.0 - smoothstep(r, REACH * r, at.across.hypot(at.past));
+        let across = at.across + BEND_ACROSS * r * hold * noise.bend[1];
+        (self.bent(at, noise), across)
     }
 
     /// The faults of the settings.
@@ -779,11 +1118,8 @@ impl RidgePlan {
         // line in brush radii of that narrow ridge.
         let lens = TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper;
         let far = from_line / (r * lens);
-        // The noise bends the two distances. Near the reach, the distance
-        // across has no bend.
-        let hold = 1.0 - smoothstep(r, REACH * r, from_line);
-        let u = self.bent(at, noise);
-        let across = at.across + BEND_ACROSS * r * hold * noise.bend[1];
+        // The noise bends the two distances.
+        let (u, across) = self.bent_place(at, noise);
         // The age of the sea floor, in millions of years. The crest is round
         // over a few texels.
         let round = CREST_ROUND * t / v;
@@ -991,12 +1327,21 @@ impl RidgePlan {
         // `j + 1`, with a blend over `sg.blend` on each side of a trace.
         // Each part is exactly zero past its blend, so the sum does not
         // depend on the boundaries that the search starts from.
-        let turn = self.turn(&sg, across / v);
-        let i = ((u - turn.0) / sg.length).floor() as i32;
+        // With guides, the turn is that of the guides at each boundary, and
+        // the search has one more boundary on each side.
+        let guides = &self.guides;
+        let (seeded, i, wide) = if guides.list.is_empty() {
+            let turn = self.turn(&sg, across / v);
+            (Some(turn), ((u - turn.0) / sg.length).floor() as i32, 0)
+        } else {
+            let base = guides.base(u, across);
+            (None, (base / sg.length).floor() as i32, 1)
+        };
         let (mut rise, mut hills, mut deep, mut above) = (0.0, 0.0, 0.0, 0.0);
         let mut ridges = 0.0;
         let mut lower: Option<(f64, f64)> = None;
-        for j in i - 1 - extra..=i + 2 + extra {
+        for j in i - 1 - wide - extra..=i + 2 + wide + extra {
+            let turn = seeded.unwrap_or_else(|| guides.turn(self.boundary(&sg, j), across));
             let trace = self.trace(&sg, j, across, turn);
             // The distance from the trace, square to it.
             let off = (u - trace.u) / trace.slope.hypot(1.0);
@@ -1220,6 +1565,127 @@ struct Segmenting {
     blend: f64,
 }
 
+/// The drawn fracture zones of a line, which set the traces of the
+/// boundaries.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Guides {
+    /// The guides in the order of their boundaries.
+    pub(crate) list: Vec<Guide>,
+    /// The seeded transform faults that are plain offsets, in order.
+    pub(crate) excluded: Vec<i32>,
+    /// The distance across the line between two samples, in radians.
+    pub(crate) step: f64,
+}
+
+/// One drawn fracture zone.
+#[derive(Clone, Debug)]
+pub(crate) struct Guide {
+    /// The boundary of the transform fault.
+    pub(crate) j: i32,
+    /// The place of boundary `j` at the crest, in radians.
+    pub(crate) u0: f64,
+    /// The place where the stroke crosses the line, before the snap. The
+    /// tests read it.
+    #[allow(dead_code)]
+    drawn: f64,
+    /// The move of the trace along the line from `u0` at `k` samples
+    /// across the line, on the left and on the right.
+    pub(crate) m: [[f64; GUIDE_SAMPLES]; 2],
+    /// The place of the stroke in draw order.
+    order: usize,
+    /// The result of `RidgePlan::group_part` for the group of the guide.
+    pub(crate) part: f64,
+}
+
+/// A fracture zone of a stroke, before the snap: the place where it
+/// crosses the line, and the moves of `Guide::m` from that place.
+struct Drawn {
+    u0: f64,
+    m: [[f64; GUIDE_SAMPLES]; 2],
+}
+
+impl Guides {
+    /// The guide of group `c`, if a guide starts it.
+    fn of_group(&self, c: i32) -> Option<&Guide> {
+        if self.list.is_empty() || c < GUIDE_GROUP {
+            return None;
+        }
+        self.list.get((c - GUIDE_GROUP) as usize)
+    }
+
+    /// The move of a trace that starts at `b` at the crest, at `across`, and
+    /// its change with `across`. Between two guides, it is a mix of their
+    /// moves.
+    fn turn(&self, b: f64, across: f64) -> (f64, f64) {
+        let list = &self.list;
+        let n = list.partition_point(|guide| guide.u0 <= b);
+        if n == 0 {
+            return list[0].at(across, self.step);
+        }
+        if n == list.len() {
+            return list[n - 1].at(across, self.step);
+        }
+        let (a, c) = (&list[n - 1], &list[n]);
+        let t = (b - a.u0) / (c.u0 - a.u0);
+        let (ma, sa) = a.at(across, self.step);
+        let (mc, sc) = c.at(across, self.step);
+        (ma + t * (mc - ma), sa + t * (sc - sa))
+    }
+
+    /// The place at the crest of the trace through `u` at `across`: the
+    /// inverse of `b + turn(b, across).0`.
+    fn base(&self, u: f64, across: f64) -> f64 {
+        let list = &self.list;
+        let place = |guide: &Guide| guide.u0 + guide.at(across, self.step).0;
+        let n = list.partition_point(|guide| place(guide) <= u);
+        if n == 0 {
+            return u - list[0].at(across, self.step).0;
+        }
+        if n == list.len() {
+            return u - list[n - 1].at(across, self.step).0;
+        }
+        let (a, c) = (&list[n - 1], &list[n]);
+        let (pa, pc) = (place(a), place(c));
+        a.u0 + (u - pa) / (pc - pa) * (c.u0 - a.u0)
+    }
+}
+
+impl Guide {
+    /// The move of the trace at `across`, and its change with `across`.
+    /// `step` is the distance between two samples. A cubic Hermite curve
+    /// goes through the samples.
+    fn at(&self, across: f64, step: f64) -> (f64, f64) {
+        let m = &self.m[usize::from(across < 0.0)];
+        let last = (GUIDE_SAMPLES - 1) as f64;
+        let x = (across.abs() / step).min(last);
+        let k = (x.floor() as usize).min(GUIDE_SAMPLES - 2);
+        let t = x - k as f64;
+        let tangent = |i: usize| {
+            if i == 0 {
+                m[1] - m[0]
+            } else if i == GUIDE_SAMPLES - 1 {
+                m[i] - m[i - 1]
+            } else {
+                0.5 * (m[i + 1] - m[i - 1])
+            }
+        };
+        let (p0, p1, d0, d1) = (m[k], m[k + 1], tangent(k), tangent(k + 1));
+        let (t2, t3) = (t * t, t * t * t);
+        let value = (2.0 * t3 - 3.0 * t2 + 1.0) * p0
+            + (t3 - 2.0 * t2 + t) * d0
+            + (3.0 * t2 - 2.0 * t3) * p1
+            + (t3 - t2) * d1;
+        if x >= last {
+            return (value, 0.0);
+        }
+        let slope = ((6.0 * t2 - 6.0 * t) * (p0 - p1)
+            + (3.0 * t2 - 4.0 * t + 1.0) * d0
+            + (3.0 * t2 - 2.0 * t) * d1)
+            / step;
+        (value, if across < 0.0 { -slope } else { slope })
+    }
+}
+
 /// The trace of a boundary at a distance across the line.
 struct Trace {
     /// The place along the line, in radians.
@@ -1241,6 +1707,19 @@ pub(crate) struct RidgeNoise {
     /// A number from -1.5 to 1.5 that changes over about `PATCH_KM`.
     pub patch: f64,
 }
+
+/// The samples of each side of a guide, from the crest to the reach.
+pub(crate) const GUIDE_SAMPLES: usize = 32;
+/// The group of the first guide. A guide starts group `GUIDE_GROUP` plus its
+/// index.
+pub(crate) const GUIDE_GROUP: i32 = 1 << 28;
+/// The most seeded transform faults that guides make plain offsets.
+pub(crate) const GUIDE_EXCLUDED: usize = 64;
+/// The most seeded groups that a group can join.
+const GUIDE_JOINS: usize = 8;
+/// The largest change of the move of a guide with the distance across the
+/// line, past the end of its stroke.
+const GUIDE_SLOPE: f64 = 1.5;
 
 /// The sizes of the cells of the noise, as parts of the brush radius.
 const BEND_SIZE: f64 = 0.9;
@@ -3472,5 +3951,181 @@ mod tests {
         lay(&mut map, full(), &dirs);
         map.cancel_stroke();
         assert!(levels(&map) == before);
+    }
+
+    /// A line along the equator from longitude 0 to 60, with the settings
+    /// of `full`.
+    fn equator() -> RidgeLine {
+        let mut line = RidgeLine::new(full(), FINE);
+        for dir in path(&[(0.0, 0.0), (60.0, 0.0)], LINE_SPACING * spec().radius) {
+            line.push(dir, 1.0);
+        }
+        line
+    }
+
+    /// A stroke through places in degrees of longitude and latitude.
+    fn guide_stroke(places: &[(f64, f64)]) -> Vec<V3> {
+        path(places, 0.05 * spec().radius)
+    }
+
+    /// The place of the trace of boundary `j` along the line at `across`,
+    /// with the guides of the plan.
+    fn guided_trace(plan: &RidgePlan, j: i32, across: f64) -> f64 {
+        let sg = plan.segmenting();
+        let turn = plan.guides.turn(plan.boundary(&sg, j), across);
+        plan.trace(&sg, j, across, turn).u
+    }
+
+    /// The most that the wander and the warp move a trace of a transform
+    /// fault.
+    fn trace_noise(plan: &RidgePlan) -> f64 {
+        (WANDER_KM + 1.45 * TRACE_WARP_KM) / plan.ridge.world_km
+    }
+
+    #[test]
+    fn the_trace_of_a_drawn_fracture_zone_follows_the_stroke() {
+        let mut line = equator();
+        let stroke = guide_stroke(&[(30.0, -7.0), (34.0, 7.0)]);
+        assert!(line.add_guide(&stroke));
+        let plan = line.plan(0);
+        let r = plan.ridge.radius;
+        let sg = plan.segmenting();
+        assert_eq!(plan.guides.list.len(), 1);
+        let guide = &plan.guides.list[0];
+        // The snap moves the trace by less than a boundary step.
+        let snap = guide.u0 - guide.drawn;
+        assert!(snap.abs() <= sg.length, "{snap}");
+        let kept = line.kept(&line.bare(Arc::default()), &stroke);
+        let mut count = 0;
+        for (u, across) in kept {
+            if across.abs() < 0.05 * r || across.abs() > 1.3 * r {
+                continue;
+            }
+            count += 1;
+            let trace = guided_trace(&plan, guide.j, across);
+            let miss = (trace - (u + snap)).abs();
+            assert!(miss <= trace_noise(&plan) + 2e-4, "{across}: {miss}");
+        }
+        assert!(count > 20, "{count}");
+    }
+
+    #[test]
+    fn a_fracture_zone_drawn_on_one_side_goes_on_straight_across_the_line() {
+        let mut line = equator();
+        assert!(line.add_guide(&guide_stroke(&[(30.0, 0.2), (33.0, 7.0)])));
+        let guides = line.plan(0).guides;
+        let m = &guides.list[0].m;
+        assert_eq!(m[1], m[0].map(|x| -x));
+        assert!(m[0][GUIDE_SAMPLES - 1] > 0.02, "{m:?}");
+    }
+
+    #[test]
+    fn a_stroke_far_from_the_line_is_not_a_fracture_zone() {
+        let mut line = equator();
+        assert!(!line.add_guide(&guide_stroke(&[(30.0, 15.0), (32.0, 25.0)])));
+        // A stroke near the line that does not cross it, and does not end
+        // near it.
+        assert!(!line.add_guide(&guide_stroke(&[(30.0, 3.0), (34.0, 5.0)])));
+        assert!(line.guide_strokes().is_empty());
+        assert!(line.plan(0).guides.list.is_empty());
+        assert!(!line.pop_guide());
+    }
+
+    #[test]
+    fn a_fracture_zone_at_the_boundary_of_another_takes_its_place() {
+        let (first, second) = (
+            guide_stroke(&[(30.0, -7.0), (34.0, 7.0)]),
+            guide_stroke(&[(34.0, -7.0), (30.0, 7.0)]),
+        );
+        let mut line = equator();
+        assert!(line.add_guide(&first));
+        assert!(line.add_guide(&second));
+        assert_eq!(line.guide_strokes().len(), 2);
+        let mut alone = equator();
+        assert!(alone.add_guide(&second));
+        let (both, alone) = (line.plan(0).guides, alone.plan(0).guides);
+        assert_eq!(both.list.len(), 1);
+        assert_eq!(both.list[0].j, alone.list[0].j);
+        assert_eq!(both.list[0].m, alone.list[0].m);
+    }
+
+    #[test]
+    fn converging_fracture_zones_keep_the_traces_in_order() {
+        let mut line = equator();
+        assert!(line.add_guide(&guide_stroke(&[(29.0, -7.0), (33.0, 7.0)])));
+        assert!(line.add_guide(&guide_stroke(&[(35.0, -7.0), (31.0, 7.0)])));
+        let plan = line.plan(0);
+        let (r, sg) = (plan.ridge.radius, plan.segmenting());
+        let guides = &plan.guides;
+        let (a, b) = (guides.list[0].j, guides.list[1].j);
+        assert!(b > a + 2, "{a} {b}");
+        for i in -140..=140 {
+            let across = r * f64::from(i) / 100.0;
+            let place = |j: i32| {
+                let start = plan.boundary(&sg, j);
+                start + guides.turn(start, across).0
+            };
+            for j in a - 3..b + 3 {
+                assert!(place(j + 1) > place(j), "{across} {j}");
+            }
+            assert!(guided_trace(&plan, b, across) > guided_trace(&plan, a, across));
+        }
+        // The level does not depend on the boundaries that the search starts
+        // from.
+        let mut changed = 0;
+        for j in 0..60 {
+            let u = 0.5 + f64::from(j) * 0.0037;
+            for i in 0..=60 {
+                let across = r * (f64::from(i) / 20.0 - 1.5);
+                let p = lonlat_to_dir(u.to_degrees(), across.to_degrees());
+                let noise = plan.noise(p);
+                let new = plan.level_in(START, at(u, across), noise, 0);
+                assert_eq!(new, plan.level_in(START, at(u, across), noise, 3));
+                changed += usize::from(new != START);
+            }
+        }
+        assert!(changed > 2000, "{changed}");
+    }
+
+    #[test]
+    fn removing_the_last_fracture_zone_gives_back_the_levels_without_it() {
+        let mut line = equator();
+        let levels = |plan: &RidgePlan| -> Vec<u16> {
+            let r = plan.ridge.radius;
+            let mut out = Vec::new();
+            for j in 0..80 {
+                let u = 0.5 + f64::from(j) * 0.0029;
+                for i in 0..=30 {
+                    out.push(real(plan, u, r * (f64::from(i) / 10.0 - 1.5)) as u16);
+                }
+            }
+            out
+        };
+        let before = levels(&line.plan(0));
+        assert!(line.add_guide(&guide_stroke(&[(30.0, -7.0), (34.0, 7.0)])));
+        assert_ne!(levels(&line.plan(0)), before);
+        assert!(line.pop_guide());
+        assert!(line.guide_strokes().is_empty());
+        assert_eq!(levels(&line.plan(0)), before);
+    }
+
+    #[test]
+    fn a_drawn_fracture_zone_is_a_transform_fault_with_a_trough() {
+        let mut line = equator();
+        assert!(line.add_guide(&guide_stroke(&[(30.0, -7.0), (34.0, 7.0)])));
+        let plan = line.plan(0);
+        let (r, km, sg) = (plan.ridge.radius, plan.ridge.world_km, plan.segmenting());
+        let j = plan.guides.list[0].j;
+        assert!(plan.transform(&sg, j));
+        // The offset at the transform fault is large.
+        let step = (plan.shift(&sg, j) - plan.shift(&sg, j - 1)).abs();
+        assert!(step >= 0.4 * plan.ridge.offset * GROUP_SHIFT, "{step}");
+        let off = 2.0 * sg.blend + 15.0 / km;
+        for across in [-1.0, -0.8, -0.6, 0.6, 0.8, 1.0].map(|a| a * r) {
+            let u = guided_trace(&plan, j, across);
+            let low = level(&plan, u, across);
+            let sides = level(&plan, u - off, across).min(level(&plan, u + off, across));
+            assert!(low + 300.0 < sides, "{across}: {low} {sides}");
+        }
     }
 }

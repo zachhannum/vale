@@ -2478,6 +2478,12 @@ pub(super) fn paint_canvas(
         painter.line(axis.clone(), shade);
         painter.line(axis, line);
     }
+    for zone in globe.fracture_preview().into_iter().filter(|z| z.len() > 1) {
+        let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
+        let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
+        painter.line(zone.clone(), shade);
+        painter.line(zone, line);
+    }
     if let Some(outline) = globe.outline_preview().filter(|o| o.len() > 1) {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));
         let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));

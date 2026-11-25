@@ -79,7 +79,7 @@ use gpu::{
 };
 use import::{ImportResult, Job, Source, Step};
 use line::LineSettings;
-use math::{V3, angle};
+use math::{V3, angle, cross, dot, length, normalize};
 use nav::Nav;
 use preview::{Preview, band_uniforms, line_uniforms};
 use rivers::{Rivers, choose_window};
@@ -159,6 +159,10 @@ const LINE_TEXELS_PER_FRAME: usize = 1 << 20;
 /// the texels of the whole plan. Thus the GPU work of one frame is small,
 /// and the frames of the UI do not wait for a large plan.
 const RIDGE_PIECE_TEXELS: usize = 1 << 20;
+
+/// A stroke that starts closer to the line of a held ocean ridge than this
+/// many radii of the ridge draws a fracture zone of it.
+const FRACTURE_REACH: f64 = 1.5;
 
 /// A stroke of the line tool, the polygon tool, or the Polygon brush.
 pub struct LineStroke {
@@ -354,6 +358,9 @@ struct Ridging {
     pieces: VecDeque<LineOp>,
     /// `Some`: the stroke is a range stroke with erosion.
     range: Option<Ranging>,
+    /// `Some`: the pen draws a fracture zone of the held ocean ridge. The
+    /// places of the stroke so far.
+    guide: Option<Vec<V3>>,
 }
 
 impl Ridging {
@@ -364,12 +371,44 @@ impl Ridging {
 
     fn extend(&mut self, stamps: &[Stamp]) {
         for stamp in stamps {
+            if let Some(guide) = &mut self.guide {
+                guide.push(stamp.center);
+                continue;
+            }
             self.points.push((stamp.center, stamp.flow));
             match &mut self.line {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
             }
         }
+    }
+
+    /// The angle from a direction to the line, in radians.
+    fn distance(&self, p: V3) -> f64 {
+        let mut best = f64::INFINITY;
+        for (k, &(a, _)) in self.points.iter().enumerate() {
+            best = best.min(angle(p, a));
+            let Some(&(b, _)) = self.points.get(k + 1) else {
+                continue;
+            };
+            let n = cross(a, b);
+            if length(n) < 1e-12 {
+                continue;
+            }
+            let n = normalize(n);
+            // Between the planes through the ends, the nearest place is on
+            // the great circle.
+            if dot(p, cross(n, a)) >= 0.0 && dot(p, cross(n, b)) <= 0.0 {
+                best = best.min(dot(p, n).clamp(-1.0, 1.0).asin().abs());
+            }
+        }
+        best
+    }
+
+    /// Resends each plan of the line.
+    fn resend(&mut self) {
+        self.sent = 0;
+        self.pieces.clear();
     }
 }
 
@@ -395,6 +434,7 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
         sent: 0,
         pieces: VecDeque::new(),
         range,
+        guide: None,
     })
 }
 
@@ -2639,7 +2679,10 @@ impl Globe {
             return None;
         }
         let mut points: Vec<Pos2> = Vec::new();
-        let pen = self.input.pos.filter(|_| !active.ended);
+        let pen = self
+            .input
+            .pos
+            .filter(|_| !active.ended && ridge.guide.is_none());
         for pos in ridge
             .points
             .iter()
@@ -2652,6 +2695,37 @@ impl Globe {
             }
         }
         Some(points)
+    }
+
+    /// The drawn fracture zones of a held ocean ridge in screen points, and
+    /// the one that the pen draws, which ends at the pen.
+    pub fn fracture_preview(&self) -> Vec<Vec<Pos2>> {
+        let active = self.stroke.as_ref().filter(|a| a.held.is_some());
+        let Some(ridge) = active.and_then(|a| a.ridge.as_ref()) else {
+            return Vec::new();
+        };
+        let BrushLine::Ridge(line) = &ridge.line else {
+            return Vec::new();
+        };
+        let screen = |dirs: &[V3], pen: Option<Pos2>| -> Vec<Pos2> {
+            let mut points: Vec<Pos2> = Vec::new();
+            for pos in dirs.iter().filter_map(|&dir| self.project(dir)).chain(pen) {
+                match points.last() {
+                    Some(last) if last.distance(pos) < 1.5 => {}
+                    _ => points.push(pos),
+                }
+            }
+            points
+        };
+        let mut lines: Vec<Vec<Pos2>> = line
+            .guide_strokes()
+            .iter()
+            .map(|g| screen(g, None))
+            .collect();
+        if let Some(guide) = &ridge.guide {
+            lines.push(screen(guide, self.input.pos));
+        }
+        lines
     }
 
     /// The outline of a basin while the pen draws it, in screen points. It
@@ -2845,14 +2919,23 @@ impl Globe {
     }
 
     /// True if an undo can put back the heightmap from before the last
-    /// stroke, or discard the held stroke.
+    /// stroke, or change or discard the held stroke.
     pub fn can_undo(&self) -> bool {
         self.holding().is_some() || (!self.busy() && self.map.can_undo())
     }
 
-    /// Discards the held stroke, or puts back the heightmap from before the
-    /// last stroke.
+    /// Takes the last fracture zone away from a held ocean ridge, discards
+    /// another held stroke, or puts back the heightmap from before the last
+    /// stroke.
     pub fn undo(&mut self) -> bool {
+        if self.holding() == Some(Mode::OceanRidge)
+            && let Some(ridge) = self.stroke.as_mut().and_then(|a| a.ridge.as_mut())
+            && let BrushLine::Ridge(line) = &mut ridge.line
+            && line.pop_guide()
+        {
+            ridge.resend();
+            return true;
+        }
         if self.holding().is_some() {
             self.discard_held();
             return true;
@@ -3496,6 +3579,32 @@ impl Globe {
                             continue;
                         }
                     }
+                    // A new stroke that starts near the line of a held ocean
+                    // ridge draws a fracture zone of it, in the same undo
+                    // step.
+                    if self.tool == Tool::Brush && self.brush.mode == Mode::OceanRidge {
+                        let active = self.stroke.as_mut().filter(|a| a.ended);
+                        let held = active.filter(|a| a.held.as_ref().is_some_and(|h| !h.apply));
+                        if let Some(active) = held
+                            && let (Some(held), Some(ridge)) = (&active.held, &mut active.ridge)
+                        {
+                            // The first place of the pen decides.
+                            let first = match self.inputs.get(1) {
+                                None => break,
+                                Some(Input::Sample(sample, _)) => sample.dir,
+                                Some(_) => None,
+                            };
+                            let reach = FRACTURE_REACH * held.radius;
+                            if first.is_some_and(|p| ridge.distance(p) <= reach) {
+                                ridge.guide = Some(Vec::new());
+                                active.stroke = Stroke::default();
+                                active.sampled = None;
+                                active.ended = false;
+                                self.inputs.pop_front();
+                                continue;
+                            }
+                        }
+                    }
                     if let Some(active) = &mut self.stroke {
                         // The stroke before this one still waits for its
                         // texels. A new stroke applies a held one.
@@ -3554,8 +3663,10 @@ impl Globe {
                 Input::Sample(sample, time) => {
                     if let Some(active) = self.stroke.as_mut().filter(|a| !a.ended) {
                         // The first sample gives the radius of the line.
-                        // A river of a held basin is not a new stroke.
-                        if active.sampled.is_none() && active.basin.is_none() {
+                        // A river of a held basin and a fracture zone of a
+                        // held ocean ridge are not new strokes.
+                        let guide = active.ridge.as_ref().is_some_and(|r| r.guide.is_some());
+                        if active.sampled.is_none() && active.basin.is_none() && !guide {
                             let (km, seed, n) =
                                 (self.world_km, self.world_seed, self.map.face_size());
                             active.ridge = line_of(&self.brush, km, seed, n, sample.radius);
@@ -3662,6 +3773,14 @@ impl Globe {
                         if let Some(ridge) = &mut active.ridge {
                             ridge.extend(&stamps);
                             stamps.clear();
+                            // A fracture zone that the line cannot take
+                            // changes nothing.
+                            if let Some(guide) = ridge.guide.take()
+                                && let BrushLine::Ridge(line) = &mut ridge.line
+                                && line.add_guide(&guide)
+                            {
+                                ridge.resend();
+                            }
                         }
                         if let Some(basin) = &mut active.basin {
                             basin.extend(&stamps);
@@ -3933,9 +4052,13 @@ impl Globe {
                 for &(dir, flow) in &ridge.points {
                     line.push(dir, (flow * scale).min(1.0));
                 }
+                if let BrushLine::Ridge(old) = &ridge.line {
+                    for guide in old.guide_strokes() {
+                        line.add_guide(guide);
+                    }
+                }
                 ridge.line = BrushLine::Ridge(line);
-                ridge.sent = 0;
-                ridge.pieces.clear();
+                ridge.resend();
                 // Each plan writes the ground from before the stroke and
                 // then the ridge into its rectangles, and with the same
                 // line, a radius that is not smaller gives rectangles that
