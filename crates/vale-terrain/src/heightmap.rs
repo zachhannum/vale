@@ -1660,7 +1660,7 @@ impl Heightmap {
     /// texel grid continues past the face edges, and the level of a texel
     /// there comes from this function without `past`. If not, the texels at
     /// the face edge continue.
-    fn level_between(&self, d: V3, past: bool) -> f64 {
+    pub(crate) fn level_between(&self, d: V3, past: bool) -> f64 {
         let (face, a, b) = face_of(d);
         let at = |a: f64| (warp(a) + 1.0) * 0.5 * self.n as f64 - 0.5;
         self.level_on_face(face, at(a), at(b), past)
