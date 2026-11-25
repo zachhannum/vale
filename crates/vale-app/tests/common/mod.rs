@@ -39,7 +39,8 @@ pub fn paint_valley(map: &mut vale_terrain::Heightmap, head: f64) {
         for y in 0..n {
             for x in 0..n {
                 let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
-                let level = vale_terrain::meters_to_level(valley_meters([lon, lat], head));
+                let level =
+                    vale_terrain::Elevation::default().level(valley_meters([lon, lat], head));
                 if map.get(face, x as i64, y as i64) != level {
                     map.set(face, x, y, level);
                 }
@@ -73,7 +74,7 @@ pub fn paint_confluence(map: &mut vale_terrain::Heightmap) {
         for y in 0..n {
             for x in 0..n {
                 let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
-                let level = vale_terrain::meters_to_level(confluence_meters([lon, lat]));
+                let level = vale_terrain::Elevation::default().level(confluence_meters([lon, lat]));
                 map.set(face, x, y, level);
             }
         }

@@ -6,10 +6,7 @@ use std::time::Instant;
 use eframe::egui::{self, Color32, Pos2, Rect};
 use eframe::egui_wgpu::{self, wgpu};
 
-use vale_terrain::{
-    ELEV_MAX, ELEV_MIN, Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, level_to_meters,
-    meters_to_level,
-};
+use vale_terrain::{DEFAULT_ELEV_MIN, Elevation, Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp};
 
 use crate::gpu::{GlobeCallback, MAX_BANDS, Uniforms, Upload, UploadQueue};
 use crate::math::{V3, angle, dir_to_lonlat, slerp};
@@ -22,7 +19,7 @@ const START_ELEVATION: f64 = -2500.0;
 
 /// The lower limit of each band in meters, and the tint of the band.
 pub const BANDS: [(f64, [u8; 3]); 12] = [
-    (ELEV_MIN, [0x24, 0x55, 0x86]),
+    (DEFAULT_ELEV_MIN, [0x24, 0x55, 0x86]),
     (-4000.0, [0x35, 0x6f, 0xa3]),
     (-2000.0, [0x54, 0x8f, 0xbd]),
     (-1000.0, [0x80, 0xb0, 0xd3]),
@@ -197,7 +194,7 @@ fn is_pen(force: Option<f32>) -> bool {
 impl ProtoApp {
     pub fn new(format: wgpu::TextureFormat, face_size: usize) -> ProtoApp {
         ProtoApp {
-            map: Heightmap::new(face_size, meters_to_level(START_ELEVATION)),
+            map: Heightmap::new(face_size, Elevation::default().level(START_ELEVATION)),
             view: GlobeView::centered(15.0, 25.0),
             lines: Vec::new(),
             tool: Tool::Paint,
@@ -284,7 +281,7 @@ impl ProtoApp {
         let spacing = (radius * STAMP_SPACING).max(texel * 0.5);
         let level = *stroke.level.get_or_insert_with(|| self.map.sample(dir));
         let brush = self.brush;
-        let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+        let span = self.map.elevation().meters_per_level();
         let stamp_at = |center: V3, flow: f64| Stamp {
             center,
             radius,
@@ -702,7 +699,8 @@ impl ProtoApp {
         let mut limits = [[0.0; 4]; MAX_BANDS];
         let mut colors = [[0.0; 4]; MAX_BANDS];
         for (i, (limit, rgb)) in BANDS.iter().enumerate() {
-            limits[i][0] = ((limit - ELEV_MIN) / (ELEV_MAX - ELEV_MIN)) as f32;
+            let elevation = self.map.elevation();
+            limits[i][0] = ((limit - elevation.min) / (elevation.max - elevation.min)) as f32;
             colors[i] = [
                 f32::from(rgb[0]) / 255.0,
                 f32::from(rgb[1]) / 255.0,
@@ -912,7 +910,7 @@ impl ProtoApp {
                 self.view = GlobeView::centered(15.0, 89.9);
             }
             if ui.button("Clear").clicked() {
-                self.map.fill(meters_to_level(START_ELEVATION));
+                self.map.fill(Elevation::default().level(START_ELEVATION));
                 self.lines.clear();
             }
         });
@@ -934,7 +932,7 @@ impl ProtoApp {
                     .clicked()
                     && current != size
                 {
-                    self.map = Heightmap::new(size, meters_to_level(START_ELEVATION));
+                    self.map = Heightmap::new(size, Elevation::default().level(START_ELEVATION));
                 }
             }
             ui.label(format!("{:.1} km per texel", self.texel_km()));
@@ -997,7 +995,7 @@ impl ProtoApp {
             let (lon, lat) = dir_to_lonlat(dir);
             line(format!(
                 "Cursor        {lon:.2}, {lat:.2}, {:.0} m",
-                level_to_meters(self.map.sample(dir))
+                self.map.elevation().meters(self.map.sample(dir))
             ));
         }
         out

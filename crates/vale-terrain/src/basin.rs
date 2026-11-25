@@ -20,10 +20,7 @@ use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::f64::consts::{FRAC_PI_2, SQRT_2};
 
-use crate::channel::{
-    ChannelCurve, ChannelCut, ChannelLines, ChannelShape, METERS_PER_LEVEL, channel_size,
-};
-use crate::cube::meters_to_level;
+use crate::channel::{ChannelCurve, ChannelCut, ChannelLines, ChannelShape, channel_size};
 use crate::erode::Erosion;
 use crate::flow::{
     CoarseHeights, Grid, NONE, OUT, WINDOW_CELLS, Window, WindowHeights, level_curves,
@@ -451,7 +448,8 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let cell = FRAC_PI_2 * window.cell as f64 / n as f64;
     let outline = OutlineGrid::new(&line.outline, &window);
     // The sea is outside the basin.
-    let sea = f64::from(meters_to_level(0.0));
+    let elevation = map.elevation();
+    let sea = f64::from(elevation.sea_level());
     let land = |p: V3| f64::from(map.sample(p)) >= sea;
     let rivers = prepare_rivers(&line.rivers, &outline, &window, land, JOIN * cell);
     let (chains, ends) = river_chains(&rivers, &window, &vec![true; rivers.len()]);
@@ -673,7 +671,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     // Each river follows a concave profile, and it stays at or below the
     // lowest old ground upstream of it. Its bed is the depth of the channel
     // below its level. A tributary ends above the river that it joins.
-    let depth = DEPTH_M / METERS_PER_LEVEL;
+    let depth = DEPTH_M / elevation.meters_per_level();
     let lift = |c: usize| depth * channel_size(area[c] * mean_solid);
     let lowest = |levels: &[f64], window: &Window, c: usize| {
         let near = window.neighbors(c);
@@ -943,7 +941,7 @@ pub fn basin(map: &Heightmap, line: &BasinLine) -> BasinCut {
     let edge_width = EDGE * radius;
     // A cut of the ground gets less near sea level, so it does not reach
     // the sea.
-    let band = COAST_M / METERS_PER_LEVEL;
+    let band = COAST_M / elevation.meters_per_level();
     let ease = |old: f64, new: f64| {
         let above = new - sea;
         if new >= old || above >= band {
@@ -2286,13 +2284,13 @@ fn basin_rects(window: &Window, inside: &[bool], n: usize) -> Vec<(usize, TexelR
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
+    use crate::cube::Elevation;
     use crate::math::{dir_to_lonlat, lonlat_to_dir};
 
     const N: usize = 256;
 
     fn level(m: f64) -> u16 {
-        meters_to_level(m)
+        Elevation::default().level(m)
     }
 
     fn spec(density_deg: f64, seed: u32) -> BasinSpec {
@@ -2482,7 +2480,10 @@ mod tests {
             for b in 0..=60 {
                 let x = lon.0 + (lon.1 - lon.0) * f64::from(a) / 60.0;
                 let y = middle(x, wave) + (WIDTH - 2.0) * (f64::from(b) / 30.0 - 1.0);
-                heights.push(f64::from(map.sample(lonlat_to_dir(x, y))) * METERS_PER_LEVEL);
+                heights.push(
+                    f64::from(map.sample(lonlat_to_dir(x, y)))
+                        * Elevation::default().meters_per_level(),
+                );
             }
         }
         heights.sort_by(f64::total_cmp);
@@ -2494,7 +2495,7 @@ mod tests {
         let n = 512;
         let map = mountains_of(n);
         let spec = BasinSpec {
-            height: 300.0 / METERS_PER_LEVEL,
+            height: 300.0 / Elevation::default().meters_per_level(),
             ..spec(2.0, 7)
         };
         let line = line_of(n, spec, -20.0, 20.0, 2.0);
@@ -2513,8 +2514,9 @@ mod tests {
                 .map(|(a, b)| {
                     let x = -18.0 + 6.0 * f64::from(a) / 40.0;
                     let y = middle(x, 2.0) + (WIDTH - 2.0) * (f64::from(b) / 20.0 - 1.0);
-                    f64::from(map.sample(lonlat_to_dir(x, y))) * METERS_PER_LEVEL
-                        + crate::cube::ELEV_MIN
+                    f64::from(map.sample(lonlat_to_dir(x, y)))
+                        * Elevation::default().meters_per_level()
+                        + crate::cube::DEFAULT_ELEV_MIN
                 })
                 .collect();
             h.sort_by(f64::total_cmp);
@@ -2646,7 +2648,7 @@ mod tests {
             }
         }
         let wet: Vec<bool> = (0..w * h)
-            .map(|i| (filled[i] - level(i)) * METERS_PER_LEVEL >= deep)
+            .map(|i| (filled[i] - level(i)) * Elevation::default().meters_per_level() >= deep)
             .collect();
         let mut seen = vec![false; w * h];
         let (mut lakes, mut texels) = (0, 0);
@@ -2892,7 +2894,7 @@ mod tests {
         let side = net.window.cells;
         // The bed of the channel is at or below the lowest old ground near
         // it and upstream of it, with a margin for the depth of the channel.
-        let margin = DEPTH_M / METERS_PER_LEVEL;
+        let margin = DEPTH_M / Elevation::default().meters_per_level();
         let mut low = f64::MAX;
         for &c in &net.chains[0] {
             let (face, x, y) = after.texel_of(net.window.cell_dir(c % side, c / side));
@@ -3403,7 +3405,8 @@ mod tests {
                 west + x as f64 * step,
                 var("LAT", 0.0) + 0.5 * tall - y as f64 * step,
             );
-            f64::from(after.sample(lonlat_to_dir(lon, lat))) * METERS_PER_LEVEL
+            f64::from(after.sample(lonlat_to_dir(lon, lat)))
+                * Elevation::default().meters_per_level()
         };
         let texel_m = step.to_radians() * 6_371_000.0;
         if var("DEM", 0.0) > 0.0 {
@@ -3442,7 +3445,7 @@ mod tests {
             }
             let mut out = format!("P6 {w} {h} 255\n").into_bytes();
             for i in 0..w * h {
-                let m = ground[i] + crate::cube::ELEV_MIN;
+                let m = ground[i] + crate::cube::DEFAULT_ELEV_MIN;
                 let g = ((m / top).clamp(0.0, 1.0) * 255.0) as u8;
                 if filled[i] - ground[i] >= 2.0 {
                     out.extend([40, 110, 230]);
@@ -3468,13 +3471,14 @@ mod tests {
                 if change > 0.0 {
                     let lon = west + x as f64 * step;
                     let lat = var("LAT", 0.0) + 0.5 * tall - y as f64 * step;
-                    let was = f64::from(map.sample(lonlat_to_dir(lon, lat))) * METERS_PER_LEVEL;
+                    let was = f64::from(map.sample(lonlat_to_dir(lon, lat)))
+                        * Elevation::default().meters_per_level();
                     let d = (at(x, y) - was) / change;
                     out.push(((0.5 + 0.5 * d).clamp(0.0, 1.0) * 255.0) as u8);
                     continue;
                 }
                 let light = if top > 0.0 {
-                    let m = at(x, y) + crate::cube::ELEV_MIN;
+                    let m = at(x, y) + crate::cube::DEFAULT_ELEV_MIN;
                     0.75 * (m / top).clamp(0.0, 1.0) + 0.25 * light
                 } else {
                     light

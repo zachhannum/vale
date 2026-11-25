@@ -410,7 +410,7 @@ impl Eroder {
 mod tests {
     use std::time::Duration;
 
-    use vale_terrain::{Heightmap, WINDOW_CELLS, Window, meters_to_level};
+    use vale_terrain::{Elevation, Heightmap, WINDOW_CELLS, Window};
 
     use super::*;
     use crate::globe::math::lonlat_to_dir;
@@ -419,12 +419,12 @@ mod tests {
 
     /// A hill on face 0 of a heightmap in the sea.
     fn hill() -> Heightmap {
-        let mut map = Heightmap::new(N, meters_to_level(-100.0));
+        let mut map = Heightmap::new(N, Elevation::default().level(-100.0));
         for y in 0..N {
             for x in 0..N {
                 let from_edge = x.min(y).min(N - 1 - x).min(N - 1 - y) as f64;
                 let meters = from_edge * 6400.0 / N as f64 - 400.0;
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
         map
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn a_request_with_uplift_raises_the_cells_before_the_step() {
         // The sea floor is flat, so a step without uplift lowers nothing.
-        let map = Heightmap::new(N, meters_to_level(-100.0));
+        let map = Heightmap::new(N, Elevation::default().level(-100.0));
         let mut eroder = Eroder::new(true);
         eroder.begin(global(&map));
         eroder.request(brush(true), 1.0, Lift::None, Limits::default());
@@ -553,7 +553,7 @@ mod tests {
 
     #[test]
     fn a_stroke_that_moves_keeps_its_heights_in_the_new_window() {
-        let map = Heightmap::new(N, meters_to_level(-100.0));
+        let map = Heightmap::new(N, Elevation::default().level(-100.0));
         let ground = |lon: f64| {
             let window = brush_window(lonlat_to_dir(lon, 0.0), 0.02, N);
             Ground::Alone(WindowHeights::new(&map, window))
@@ -682,13 +682,13 @@ mod tests {
     #[ignore]
     fn manual_step_time_on_the_window_of_a_brush() {
         let n = 8192;
-        let mut map = Heightmap::new(n, meters_to_level(-100.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(-100.0));
         for y in 0..n {
             for x in 0..n {
                 let from_edge = x.min(y).min(n - 1 - x).min(n - 1 - y) as f64;
                 let waves = ((x / 40) as f64).sin() + ((y / 56) as f64).cos();
                 let meters = from_edge * 6400.0 / n as f64 - 400.0 + 60.0 * waves;
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
         let center = lonlat_to_dir(20.0, 0.0);
@@ -767,8 +767,8 @@ mod tests {
     fn each_step_has_the_limits_of_its_request() {
         let map = hill();
         let limits = Limits {
-            floor: meters_to_level(0.0),
-            ceiling: meters_to_level(2000.0),
+            floor: Elevation::default().level(0.0),
+            ceiling: Elevation::default().level(2000.0),
         };
         let window = |lon: f64| {
             let window = brush_window(lonlat_to_dir(lon, 0.0), 0.1, N);
@@ -799,7 +799,7 @@ mod tests {
     /// A range from north to south across longitude 20, with sea at each
     /// side.
     fn range() -> Heightmap {
-        let mut map = Heightmap::new(N, meters_to_level(-100.0));
+        let mut map = Heightmap::new(N, Elevation::default().level(-100.0));
         let middle = (N as f64 * (0.5 + 0.5 * 20f64.to_radians().tan())) as usize;
         for y in N / 4..3 * N / 4 {
             for x in 0..N {
@@ -807,7 +807,7 @@ mod tests {
                 if across < 120.0 {
                     let ribs = 100.0 * ((y as f64 * 0.2).sin() + 1.0);
                     let meters = 100.0 + 2400.0 * (1.0 - across / 120.0) + ribs;
-                    map.set(0, x, y, meters_to_level(meters));
+                    map.set(0, x, y, Elevation::default().level(meters));
                 }
             }
         }

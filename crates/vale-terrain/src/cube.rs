@@ -10,16 +10,71 @@ use crate::math::{V3, normalize};
 
 pub const FACES: usize = 6;
 
-/// The lowest and highest elevation that the 16-bit range holds, in meters.
-pub const ELEV_MIN: f64 = -6000.0;
-pub const ELEV_MAX: f64 = 6000.0;
+/// The lowest and highest elevation of the default range, in meters.
+pub const DEFAULT_ELEV_MIN: f64 = -6000.0;
+pub const DEFAULT_ELEV_MAX: f64 = 6000.0;
 
-pub fn meters_to_level(m: f64) -> u16 {
-    (((m - ELEV_MIN) / (ELEV_MAX - ELEV_MIN)).clamp(0.0, 1.0) * 65535.0).round() as u16
+/// The highest value of the lowest elevation of a range, in meters. A range
+/// holds sea level with some room on each side.
+pub const ELEV_MIN_HIGHEST: f64 = -100.0;
+/// The lowest value of the highest elevation of a range, in meters.
+pub const ELEV_MAX_LOWEST: f64 = 100.0;
+/// The largest distance of an end of a range from sea level, in meters.
+pub const ELEV_LIMIT: f64 = 30000.0;
+
+/// The elevation range of a heightmap: level 0 is at `min` and level 65,535
+/// is at `max`, in meters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Elevation {
+    pub min: f64,
+    pub max: f64,
 }
 
-pub fn level_to_meters(level: u16) -> f64 {
-    ELEV_MIN + f64::from(level) / 65535.0 * (ELEV_MAX - ELEV_MIN)
+impl Default for Elevation {
+    fn default() -> Elevation {
+        Elevation {
+            min: DEFAULT_ELEV_MIN,
+            max: DEFAULT_ELEV_MAX,
+        }
+    }
+}
+
+impl Elevation {
+    /// A range from `min` to `max`, or `None` if it breaks the rule of
+    /// `is_valid`.
+    pub fn new(min: f64, max: f64) -> Option<Elevation> {
+        let range = Elevation { min, max };
+        range.is_valid().then_some(range)
+    }
+
+    /// Whether the range holds sea level: `min` is at most
+    /// `ELEV_MIN_HIGHEST`, `max` is at least `ELEV_MAX_LOWEST`, and each end
+    /// is at most `ELEV_LIMIT` from 0 m.
+    pub fn is_valid(self) -> bool {
+        (-ELEV_LIMIT..=ELEV_MIN_HIGHEST).contains(&self.min)
+            && (ELEV_MAX_LOWEST..=ELEV_LIMIT).contains(&self.max)
+    }
+
+    /// The level of an elevation in meters. An elevation out of the range
+    /// gets the nearest end.
+    pub fn level(self, m: f64) -> u16 {
+        (((m - self.min) / (self.max - self.min)).clamp(0.0, 1.0) * 65535.0).round() as u16
+    }
+
+    /// The elevation of a level, in meters.
+    pub fn meters(self, level: u16) -> f64 {
+        self.min + f64::from(level) / 65535.0 * (self.max - self.min)
+    }
+
+    /// The meters of one 16-bit step.
+    pub fn meters_per_level(self) -> f64 {
+        (self.max - self.min) / 65535.0
+    }
+
+    /// The level of sea level.
+    pub fn sea_level(self) -> u16 {
+        self.level(0.0)
+    }
 }
 
 /// The values that describe a face size to a person.

@@ -321,7 +321,7 @@ impl Rivers {
 mod tests {
     use std::time::Duration;
 
-    use vale_terrain::meters_to_level;
+    use vale_terrain::Elevation;
 
     use super::*;
     use crate::globe::math::{angle, lonlat_to_dir};
@@ -343,12 +343,12 @@ mod tests {
 
     /// A hill on face 0 of a heightmap in the sea.
     fn hill(n: usize) -> Heightmap {
-        let mut map = Heightmap::new(n, meters_to_level(-100.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(-100.0));
         for y in 0..n {
             for x in 0..n {
                 let from_edge = x.min(y).min(n - 1 - x).min(n - 1 - y) as f64;
                 let meters = from_edge * 6400.0 / n as f64 - 400.0;
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
         map
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn the_worker_gives_the_newest_result() {
         const N: usize = 64;
-        let map = Heightmap::new(N, meters_to_level(-100.0));
+        let map = Heightmap::new(N, Elevation::default().level(-100.0));
         let mut rivers = Rivers::new(&map, false);
         assert!(!rivers.pending());
         assert!(rivers.poll().is_none());
@@ -390,7 +390,7 @@ mod tests {
             for x in 0..N {
                 let (dx, dy) = (x as f64 - 32.0, y as f64 - 32.0);
                 if dx * dx + dy * dy < 36.0 {
-                    map.set(0, x, y, meters_to_level(500.0));
+                    map.set(0, x, y, Elevation::default().level(500.0));
                 }
             }
         }

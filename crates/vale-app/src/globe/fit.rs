@@ -65,7 +65,7 @@ fn roads(features: &[Feature]) -> Vec<Vec<V3>> {
 mod tests {
     use std::f64::consts::FRAC_PI_2;
 
-    use vale_terrain::meters_to_level;
+    use vale_terrain::Elevation;
 
     use super::*;
     use crate::globe::line::tests::{SCALE, feature, free, lines, stroke};
@@ -76,7 +76,7 @@ mod tests {
     const RADIUS: f64 = 1.0e6;
 
     fn flat() -> Heightmap {
-        Heightmap::new(N, meters_to_level(200.0))
+        Heightmap::new(N, Elevation::default().level(200.0))
     }
 
     fn on(terrain: f64) -> LineSettings {

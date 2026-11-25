@@ -45,8 +45,8 @@ pub use channel::{
     PLAIN_SLOPES, REFERENCE_AREA_KM2, WINDOW_BIN_CELLS, channel_size,
 };
 pub use cube::{
-    ELEV_MAX, ELEV_MIN, FACES, FaceSizeValues, face_dir, face_of, face_size_values,
-    level_to_meters, meters_to_level, unwarp, warp,
+    DEFAULT_ELEV_MAX, DEFAULT_ELEV_MIN, ELEV_LIMIT, ELEV_MAX_LOWEST, ELEV_MIN_HIGHEST, Elevation,
+    FACES, FaceSizeValues, face_dir, face_of, face_size_values, unwarp, warp,
 };
 pub use equirect::{Equirect, EquirectGrid};
 pub use erode::{ErodeBrush, ErodeGrid, ErodeStep, Erosion, OuterFlow};

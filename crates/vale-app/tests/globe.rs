@@ -34,8 +34,8 @@ use vale_import::geojson;
 use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke, StrokeKind};
 use vale_terrain::{
-    Bands, ChannelCut, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine,
-    WindowHeights, channel_map, level_to_meters, meters_to_level, window_channels,
+    Bands, ChannelCut, ChannelMap, CoarseHeights, Elevation, FlowMap, Limits, Mode, Rain, StopLine,
+    WindowHeights, channel_map, window_channels,
 };
 
 /// The sample world with its vector layers hidden, so that each place of the
@@ -1067,7 +1067,7 @@ fn the_four_modes_work_with_a_mouse_and_with_a_pen() {
         h.run_steps(1);
         let base = h.state().globe.map.base();
         let under = place(&h, h.state().globe.rect.center());
-        let level = meters_to_level(3000.0);
+        let level = Elevation::default().level(3000.0);
         h.state_mut().globe.brush.flatten_level = Some(level);
         let mut stroke = |mode: Mode| {
             h.state_mut().globe.brush.mode = mode;
@@ -1230,7 +1230,10 @@ fn preview_harness() -> Harness<'static, AppState> {
 /// Sets the whole world to one elevation and returns the color at the middle
 /// of the globe.
 fn color_at(h: &mut Harness<'static, AppState>, meters: f64) -> [u8; 3] {
-    h.state_mut().globe.map.fill(meters_to_level(meters));
+    h.state_mut()
+        .globe
+        .map
+        .fill(Elevation::default().level(meters));
     middle(h)
 }
 
@@ -1287,7 +1290,7 @@ fn the_grey_display_shows_the_plain_greyscale() {
     h.get_by_label("Grey").click();
     h.step();
     let grey = middle(&mut h);
-    let level = (f32::from(meters_to_level(1500.0)) / 65535.0 * 255.0).round() as u8;
+    let level = (f32::from(Elevation::default().level(1500.0)) / 65535.0 * 255.0).round() as u8;
     assert!(close(grey, [level; 3]), "{grey:?}");
     h.get_by_label("Bands").click();
     h.step();
@@ -1887,7 +1890,7 @@ fn set_island(map: &mut vale_terrain::Heightmap) {
         for y in 0..n {
             for x in 0..n {
                 let meters = island(map.texel_dir(face, x, y), center);
-                map.set(face, x, y, meters_to_level(meters));
+                map.set(face, x, y, Elevation::default().level(meters));
             }
         }
     }
@@ -1896,7 +1899,7 @@ fn set_island(map: &mut vale_terrain::Heightmap) {
 /// The number of pixels of the canvas that show a river on land.
 fn river_pixels(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> usize {
     let globe = &h.state().globe;
-    let land = meters_to_level(150.0);
+    let land = Elevation::default().level(150.0);
     let min = globe.rect.min.ceil();
     let pixels = img.enumerate_pixels().filter(|(x, y, p)| {
         let [r, g, b, _] = p.0.map(i32::from);
@@ -1940,7 +1943,7 @@ fn the_flow_map_follows_each_stroke_and_each_undo() {
     let _gpu = one_gpu_test();
     let mut h = gpu_harness();
     let globe = &mut h.state_mut().globe;
-    globe.map.fill(meters_to_level(-100.0));
+    globe.map.fill(Elevation::default().level(-100.0));
     globe.tool = Tool::Brush;
     globe.brush.strength_m = 4000.0;
     globe.brush.size_points = 60.0;
@@ -1951,7 +1954,7 @@ fn the_flow_map_follows_each_stroke_and_each_undo() {
     let c = mouse_stroke(&mut h);
     settle(&mut h);
     let globe = &h.state().globe;
-    assert!(globe.map.sample(place(&h, c)) > meters_to_level(0.0));
+    assert!(globe.map.sample(place(&h, c)) > Elevation::default().level(0.0));
     assert!(globe.channels().unwrap().has_rivers());
 
     assert!(h.state_mut().globe.undo());
@@ -2040,7 +2043,7 @@ fn carve_cuts_a_valley_along_a_river_and_stays_above_the_sea() {
     settle(&mut h);
     save(&canvas_image(&mut h), "carve-after");
     let after = levels(&h.state().globe.map);
-    let sea = meters_to_level(0.0);
+    let sea = Elevation::default().level(0.0);
     let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
     let (mut on_river, mut cut) = (0, 0);
     for (i, (face, x, y)) in texels().enumerate() {
@@ -2121,7 +2124,7 @@ fn ridge_raises_the_land_between_the_rivers_and_leaves_the_sea() {
     settle(&mut h);
     save(&canvas_image(&mut h), "ridge-after");
     let after = levels(&h.state().globe.map);
-    let sea = meters_to_level(0.0);
+    let sea = Elevation::default().level(0.0);
     let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
     // The rise of each texel that the stroke raised, near a river and far
     // from each river.
@@ -2215,7 +2218,7 @@ fn deposit_raises_low_ground_to_the_fill_level_and_leaves_the_sea() {
     settle(&mut h);
     save(&canvas_image(&mut h), "deposit-after");
     let after = levels(&h.state().globe.map);
-    let sea = meters_to_level(0.0);
+    let sea = Elevation::default().level(0.0);
     let at = |x: usize| (x as f64 + 0.5) * channels.size() as f64 / n as f64 - 0.5;
     let mut raised = 0;
     for (i, (face, x, y)) in texels().enumerate() {
@@ -2441,7 +2444,10 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         let brush = h.state().globe.brush;
         assert!(brush.floor_on && brush.ceiling_on, "{mode}");
         assert_eq!(off(&h), 0, "{mode}");
-        let (floor, ceiling) = (meters_to_level(0.0), meters_to_level(1000.0));
+        let (floor, ceiling) = (
+            Elevation::default().level(0.0),
+            Elevation::default().level(1000.0),
+        );
         assert_eq!(brush.limits(), Limits { floor, ceiling }, "{mode}");
 
         // A drag on the elevation of the ceiling changes it.
@@ -2522,7 +2528,9 @@ fn weather_lowers_a_steep_hill_and_one_undo_puts_it_back() {
             for x in 0..n {
                 let part = 1.0 - angle(globe.map.texel_dir(face, x, y), top) / 0.05;
                 if part > 0.0 {
-                    globe.map.set(face, x, y, meters_to_level(3000.0 * part));
+                    globe
+                        .map
+                        .set(face, x, y, Elevation::default().level(3000.0 * part));
                 }
             }
         }
@@ -2593,7 +2601,7 @@ fn manual_screenshots_with_rivers() {
             for y in 0..n {
                 for x in 0..n {
                     let meters = continents(map.texel_dir(face, x, y));
-                    map.set(face, x, y, meters_to_level(meters));
+                    map.set(face, x, y, Elevation::default().level(meters));
                 }
             }
         }
@@ -2607,7 +2615,7 @@ fn manual_screenshots_with_rivers() {
 #[ignore = "gpu"]
 fn the_keyboard_shortcuts_undo_and_redo_a_stroke_of_each_mode() {
     use egui::{Key, Modifiers};
-    use vale_terrain::{Mode, meters_to_level};
+    use vale_terrain::{Elevation, Mode};
     let _gpu = one_gpu_test();
     let redo_keys = [
         (Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
@@ -2617,7 +2625,7 @@ fn the_keyboard_shortcuts_undo_and_redo_a_stroke_of_each_mode() {
     for (i, mode) in modes.into_iter().enumerate() {
         let mut h = gpu_harness();
         h.state_mut().globe.tool = Tool::Brush;
-        h.state_mut().globe.brush.flatten_level = Some(meters_to_level(3000.0));
+        h.state_mut().globe.brush.flatten_level = Some(Elevation::default().level(3000.0));
         h.run_steps(1);
         let under = place(&h, h.state().globe.rect.center());
         // A hill gives the smooth mode a slope.
@@ -2691,7 +2699,7 @@ fn set_small_island(map: &mut vale_terrain::Heightmap, radius: f64) {
             let cone = 2600.0 * slope * if slope < 0.0 { 4.0 } else { 1.0 };
             let meters = cone + 900.0 * hills(d, 5.0 / radius);
             if meters > -2500.0 {
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
     }
@@ -2929,7 +2937,7 @@ fn carve_in_a_far_view_changes_only_the_ground_near_the_rivers() {
             // stays.
             let d = map.texel_dir(face, x, y);
             let under = (0..=8).any(|k| angle(d, slerp(a, b, f64::from(k) / 8.0)) < 0.5 * radius);
-            if under && old > meters_to_level(0.0) {
+            if under && old > Elevation::default().level(0.0) {
                 let past = rivers.past_floodplain(map, &cut, (face, x, y));
                 kept += usize::from(past.is_none_or(|past| past > 2.0));
             }
@@ -3027,7 +3035,7 @@ fn erode_in_a_far_view_lowers_the_land_and_the_sea_floor() {
     let c = h.state().globe.rect.center();
     let reach = 0.88 * h.state().globe.radius() as f32;
     let (from, to) = (c, c + Vec2::new(reach, 0.0));
-    assert!(h.state().globe.map.sample(place(&h, to)) < meters_to_level(0.0));
+    assert!(h.state().globe.map.sample(place(&h, to)) < Elevation::default().level(0.0));
     button(&mut h, egui::PointerButton::Primary, from, true);
     h.step();
     for i in 1..=40 {
@@ -3040,7 +3048,7 @@ fn erode_in_a_far_view_lowers_the_land_and_the_sea_floor() {
     save(&canvas_image(&mut h), "erode-after");
 
     let after = all_levels(&h);
-    let sea = meters_to_level(0.0);
+    let sea = Elevation::default().level(0.0);
     let map = &h.state().globe.map;
     let n = map.face_size();
     let radius = h.state().globe.brush.radius(h.state().globe.radius());
@@ -3105,7 +3113,7 @@ fn erode_in_a_far_view_cuts_thin_channels() {
         let (face, x, y) = (i / (N * N), i % N, i / N % N);
         let d = map.texel_dir(face, x, y);
         let under = (0..=8).any(|k| angle(d, slerp(a, b, f64::from(k) / 8.0)) < 0.5 * radius);
-        if !under || old <= meters_to_level(0.0) {
+        if !under || old <= Elevation::default().level(0.0) {
             continue;
         }
         let drop = f64::from(old.saturating_sub(new));
@@ -3161,7 +3169,7 @@ fn an_erode_stroke_with_a_floor_keeps_the_land_above_the_sea() {
     let _gpu = one_gpu_test();
     let mut h = erode_harness();
     let before = all_levels(&h);
-    let sea = meters_to_level(0.0);
+    let sea = Elevation::default().level(0.0);
 
     // Without the floor, the stroke moves land below the sea and lowers
     // the sea floor.
@@ -3752,7 +3760,9 @@ fn an_uplift_stroke_with_a_ceiling_gives_a_plateau() {
 
     let brush = &mut h.state_mut().globe.brush;
     brush.ceiling_on = true;
-    brush.ceiling_m = level_to_meters(start + (top - start) / 3).round();
+    brush.ceiling_m = Elevation::default()
+        .meters(start + (top - start) / 3)
+        .round();
     let ceiling = brush.limits().ceiling;
     assert!(start + 500 < ceiling && ceiling + 500 < top, "{ceiling}");
     assert!(free.iter().filter(|&&level| level > ceiling).count() > 1000);
@@ -4120,7 +4130,7 @@ fn an_ocean_ridge_shows_on_the_globe_after_the_pen_goes_up() {
     let before = all_levels(&h);
     // The same part of a stroke with a crest below the ground, which
     // changes nothing.
-    h.state_mut().globe.brush.ridge_crest_m = vale_terrain::ELEV_MIN;
+    h.state_mut().globe.brush.ridge_crest_m = vale_terrain::DEFAULT_ELEV_MIN;
     uplift_part(&mut h, 12);
     let flat = canvas_with_pointer(&mut h);
     assert!(uplift_stroke_end(&mut h) == before);
@@ -4202,7 +4212,7 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     stroke.finish(&brush, n, &mut stamps);
     let spec = brush.ridge_spec(0.1, globe.world_km, globe.world_seed);
     assert_eq!(spec.seed, 7);
-    let mut line = RidgeLine::new(spec, n);
+    let mut line = RidgeLine::new(spec, n, Elevation::default());
     for stamp in &stamps {
         // The flow of a mouse gives the full height.
         assert_eq!(stamp.flow, 1.0);
@@ -4232,10 +4242,10 @@ fn an_ocean_ridge_stroke_gives_the_levels_of_the_cpu_ridge() {
     assert!(worst.unwrap() <= 2, "{worst:?}");
     // The top is near the Crest setting. The rift mountains and the axial
     // high go above it by 800 m at most.
-    let crest = meters_to_level(-500.0);
-    let rim = meters_to_level(300.0) - crest + 2;
+    let crest = Elevation::default().level(-500.0);
+    let rim = Elevation::default().level(300.0) - crest + 2;
     let top = *app.iter().max().unwrap();
-    let lift = crest - meters_to_level(-2500.0);
+    let lift = crest - Elevation::default().level(-2500.0);
     assert!(
         top <= crest + rim && top + lift / 4 > crest,
         "{top} of {crest}"
@@ -4569,7 +4579,7 @@ fn a_range_stroke_gives_the_levels_of_the_cpu_range() {
     assert!(worst.unwrap() <= 2, "{worst:?}");
     // The top is near the height of the brush above the ground.
     let base = globe.map.base();
-    let height = meters_to_level(brush.strength_m) - meters_to_level(0.0);
+    let height = Elevation::default().level(brush.strength_m) - Elevation::default().level(0.0);
     let top = *app.iter().max().unwrap();
     assert!(top > base + height / 2 && top <= base + height, "{top}");
 }
@@ -4723,7 +4733,7 @@ fn basin_harness(seed: u32) -> Harness<'static, AppState> {
     let state = h.state_mut();
     // The sea is outside a basin, so the basin tests are on land. The fill
     // is not an undo step of the tests.
-    state.globe.map.fill(meters_to_level(300.0));
+    state.globe.map.fill(Elevation::default().level(300.0));
     state.globe.map.set_undo_steps(false);
     state.globe.map.set_undo_steps(true);
     state.doc.project.world.seed = seed;
@@ -5277,7 +5287,7 @@ fn map_picture(
         let places = [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)];
         let levels = places.map(|(dx, dy)| {
             let dir = lonlat_to_dir(lon + dx * step, lat + dy * step);
-            level_to_meters(map.sample(dir))
+            Elevation::default().meters(map.sample(dir))
         });
         levels.iter().sum::<f64>() / 4.0
     };
@@ -5311,14 +5321,14 @@ fn cpu_ridge_pictures(
     let mut brush = vale_app::globe::brush::BrushSettings::default();
     edit(&mut brush);
     let spec = brush.ridge_spec(radius_km / world_km, world_km, seed);
-    let mut line = RidgeLine::new(spec, n);
+    let mut line = RidgeLine::new(spec, n, Elevation::default());
     let steps = (72f64.to_radians() / (LINE_SPACING * spec.radius)).ceil() as u32;
     for i in 0..=steps {
         let (lon, lat) = ridge_shot_place(f64::from(i) / f64::from(steps));
         line.push(lonlat_to_dir(lon, lat), 1.0);
     }
     let base = -2500.0;
-    let mut map = Heightmap::new(n, meters_to_level(base));
+    let mut map = Heightmap::new(n, Elevation::default().level(base));
     map.begin_stroke();
     let mut from = 0;
     while from < line.len() {
@@ -5344,7 +5354,7 @@ fn cpu_ridge_pictures(
             for y in 0..rows {
                 for x in 0..cols {
                     let (lon, lat) = (west + f64::from(x) * step, south + f64::from(y) * step);
-                    let meters = level_to_meters(map.sample(lonlat_to_dir(lon, lat)));
+                    let meters = Elevation::default().meters(map.sample(lonlat_to_dir(lon, lat)));
                     text += &format!("{lat},{lon},{meters}\n");
                 }
             }
@@ -5444,7 +5454,7 @@ fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
     assert_eq!(values, [-700.0, 25.0, 0.0, 400.0, 100.0]);
     // The crest of the start is above the empty world, so the first stroke
     // makes a ridge.
-    assert!(meters_to_level(brush.ridge_crest_m) > h.state().globe.map.base());
+    assert!(Elevation::default().level(brush.ridge_crest_m) > h.state().globe.map.base());
     for name in SLIDERS
         .into_iter()
         .chain(["Radius", "Flow", "Floor", "Ceiling"])
@@ -6170,7 +6180,7 @@ fn set_layer_island(h: &mut Harness<'static, AppState>, id: RasterId, lon: f64, 
             for x in 0..n {
                 let meters = island_meters(map.texel_dir(face, x, y), center);
                 if meters > -2500.0 {
-                    map.set(face, x, y, meters_to_level(meters));
+                    map.set(face, x, y, Elevation::default().level(meters));
                 }
             }
         }
@@ -6289,7 +6299,7 @@ fn each_visible_height_layer_shows_its_rivers() {
     for y in 0..LAYER_FACE_SIZE {
         for x in 0..LAYER_FACE_SIZE {
             let meters = island_meters(map.texel_dir(0, x, y), center);
-            map.set(0, x, y, meters_to_level(meters));
+            map.set(0, x, y, Elevation::default().level(meters));
         }
     }
     load(&mut h);
@@ -6337,7 +6347,7 @@ fn the_readout_shows_the_selected_raster_layer_or_the_top_visible_one() {
         .globe
         .raster_map_mut(height)
         .unwrap()
-        .fill(meters_to_level(1500.0));
+        .fill(Elevation::default().level(1500.0));
     h.state_mut().select(None);
     h.run_steps(2);
     assert_eq!(text(&h), "Height 1500 m");
@@ -6901,7 +6911,9 @@ fn a_stop_line_shows_only_where_the_values_cross_the_stop() {
             for x in 0..N {
                 let d = globe.map.texel_dir(face, x, y);
                 let fine = 90.0 * wave(d, 400.0, 0.3) + 60.0 * wave(d, 900.0, 1.1);
-                globe.map.set(face, x, y, meters_to_level(300.0 + fine));
+                globe
+                    .map
+                    .set(face, x, y, Elevation::default().level(300.0 + fine));
             }
         }
     }
@@ -6928,7 +6940,7 @@ fn no_line_draws_at_the_top_of_the_range() {
     let _gpu = one_gpu_test();
     // Ground that rises to the top of the range and stays there, with no
     // coast line.
-    let top = |along: f64| (12000.0 * along).min(vale_terrain::ELEV_MAX);
+    let top = |along: f64| (12000.0 * along).min(vale_terrain::DEFAULT_ELEV_MAX);
     let white = [[255; 3]; 3];
     let mut h = line_globe(
         RasterDisplay::Bands,
@@ -7093,10 +7105,10 @@ fn a_bump_smaller_than_the_feature_size_has_no_line_with_the_smoothing() {
     let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(N);
-    globe.map.fill(meters_to_level(-500.0));
+    globe.map.fill(Elevation::default().level(-500.0));
     // Four texels above the sea at the middle of face +x.
     for (x, y) in [(127, 127), (128, 127), (127, 128), (128, 128)] {
-        globe.map.set(0, x, y, meters_to_level(1000.0));
+        globe.map.set(0, x, y, Elevation::default().level(1000.0));
     }
     assert!(angle(globe.map.texel_dir(0, 128, 128), [1.0, 0.0, 0.0]) < 0.01);
     globe.view = GlobeView::centered(0.0, 0.0);
@@ -7386,9 +7398,9 @@ fn fine_globe(land: &[(usize, usize)]) -> Harness<'static, AppState> {
     let mut h = measured_globe(axis, |_| -500.0);
     let globe = &mut h.state_mut().globe;
     globe.set_face_size(FINE_FACE_SIZE);
-    globe.map.fill(meters_to_level(-500.0));
+    globe.map.fill(Elevation::default().level(-500.0));
     for &(x, y) in land {
-        globe.map.set(0, x, y, meters_to_level(1000.0));
+        globe.map.set(0, x, y, Elevation::default().level(1000.0));
     }
     let id = brush_layer(&h);
     set_smoothing(&mut h, id, false, 2.0);
@@ -7642,7 +7654,7 @@ fn drawn_cover(shape: Shape) -> Cover {
     let globe = &mut h.state_mut().globe;
     globe.view = view;
     globe.set_face_size(FINE_FACE_SIZE);
-    globe.map.fill(meters_to_level(-500.0));
+    globe.map.fill(Elevation::default().level(-500.0));
     let r = view.radius(rect);
     let c = rect.center();
     for y in 0..FINE_FACE_SIZE {
@@ -7650,7 +7662,7 @@ fn drawn_cover(shape: Shape) -> Cover {
             let v = view.rot.mul_vec(globe.map.texel_dir(0, x, y));
             let p = [f64::from(c.x) + v[0] * r, f64::from(c.y) - v[1] * r];
             let m = (30.0 * shape.land(p)).clamp(-1000.0, 1000.0);
-            globe.map.set(0, x, y, meters_to_level(m));
+            globe.map.set(0, x, y, Elevation::default().level(m));
         }
     }
     let id = brush_layer(&h);
@@ -8529,7 +8541,8 @@ fn lake_pixels(h: &Harness<'static, AppState>, img: &image::RgbaImage) -> Vec<La
 /// The change of the level for a change of the height of `meters` near the
 /// lake.
 fn levels_of(meters: f64) -> f64 {
-    f64::from(meters_to_level(700.0 + meters)) - f64::from(meters_to_level(700.0))
+    f64::from(Elevation::default().level(700.0 + meters))
+        - f64::from(Elevation::default().level(700.0))
 }
 
 #[test]
@@ -9227,11 +9240,13 @@ fn the_coast_of_a_thin_channel_has_no_corner_at_a_texel_edge() {
     globe.preview.graticule = false;
     let n = globe.map.face_size();
     two_bands(&mut globe.map.bands, [255, 0, 0], [255, 255, 0]);
-    globe.map.fill(vale_terrain::meters_to_level(500.0));
+    globe
+        .map
+        .fill(vale_terrain::Elevation::default().level(500.0));
     for i in 0..n {
         globe
             .map
-            .set(0, i, i, vale_terrain::meters_to_level(-2000.0));
+            .set(0, i, i, vale_terrain::Elevation::default().level(-2000.0));
     }
     let middle = globe.map.texel_dir(0, n / 2, n / 2);
     let lat = middle[2].asin().to_degrees();

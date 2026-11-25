@@ -6,7 +6,7 @@
 //! the water that the air holds.
 
 use crate::bands::SEA_LEVEL;
-use crate::cube::level_to_meters;
+use crate::cube::Elevation;
 use crate::math::{V3, cross, dot, normalize};
 
 /// The number of steps of the air that a cell looks back along the wind.
@@ -73,9 +73,15 @@ impl Rain {
     }
 
     /// The rain at `d`. `step` is the angle of one step of the air, and
-    /// `level` gives the level of the ground at a direction. A direction with
-    /// no level ends the look back along the wind.
-    pub(crate) fn at(&self, d: V3, step: f64, level: impl Fn(V3) -> Option<f64>) -> f64 {
+    /// `level` gives the level of the ground at a direction in `elevation`. A
+    /// direction with no level ends the look back along the wind.
+    pub(crate) fn at(
+        &self,
+        d: V3,
+        step: f64,
+        elevation: Elevation,
+        level: impl Fn(V3) -> Option<f64>,
+    ) -> f64 {
         let shadow = self.shadow.clamp(0.0, 1.0);
         if shadow <= 0.0 {
             return 1.0;
@@ -84,7 +90,7 @@ impl Rain {
             let low = level.floor().clamp(0.0, 65535.0) as u16;
             let t = level - f64::from(low);
             let high = low.saturating_add(1);
-            level_to_meters(low) * (1.0 - t) + level_to_meters(high) * t - SEA_LEVEL
+            elevation.meters(low) * (1.0 - t) + elevation.meters(high) * t - SEA_LEVEL
         };
         // The ground along the wind, from `d` back toward the wind.
         let mut ground = [0.0; TRACE_STEPS + 1];
@@ -126,7 +132,7 @@ impl Rain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
+    use crate::cube::Elevation;
     use crate::math::lonlat_to_dir;
 
     /// A range along a meridian at longitude 0, 2,000 m high and 10 degrees
@@ -138,7 +144,7 @@ mod tests {
         } else {
             200.0 + 2000.0 * (1.0 - lon.abs() / 5.0).max(0.0)
         };
-        Some(f64::from(meters_to_level(meters)))
+        Some(f64::from(Elevation::default().level(meters)))
     }
 
     const WEST: Rain = Rain {
@@ -147,7 +153,12 @@ mod tests {
     };
 
     fn rain_at(rain: Rain, lon: f64) -> f64 {
-        rain.at(lonlat_to_dir(lon, 10.0), 0.5_f64.to_radians(), range)
+        rain.at(
+            lonlat_to_dir(lon, 10.0),
+            0.5_f64.to_radians(),
+            Elevation::default(),
+            range,
+        )
     }
 
     #[test]

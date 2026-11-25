@@ -42,7 +42,7 @@ use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER,
 use vale_app::ui::{Action, AppState, FontTarget, Layout, RampApply, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{GeometryKind, Hillshade, LayerKind, RasterDisplay, RasterId, Units, World};
-use vale_terrain::{Mode, Rain, meters_to_level};
+use vale_terrain::{Elevation, Mode, Rain};
 
 type Pad = Harness<'static, AppState>;
 
@@ -96,7 +96,7 @@ fn pad(size: (f32, f32)) -> Pad {
 fn painted_pad(size: (f32, f32)) -> Pad {
     let mut h = pad(size);
     let globe = &mut h.state_mut().globe;
-    globe.map.set(0, 0, 0, meters_to_level(100.0));
+    globe.map.set(0, 0, 0, Elevation::default().level(100.0));
     assert!(h.state().has_raster());
     h.run_steps(2);
     h
@@ -1319,8 +1319,8 @@ fn the_values_of_a_raster_layer_have_the_unit_and_the_range_of_the_layer() {
     let brush = &mut state.globe.brush;
     assert_eq!(brush.value_range, (-6000.0, 6000.0));
     brush.floor_m = 0.0;
-    assert_eq!(brush.limits().floor, meters_to_level(0.0));
-    assert_eq!(brush.level(1500.0), meters_to_level(1500.0));
+    assert_eq!(brush.limits().floor, Elevation::default().level(0.0));
+    assert_eq!(brush.level(1500.0), Elevation::default().level(1500.0));
     assert_eq!(brush.strength_value(), 1500.0);
 }
 
@@ -1333,7 +1333,7 @@ fn the_panel_of_a_raster_layer_renames_the_layer_and_a_swipe_deletes_it() {
         let state = h.state_mut();
         state.session = Some(Session::open(&dir.path().join("w.gpkg"), &mut state.doc).unwrap());
         let height = state.doc.project.rasters()[0].id;
-        let level = meters_to_level(100.0);
+        let level = Elevation::default().level(100.0);
         state.globe.map.set(0, 0, 0, level);
         state.save_waiting().unwrap();
         h.run_steps(2);
@@ -2119,7 +2119,10 @@ fn height_pad(size: (f32, f32)) -> Pad {
     let mut h = empty_pad(size);
     h.state_mut().globe.set_face_size(64);
     h.state_mut().add_height();
-    h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
+    h.state_mut()
+        .globe
+        .map
+        .set(0, 0, 0, Elevation::default().level(100.0));
     h.run_steps(2);
     open_panel(&mut h, "Layers");
     tap(&mut h, "Open Height");
@@ -2914,7 +2917,7 @@ fn the_brush_panel_has_the_floor_and_the_ceiling() {
         assert_eq!(brush.ceiling_m, -6000.0, "{what}");
         assert!(brush.floor_m > brush.ceiling_m, "{what}");
         let limits = brush.limits();
-        assert_eq!(limits.floor, meters_to_level(floor), "{what}");
+        assert_eq!(limits.floor, Elevation::default().level(floor), "{what}");
         assert_eq!(limits.ceiling, 0, "{what}");
 
         // A tap turns a limit off, and its level keeps its meters.
@@ -5480,7 +5483,10 @@ fn the_screenshots_show_the_export_row() {
         let height = state.add_height();
         state.pad.layer = Some(LayerRef::Raster(height));
         let paint = |state: &mut AppState| {
-            state.globe.map.set(0, 0, 0, meters_to_level(100.0));
+            state
+                .globe
+                .map
+                .set(0, 0, 0, Elevation::default().level(100.0));
             let path = dir.path().join("Terra.tif");
             state.run_action(Action::ExportHeightmap(path));
             Ok(())
@@ -6361,7 +6367,10 @@ fn each_stop_value_is_on_its_seam_with_its_line_weight_and_sea_level() {
 fn halves(h: &mut Pad) {
     let map = &mut h.state_mut().globe.map;
     let n = map.face_size();
-    let (north, south) = (meters_to_level(2500.0), meters_to_level(-3000.0));
+    let (north, south) = (
+        Elevation::default().level(2500.0),
+        Elevation::default().level(-3000.0),
+    );
     for face in 0..6 {
         for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
             let d = map.texel_dir(face, x, y);
@@ -8088,7 +8097,7 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     globe.preview.graticule = false;
     globe.view = GlobeView::centered(0.0, 0.0);
     let meters = 1100.0;
-    globe.map.fill(meters_to_level(meters));
+    globe.map.fill(Elevation::default().level(meters));
     h.run_steps(3);
     let center = |h: &mut Pad| {
         let img = h.render().unwrap();
@@ -8115,7 +8124,7 @@ fn a_change_in_the_panel_of_a_raster_layer_shows_on_the_globe_in_the_same_frame(
     h.step();
     let display = h.state().doc.project.raster(height).unwrap().display;
     assert_eq!(display, RasterDisplay::Grey);
-    let level = (f32::from(meters_to_level(meters)) / 65535.0 * 255.0).round() as u8;
+    let level = (f32::from(Elevation::default().level(meters)) / 65535.0 * 255.0).round() as u8;
     let grey = center(&mut h);
     assert!(near(grey, [level; 3]), "{grey:?}");
     tap(&mut h, "Bands");
@@ -8779,7 +8788,10 @@ fn eyedropper_page() -> (Pad, RasterId) {
     h.run_steps(3);
     h.state_mut().add_height();
     h.run_steps(2);
-    h.state_mut().globe.map.set(0, 0, 0, meters_to_level(100.0));
+    h.state_mut()
+        .globe
+        .map
+        .set(0, 0, 0, Elevation::default().level(100.0));
     h.run_steps(2);
     let id = open_height(&mut h);
     scroll_to(&mut h, raster::HILLSHADE);
@@ -15943,7 +15955,10 @@ fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
     // The GPU does the work of the ridge when a frame renders.
     h.set_render_every_step(true);
     h.state_mut().add_height();
-    h.state_mut().globe.map.fill(meters_to_level(-4000.0));
+    h.state_mut()
+        .globe
+        .map
+        .fill(Elevation::default().level(-4000.0));
     h.run_steps(4);
     tap(&mut h, "Brush settings");
     choose_mode(&mut h, "Ocean ridge");
@@ -16034,7 +16049,7 @@ fn a_held_basin_with_two_rivers_has_three_buttons_that_fit() {
         };
         h.input_mut().safe_area_insets = Some(egui::SafeAreaInsets(insets));
         let globe = &mut h.state_mut().globe;
-        globe.map.fill(meters_to_level(300.0));
+        globe.map.fill(Elevation::default().level(300.0));
         globe.tool = Tool::Brush;
         globe.brush.mode = Mode::Basin;
         h.run_steps(3);
@@ -19919,7 +19934,7 @@ fn islands_pad() -> (Pad, RasterId) {
     let state = h.state_mut();
     let height = state.add_raster(RasterSpec::height("Height", 128)).unwrap();
     let map = state.globe.raster_map_mut(height).unwrap();
-    paint_world(map, |d| meters_to_level(island_meters(d)));
+    paint_world(map, |d| Elevation::default().level(island_meters(d)));
     h.run_steps(2);
     (h, height)
 }
@@ -20202,7 +20217,7 @@ fn polygonize_marks_its_layers_out_of_date_and_a_new_run_replaces_them() {
     // Paint a new island.
     let map = h.state_mut().globe.raster_map_mut(height).unwrap();
     let (face, x, y) = map.texel_of(lonlat_to_dir(-60.0, -20.0));
-    map.set(face, x, y, meters_to_level(800.0));
+    map.set(face, x, y, Elevation::default().level(800.0));
     h.run_steps(2);
     let stale = "Bathymetry and Topography are out of date. This run replaces them.";
     assert!(h.query_by_label(stale).is_some());
@@ -20241,7 +20256,7 @@ fn an_out_of_date_polygonize_layer_runs_again_from_its_panel() {
     assert!(h.query_by_label(STALE_LAYER).is_none());
     let map = h.state_mut().globe.raster_map_mut(height).unwrap();
     let (face, x, y) = map.texel_of(lonlat_to_dir(-60.0, -20.0));
-    map.set(face, x, y, meters_to_level(800.0));
+    map.set(face, x, y, Elevation::default().level(800.0));
     h.run_steps(2);
     assert!(h.query_by_label(STALE_LAYER).is_some());
     check_controls(&h, "the panel of an out-of-date layer");
@@ -20266,11 +20281,11 @@ fn polygonize_reads_the_whole_heightmap_of_a_large_layer() {
     // An island of 2 by 2 texels. The reduced copy takes the mean of 2 by 2
     // texels at most, so the island is in a lower band there.
     let map = state.globe.raster_map_mut(height).unwrap();
-    map.fill(meters_to_level(-3000.0));
+    map.fill(Elevation::default().level(-3000.0));
     let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
     let (x, y) = (x | 1, y | 1);
     for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-        map.set(face, x + dx, y + dy, meters_to_level(900.0));
+        map.set(face, x + dx, y + dy, Elevation::default().level(900.0));
     }
     let middle = dir_to_lonlat(map.texel_dir(face, x, y));
     h.run_steps(2);
@@ -20316,7 +20331,7 @@ fn noise_level(face: usize, x: usize, y: usize, n: usize) -> u16 {
         cell /= 2;
         amp *= 0.6;
     }
-    meters_to_level(s * 9000.0)
+    Elevation::default().level(s * 9000.0)
 }
 
 #[test]
@@ -20700,7 +20715,7 @@ fn polygonize_shows_its_progress_and_stops_on_cancel() {
     // The trace goes over each cell of a face, so a plain map takes as long
     // as a painted one.
     let map = state.globe.raster_map_mut(height).unwrap();
-    map.fill(meters_to_level(-3000.0));
+    map.fill(Elevation::default().level(-3000.0));
     h.run_steps(2);
     open_polygonize(&mut h);
     assert!(h.query_by_label_contains(LEVELS).is_some());
@@ -20737,11 +20752,11 @@ fn polygonize_reads_a_layer_that_is_not_active_from_the_project_file() {
     let n = 2 * DISPLAY_CAP as usize;
     let height = state.add_raster(RasterSpec::height("Height", n)).unwrap();
     let map = state.globe.raster_map_mut(height).unwrap();
-    map.fill(meters_to_level(-3000.0));
+    map.fill(Elevation::default().level(-3000.0));
     let (face, x, y) = map.texel_of(lonlat_to_dir(10.0, 5.0));
     for dy in 0..8 {
         for dx in 0..8 {
-            map.set(face, x + dx, y + dy, meters_to_level(900.0));
+            map.set(face, x + dx, y + dy, Elevation::default().level(900.0));
         }
     }
     let middle = dir_to_lonlat(map.texel_dir(face, x + 4, y + 4));

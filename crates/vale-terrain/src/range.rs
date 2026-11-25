@@ -352,7 +352,7 @@ pub fn erode_range(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
+    use crate::cube::Elevation;
     use crate::flow::{Window, WindowHeights};
     use crate::heightmap::Heightmap;
     use crate::line::LINE_SPACING;
@@ -821,7 +821,7 @@ mod tests {
     /// Returns the rivers after the erosion.
     fn river_run(seed: u32) -> (f64, usize, usize, usize) {
         let n = 256;
-        let sea = meters_to_level(0.0);
+        let sea = Elevation::default().level(0.0);
         let mut map = Heightmap::new(n, sea);
         for y in 0..n {
             for x in 0..n {
@@ -831,12 +831,12 @@ mod tests {
                 } else {
                     -100.0
                 };
-                map.set(0, x, y, meters_to_level(meters));
+                map.set(0, x, y, Elevation::default().level(meters));
             }
         }
         let spec = RangeSpec {
             radius: 0.12,
-            height: f64::from(meters_to_level(2500.0) - sea),
+            height: f64::from(Elevation::default().level(2500.0) - sea),
             spacing: 0.04,
             seed,
             limits: Limits::default(),

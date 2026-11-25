@@ -13,9 +13,8 @@ use std::collections::BinaryHeap;
 use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_4};
 use std::sync::LazyLock;
 
-use crate::bands::SEA_LEVEL;
-use crate::channel::{ChannelCurve, ChannelLines, METERS_PER_LEVEL, plain_factor};
-use crate::cube::{FACES, face_dir, face_of, meters_to_level, unwarp, warp};
+use crate::channel::{ChannelCurve, ChannelLines, plain_factor};
+use crate::cube::{Elevation, FACES, face_dir, face_of, unwarp, warp};
 use crate::heightmap::{Heightmap, TexelRect};
 use crate::lake::{LAKE_MIN_AREA, bordered, lake_at, lake_levels};
 use crate::math::{V3, add, angle, normalize, scale};
@@ -91,8 +90,10 @@ pub(crate) const STEPS: [(i64, i64); 8] = [
     (-1, -1),
 ];
 
+/// The level of sea level at the default elevation range.
+#[cfg(test)]
 pub(crate) fn sea() -> u16 {
-    meters_to_level(SEA_LEVEL)
+    Elevation::default().sea_level()
 }
 
 /// The equal-angle coordinate at the center of cell `i` of `m`. The cell can
@@ -189,6 +190,8 @@ pub struct CoarseHeights {
     pub(crate) m: usize,
     /// The cells of all faces, face by face, in row order.
     pub(crate) levels: Vec<u16>,
+    /// The elevation range of the levels.
+    pub(crate) elevation: Elevation,
 }
 
 impl CoarseHeights {
@@ -197,6 +200,7 @@ impl CoarseHeights {
         let mut heights = CoarseHeights {
             m,
             levels: vec![map.base(); FACES * m * m],
+            elevation: map.elevation(),
         };
         for (face, rect) in map.allocated_rects() {
             heights.update(map, face, rect);
@@ -205,7 +209,7 @@ impl CoarseHeights {
     }
 
     /// Makes `m` by `m` cells on each face. `level` gives the level at the
-    /// center of each cell.
+    /// center of each cell. The levels have the default elevation range.
     pub fn from_fn(m: usize, level: impl Fn(V3) -> u16) -> CoarseHeights {
         assert!(m > 0, "the size must not be zero");
         let cells = (0..FACES * m * m).map(|i| {
@@ -215,7 +219,17 @@ impl CoarseHeights {
         CoarseHeights {
             m,
             levels: cells.collect(),
+            elevation: Elevation::default(),
         }
+    }
+
+    /// The same cells with the elevation range `elevation`.
+    pub fn with_elevation(self, elevation: Elevation) -> CoarseHeights {
+        CoarseHeights { elevation, ..self }
+    }
+
+    pub fn elevation(&self) -> Elevation {
+        self.elevation
     }
 
     /// The number of cells along one side of a face.
@@ -499,6 +513,7 @@ pub struct FlowMap {
     filled: Vec<u16>,
     /// The lake level of each cell, or 0 for no lake.
     lakes: Vec<u16>,
+    elevation: Elevation,
 }
 
 impl FlowMap {
@@ -514,9 +529,10 @@ impl FlowMap {
             m: heights.m,
             solid: solid_angles(heights.m),
         };
-        let flow = drain(&grid, &heights.levels, &[], sea());
+        let sea = heights.elevation.sea_level();
+        let flow = drain(&grid, &heights.levels, &[], sea);
         let fill = fill_levels(&grid, &heights.levels, &flow, RIVER_MIN_AREA);
-        let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea(), lake_area);
+        let lakes = lake_levels(&grid, &heights.levels, &flow.filled, sea, lake_area);
         FlowMap {
             m: heights.m,
             receiver: flow.receiver,
@@ -524,6 +540,7 @@ impl FlowMap {
             fill,
             filled: flow.filled,
             lakes,
+            elevation: heights.elevation,
         }
     }
 
@@ -746,6 +763,7 @@ impl FlowMap {
             &self.filled,
             normalize,
             world_km,
+            self.elevation,
         );
         map.lines = ChannelLines::faces(curves, self.m, world_km);
         map
@@ -870,6 +888,7 @@ impl Rivers {
         filled: &[u16],
         dir: impl Fn(V3) -> V3,
         world_km: f64,
+        elevation: Elevation,
     ) -> Vec<ChannelCurve> {
         let count = self.cells.len();
         let dirs: Vec<V3> = self.pos.iter().map(|&p| dir(p)).collect();
@@ -881,7 +900,7 @@ impl Rivers {
         let after = |k: usize| match self.down[k] as usize {
             down if down < count => level(down),
             _ if receiver[cell(k)] == OUT => level(k),
-            _ => f64::from(sea()),
+            _ => f64::from(elevation.sea_level()),
         };
         // The slope at each node, over 2 nodes up and 2 nodes down.
         let plains: Vec<f64> = (0..count)
@@ -905,7 +924,7 @@ impl Rivers {
                     }
                     down = next;
                 }
-                let drop = (level(up) - low) * METERS_PER_LEVEL;
+                let drop = (level(up) - low) * elevation.meters_per_level();
                 let slope = if length > 0.0 {
                     drop / (length * world_km * 1000.0)
                 } else {
@@ -1541,6 +1560,8 @@ pub struct WindowHeights {
     pub(crate) window: Window,
     /// The cells in row order.
     pub(crate) levels: Vec<u16>,
+    /// The elevation range of the levels.
+    pub(crate) elevation: Elevation,
 }
 
 impl WindowHeights {
@@ -1564,17 +1585,32 @@ impl WindowHeights {
                 });
             }
         }
-        WindowHeights { window, levels }
+        WindowHeights {
+            window,
+            levels,
+            elevation: map.elevation(),
+        }
     }
 
-    /// `level` gives the level at the center of each cell.
+    /// `level` gives the level at the center of each cell. The levels have
+    /// the default elevation range.
     pub fn from_fn(window: Window, level: impl Fn(V3) -> u16) -> WindowHeights {
         let cells = 0..window.cells * window.cells;
         let levels = cells.map(|i| level(window.cell_dir(i % window.cells, i / window.cells)));
         WindowHeights {
             window,
             levels: levels.collect(),
+            elevation: Elevation::default(),
         }
+    }
+
+    /// The same cells with the elevation range `elevation`.
+    pub fn with_elevation(self, elevation: Elevation) -> WindowHeights {
+        WindowHeights { elevation, ..self }
+    }
+
+    pub fn elevation(&self) -> Elevation {
+        self.elevation
     }
 
     pub fn window(&self) -> Window {
@@ -1598,6 +1634,7 @@ struct WindowFlow {
     fill: Vec<u16>,
     /// The level of each cell after the flood fills the pits.
     filled: Vec<u16>,
+    elevation: Elevation,
 }
 
 impl WindowFlow {
@@ -1605,7 +1642,12 @@ impl WindowFlow {
     fn new(heights: &WindowHeights, global: Option<&FlowMap>) -> WindowFlow {
         let window = heights.window;
         let inflow = global.map_or_else(Vec::new, |global| window.inflow(global));
-        let flow = drain(&window, &heights.levels, &inflow, sea());
+        let flow = drain(
+            &window,
+            &heights.levels,
+            &inflow,
+            heights.elevation.sea_level(),
+        );
         let min_area = window.river_min_area();
         let fill = fill_levels(&window, &heights.levels, &flow, min_area);
         WindowFlow {
@@ -1615,6 +1657,7 @@ impl WindowFlow {
             min_area,
             fill,
             filled: flow.filled,
+            elevation: heights.elevation,
         }
     }
 
@@ -1648,7 +1691,14 @@ impl WindowFlow {
         }
         let window = self.window;
         let dir = |p: V3| window.dir(p[0], p[1]);
-        let curves = rivers.curves(&self.receiver, &self.area, &self.filled, dir, world_km);
+        let curves = rivers.curves(
+            &self.receiver,
+            &self.area,
+            &self.filled,
+            dir,
+            world_km,
+            self.elevation,
+        );
         ChannelWindow {
             window,
             data,
@@ -1782,7 +1832,7 @@ pub fn window_channels(heights: &WindowHeights, global: &FlowMap, world_km: f64)
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::cube::level_to_meters;
+    use crate::cube::Elevation;
     use crate::math::{angle, dir_to_lonlat, lonlat_to_dir};
 
     pub(crate) const WORLD_KM: f64 = 6371.0;
@@ -1796,7 +1846,7 @@ pub(crate) mod tests {
     ) -> CoarseHeights {
         CoarseHeights::from_fn(m, |d| {
             let (face, x, y) = cell_at(m, d);
-            meters_to_level(meters(face, x, y))
+            Elevation::default().level(meters(face, x, y))
         })
     }
 
@@ -1826,7 +1876,7 @@ pub(crate) mod tests {
         let wave = |k: f64, p: f64| (k * d[0] + p).sin() * (k * d[1] - p).cos() * (k * d[2]).cos();
         let meters =
             -250.0 + 1800.0 * wave(3.0, 0.4) + 900.0 * wave(7.0, 1.3) + 400.0 * wave(17.0, 2.1);
-        meters_to_level(meters)
+        Elevation::default().level(meters)
     }
 
     /// A strip of land on face 0, 7 cells wide. The middle row is a valley
@@ -1910,7 +1960,7 @@ pub(crate) mod tests {
         let peak = lonlat_to_dir(38.0, 28.0);
         let heights = CoarseHeights::from_fn(m, |d| {
             let from_peak = angle(d, peak);
-            meters_to_level(if from_peak < 0.6 {
+            Elevation::default().level(if from_peak < 0.6 {
                 3100.0 - 5000.0 * from_peak
             } else {
                 OCEAN
@@ -1962,14 +2012,14 @@ pub(crate) mod tests {
         let middle = lonlat_to_dir(-20.0, 10.0);
         let heights = CoarseHeights::from_fn(m, |d| {
             let r = angle(d, middle);
-            meters_to_level(if r < 0.5 {
+            Elevation::default().level(if r < 0.5 {
                 2500.0 - 8000.0 * (r - 0.25).abs()
             } else {
                 OCEAN
             })
         });
         let pit = cell_at(m, middle);
-        assert!(level_to_meters(heights.level(pit.0, pit.1, pit.2)) < 800.0);
+        assert!(Elevation::default().meters(heights.level(pit.0, pit.1, pit.2)) < 800.0);
         let flow = FlowMap::new(&heights);
         for cell in cells(m).filter(|&cell| !is_ocean(&heights, cell)) {
             let path = path(&flow, cell);
@@ -1990,10 +2040,10 @@ pub(crate) mod tests {
     #[test]
     fn a_world_with_no_sea_has_no_rivers() {
         let m = 32;
-        let hills = |d: V3| meters_to_level(2000.0 + 1500.0 * (5.0 * d[0]).sin() * d[2]);
+        let hills = |d: V3| Elevation::default().level(2000.0 + 1500.0 * (5.0 * d[0]).sin() * d[2]);
         for heights in [
             CoarseHeights::from_fn(m, hills),
-            CoarseHeights::from_fn(m, |_| meters_to_level(OCEAN)),
+            CoarseHeights::from_fn(m, |_| Elevation::default().level(OCEAN)),
         ] {
             let flow = FlowMap::new(&heights);
             for (face, x, y) in cells(m) {
@@ -2015,7 +2065,7 @@ pub(crate) mod tests {
         let heights = CoarseHeights::from_fn(m, |d| {
             let (lon, lat) = dir_to_lonlat(d);
             let across = (lat - 0.4).abs();
-            meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
+            Elevation::default().level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
                 100.0 + 20.0 * (lon - 10.0) + 300.0 * across
             } else {
                 OCEAN
@@ -2419,13 +2469,13 @@ pub(crate) mod tests {
         let heights = CoarseHeights::from_fn(m, |d| {
             let (face, a, b) = face_of(d);
             if face != 0 {
-                return meters_to_level(-1000.0);
+                return Elevation::default().level(-1000.0);
             }
             let (x, y) = face_cells(m, d);
             let (x, y) = (x - middle, y - middle);
             let (along, across) = (x * sx + y * sy, (y * sx - x * sy).abs());
             let land = a.abs() < 0.9 && b.abs() < 0.9 && along > -40.0;
-            meters_to_level(if land {
+            Elevation::default().level(if land {
                 100.0 + 10.0 * (along + 40.0) + 40.0 * across
             } else {
                 -1000.0
@@ -2480,7 +2530,7 @@ pub(crate) mod tests {
     }
 
     fn slope(d: V3) -> u16 {
-        meters_to_level(slope_meters(d))
+        Elevation::default().level(slope_meters(d))
     }
 
     /// A valley along the equator that goes down to the west, from face 2 to
@@ -2488,7 +2538,7 @@ pub(crate) mod tests {
     pub(crate) fn equator_valley(d: V3) -> u16 {
         let (lon, lat) = dir_to_lonlat(d);
         let across = (lat - 0.4).abs();
-        meters_to_level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
+        Elevation::default().level(if lon > 10.0 && lon < 80.0 && across < 3.0 {
             100.0 + 20.0 * (lon - 10.0) + 300.0 * across
         } else {
             OCEAN
@@ -2574,7 +2624,7 @@ pub(crate) mod tests {
     #[test]
     fn a_window_with_no_sea_drains_to_its_border() {
         let window = Window::centered(lonlat_to_dir(10.0, 5.0), 1024, 2, 64);
-        let land = |d: V3| meters_to_level(slope_meters(d) + 2000.0);
+        let land = |d: V3| Elevation::default().level(slope_meters(d) + 2000.0);
         let heights = WindowHeights::from_fn(window, land);
         assert!(heights.levels.iter().all(|&level| level >= sea()));
         let flow = WindowFlow::new(&heights, None);
@@ -2650,7 +2700,7 @@ pub(crate) mod tests {
     #[test]
     fn a_window_past_a_face_edge_follows_the_land_of_the_next_face() {
         let n = 256;
-        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        let mut map = Heightmap::new(n, Elevation::default().level(OCEAN));
         for face in [0, 2] {
             let levels: Vec<u16> = (0..n * n)
                 .map(|i| equator_valley(map.texel_dir(face, i % n, i / n)))
@@ -2699,7 +2749,7 @@ pub(crate) mod tests {
     #[ignore]
     fn window_time_at_the_full_size() {
         let n = 8192;
-        let mut map = Heightmap::new(n, meters_to_level(OCEAN));
+        let mut map = Heightmap::new(n, Elevation::default().level(OCEAN));
         let land = TexelRect {
             x0: 3000,
             y0: 3000,

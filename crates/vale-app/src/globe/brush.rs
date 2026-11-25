@@ -5,10 +5,10 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
-    ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
-    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, meters_to_level,
-    talus_levels,
+    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
+    DEFAULT_ELEV_MAX, DEFAULT_ELEV_MIN, Elevation, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS,
+    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp,
+    StampPlan, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -228,7 +228,7 @@ impl Default for BrushSettings {
             floor_m: 0.0,
             ceiling_on: false,
             ceiling_m: 1000.0,
-            value_range: (ELEV_MIN, ELEV_MAX),
+            value_range: (DEFAULT_ELEV_MIN, DEFAULT_ELEV_MAX),
         }
     }
 }
@@ -319,7 +319,7 @@ impl BrushSettings {
     /// `strength_value` gives the strength.
     pub fn meters_value(&self, meters: f64) -> f64 {
         let (min, max) = self.value_range;
-        meters * (max - min) / (ELEV_MAX - ELEV_MIN)
+        meters * (max - min) / (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN)
     }
 
     /// The settings of an ocean ridge stroke with this brush radius, in
@@ -327,7 +327,7 @@ impl BrushSettings {
     pub fn ridge_spec(&self, radius: f64, world_km: f64, seed: u32) -> Ridge {
         Ridge {
             radius,
-            crest: meters_to_level(self.ridge_crest_m),
+            crest: Elevation::default().level(self.ridge_crest_m),
             segment: self.ridge_segment_km / world_km,
             offset: self.ridge_offset_km / world_km,
             spread: 0.5 * self.ridge_spread_mm / world_km,
@@ -347,7 +347,7 @@ impl BrushSettings {
     /// The settings of a range stroke with this brush radius, in radians.
     /// `world_km` is the radius of the world.
     pub fn range_spec(&self, radius: f64, world_km: f64, seed: u32) -> RangeSpec {
-        let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
+        let height = Elevation::default().level(self.strength_m) - Elevation::default().level(0.0);
         RangeSpec {
             radius,
             height: f64::from(height),
@@ -360,7 +360,7 @@ impl BrushSettings {
     /// The settings of a basin. `world_km` is the radius of the world. The
     /// height is the strength. The channels have the default width.
     pub fn basin_spec(&self, world_km: f64, seed: u32, rain: Rain) -> BasinSpec {
-        let height = meters_to_level(self.strength_m) - meters_to_level(0.0);
+        let height = Elevation::default().level(self.strength_m) - Elevation::default().level(0.0);
         BasinSpec {
             height: f64::from(height),
             density: self.basin_density_km / world_km,
@@ -535,7 +535,7 @@ impl Tip<'_> {
     fn stamp(&self, center: V3, flow: f64, motion: V3) -> Stamp {
         let input = flow;
         let flow = flow * self.brush.flow;
-        let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+        let span = (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN) / 65535.0;
         Stamp {
             center,
             radius: self.radius,
@@ -612,7 +612,12 @@ pub fn set_world(
     world_km: f64,
     seed: u32,
 ) {
-    stamp.talus = talus_levels(brush.talus_deg, face_size, world_km * 1000.0);
+    stamp.talus = talus_levels(
+        brush.talus_deg,
+        face_size,
+        world_km * 1000.0,
+        Elevation::default(),
+    );
     stamp.scale = brush.scale_km / world_km;
     stamp.seed = seed;
     stamp.channel = brush.channel_shape(world_km);
@@ -827,7 +832,7 @@ impl Backlog {
 mod tests {
     use std::time::Duration;
 
-    use vale_terrain::{Heightmap, meters_to_level};
+    use vale_terrain::{Elevation, Heightmap};
 
     use super::*;
     use crate::globe::math::{dot, length, lonlat_to_dir};
@@ -966,7 +971,7 @@ mod tests {
         };
         let mut out = Vec::new();
         Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
-        let step = f64::from(out[0].level) * (ELEV_MAX - ELEV_MIN) / 65535.0;
+        let step = f64::from(out[0].level) * (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN) / 65535.0;
         assert!((step - 300.0).abs() < 0.1, "{step}");
         assert_eq!(out[0].flow, 0.3);
         assert!(needs_height(Mode::Terrace));
@@ -1012,7 +1017,7 @@ mod tests {
         assert_eq!(stamp_of(&brush).limits, Limits::default());
 
         brush.floor_on = true;
-        let floor = meters_to_level(0.0);
+        let floor = Elevation::default().level(0.0);
         assert_eq!(floor, 32768);
         assert_eq!(
             stamp_of(&brush).limits,
@@ -1024,7 +1029,7 @@ mod tests {
 
         brush.ceiling_on = true;
         brush.ceiling_m = 3000.0;
-        let ceiling = meters_to_level(3000.0);
+        let ceiling = Elevation::default().level(3000.0);
         assert_eq!(ceiling, 49151);
         for mode in [
             Mode::Lower,
@@ -1042,7 +1047,7 @@ mod tests {
         // The floor can be above the ceiling.
         brush.floor_m = 4000.0;
         let limits = stamp_of(&brush).limits;
-        assert_eq!(limits.floor, meters_to_level(4000.0));
+        assert_eq!(limits.floor, Elevation::default().level(4000.0));
         assert_eq!(limits.ceiling, ceiling);
     }
 
@@ -1128,7 +1133,7 @@ mod tests {
             shadow: 0.5,
         };
         let spec = brush.basin_spec(6371.0, 9, rain);
-        let height = meters_to_level(2000.0) - meters_to_level(0.0);
+        let height = Elevation::default().level(2000.0) - Elevation::default().level(0.0);
         assert_eq!(spec.height, f64::from(height));
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
         assert_eq!(spec.erosion, brush.erosion);

@@ -13,9 +13,9 @@ use vale_store::{
     BlendMode, Hillshade, ImageId, LayerId, LonLat, RasterDisplay, RasterId, Smoothing, Uuid,
 };
 use vale_terrain::{
-    Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES,
-    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL, Stamp,
-    TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
+    Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, Elevation, ErodeBrush, ErodeStep,
+    FACES, Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL,
+    Stamp, TexelRect, Window, WindowHeights, max_level, reduced_cap, reduced_face_size,
     smoothing_level,
 };
 
@@ -377,7 +377,10 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
     let (line, range) = match brush.mode {
         Mode::OceanRidge => {
             let spec = brush.ridge_spec(radius, km, seed);
-            (BrushLine::Ridge(RidgeLine::new(spec, n)), None)
+            (
+                BrushLine::Ridge(RidgeLine::new(spec, n, Elevation::default())),
+                None,
+            )
         }
         Mode::Range => {
             let spec = brush.range_spec(radius, km, seed);
@@ -1156,7 +1159,7 @@ impl Default for Globe {
 impl Globe {
     pub fn with_face_size(face_size: usize) -> Globe {
         let (link, events) = Link::new();
-        let map = Heightmap::new(face_size, meters_to_level(START_ELEVATION));
+        let map = Heightmap::new(face_size, Elevation::default().level(START_ELEVATION));
         let mut globe = Globe {
             rivers: Rivers::new(&map, false),
             eroder: Eroder::new(false),
@@ -1277,7 +1280,10 @@ impl Globe {
 
     /// The heightmap of a globe with no raster layer.
     fn empty_map(&self) -> Heightmap {
-        Heightmap::new(self.new_face_size, meters_to_level(START_ELEVATION))
+        Heightmap::new(
+            self.new_face_size,
+            Elevation::default().level(START_ELEVATION),
+        )
     }
 
     /// Makes the globe that of a new world: no raster layer, an empty
@@ -3845,7 +3851,7 @@ impl Globe {
                 };
                 (held.spec, held.flow) = wanted;
                 let scale = held.flow / held.drawn_flow.max(1e-6);
-                let mut line = RidgeLine::new(spec, n);
+                let mut line = RidgeLine::new(spec, n, Elevation::default());
                 for &(dir, flow) in &ridge.points {
                     line.push(dir, (flow * scale).min(1.0));
                 }
@@ -5545,7 +5551,7 @@ mod tests {
     fn the_pieces_of_a_ridge_plan_cover_its_rectangles_once() {
         let brush = BrushSettings::default();
         let n = 8192;
-        let mut line = RidgeLine::new(brush.ridge_spec(0.1, 6371.0, 7), n);
+        let mut line = RidgeLine::new(brush.ridge_spec(0.1, 6371.0, 7), n, Elevation::default());
         for i in 0..=30 {
             line.push(lonlat_to_dir(f64::from(i), 0.0), 1.0);
         }

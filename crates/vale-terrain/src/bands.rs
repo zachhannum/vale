@@ -2,7 +2,7 @@
 
 use std::ops::Range;
 
-use crate::cube::{ELEV_MAX, ELEV_MIN};
+use crate::cube::{DEFAULT_ELEV_MAX, DEFAULT_ELEV_MIN};
 
 pub type Rgb = [u8; 3];
 
@@ -163,7 +163,7 @@ impl Default for Bands {
             -4000.0, -2000.0, -1000.0, -200.0, SEA_LEVEL, 200.0, 500.0, 1000.0, 2000.0, 3000.0,
             4000.0,
         ];
-        Bands::from_palette(ELEV_MIN, ELEV_MAX, true, &limits)
+        Bands::from_palette(DEFAULT_ELEV_MIN, DEFAULT_ELEV_MAX, true, &limits)
     }
 }
 
@@ -979,7 +979,7 @@ fn blend(colors: &[Rgb], t: f64) -> Rgb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::{level_to_meters, meters_to_level};
+    use crate::cube::Elevation;
 
     fn values(bands: &Bands) -> Vec<f64> {
         bands.stops().iter().map(|s| s.value).collect()
@@ -1045,7 +1045,7 @@ mod tests {
         assert_eq!(bands.stops()[sea].value, SEA_LEVEL);
         assert_eq!(
             (bands.stops()[0].value, bands.stops()[12].value),
-            (ELEV_MIN, ELEV_MAX)
+            (DEFAULT_ELEV_MIN, DEFAULT_ELEV_MAX)
         );
         assert!(sorted(&bands));
     }
@@ -1175,8 +1175,14 @@ mod tests {
         stops[0].line = line;
         stops[last].line = line;
         stops[3].line = line;
-        let saved =
-            Bands::from_range_parts(ELEV_MIN, ELEV_MAX, true, &stops, bands.colors()).unwrap();
+        let saved = Bands::from_range_parts(
+            DEFAULT_ELEV_MIN,
+            DEFAULT_ELEV_MAX,
+            true,
+            &stops,
+            bands.colors(),
+        )
+        .unwrap();
         assert_eq!(saved.stops()[0].line, StopLine::default());
         assert_eq!(saved.stops()[last].line, StopLine::default());
         assert_eq!(saved.stops()[3].line, line);
@@ -1208,12 +1214,12 @@ mod tests {
             SEA_LEVEL,
             200.5,
             199.5,
-            ELEV_MIN,
-            ELEV_MAX,
-            ELEV_MIN + 0.5,
-            ELEV_MAX - 0.5,
-            ELEV_MIN - 100.0,
-            ELEV_MAX + 100.0,
+            DEFAULT_ELEV_MIN,
+            DEFAULT_ELEV_MAX,
+            DEFAULT_ELEV_MIN + 0.5,
+            DEFAULT_ELEV_MAX - 0.5,
+            DEFAULT_ELEV_MIN - 100.0,
+            DEFAULT_ELEV_MAX + 100.0,
             f64::NAN,
             f64::INFINITY,
             f64::NEG_INFINITY,
@@ -1222,7 +1228,7 @@ mod tests {
         }
         assert_eq!(bands, before);
         assert_eq!(bands.add(201.0), Some(7));
-        assert_eq!(bands.add(ELEV_MIN + MIN_BAND), Some(1));
+        assert_eq!(bands.add(DEFAULT_ELEV_MIN + MIN_BAND), Some(1));
     }
 
     #[test]
@@ -1275,8 +1281,8 @@ mod tests {
         assert_eq!(bands.move_to(7, f64::INFINITY), 1000.0 - MIN_BAND);
         assert_eq!(bands.move_to(7, f64::NAN), 1000.0 - MIN_BAND);
 
-        assert_eq!(bands.move_to(1, -9000.0), ELEV_MIN + MIN_BAND);
-        assert_eq!(bands.move_to(11, 9000.0), ELEV_MAX - MIN_BAND);
+        assert_eq!(bands.move_to(1, -9000.0), DEFAULT_ELEV_MIN + MIN_BAND);
+        assert_eq!(bands.move_to(11, 9000.0), DEFAULT_ELEV_MAX - MIN_BAND);
         assert_eq!(bands.move_to(4, 500.0), SEA_LEVEL - MIN_BAND);
         assert_eq!(bands.stops().len(), 13);
         assert!(sorted(&bands));
@@ -1289,8 +1295,8 @@ mod tests {
         let sea = bands.sea().unwrap();
         assert!(bands.fixed(0) && bands.fixed(last) && bands.fixed(sea));
         assert!(!bands.fixed(1) && !bands.fixed(last - 1));
-        assert_eq!(bands.move_to(0, 100.0), ELEV_MIN);
-        assert_eq!(bands.move_to(last, 100.0), ELEV_MAX);
+        assert_eq!(bands.move_to(0, 100.0), DEFAULT_ELEV_MIN);
+        assert_eq!(bands.move_to(last, 100.0), DEFAULT_ELEV_MAX);
         assert_eq!(bands.move_to(sea, 100.0), SEA_LEVEL);
         assert_eq!(bands.move_to(sea, -100.0), SEA_LEVEL);
         assert!(!bands.remove(0));
@@ -1336,10 +1342,13 @@ mod tests {
             let index = (0..bands.stops().len()).find(|&i| !bands.fixed(i)).unwrap();
             assert!(bands.remove(index));
         }
-        assert_eq!(values(&bands), [ELEV_MIN, SEA_LEVEL, ELEV_MAX]);
+        assert_eq!(
+            values(&bands),
+            [DEFAULT_ELEV_MIN, SEA_LEVEL, DEFAULT_ELEV_MAX]
+        );
         let steps = bands.bands();
-        assert_eq!((steps[0].min, steps[0].max), (ELEV_MIN, SEA_LEVEL));
-        assert_eq!((steps[1].min, steps[1].max), (SEA_LEVEL, ELEV_MAX));
+        assert_eq!((steps[0].min, steps[0].max), (DEFAULT_ELEV_MIN, SEA_LEVEL));
+        assert_eq!((steps[1].min, steps[1].max), (SEA_LEVEL, DEFAULT_ELEV_MAX));
         // Each removal keeps the lower color: the deepest sea band and the
         // first land band.
         let old = Bands::default().colors().to_vec();
@@ -1358,8 +1367,8 @@ mod tests {
         bands.remove(8);
         let steps = bands.bands();
         assert_eq!(steps.len(), bands.stops().len() - 1);
-        assert_eq!(steps[0].min, ELEV_MIN);
-        assert_eq!(steps[steps.len() - 1].max, ELEV_MAX);
+        assert_eq!(steps[0].min, DEFAULT_ELEV_MIN);
+        assert_eq!(steps[steps.len() - 1].max, DEFAULT_ELEV_MAX);
         for pair in steps.windows(2) {
             assert_eq!(pair[0].max, pair[1].min);
             if pair[0].max != SEA_LEVEL {
@@ -1427,14 +1436,32 @@ mod tests {
     #[test]
     fn the_default_gives_the_levels_of_meters() {
         let bands = Bands::default();
-        assert_eq!((bands.min(), bands.max()), (ELEV_MIN, ELEV_MAX));
+        assert_eq!(
+            (bands.min(), bands.max()),
+            (DEFAULT_ELEV_MIN, DEFAULT_ELEV_MAX)
+        );
         for meters in [
-            -9000.0, ELEV_MIN, -1234.5, SEA_LEVEL, 0.1, 2500.0, ELEV_MAX, 9000.0,
+            -9000.0,
+            DEFAULT_ELEV_MIN,
+            -1234.5,
+            SEA_LEVEL,
+            0.1,
+            2500.0,
+            DEFAULT_ELEV_MAX,
+            9000.0,
         ] {
-            assert_eq!(bands.level(meters), meters_to_level(meters), "{meters}");
+            assert_eq!(
+                bands.level(meters),
+                Elevation::default().level(meters),
+                "{meters}"
+            );
         }
         for level in [0, 1, 32767, 32768, 65535] {
-            assert_eq!(bands.value(level), level_to_meters(level), "{level}");
+            assert_eq!(
+                bands.value(level),
+                Elevation::default().meters(level),
+                "{level}"
+            );
         }
         assert_eq!(copy(&bands), Some(bands));
     }
@@ -1672,8 +1699,11 @@ mod tests {
         assert_eq!(bands.part(&greys(3)), Part::Land);
         let painted = bands.painted(&greys(3)).unwrap();
         assert_eq!(painted.stops()[..=sea], bands.stops()[..=sea]);
-        let third = ELEV_MAX / 3.0;
-        assert_eq!(values(&painted)[sea..], [0.0, third, 2.0 * third, ELEV_MAX]);
+        let third = DEFAULT_ELEV_MAX / 3.0;
+        assert_eq!(
+            values(&painted)[sea..],
+            [0.0, third, 2.0 * third, DEFAULT_ELEV_MAX]
+        );
         let old = band_colors(&bands);
         assert_eq!(band_colors(&painted), [&old[..sea], &greys(3)].concat());
     }
@@ -1685,10 +1715,10 @@ mod tests {
         let painted = bands.painted(&greys(3)).unwrap();
         assert_eq!(painted.part(&deep), Part::Sea);
         let both = painted.painted(&deep).unwrap();
-        let half = ELEV_MIN / 4.0;
+        let half = DEFAULT_ELEV_MIN / 4.0;
         assert_eq!(
             values(&both)[..5],
-            [ELEV_MIN, 3.0 * half, 2.0 * half, half, 0.0]
+            [DEFAULT_ELEV_MIN, 3.0 * half, 2.0 * half, half, 0.0]
         );
         // The land does not change.
         let sea = bands.sea().unwrap();
@@ -1803,7 +1833,10 @@ mod tests {
         let sea = bands.sea().unwrap();
         // Grey is a land color, but the user chose the sea.
         let painted = bands.painted_part(&greys(2), &[], Part::Sea).unwrap();
-        assert_eq!(values(&painted)[..3], [ELEV_MIN, ELEV_MIN / 2.0, 0.0]);
+        assert_eq!(
+            values(&painted)[..3],
+            [DEFAULT_ELEV_MIN, DEFAULT_ELEV_MIN / 2.0, 0.0]
+        );
         assert_eq!(painted.stops()[3..], bands.stops()[sea + 1..]);
         assert_eq!(band_colors(&painted)[..2], greys(2));
         let stretched = bands.stretched_part(&greys(2), &[], Part::Sea).unwrap();
@@ -1853,10 +1886,17 @@ mod tests {
             [140, 81, 10],
         ];
         let painted = bands.painted(&colors).unwrap();
-        let land = ELEV_MAX / 4.0;
+        let land = DEFAULT_ELEV_MAX / 4.0;
         assert_eq!(
             values(&painted),
-            [ELEV_MIN, 0.0, land, 2.0 * land, 3.0 * land, ELEV_MAX]
+            [
+                DEFAULT_ELEV_MIN,
+                0.0,
+                land,
+                2.0 * land,
+                3.0 * land,
+                DEFAULT_ELEV_MAX
+            ]
         );
         assert_eq!(band_colors(&painted), colors);
     }
@@ -2004,11 +2044,11 @@ mod tests {
             .painted_in(&greys(2), &[], Part::Land, 0..12, -5000.0, 2000.0)
             .unwrap();
         assert_eq!(land.stops()[..=sea], bands.stops()[..=sea]);
-        assert_eq!(values(&land)[sea..], [0.0, 1000.0, ELEV_MAX]);
+        assert_eq!(values(&land)[sea..], [0.0, 1000.0, DEFAULT_ELEV_MAX]);
         let water = bands
             .painted_in(&greys(2), &[], Part::Sea, 0..12, -3000.0, 2000.0)
             .unwrap();
-        assert_eq!(values(&water)[..3], [ELEV_MIN, -1500.0, 0.0]);
+        assert_eq!(values(&water)[..3], [DEFAULT_ELEV_MIN, -1500.0, 0.0]);
     }
 
     #[test]
@@ -2182,10 +2222,17 @@ mod tests {
         assert_eq!(painted.colors()[sea - 1], colors[3]);
         assert_eq!(painted.colors()[sea], colors[4]);
         assert_eq!(painted.colors()[9], colors[7]);
-        let land = ELEV_MAX / 5.0;
+        let land = DEFAULT_ELEV_MAX / 5.0;
         assert_eq!(
             values(&painted)[sea..],
-            [0.0, land, 2.0 * land, 3.0 * land, 4.0 * land, ELEV_MAX]
+            [
+                0.0,
+                land,
+                2.0 * land,
+                3.0 * land,
+                4.0 * land,
+                DEFAULT_ELEV_MAX
+            ]
         );
     }
 

@@ -11,7 +11,7 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, warp};
+use crate::cube::{FACES, warp};
 use crate::flow::{RIVER_MIN_AREA, RIVER_OCTAVES, Window};
 use crate::math::{V3, add, dot, length, scale};
 
@@ -95,9 +95,6 @@ pub(crate) fn plain_factor(area: f64, slope: f64, world_km: f64) -> f64 {
     let large = smoothstep(km2, PLAIN_AREAS_KM2.0, PLAIN_AREAS_KM2.1);
     large * (1.0 - smoothstep(slope, PLAIN_SLOPES.0, PLAIN_SLOPES.1))
 }
-
-/// The meters of one 16-bit step.
-pub(crate) const METERS_PER_LEVEL: f64 = (ELEV_MAX - ELEV_MIN) / 65535.0;
 
 /// The depth of a channel for a drained area, from 0.25 to 1. It grows over
 /// `RIVER_OCTAVES` doublings from `RIVER_MIN_AREA`.

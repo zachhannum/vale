@@ -695,7 +695,7 @@ fn wet_runs(wet: impl Iterator<Item = bool>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::{FACES, face_of, meters_to_level};
+    use crate::cube::{Elevation, FACES, face_of};
     use crate::math::{dir_to_lonlat, lonlat_to_dir};
     use std::time::Instant;
 
@@ -709,12 +709,12 @@ mod tests {
     }
 
     fn paint(n: usize, h: impl Fn(f64, f64) -> f64) -> Heightmap {
-        let mut map = Heightmap::new(n, meters_to_level(200.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(200.0));
         for face in 0..FACES {
             for y in 0..n {
                 for x in 0..n {
                     let (lon, lat) = dir_to_lonlat(map.texel_dir(face, x, y));
-                    map.set(face, x, y, meters_to_level(h(lon, lat)));
+                    map.set(face, x, y, Elevation::default().level(h(lon, lat)));
                 }
             }
         }
@@ -928,7 +928,7 @@ mod tests {
     #[ignore]
     fn manual_a_fit_of_1000_texels_takes_less_than_100_ms() {
         let n = 8192;
-        let mut map = Heightmap::new(n, meters_to_level(500.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(500.0));
         let radius_m = 6.371e6;
         for y in n / 2 - 120..n / 2 + 120 {
             for x in n / 2 - 560..n / 2 + 560 {
@@ -936,7 +936,7 @@ mod tests {
                 let h = 500.0
                     + 600.0 * (fx / 23.0).sin() * (fy / 17.0).cos()
                     + 300.0 * (fx / 7.0 + fy / 11.0).sin();
-                map.set(0, x, y, meters_to_level(h));
+                map.set(0, x, y, Elevation::default().level(h));
             }
         }
         let stroke = [

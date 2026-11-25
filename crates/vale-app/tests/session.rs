@@ -15,7 +15,7 @@ use vale_store::{
 use vale_style::expr::Filter;
 use vale_style::{LayerStyle, PointSymbolizer, Rule, Style, Symbolizer};
 use vale_terrain::math::lonlat_to_dir;
-use vale_terrain::{Bands, FACES, Heightmap, Limits, Mode, Stamp, TexelRect, meters_to_level};
+use vale_terrain::{Bands, Elevation, FACES, Heightmap, Limits, Mode, Stamp, TexelRect};
 
 const BASE: u16 = 19114;
 
@@ -535,7 +535,7 @@ fn a_heightmap_opens_again_with_its_face_size() {
 
     // A heightmap of another face size does not go to the file. The world
     // goes to the file, and the file keeps its tiles.
-    let mut small = Heightmap::new(1024, meters_to_level(0.0));
+    let mut small = Heightmap::new(1024, Elevation::default().level(0.0));
     paint(&mut small, -50.0, -50.0, 0.1);
     doc.project.world.name = "Other".to_string();
     session

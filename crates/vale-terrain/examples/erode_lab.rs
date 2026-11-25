@@ -13,9 +13,8 @@ use std::path::{Path, PathBuf};
 
 use image::{Rgb, RgbImage};
 use vale_terrain::{
-    ChannelShape, CoarseHeights, ELEV_MAX, ELEV_MIN, ErodeBrush, Erosion, Heightmap, Limits, Mode,
-    OuterFlow, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir, meters_to_level, talus_levels,
-    unwarp,
+    ChannelShape, CoarseHeights, Elevation, ErodeBrush, Erosion, Heightmap, Limits, Mode,
+    OuterFlow, Stamp, WINDOW_CELLS, Window, WindowHeights, face_dir, talus_levels, unwarp,
 };
 
 const N: usize = 2048;
@@ -82,10 +81,15 @@ fn ground_m(x: f64, y: f64) -> f64 {
 }
 
 fn start_map() -> Heightmap {
-    let mut map = Heightmap::new(N, meters_to_level(0.0));
+    let mut map = Heightmap::new(N, Elevation::default().level(0.0));
     for y in 0..N {
         for x in 0..N {
-            map.set(0, x, y, meters_to_level(ground_m(x as f64, y as f64)));
+            map.set(
+                0,
+                x,
+                y,
+                Elevation::default().level(ground_m(x as f64, y as f64)),
+            );
         }
     }
     map
@@ -157,7 +161,7 @@ fn stamp(mode: Mode, center: [f64; 3], radius: f64, flow: f64, strength: f64) ->
         level: 0,
         strength,
         lower: 0.0,
-        talus: talus_levels(TALUS_DEG, N, WORLD_KM * 1000.0),
+        talus: talus_levels(TALUS_DEG, N, WORLD_KM * 1000.0, Elevation::default()),
         scale: 0.0,
         seed: SEED,
         motion: [0.0; 3],
@@ -235,7 +239,7 @@ fn uplift_rate(window: &Window, radius: f64, stamps: usize) -> f64 {
 /// uplift stroke only raises the texels.
 fn paint(map: &mut Heightmap, mode: StrokeMode, radius_texels: f64, v: &Variant, erode: bool) {
     let radius = radius_texels * FRAC_PI_2 / N as f64;
-    let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+    let span = Elevation::default().meters_per_level();
     let (passes, group) = match mode {
         StrokeMode::Uplift => (UPLIFT_PASSES, UPLIFT_GROUP),
         StrokeMode::Erode => (ERODE_PASSES, ERODE_GROUP),
@@ -744,7 +748,7 @@ fn pictures(h: &[f64], r: &Region) -> (RgbImage, RgbImage) {
 /// A hillshade from the northwest at 2 times the size, for a person who
 /// looks at the valleys.
 fn shade(h: &[f64], r: &Region) -> RgbImage {
-    let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+    let span = Elevation::default().meters_per_level();
     let texel_m = WORLD_KM * 1000.0 * FRAC_PI_2 / N as f64;
     let z = 40.0 * span / texel_m;
     let at = |x: usize, y: usize| h[y.min(r.h - 1) * r.w + x.min(r.w - 1)];
@@ -838,7 +842,7 @@ fn run(v: &Variant, mode: StrokeMode, radius: f64, base: &Heightmap, out: &Path)
         40.0 * scale * scale,
         (6.0 * scale).round() as usize,
     );
-    let span = (ELEV_MAX - ELEV_MIN) / 65535.0;
+    let span = Elevation::default().meters_per_level();
     let inside: Vec<usize> = (0..r.mask.len()).filter(|&i| r.mask[i]).collect();
     let mean_change =
         inside.iter().map(|&i| after[i] - before[i]).sum::<f64>() / inside.len() as f64;

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::basin::BasinCut;
 use crate::channel::{ChannelCut, ChannelShape};
-use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level, unwarp, warp};
+use crate::cube::{Elevation, FACES, face_dir, face_of, unwarp, warp};
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
@@ -223,9 +223,14 @@ const WARP_MARGIN: f64 = 3.0;
 
 /// The slope of an angle on a world, in 16-bit steps for each texel step.
 /// The texel step is the one at the center of a face.
-pub fn talus_levels(angle_deg: f64, face_size: usize, world_radius_m: f64) -> f64 {
+pub fn talus_levels(
+    angle_deg: f64,
+    face_size: usize,
+    world_radius_m: f64,
+    elevation: Elevation,
+) -> f64 {
     let texel_m = world_radius_m * FRAC_PI_2 / face_size as f64;
-    angle_deg.to_radians().tan() * texel_m / ((ELEV_MAX - ELEV_MIN) / 65535.0)
+    angle_deg.to_radians().tan() * texel_m / elevation.meters_per_level()
 }
 
 /// The brush effect at a texel is the mean of the falloff over the area of
@@ -389,6 +394,8 @@ pub struct StampPlan {
     /// The distance from a texel to the neighbors that the smooth mode reads,
     /// in texels.
     pub reach: usize,
+    /// The elevation range of the heightmap.
+    pub elevation: Elevation,
 }
 
 /// The texels of one tile. A snapshot shares it, and the first write after
@@ -530,6 +537,14 @@ impl Heightmap {
     /// The level of each texel in a tile that has no memory.
     pub fn base(&self) -> u16 {
         self.base
+    }
+
+    /// The elevation range. The bands hold it.
+    pub fn elevation(&self) -> Elevation {
+        Elevation {
+            min: self.bands.min(),
+            max: self.bands.max(),
+        }
     }
 
     /// Sets the rivers that the carve mode and the ridge mode follow, and the
@@ -1148,6 +1163,7 @@ impl Heightmap {
             },
             rects: std::array::from_fn(|face| brush_rect(self.n, face, stamp.center, radius)),
             reach: ((radius / (FRAC_PI_2 / self.n as f64)) * reach).max(1.0) as usize,
+            elevation: self.elevation(),
         }
     }
 
@@ -1192,7 +1208,8 @@ impl Heightmap {
         let old_at = |x: usize, y: usize| f64::from(before[y * bw + x]);
         let channels = self.channels.clone();
         let window = self.window.clone();
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let elevation = self.elevation();
+        let sea = f64::from(elevation.level(SEA_LEVEL));
         let channel_size = channels.as_ref().map_or(0.0, |c| c.size() as f64);
         let n = self.n as f64;
         let cut = ChannelCut {
@@ -1225,7 +1242,7 @@ impl Heightmap {
             })
         };
         let octaves = noise_octaves(stamp.scale, self.n);
-        let relief_span = f64::from(meters_to_level(SEA_LEVEL + NOISE_RELIEF_M)) - sea;
+        let relief_span = f64::from(elevation.level(SEA_LEVEL + NOISE_RELIEF_M)) - sea;
         // The ridge height at a texel. The window comes first. With no
         // channel map, no river is near, so the ridge has its full height.
         let ridge = |x: usize, y: usize, fu: f64, fv: f64| {
@@ -2705,12 +2722,12 @@ mod tests {
     /// The land of `valley` with `n` texels along one side of a face, and
     /// with no channel map.
     fn valley_land(n: usize) -> Heightmap {
-        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(-1000.0));
         let data: Vec<u16> = (0..n * n)
             .map(|i| {
                 let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
                 let across = (lat - RIVER_LAT).abs();
-                meters_to_level(if lon.abs() < 30.0 && across < 20.0 {
+                Elevation::default().level(if lon.abs() < 30.0 && across < 20.0 {
                     200.0 + 20.0 * (lon + 30.0) + 60.0 * across
                 } else {
                     -1000.0
@@ -2772,7 +2789,7 @@ mod tests {
     #[test]
     fn carve_does_not_lower_land_below_sea_level() {
         let mut map = valley();
-        let sea = meters_to_level(SEA_LEVEL);
+        let sea = Elevation::default().level(SEA_LEVEL);
         let before = face_levels(&map);
         // The river is about 1300 steps above the sea at this place. The
         // bed of the smallest channel is a quarter of the strength deep.
@@ -2794,7 +2811,7 @@ mod tests {
     #[test]
     fn carve_leaves_the_sea_and_ground_far_from_a_river() {
         let mut map = valley();
-        let sea = meters_to_level(SEA_LEVEL);
+        let sea = Elevation::default().level(SEA_LEVEL);
         let before = face_levels(&map);
         // The brush covers the mouth of the river and the sea next to it.
         map.stamp(&carve(-30.0, RIVER_LAT, 0.05));
@@ -3056,7 +3073,7 @@ mod tests {
             let in_brush =
                 (-10..=10).any(|lon| angle(p, lonlat_to_dir(f64::from(lon), RIVER_LAT)) < 0.04);
             if new == old {
-                kept += usize::from(in_brush && *old > meters_to_level(SEA_LEVEL));
+                kept += usize::from(in_brush && *old > Elevation::default().level(SEA_LEVEL));
                 continue;
             }
             changed += 1;
@@ -3129,7 +3146,7 @@ mod tests {
     fn a_channel_across_a_face_edge_has_no_seam() {
         let n = 1024;
         let texel = FRAC_PI_2 / n as f64;
-        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(-1000.0));
         for face in [0, 2] {
             let data: Vec<u16> = (0..n * n)
                 .map(|i| equator_valley(map.texel_dir(face, i % n, i / n)))
@@ -3254,7 +3271,7 @@ mod tests {
     #[test]
     fn ridge_does_not_change_the_sea_floor() {
         let mut map = valley();
-        let sea = meters_to_level(SEA_LEVEL);
+        let sea = Elevation::default().level(SEA_LEVEL);
         let before = face_levels(&map);
         // The brush covers the mouth of the river and the sea next to it.
         map.stamp(&ridge(-30.0, RIVER_LAT, 0.05));
@@ -3299,7 +3316,7 @@ mod tests {
     fn ridge_without_channels_raises_the_land_as_raise_does() {
         let mut map = valley();
         map.set_channels(None);
-        let sea = meters_to_level(SEA_LEVEL);
+        let sea = Elevation::default().level(SEA_LEVEL);
         let before = face_levels(&map);
         let stamp = ridge(-30.0, RIVER_LAT, 0.05);
         map.stamp(&stamp);
@@ -3330,12 +3347,12 @@ mod tests {
     /// and latitude 0. The map has the channel map of its rivers.
     fn basin() -> Heightmap {
         let n = 256;
-        let mut map = Heightmap::new(n, meters_to_level(-1000.0));
+        let mut map = Heightmap::new(n, Elevation::default().level(-1000.0));
         let data: Vec<u16> = (0..n * n)
             .map(|i| {
                 let (lon, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
                 let from_pit = lon.hypot(lat) / PIT_RADIUS;
-                meters_to_level(if lon.abs() < 30.0 && lat.abs() < 20.0 {
+                Elevation::default().level(if lon.abs() < 30.0 && lat.abs() < 20.0 {
                     let pit = 400.0 * (1.0 - from_pit * from_pit).max(0.0);
                     200.0 + 20.0 * (lon + 30.0) - pit
                 } else {
@@ -3356,7 +3373,7 @@ mod tests {
         let center = place(&map, 0.0, 0.0);
         // Water leaves the pit at its west side.
         let rim = before[place(&map, -PIT_RADIUS, 0.0)];
-        let level = |meters: f64| i32::from(meters_to_level(meters));
+        let level = |meters: f64| i32::from(Elevation::default().level(meters));
         assert!((i32::from(rim) - level(720.0)).abs() < level(20.0) - level(0.0));
         assert!(before[center] < rim - 1000);
         let stamp = Stamp {
@@ -3446,7 +3463,7 @@ mod tests {
 
     #[test]
     fn deposit_does_not_lower_ground_and_does_not_change_the_sea_floor() {
-        let sea = meters_to_level(SEA_LEVEL);
+        let sea = Elevation::default().level(SEA_LEVEL);
         // The brush covers the mouth of the river and the sea next to it.
         for (mut map, lat) in [(valley(), RIVER_LAT), (basin(), 0.0)] {
             let before = face_levels(&map);
@@ -3993,8 +4010,11 @@ mod tests {
     fn one_angle_gives_one_slope_at_each_face_size() {
         let world = 4000.0;
         for n in [64, 128, 8192] {
-            let slope = talus_levels(15.0, n, world);
-            assert_eq!(talus_levels(15.0, 2 * n, world) * 2.0, slope);
+            let slope = talus_levels(15.0, n, world, Elevation::default());
+            assert_eq!(
+                talus_levels(15.0, 2 * n, world, Elevation::default()) * 2.0,
+                slope
+            );
         }
         // A world with a slope of 20 degrees to the north on face 0. Returns
         // `true` if a weather stamp with the angle changes it.
@@ -4003,13 +4023,17 @@ mod tests {
             let ramp: Vec<u16> = (0..n * n)
                 .map(|i| {
                     let (_, lat) = dir_to_lonlat(map.texel_dir(0, i % n, i / n));
-                    meters_to_level(20f64.to_radians().tan() * world * lat.to_radians())
+                    Elevation::default().level(20f64.to_radians().tan() * world * lat.to_radians())
                 })
                 .collect();
             map.store_rect(0, face_rect(n), &ramp);
             map.stamp(&Stamp {
                 hardness: 0.5,
-                ..weather(lonlat_to_dir(0.0, 0.0), 0.1, talus_levels(angle, n, world))
+                ..weather(
+                    lonlat_to_dir(0.0, 0.0),
+                    0.1,
+                    talus_levels(angle, n, world, Elevation::default()),
+                )
             });
             face_levels(&map) != ramp
         };
@@ -4717,7 +4741,7 @@ mod tests {
 
     /// Ground at a level of `meters` above sea level.
     fn ground_at(n: usize, meters: f64) -> Heightmap {
-        Heightmap::new(n, meters_to_level(SEA_LEVEL + meters))
+        Heightmap::new(n, Elevation::default().level(SEA_LEVEL + meters))
     }
 
     #[test]
@@ -5186,7 +5210,7 @@ mod tests {
             seed: 7,
             limits: Limits::default(),
         };
-        let mut line = RidgeLine::new(spec, map.face_size());
+        let mut line = RidgeLine::new(spec, map.face_size(), map.elevation());
         map.begin_stroke();
         for i in 0..=20 {
             let k = f64::from(i) / 20.0;
@@ -5403,7 +5427,7 @@ mod tests {
         }
 
         let limits = Limits {
-            floor: meters_to_level(SEA_LEVEL) + 500,
+            floor: Elevation::default().level(SEA_LEVEL) + 500,
             ..Limits::default()
         };
         let mut map = valley();
@@ -5552,7 +5576,7 @@ mod tests {
     /// A face of 64 texels with a ramp along x: `sea + (x - 32) * 30` on
     /// each row. The ramp crosses sea level at the face center.
     fn terrace_ramp() -> (Heightmap, f64) {
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let sea = f64::from(Elevation::default().level(SEA_LEVEL));
         let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
         let rect = TexelRect {
             x0: 0,
@@ -5632,7 +5656,7 @@ mod tests {
 
     #[test]
     fn terrace_does_not_move_a_texel_across_sea_level() {
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let sea = f64::from(Elevation::default().level(SEA_LEVEL));
         for old in [
             sea - 900.0,
             sea - 300.0,
@@ -5659,7 +5683,7 @@ mod tests {
     /// A face of 64 texels with ridges along y. Each row has sharp crests
     /// at each multiple of 16 and valleys between them, with straight slopes.
     fn shape_ridges() -> (Heightmap, f64) {
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let sea = f64::from(Elevation::default().level(SEA_LEVEL));
         let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
         let row: Vec<u16> = (0..64)
             .map(|x: i64| (sea + 1000.0 + 125.0 * ((x % 16) - 8).abs() as f64) as u16)
@@ -5739,7 +5763,7 @@ mod tests {
 
     #[test]
     fn shape_does_not_move_a_texel_across_sea_level() {
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let sea = f64::from(Elevation::default().level(SEA_LEVEL));
         // Ridges that cross sea level, so that the curve of a texel crosses it.
         for value in [-1.0, 1.0] {
             let mut map = Heightmap::with_tile_size(64, 16, sea as u16);
@@ -5774,7 +5798,7 @@ mod tests {
         // column. The valleys fall to the sea in the south, so the rivers run
         // along them, and each slope falls along the rows.
         let n = 256;
-        let sea = f64::from(meters_to_level(SEA_LEVEL));
+        let sea = f64::from(Elevation::default().level(SEA_LEVEL));
         let map = ground(n, |face, x, y, p| {
             if face != 0 || p[0] < 0.5 {
                 return (sea - 1000.0) as u16;
