@@ -8,7 +8,6 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
-use vale_app::globe::brush::STRENGTH_M;
 use vale_app::globe::select::FeatureRef;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{StackItem, Tool, WorldView};
@@ -2267,7 +2266,8 @@ fn a_finger_hits_each_control_at_the_first_try() {
         };
         drag(&mut h, from, to, None);
     }
-    assert_eq!(h.state().globe.brush.strength_m, *STRENGTH_M.end());
+    let most = *h.state().globe.brush.strength_limits().end();
+    assert_eq!(h.state().globe.brush.strength_m, most);
     assert_eq!(h.state().globe.brush.hardness, 1.0);
     let size = h.state().globe.brush.size_points;
     let rect = control(&h, STRIP_SIZE).unwrap();
@@ -2751,7 +2751,8 @@ fn the_brush_panel_of_the_noise_mode_has_its_settings() {
     slide_to_end(&mut h, "Brush raise", false);
     assert_eq!(h.state().globe.brush.noise_raise_m, 0.0);
     slide_to_end(&mut h, "Brush raise", true);
-    assert_eq!(h.state().globe.brush.noise_raise_m, 6000.0);
+    // The rise goes up to the span of the range of the layer.
+    assert_eq!(h.state().globe.brush.noise_raise_m, 12000.0);
     type_value(&mut h, "Brush seed", "999");
     assert_eq!(h.state().doc.project.world.seed, 999);
     step(&mut h, "Brush seed", false);
@@ -2801,7 +2802,7 @@ fn the_brush_panel_has_the_two_sliders_of_the_uplift_mode() {
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     // The strength slider sets the rate of the uplift.
     slide_to_end(&mut h, "Brush strength", true);
-    assert!((h.state().globe.brush.strength_m - 6000.0).abs() < 1e-6);
+    assert!((h.state().globe.brush.strength_m - 12000.0).abs() < 1e-6);
     slide_to_end(&mut h, "Brush erosion", false);
     assert_eq!(h.state().globe.brush.erosion, 0.0);
     slide_to_end(&mut h, "Brush erosion", true);

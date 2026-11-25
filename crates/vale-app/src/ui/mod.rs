@@ -15,7 +15,7 @@ use vale_store::{
     StoreError, World,
 };
 use vale_style::LabelClass;
-use vale_terrain::{Bands, Heightmap, Mode};
+use vale_terrain::{Bands, Elevation, Heightmap, Mode};
 
 use crate::atlas_export::{ExportOptions, ExportStep, PdfExport};
 use crate::document::{Document, Target};
@@ -27,7 +27,7 @@ use crate::globe::line::{self, LineEdit};
 use crate::globe::math::lonlat_to_dir;
 use crate::globe::snap::{LayerTargets, TargetSet, Targets};
 use crate::globe::split::SplitStroke;
-use crate::globe::{Globe, Look, START_ELEVATION, StackItem, Tool, brush};
+use crate::globe::{Globe, Look, StackItem, Tool, brush};
 use crate::globe::{LineStroke, PictureLayer, polygon, reshape, sweep, thumbnail};
 use crate::image_layer::{ImageImport, ImageTiles, ImportStep};
 use crate::measure::{self, Measure};
@@ -444,24 +444,32 @@ pub struct RasterSpec {
 impl RasterSpec {
     /// A height layer in meters, with the range and the bands of the app.
     pub fn height(name: &str, face_size: usize) -> RasterSpec {
-        let bands = Bands::default();
+        RasterSpec::height_in(name, face_size, Elevation::default())
+    }
+
+    /// A height layer in meters with this elevation range.
+    pub fn height_in(name: &str, face_size: usize, range: Elevation) -> RasterSpec {
         RasterSpec {
             name: name.to_string(),
             unit: HEIGHT_UNIT.to_string(),
-            min: bands.min(),
-            max: bands.max(),
+            min: range.min,
+            max: range.max,
             face_size,
         }
     }
 
-    /// The first bands of the layer. `None`: the range is empty or not
-    /// finite.
+    /// The first bands of the layer. A height layer gets the stops of the
+    /// app that are in its range. `None`: the range is empty or not finite,
+    /// or a height layer has a range that is not valid.
     fn bands(&self) -> Option<Bands> {
-        let height = Bands::default();
-        if self.unit == HEIGHT_UNIT && (self.min, self.max) == (height.min(), height.max()) {
-            return Some(height);
+        if self.unit == HEIGHT_UNIT {
+            let range = Elevation::new(self.min, self.max)?;
+            return match range == Elevation::default() {
+                true => Some(Bands::default()),
+                false => Bands::default().with_range_kept(range.min, range.max),
+            };
         }
-        Bands::with_range(self.min, self.max, self.unit == HEIGHT_UNIT)
+        Bands::with_range(self.min, self.max, false)
     }
 }
 
@@ -1408,8 +1416,15 @@ impl AppState {
         let height = spec.unit == HEIGHT_UNIT;
         // A height starts as a sea. Each other layer starts at the minimum
         // of its range.
-        let start = if height { START_ELEVATION } else { bands.min() };
-        let mut map = Heightmap::new(face_size, bands.level(start));
+        let range = Elevation {
+            min: bands.min(),
+            max: bands.max(),
+        };
+        let start = match height {
+            true => crate::globe::start_level(range),
+            false => bands.level(bands.min()),
+        };
+        let mut map = Heightmap::new(face_size, start);
         map.bands = bands;
         let project = &mut self.doc.project;
         let id = project.add_raster(spec.name, face_size as u32, spec.unit, spec.min, spec.max);

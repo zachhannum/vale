@@ -22,10 +22,9 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
-    needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, OPACITY as BRUSH_OPACITY,
+    RANGE_SPACING_KM, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
+    SEED, SHAPE, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1557,8 +1556,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if ridge {
         let brush = &mut globe.brush;
+        let limits = brush.crest_limits();
         number::stepper("Crest", &mut brush.ridge_crest_m)
-            .range(RIDGE_CREST_M)
+            .range(limits)
             .step(50.0)
             .decimals(0)
             .suffix(" m")
@@ -1630,11 +1630,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         );
         let text = |v: f64| world::value_text(v, span, &unit);
         if brush.mode == Mode::Noise {
+            let noise = brush.noise_limits();
             for (name, meters) in [
                 ("Raise", &mut brush.noise_raise_m),
                 ("Lower", &mut brush.noise_lower_m),
             ] {
-                number::slider(name, meters, NOISE_M)
+                number::slider(name, meters, noise.clone())
                     .log()
                     .smallest(10.0)
                     .factor(scale)
@@ -1655,7 +1656,8 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {
             let name = strength_name(brush.mode);
-            number::slider(name, &mut brush.strength_m, STRENGTH_M)
+            let limits = brush.strength_limits();
+            number::slider(name, &mut brush.strength_m, limits)
                 .log()
                 .smallest(10.0)
                 .factor(scale)

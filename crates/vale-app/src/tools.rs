@@ -8,7 +8,7 @@ use std::path::Path;
 use vale_terrain::Mode;
 
 use crate::globe::Tool;
-use crate::globe::brush::{BrushSettings, FLOW, SIZE_POINTS, STRENGTH_M};
+use crate::globe::brush::{BrushSettings, FLOW, SAVED_STRENGTH_M, SIZE_POINTS};
 use crate::globe::combine::PolygonMode;
 use crate::globe::line::LineSettings;
 use crate::globe::snap::SnapSettings;
@@ -144,7 +144,8 @@ impl ModeSettings {
         brush.lock = self.lock;
         brush.hardness = self.hardness;
         brush.flow = self.flow;
-        brush.strength_m = self.strength_m;
+        let limits = brush.strength_limits();
+        brush.strength_m = self.strength_m.clamp(*limits.start(), *limits.end());
     }
 }
 
@@ -548,7 +549,7 @@ fn parse_mode(text: &str) -> Option<(Mode, ModeSettings)> {
         lock,
         hardness: float(hardness)?.clamp(0.0, 1.0),
         flow: float(flow)?.clamp(*FLOW.start(), *FLOW.end()),
-        strength_m: float(strength)?.clamp(*STRENGTH_M.start(), *STRENGTH_M.end()),
+        strength_m: float(strength)?.clamp(*SAVED_STRENGTH_M.start(), *SAVED_STRENGTH_M.end()),
     };
     Some((mode, settings))
 }
@@ -974,6 +975,6 @@ mod tests {
         assert_eq!(globe.brush.size_points, *SIZE_POINTS.end());
         assert_eq!(globe.brush.hardness, 1.0);
         assert_eq!(globe.brush.flow, *FLOW.start());
-        assert_eq!(globe.brush.strength_m, *STRENGTH_M.start());
+        assert_eq!(globe.brush.strength_m, *SAVED_STRENGTH_M.start());
     }
 }

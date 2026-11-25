@@ -5,10 +5,9 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
-    DEFAULT_ELEV_MAX, DEFAULT_ELEV_MIN, Elevation, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS,
-    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp,
-    StampPlan, talus_levels,
+    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_LIMIT,
+    Elevation, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
+    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Stamp, StampPlan, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -27,10 +26,11 @@ pub const FLOW: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 pub const FLATTEN_RATE: std::ops::RangeInclusive<f64> = 0.01..=1.0;
 /// The limits of the opacity of the paint mode.
 pub const OPACITY: std::ops::RangeInclusive<f64> = 0.0..=1.0;
-/// The limits of the strength setting, in meters.
-pub const STRENGTH_M: std::ops::RangeInclusive<f64> = 50.0..=6000.0;
-/// The limits of the rise and the drop of the noise mode, in meters.
-pub const NOISE_M: std::ops::RangeInclusive<f64> = 0.0..=6000.0;
+/// The least strength, in meters. The most strength is the span of the
+/// elevation range of the brush.
+pub const MIN_STRENGTH_M: f64 = 50.0;
+/// The limits of a strength that a saved tool keeps, in meters.
+pub const SAVED_STRENGTH_M: std::ops::RangeInclusive<f64> = MIN_STRENGTH_M..=2.0 * ELEV_LIMIT;
 /// The limits of the grain of the noise mode. The features are `1 + grain`
 /// times longer along the stroke than across it.
 pub const NOISE_GRAIN: std::ops::RangeInclusive<f64> = 0.0..=9.0;
@@ -47,8 +47,6 @@ pub const WARP_KM: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 pub const SCALE_KM: std::ops::RangeInclusive<f64> = 5.0..=2000.0;
 /// The limits of the seed slider of the warp mode.
 pub const SEED: std::ops::RangeInclusive<u32> = 0..=999;
-/// The limits of the crest of the ocean ridge mode, in meters.
-pub const RIDGE_CREST_M: std::ops::RangeInclusive<f64> = -6000.0..=6000.0;
 /// The limits of the full spreading rate of the ocean ridge mode, in
 /// millimeters per year.
 pub const RIDGE_SPREAD_MM: std::ops::RangeInclusive<f64> = 10.0..=150.0;
@@ -183,8 +181,12 @@ pub struct BrushSettings {
     /// The value of the ceiling, in the unit of the layer.
     pub ceiling_m: f64,
     /// The values of the lowest and of the highest level of the layer that
-    /// the brush paints. The globe sets them.
+    /// the brush paints. `set_layer` sets them.
     pub value_range: (f64, f64),
+    /// The elevation range of the heights in meters of the settings: the
+    /// range of a height layer, or else the default range. `set_layer`
+    /// sets it.
+    pub elevation: Elevation,
 }
 
 impl Default for BrushSettings {
@@ -228,7 +230,8 @@ impl Default for BrushSettings {
             floor_m: 0.0,
             ceiling_on: false,
             ceiling_m: 1000.0,
-            value_range: (DEFAULT_ELEV_MIN, DEFAULT_ELEV_MAX),
+            value_range: (Elevation::default().min, Elevation::default().max),
+            elevation: Elevation::default(),
         }
     }
 }
@@ -270,6 +273,64 @@ pub fn needs_height(mode: Mode) -> bool {
 const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
 
 impl BrushSettings {
+    /// Sets the range of the layer that the brush paints. `height`: the
+    /// values are heights in meters. The settings in meters, the floor, and
+    /// the ceiling move into their new limits.
+    pub fn set_layer(&mut self, value_range: (f64, f64), height: bool) {
+        self.value_range = value_range;
+        let (min, max) = value_range;
+        self.elevation = match Elevation::new(min, max) {
+            Some(range) if height => range,
+            _ => Elevation::default(),
+        };
+        let clamp = |value: &mut f64, limits: std::ops::RangeInclusive<f64>| {
+            *value = value.clamp(*limits.start(), *limits.end());
+        };
+        let (strength, noise, crest) = (
+            self.strength_limits(),
+            self.noise_limits(),
+            self.crest_limits(),
+        );
+        clamp(&mut self.strength_m, strength);
+        clamp(&mut self.noise_raise_m, noise.clone());
+        clamp(&mut self.noise_lower_m, noise);
+        clamp(&mut self.ridge_crest_m, crest);
+        let (low, high) = (min.min(max), max.max(min));
+        clamp(&mut self.floor_m, low..=high);
+        clamp(&mut self.ceiling_m, low..=high);
+    }
+
+    /// The span of the elevation range, in meters.
+    fn span_m(&self) -> f64 {
+        self.elevation.max - self.elevation.min
+    }
+
+    /// The limits of the strength setting, in meters.
+    pub fn strength_limits(&self) -> std::ops::RangeInclusive<f64> {
+        MIN_STRENGTH_M.min(self.span_m())..=self.span_m()
+    }
+
+    /// The limits of the rise and the drop of the noise mode, in meters.
+    pub fn noise_limits(&self) -> std::ops::RangeInclusive<f64> {
+        0.0..=self.span_m()
+    }
+
+    /// The limits of the crest of the ocean ridge mode, in meters.
+    pub fn crest_limits(&self) -> std::ops::RangeInclusive<f64> {
+        self.elevation.min..=self.elevation.max
+    }
+
+    /// The strength in meters, in its limits.
+    fn strength(&self) -> f64 {
+        let limits = self.strength_limits();
+        self.strength_m.clamp(*limits.start(), *limits.end())
+    }
+
+    /// A height in meters as a number of levels.
+    fn levels(&self, meters: f64) -> f64 {
+        (meters / self.elevation.meters_per_level()).round()
+    }
+
     /// The level that the mode paints toward. `None`: the level under the
     /// start of the stroke.
     pub fn target_level(&self) -> Option<u16> {
@@ -309,8 +370,8 @@ impl BrushSettings {
     }
 
     /// The strength as a value of the layer that the brush paints. Each
-    /// layer gets the same part of its range, and for a height the value is
-    /// `strength_m`.
+    /// layer gets the same part of its range as a height layer of the
+    /// default range, and for a height the value is `strength_m`.
     pub fn strength_value(&self) -> f64 {
         self.meters_value(self.strength_m)
     }
@@ -319,7 +380,7 @@ impl BrushSettings {
     /// `strength_value` gives the strength.
     pub fn meters_value(&self, meters: f64) -> f64 {
         let (min, max) = self.value_range;
-        meters * (max - min) / (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN)
+        meters * (max - min) / self.span_m()
     }
 
     /// The settings of an ocean ridge stroke with this brush radius, in
@@ -327,7 +388,7 @@ impl BrushSettings {
     pub fn ridge_spec(&self, radius: f64, world_km: f64, seed: u32) -> Ridge {
         Ridge {
             radius,
-            crest: Elevation::default().level(self.ridge_crest_m),
+            crest: self.elevation.level(self.ridge_crest_m),
             segment: self.ridge_segment_km / world_km,
             offset: self.ridge_offset_km / world_km,
             spread: 0.5 * self.ridge_spread_mm / world_km,
@@ -347,10 +408,9 @@ impl BrushSettings {
     /// The settings of a range stroke with this brush radius, in radians.
     /// `world_km` is the radius of the world.
     pub fn range_spec(&self, radius: f64, world_km: f64, seed: u32) -> RangeSpec {
-        let height = Elevation::default().level(self.strength_m) - Elevation::default().level(0.0);
         RangeSpec {
             radius,
-            height: f64::from(height),
+            height: self.levels(self.strength()),
             spacing: self.range_spacing_km / world_km,
             seed,
             limits: self.limits(),
@@ -360,9 +420,8 @@ impl BrushSettings {
     /// The settings of a basin. `world_km` is the radius of the world. The
     /// height is the strength. The channels have the default width.
     pub fn basin_spec(&self, world_km: f64, seed: u32, rain: Rain) -> BasinSpec {
-        let height = Elevation::default().level(self.strength_m) - Elevation::default().level(0.0);
         BasinSpec {
-            height: f64::from(height),
+            height: self.levels(self.strength()),
             density: self.basin_density_km / world_km,
             seed,
             erosion: self.erosion,
@@ -535,7 +594,13 @@ impl Tip<'_> {
     fn stamp(&self, center: V3, flow: f64, motion: V3) -> Stamp {
         let input = flow;
         let flow = flow * self.brush.flow;
-        let span = (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN) / 65535.0;
+        let span = self.brush.elevation.meters_per_level();
+        let strength = self.brush.strength();
+        let noise = self.brush.noise_limits();
+        let (raise, lower) = (
+            self.brush.noise_raise_m.clamp(*noise.start(), *noise.end()),
+            self.brush.noise_lower_m.clamp(*noise.start(), *noise.end()),
+        );
         Stamp {
             center,
             radius: self.radius,
@@ -574,14 +639,14 @@ impl Tip<'_> {
                 Mode::Shape => self.brush.shape.clamp(-1.0, 1.0),
                 Mode::Uplift => {
                     STAMP_SPACING / span
-                        * self.brush.strength_m
+                        * strength
                         * (1.0 + UPLIFT_GAIN * self.brush.erosion.clamp(0.0, 1.0))
                 }
-                Mode::Noise => STAMP_SPACING / span * self.brush.noise_raise_m,
+                Mode::Noise => STAMP_SPACING / span * raise,
                 Mode::Paint => self.brush.opacity.clamp(0.0, 1.0),
-                _ => STAMP_SPACING / span * self.brush.strength_m,
+                _ => STAMP_SPACING / span * strength,
             },
-            lower: self.brush.noise_lower_m * STAMP_SPACING / span,
+            lower: lower * STAMP_SPACING / span,
             // `set_world` sets the slope, the warp strength, the scale, the
             // seed, and the channel, which follow the world.
             talus: 0.0,
@@ -616,7 +681,7 @@ pub fn set_world(
         brush.talus_deg,
         face_size,
         world_km * 1000.0,
-        Elevation::default(),
+        brush.elevation,
     );
     stamp.scale = brush.scale_km / world_km;
     stamp.seed = seed;
@@ -846,6 +911,66 @@ mod tests {
     }
 
     #[test]
+    fn on_a_narrow_range_a_strength_in_meters_is_the_same_height() {
+        let range = Elevation::new(-3000.0, 3000.0).unwrap();
+        let mut brush = BrushSettings::default();
+        brush.set_layer((range.min, range.max), true);
+        brush.strength_m = 1000.0;
+        let per_level = range.meters_per_level();
+        assert!(range.meters(range.sea_level()).abs() <= per_level / 2.0);
+        // A height in meters is a value of the layer.
+        assert_eq!(brush.strength_value(), 1000.0);
+        let mut out = Vec::new();
+        Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
+        let meters = out[0].strength / STAMP_SPACING * per_level;
+        assert!((meters - 1000.0).abs() < 1e-6, "{meters}");
+        let height = brush.range_spec(0.1, 6371.0, 1).height * per_level;
+        assert!((height - 1000.0).abs() <= per_level, "{height}");
+        let height = brush.basin_spec(6371.0, 1, Rain::default()).height * per_level;
+        assert!((height - 1000.0).abs() <= per_level, "{height}");
+        // One stamp of full flow and hardness raises the center by the strength
+        // of one stamp.
+        let mut map = Heightmap::new(64, range.sea_level());
+        map.bands = vale_terrain::Bands::default()
+            .with_range_kept(range.min, range.max)
+            .unwrap();
+        let mut stamp = out[0];
+        stamp.hardness = 1.0;
+        map.stamp(&stamp);
+        let center = range.meters(map.sample(stamp.center));
+        assert!(
+            (center - 1000.0 * STAMP_SPACING).abs() <= per_level,
+            "{center}"
+        );
+    }
+
+    #[test]
+    fn the_limits_follow_the_range_of_the_layer() {
+        let mut brush = BrushSettings {
+            strength_m: 9000.0,
+            noise_raise_m: 9000.0,
+            ridge_crest_m: -5000.0,
+            floor_m: -5000.0,
+            ceiling_m: 5000.0,
+            ..BrushSettings::default()
+        };
+        brush.set_layer((-3000.0, 2000.0), true);
+        assert_eq!(brush.strength_limits(), MIN_STRENGTH_M..=5000.0);
+        assert_eq!(brush.noise_limits(), 0.0..=5000.0);
+        assert_eq!(brush.crest_limits(), -3000.0..=2000.0);
+        assert_eq!(brush.strength_m, 5000.0);
+        assert_eq!(brush.noise_raise_m, 5000.0);
+        assert_eq!(brush.ridge_crest_m, -3000.0);
+        assert_eq!((brush.floor_m, brush.ceiling_m), (-3000.0, 2000.0));
+        let ridge = brush.ridge_spec(0.1, 6371.0, 1);
+        assert_eq!(ridge.crest, 0);
+        // Another unit keeps the share of the range of a default height.
+        brush.set_layer((0.0, 100.0), false);
+        assert_eq!(brush.elevation, Elevation::default());
+        assert_eq!(brush.strength_limits(), MIN_STRENGTH_M..=12000.0);
+    }
+
+    #[test]
     fn the_spacing_and_the_carry_set_the_stamp_count() {
         let brush = BrushSettings::default();
         let mut stroke = Stroke::default();
@@ -971,7 +1096,7 @@ mod tests {
         };
         let mut out = Vec::new();
         Stroke::default().add_sample(&brush, 1024, sample(0.0, 0.1), |_| 7, &mut out);
-        let step = f64::from(out[0].level) * (DEFAULT_ELEV_MAX - DEFAULT_ELEV_MIN) / 65535.0;
+        let step = f64::from(out[0].level) * Elevation::default().meters_per_level();
         assert!((step - 300.0).abs() < 0.1, "{step}");
         assert_eq!(out[0].flow, 0.3);
         assert!(needs_height(Mode::Terrace));
@@ -1133,8 +1258,8 @@ mod tests {
             shadow: 0.5,
         };
         let spec = brush.basin_spec(6371.0, 9, rain);
-        let height = Elevation::default().level(2000.0) - Elevation::default().level(0.0);
-        assert_eq!(spec.height, f64::from(height));
+        let height = (2000.0 / Elevation::default().meters_per_level()).round();
+        assert_eq!(spec.height, height);
         assert!((spec.density - 80.0 / 6371.0).abs() < 1e-12);
         assert_eq!(spec.erosion, brush.erosion);
         assert_eq!((spec.age, spec.lakes), (0.9, 0.3));
