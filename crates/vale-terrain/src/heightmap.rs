@@ -14,10 +14,10 @@ use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level,
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
-use crate::math::{V3, add, cross, dot, length, normalize, scale};
+use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
-use crate::seamount::SeamountPlan;
+use crate::seamount::{SeamountPlan, Volcano};
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -1591,16 +1591,38 @@ impl Heightmap {
     /// Call this in a stroke. Returns the number of texels that changed.
     pub fn seamounts(&mut self, plan: &SeamountPlan) -> usize {
         assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        const BLOCK: usize = 32;
         let mut changed = 0;
+        let mut near = Vec::new();
         for (face, rect) in plan.rects.into_iter().enumerate() {
             let Some(rect) = rect else { continue };
-            for y in rect.y0..rect.y1 {
-                for x in rect.x0..rect.x1 {
-                    let p = self.texel_dir(face, x, y);
-                    let new = plan.level(self.level_before(face, x, y), p);
-                    if new != self.texel(face, x, y) {
-                        self.set(face, x, y, new);
-                        changed += 1;
+            for by in (rect.y0..rect.y1).step_by(BLOCK) {
+                for bx in (rect.x0..rect.x1).step_by(BLOCK) {
+                    let (x1, y1) = ((bx + BLOCK).min(rect.x1), (by + BLOCK).min(rect.y1));
+                    // The volcanoes that reach the block. A texel that no
+                    // grown volcano reaches keeps its level.
+                    let middle = self.texel_dir(face, (bx + x1) / 2, (by + y1) / 2);
+                    let corners = [(bx, by), (x1 - 1, y1 - 1), (bx, y1 - 1), (x1 - 1, by)];
+                    let far = corners
+                        .map(|(x, y)| angle(middle, self.texel_dir(face, x, y)))
+                        .into_iter()
+                        .fold(0.0, f64::max)
+                        + 2.0 * FRAC_PI_2 / self.n as f64;
+                    let reaches = |v: &Volcano| angle(v.center(), middle) < v.reach() + far;
+                    if !plan.volcanoes[..plan.grown].iter().any(reaches) {
+                        continue;
+                    }
+                    near.clear();
+                    near.extend(plan.volcanoes.iter().filter(|v| reaches(v)));
+                    for y in by..y1 {
+                        for x in bx..x1 {
+                            let p = self.texel_dir(face, x, y);
+                            let new = plan.level_of(&near, self.level_before(face, x, y), p);
+                            if new != self.texel(face, x, y) {
+                                self.set(face, x, y, new);
+                                changed += 1;
+                            }
+                        }
                     }
                 }
             }

@@ -62,8 +62,11 @@ pub struct SeamountPlan {
     pub face_size: usize,
     /// The rectangle of each face that changes.
     pub rects: [Option<TexelRect>; FACES],
-    /// Each volcano that reaches a rectangle, with its growth.
+    /// Each volcano that reaches a rectangle, with its growth. The volcanoes
+    /// that the stamp grew come first.
     pub volcanoes: Vec<Volcano>,
+    /// The number of volcanoes that the stamp grew.
+    pub grown: usize,
 }
 
 /// The volcanoes of one stroke, and their growth.
@@ -324,11 +327,12 @@ impl SeamountPlan {
     /// The level of a texel at unit direction `p` with level `start` from
     /// before the stroke.
     pub fn level(&self, start: u16, p: V3) -> u16 {
-        let sum: f64 = self
-            .volcanoes
-            .iter()
-            .map(|v| v.growth() * v.full_levels(p))
-            .sum();
+        self.level_of(&self.volcanoes, start, p)
+    }
+
+    /// `level` with only the volcanoes in `near`.
+    pub(crate) fn level_of(&self, near: &[Volcano], start: u16, p: V3) -> u16 {
+        let sum: f64 = near.iter().map(|v| v.growth() * v.full_levels(p)).sum();
         let start = f64::from(start);
         let new = (start + sum).round().clamp(0.0, 65535.0);
         self.limits.apply(start, new) as u16
@@ -419,6 +423,7 @@ impl SeamountStroke {
             face_size: n,
             rects: [None; FACES],
             volcanoes: Vec::new(),
+            grown: 0,
         };
         if changed.is_empty() {
             return plan;
@@ -447,7 +452,9 @@ impl SeamountStroke {
                 .then(a.cmp(&b))
         });
         near.truncate(PLAN_VOLCANOES);
-        near.sort_unstable();
+        plan.grown = near.iter().filter(|i| changed.contains(i)).count();
+        near[..plan.grown].sort_unstable();
+        near[plan.grown..].sort_unstable();
         plan.volcanoes = near.into_iter().map(|i| self.volcanoes[i]).collect();
         plan
     }
