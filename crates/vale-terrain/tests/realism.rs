@@ -225,16 +225,28 @@ fn abyssal_flank() -> Painted {
         seed: RIDGE_SEED,
         limits: Limits::default(),
     };
-    let start = painted.map.snapshot();
-    let mut stroke = AbyssalStroke::new(spec, FACE_SIZE);
-    painted.map.begin_stroke();
-    for lat in [-2.0, 0.0] {
-        let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.18, 0.95, 1.0);
-        painted.map.abyssal(&plan);
-    }
-    painted.map.end_stroke();
+    paint_abyssal(&mut painted.map, spec, &meridian(24.0), 0.18);
     painted.seamounts(flank_spec());
     painted
+}
+
+/// Points north along the meridian of longitude 0, from latitude `-lat`
+/// to `lat` in degrees.
+fn meridian(lat: f64) -> Vec<V3> {
+    (0..=16)
+        .map(|i| lonlat_to_dir(0.0, -lat + 2.0 * lat * f64::from(i) / 16.0))
+        .collect()
+}
+
+/// Paints an abyssal hills stroke through `points` with a radius in
+/// radians, at full flow.
+fn paint_abyssal(map: &mut Heightmap, spec: AbyssalHills, points: &[V3], radius: f64) {
+    let mut stroke = AbyssalStroke::new(spec, map.face_size());
+    map.begin_stroke();
+    for plan in stroke.stamps(points, radius, 0.95, 1.0) {
+        map.abyssal(&plan);
+    }
+    map.end_stroke();
 }
 
 /// Asserts that a realism report and a local relief are near those of the
@@ -424,14 +436,7 @@ fn coarse_abyssal(n: usize, fit: bool) -> Heightmap {
         fit,
         scale: 1.0,
     };
-    let start = map.snapshot();
-    let mut stroke = AbyssalStroke::new(spec, n);
-    map.begin_stroke();
-    for lat in [-0.5, 0.0] {
-        let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.04, 0.95, 1.0);
-        map.abyssal(&plan);
-    }
-    map.end_stroke();
+    paint_abyssal(&mut map, spec, &meridian(6.0), 0.04);
     map
 }
 
@@ -539,19 +544,71 @@ fn manual_abyssal_hills_at_each_scale() {
             fit: true,
             scale,
         };
-        let start = painted.map.snapshot();
-        let mut stroke = AbyssalStroke::new(spec, FACE_SIZE);
-        painted.map.begin_stroke();
-        for lat in [-2.0, 0.0] {
-            let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.18, 0.95, 1.0);
-            painted.map.abyssal(&plan);
-        }
-        painted.map.end_stroke();
+        paint_abyssal(&mut painted.map, spec, &meridian(24.0), 0.18);
         let heights = painted.patch(&reference).heights;
         draw(&mut image, &heights, n, reference.cell_m, [i * n, 0]);
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out = root.join("target/realism/scale.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
+}
+
+/// An S-shaped stroke and a tight arc of abyssal hills on flat floor, at
+/// the scale of the reference patch and on an Earth with faces of 8,192
+/// texels with the fit to the map, so the faults show how they bend.
+#[test]
+#[ignore = "manual"]
+fn manual_abyssal_hills_on_curved_strokes() {
+    let size = 512;
+    let mut image = image::RgbImage::new(2 * size as u32, 2 * size as u32);
+    // The world radius, the face size, and the side of the patch in km.
+    let maps = [(WORLD_KM, FACE_SIZE, 235.0), (EARTH_KM, 8192, 625.0)];
+    for (row, (km, n, side)) in maps.into_iter().enumerate() {
+        // A place `(x, y)` in parts of the side of the patch, as a unit
+        // direction.
+        let at = |x: f64, y: f64| {
+            let k = side / km * 180.0 / std::f64::consts::PI;
+            lonlat_to_dir(x * k, y * k)
+        };
+        let s_curve: Vec<V3> = (0..=48)
+            .map(|i| {
+                let y = -0.6 + 1.2 * f64::from(i) / 48.0;
+                at(0.18 * (std::f64::consts::TAU * y / 0.8).sin(), y)
+            })
+            .collect();
+        let arc: Vec<V3> = (0..=54)
+            .map(|i| {
+                let t = (-135.0 + 270.0 * f64::from(i) / 54.0_f64).to_radians();
+                at(0.22 * t.sin(), 0.22 * t.cos() - 0.05)
+            })
+            .collect();
+        for (column, line) in [s_curve, arc].iter().enumerate() {
+            let mut map = Heightmap::new(n, meters_to_level(-REFERENCE_DEPTH_M));
+            let spec = AbyssalHills {
+                rate: 110.0,
+                hills: 1.0,
+                world_km: km,
+                seed: RIDGE_SEED,
+                limits: Limits::default(),
+                fit: true,
+                scale: 1.0,
+            };
+            paint_abyssal(&mut map, spec, line, 0.1 * side / km);
+            let cell_m = side * 1000.0 / size as f64;
+            let patch = Patch::from_heightmap(&map, lonlat_to_dir(0.0, 0.0), km, size, cell_m);
+            draw(
+                &mut image,
+                &patch.heights,
+                size,
+                cell_m,
+                [column * size, row * size],
+            );
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/abyssal-curve.png");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
