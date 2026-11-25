@@ -102,9 +102,61 @@ impl Painted {
     }
 }
 
-/// The realism report of a painted patch, with the fabric along `direction`,
-/// next to the values of the reference region.
-fn compare(painted: &Painted, reference: &Reference, direction: f64) -> Realism {
+/// The side of the box of `relief`, in cells: 21 km.
+const RELIEF_BOX: usize = 47;
+
+/// The percentiles of `relief`.
+const RELIEF_PERCENTILES: [f64; 5] = [1.0, 50.0, 90.0, 99.0, 99.9];
+
+/// The local relief of the GEBCO patch, from `relief` in
+/// `manual_seamounts_next_to_the_pacific_flank`.
+const REFERENCE_RELIEF: [f64; 6] = [-176.0, -3.0, 70.0, 282.0, 825.0, 1394.0];
+
+/// The local relief of a patch of `n` by `n` heights: each height minus the
+/// mean of the box of `RELIEF_BOX` cells around it, for the cells whose box
+/// is inside the patch. The numbers are the percentiles of
+/// `RELIEF_PERCENTILES` and the largest relief, in meters.
+fn relief(heights: &[f32], n: usize) -> [f64; 6] {
+    // A table of the sums of the heights below and left of each corner.
+    let mut sums = vec![0.0; (n + 1) * (n + 1)];
+    for y in 0..n {
+        for x in 0..n {
+            sums[(y + 1) * (n + 1) + x + 1] = f64::from(heights[y * n + x])
+                + sums[y * (n + 1) + x + 1]
+                + sums[(y + 1) * (n + 1) + x]
+                - sums[y * (n + 1) + x];
+        }
+    }
+    let half = RELIEF_BOX / 2;
+    let mut values = Vec::new();
+    for y in half..n - half {
+        for x in half..n - half {
+            let (x0, y0, x1, y1) = (x - half, y - half, x + half + 1, y + half + 1);
+            let sum = sums[y1 * (n + 1) + x1] - sums[y0 * (n + 1) + x1] - sums[y1 * (n + 1) + x0]
+                + sums[y0 * (n + 1) + x0];
+            values.push(f64::from(heights[y * n + x]) - sum / (RELIEF_BOX * RELIEF_BOX) as f64);
+        }
+    }
+    values.sort_by(f64::total_cmp);
+    let at = |p: f64| values[((p / 100.0 * values.len() as f64) as usize).min(values.len() - 1)];
+    let mut out = [0.0; 6];
+    for (o, p) in out.iter_mut().zip(RELIEF_PERCENTILES) {
+        *o = at(p);
+    }
+    out[5] = values[values.len() - 1];
+    out
+}
+
+fn print_relief(name: &str, relief: &[f64; 6]) {
+    eprintln!(
+        "  relief {name}: p1 {:.0}, p50 {:.0}, p90 {:.0}, p99 {:.0}, p99.9 {:.0}, max {:.0} m",
+        relief[0], relief[1], relief[2], relief[3], relief[4], relief[5]
+    );
+}
+
+/// The realism report and the local relief of a painted patch, with the
+/// fabric along `direction`, next to the values of the reference region.
+fn compare(painted: &Painted, reference: &Reference, direction: f64) -> (Realism, [f64; 6]) {
     let patch = painted.patch(reference);
     let report = realism(&patch, reference.band_m, direction);
     let r = &reference.realism;
@@ -137,13 +189,16 @@ fn compare(painted: &Painted, reference: &Reference, direction: f64) -> Realism 
         "  slopes {:.3?}\n  reference {:.3?}",
         report.slope_histogram, r.slope_histogram
     );
-    report
+    let local = relief(&patch.heights, n);
+    print_relief("painted", &local);
+    print_relief("reference", &REFERENCE_RELIEF);
+    (report, local)
 }
 
 fn flank_spec() -> Seamounts {
     Seamounts {
-        density: 15.0,
-        height_m: 250.0,
+        density: 4.0,
+        height_m: 430.0,
         world_km: WORLD_KM,
         seed: 5,
         limits: Limits::default(),
@@ -160,8 +215,19 @@ fn pacific_flank() -> Painted {
 #[test]
 fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
     let reference = Reference::parse(PACIFIC_FLANK).unwrap();
-    let report = compare(&pacific_flank(), &reference, 0.0);
+    let (report, local) = compare(&pacific_flank(), &reference, 0.0);
     let r = &reference.realism;
+    // The body of the local relief is near the reference, and the
+    // seamounts stand above the faults.
+    let (p99, p999) = (local[3], local[4]);
+    assert!(
+        p99 > 0.7 * REFERENCE_RELIEF[3] && p99 < 1.4 * REFERENCE_RELIEF[3],
+        "a 99th percentile of the relief of {p99} m"
+    );
+    assert!(
+        p999 > 0.6 * REFERENCE_RELIEF[4],
+        "a 99.9th percentile of the relief of {p999} m"
+    );
     assert!(
         (report.spectral_slope - r.spectral_slope).abs() < 0.4,
         "a spectral slope of {}",
@@ -208,6 +274,13 @@ fn manual_seamounts_next_to_the_pacific_flank() {
         .iter()
         .map(|&b| f32::from_le_bytes(b))
         .collect();
+    print_relief("GEBCO", &relief(&gebco, reference.size));
+    let mut faults = Painted::new(BASE_M);
+    faults.ridge_flank();
+    print_relief(
+        "faults",
+        &relief(&faults.patch(&reference).heights, reference.size),
+    );
     let painted = pacific_flank();
     compare(&painted, &reference, 0.0);
     let ours = painted.patch(&reference).heights;
