@@ -647,6 +647,76 @@ impl Bands {
         self.painted_split(&new_colors, &new_labels, part, bands, lo, hi, blue)
     }
 
+    /// `painted_count` with the stops placed by `area`. Each new band
+    /// covers about the same area, and each stop rounds as `area.round`
+    /// says. Stops that round to the same value become one stop, so there
+    /// can be fewer than `count` bands. With bands that cross sea level,
+    /// the sides share `count` in the ratio of the sea colors and the land
+    /// colors of the ramp, or else in the ratio of their areas.
+    pub fn painted_by_area(
+        &self,
+        ramp: &RampColors,
+        part: Part,
+        bands: Range<usize>,
+        (lo, hi): (f64, f64),
+        count: usize,
+        area: &Area,
+    ) -> Option<Bands> {
+        let (colors, qualitative) = (ramp.colors, ramp.qualitative);
+        let n = colors.len();
+        let r = self.window(part, bands);
+        let usable = area.interval > 0.0 && area.bins.iter().sum::<f64>() > 0.0;
+        if n == 0 || count == 0 || count > MAX_BANDS || r.is_empty() || !usable {
+            return None;
+        }
+        let (bottom, top) = (self.stops[r.start].value, self.stops[r.end].value);
+        let (lo, hi) = (lo.max(bottom), hi.min(top));
+        if !(lo.is_finite() && hi.is_finite() && lo < hi) {
+            return None;
+        }
+        let labels = match ramp.labels.len() == n {
+            true => ramp.labels.to_vec(),
+            false => vec![String::new(); n],
+        };
+        let (mut new_colors, mut new_labels) = (Vec::new(), Vec::new());
+        let mut paint = |side: Range<usize>, k: usize| {
+            new_colors.extend(sample_ramp(&colors[side.clone()], k, qualitative));
+            let picks = sample_indices(side.len(), k, qualitative);
+            new_labels.extend(picks.map(|i| labels[side.start + i].clone()));
+        };
+        let below = |v: f64| area.below(self.min, self.max, v);
+        let inner = |from: f64, to: f64, k: usize| area.inner(self.min, self.max, from, to, k);
+        let crosses = self.sea().is_some_and(|sea| r.start < sea && sea < r.end);
+        let values = if crosses {
+            if count < 2 {
+                return None;
+            }
+            let share = match ramp.sea_colors() {
+                Some(b) => b as f64 / n as f64,
+                None => match below(hi) - below(lo) {
+                    all if all > 0.0 => (below(SEA_LEVEL) - below(lo)) / all,
+                    _ => (SEA_LEVEL - lo) / (hi - lo),
+                },
+            };
+            let sea = ((count as f64 * share).round() as usize).clamp(1, count - 1);
+            let (deep, high) = (inner(lo, SEA_LEVEL, sea), inner(SEA_LEVEL, hi, count - sea));
+            let (k_deep, k_high) = (deep.len() + 1, high.len() + 1);
+            match ramp.sea_colors() {
+                Some(b) => {
+                    paint(0..b, k_deep);
+                    paint(b..n, k_high);
+                }
+                None => paint(0..n, k_deep + k_high),
+            }
+            [deep, vec![SEA_LEVEL], high].concat()
+        } else {
+            let values = inner(lo, hi, count);
+            paint(0..n, values.len() + 1);
+            values
+        };
+        self.placed(&new_colors, &new_labels, r, values)
+    }
+
     /// `painted_in` with the first `blue` colors below sea level, for bands
     /// that cross it. With no `blue`, the colors split in the ratio of the
     /// values below and above sea level.
@@ -680,10 +750,6 @@ impl Bands {
             true => labels.to_vec(),
             false => vec![String::new(); n],
         };
-        let fresh = |value: f64| Stop {
-            value,
-            line: StopLine::default(),
-        };
         // The values between `from` and `to` for `count` even bands.
         let inner = |from: f64, to: f64, count: usize| {
             let step = (to - from) / count as f64;
@@ -707,6 +773,23 @@ impl Bands {
             }
             values.extend(inner(from, to, count));
         }
+        self.placed(colors, &labels, r, values)
+    }
+
+    /// The bands with new stops at `values` in the bands `r`, and the
+    /// colors and labels of the new bands. The bands out of `r` do not
+    /// change.
+    fn placed(
+        &self,
+        colors: &[Rgb],
+        labels: &[String],
+        r: Range<usize>,
+        values: Vec<f64>,
+    ) -> Option<Bands> {
+        let fresh = |value: f64| Stop {
+            value,
+            line: StopLine::default(),
+        };
         let stops: Vec<Stop> = self.stops[..=r.start]
             .iter()
             .copied()
@@ -716,7 +799,7 @@ impl Bands {
         let old = &self.colors;
         let all = [&old[..r.start], colors, &old[r.end..]].concat();
         let names = self.padded_names();
-        let names = [&names[..r.start], &labels[..], &names[r.end..]].concat();
+        let names = [&names[..r.start], labels, &names[r.end..]].concat();
         Bands::from_range_parts(self.min, self.max, self.split, &stops, &all)
             .map(|b| b.with_names(&names))
     }
@@ -913,6 +996,118 @@ impl Bands {
 }
 
 /// Whether a color is mostly blue.
+/// How the stops of new bands round.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Round {
+    /// Each stop is 0 or a value of the series 1, 2, 5, 10, 20, 50, and so
+    /// on that is at least the interval, or the same value below 0.
+    Series,
+    /// Each stop is a multiple of the interval.
+    Interval,
+}
+
+/// The spacing of new bands by the area of each value.
+#[derive(Clone, Copy, Debug)]
+pub struct Area<'a> {
+    /// The area of each value, in bins that divide the range of the layer
+    /// evenly.
+    pub bins: &'a [f64],
+    pub round: Round,
+    pub interval: f64,
+}
+
+impl Area<'_> {
+    /// The area below `value`, with the bins from `min` to `max`.
+    fn below(&self, min: f64, max: f64, value: f64) -> f64 {
+        let n = self.bins.len();
+        let t = ((value - min) / (max - min) * n as f64).clamp(0.0, n as f64);
+        let i = t.floor() as usize;
+        let whole: f64 = self.bins[..i].iter().sum();
+        whole + self.bins.get(i).map_or(0.0, |b| b * (t - i as f64))
+    }
+
+    /// The value with `area` below it.
+    fn at(&self, min: f64, max: f64, area: f64) -> f64 {
+        let n = self.bins.len() as f64;
+        let mut sum = 0.0;
+        for (i, &b) in self.bins.iter().enumerate() {
+            if b > 0.0 && sum + b >= area {
+                let t = i as f64 + (area - sum) / b;
+                return min + (max - min) * t / n;
+            }
+            sum += b;
+        }
+        max
+    }
+
+    /// The rounded stops between `from` and `to` for `count` bands of about
+    /// the same area, in ascending order. There are fewer than
+    /// `count - 1` stops when two stops round to the same value.
+    fn inner(&self, min: f64, max: f64, from: f64, to: f64, count: usize) -> Vec<f64> {
+        let (a, b) = (self.below(min, max, from), self.below(min, max, to));
+        if b <= a {
+            return Vec::new();
+        }
+        let targets = (1..count).map(|j| a + (b - a) * j as f64 / count as f64);
+        let mut values: Vec<f64> = match self.round {
+            Round::Interval => targets
+                .map(|t| (self.at(min, max, t) / self.interval).round() * self.interval)
+                .collect(),
+            Round::Series => {
+                let ladder = series(self.interval, from, to);
+                let areas: Vec<f64> = ladder.iter().map(|&v| self.below(min, max, v)).collect();
+                targets
+                    .filter_map(|t| {
+                        let off = |i: &usize| (areas[*i] - t).abs();
+                        (0..ladder.len()).min_by(|i, j| off(i).total_cmp(&off(j)))
+                    })
+                    .map(|i| ladder[i])
+                    .collect()
+            }
+        };
+        values.retain(|v| from + MIN_BAND <= *v && *v <= to - MIN_BAND);
+        values.sort_by(f64::total_cmp);
+        values.dedup_by(|b, a| *b - *a < MIN_BAND);
+        values
+    }
+}
+
+/// 0 and the values of the series 1, 2, 5, 10, 20, 50, and so on that are
+/// at least `interval`, and the same values below 0, strictly between
+/// `from` and `to`, in ascending order.
+fn series(interval: f64, from: f64, to: f64) -> Vec<f64> {
+    let reach = from.abs().max(to.abs());
+    let mut out = vec![0.0];
+    let mut scale = 10f64.powf(interval.log10().floor());
+    while scale <= reach {
+        for v in [scale, 2.0 * scale, 5.0 * scale] {
+            if v >= interval * (1.0 - 1e-9) {
+                out.extend([v, -v]);
+            }
+        }
+        scale *= 10.0;
+    }
+    out.retain(|v| from < *v && *v < to);
+    out.sort_by(f64::total_cmp);
+    out
+}
+
+/// The value of the series 1, 2, 5, 10, 20, 50, and so on that is nearest
+/// to 1/200 of the range from `min` to `max`.
+pub fn default_interval(min: f64, max: f64) -> f64 {
+    let target = (max - min) / 200.0;
+    if !(target > 0.0 && target.is_finite()) {
+        return 1.0;
+    }
+    let scale = 10f64.powf(target.log10().floor());
+    let off = |v: &f64| (v / target).ln().abs();
+    [1.0, 2.0, 5.0, 10.0]
+        .map(|m| m * scale)
+        .into_iter()
+        .min_by(|a, b| off(a).total_cmp(&off(b)))
+        .unwrap_or(1.0)
+}
+
 fn is_blue(c: Rgb) -> bool {
     c[2] > c[0] && c[2] >= c[1]
 }
@@ -2222,6 +2417,93 @@ mod tests {
         assert_eq!(painted.colors().len(), 5);
         let names: Vec<&str> = (0..5).map(|i| painted.name(i)).collect();
         assert_eq!(names, ["Low", "Mid", "Mid", "High", "High"]);
+    }
+
+    /// 1,000 bins of 10 m from 0 to 10,000 m, with an area that falls by
+    /// half each 350 m.
+    fn falling_bins() -> Vec<f64> {
+        (0..1000)
+            .map(|i| (-(i as f64 + 0.5) / 50.0).exp())
+            .collect()
+    }
+
+    fn by_area(round: Round, interval: f64, count: usize) -> Bands {
+        let bands = Bands::with_range(0.0, 10_000.0, false).unwrap();
+        let bins = falling_bins();
+        let area = Area {
+            bins: &bins,
+            round,
+            interval,
+        };
+        let all = 0..bands.colors().len();
+        bands
+            .painted_by_area(
+                &ramp_of(&greys(8), &[]),
+                Part::All,
+                all,
+                (0.0, 10_000.0),
+                count,
+                &area,
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn by_area_with_series_takes_round_values_where_the_area_is() {
+        let painted = by_area(Round::Series, 50.0, 5);
+        assert_eq!(
+            values(&painted),
+            [0.0, 100.0, 200.0, 500.0, 1000.0, 10_000.0]
+        );
+        assert_eq!(painted.colors().len(), 5);
+    }
+
+    #[test]
+    fn by_area_with_interval_rounds_to_its_multiples() {
+        let painted = by_area(Round::Interval, 50.0, 5);
+        assert_eq!(
+            values(&painted),
+            [0.0, 100.0, 250.0, 450.0, 800.0, 10_000.0]
+        );
+    }
+
+    #[test]
+    fn by_area_makes_one_stop_of_stops_that_round_to_the_same_value() {
+        let painted = by_area(Round::Series, 1000.0, 5);
+        assert_eq!(values(&painted), [0.0, 1000.0, 10_000.0]);
+        let g = greys(8);
+        assert_eq!(painted.colors(), [g[0], g[7]]);
+    }
+
+    #[test]
+    fn by_area_keeps_sea_level_and_the_sea_colors_below_it() {
+        let bands = Bands::default();
+        let bins = vec![1.0; 1200];
+        let area = Area {
+            bins: &bins,
+            round: Round::Series,
+            interval: 50.0,
+        };
+        let colors = sea_and_land(4, 4);
+        let all = 0..bands.colors().len();
+        let (lo, hi) = (bands.min(), bands.max());
+        let painted = bands
+            .painted_by_area(&ramp_of(&colors, &[]), Part::All, all, (lo, hi), 10, &area)
+            .unwrap();
+        let sea = painted.sea().unwrap();
+        assert_eq!(painted.stops()[sea].value, 0.0);
+        assert!(painted.colors()[..sea].iter().all(|c| is_blue(*c)));
+        assert!(painted.colors()[sea..].iter().all(|c| !is_blue(*c)));
+        let round = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0];
+        let inner = &values(&painted)[1..painted.stops().len() - 1];
+        assert!(inner.iter().all(|v| *v == 0.0 || round.contains(&v.abs())));
+    }
+
+    #[test]
+    fn default_interval_is_the_series_value_nearest_to_a_200th_of_the_range() {
+        assert_eq!(default_interval(ELEV_MIN, ELEV_MAX), 50.0);
+        assert_eq!(default_interval(0.0, 100.0), 0.5);
+        assert_eq!(default_interval(0.0, 30_000.0), 200.0);
     }
 
     #[test]
