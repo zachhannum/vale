@@ -1052,6 +1052,7 @@ const SALT_MAGMA = 0x9b05688cu;
 const SALT_WALL = 0x4c95e1a3u;
 const SALT_LUMP = 0x2d8e7f19u;
 const SALT_FRACTURE = 0x5f3ac2e1u;
+const SALT_HILL = 0x7e4b15d3u;
 const JITTER = 0.3;
 const SECOND_ORDER_KM = 130.0;
 const GROUP_SHIFT = 0.8;
@@ -1185,6 +1186,64 @@ const FAULT_HEAVE = array<vec2<f32>, 5>(
     vec2<f32>(0.8, 0.7),
     vec2<f32>(0.9, 0.3),
 );
+
+// The abyssal hills of `ridge.rs`.
+const HILL_RMS = 1.0;
+const HILL_SLOWEST = 10.0;
+const FAULT_RMS = 0.7;
+const HILL_RATES = vec2<f32>(20.0, 80.0);
+const HILL_WIDTH = vec2<f32>(4.0, 2.5);
+const HILL_ASPECT = vec2<f32>(1.2, 1.5);
+const HILL_CELL = 12.566370614359172;
+const HILL_TURN = 0.971;
+const HILL_WEIGHTS = array<f32, 10>(
+    0.267, 0.4577, 0.5857, 0.4905, 0.3067, 0.1716, 0.093, 0.05, 0.0268, 0.0144,
+);
+const VALUE_RMS = 0.429;
+
+// `hill_field` in `ridge.rs`, at the spreading rate and the mean throw of
+// the pass.
+fn ridge_hill_field() -> vec3<f32> {
+    let rate = 2.0 * ridge.spread * ridge.world_km;
+    let all = HILL_RMS / sqrt(max(rate, HILL_SLOWEST));
+    let faults = FAULT_RMS * ridge.mean_throw;
+    let rest = sqrt(max(all * all - faults * faults, 0.0));
+    let t = clamp((rate - HILL_RATES.x) / (HILL_RATES.y - HILL_RATES.x), 0.0, 1.0);
+    return vec3<f32>(
+        rest,
+        ridge_mix(HILL_WIDTH.x, HILL_WIDTH.y, t),
+        ridge_mix(HILL_ASPECT.x, HILL_ASPECT.y, t),
+    );
+}
+
+// `RidgePlan::hills`, with `field` from `ridge_hill_field`.
+fn ridge_hills(field: vec3<f32>, band_group: i32, side: u32, along: f32, across: f32) -> f32 {
+    if field.x <= 0.0 {
+        return 0.0;
+    }
+    let seed = ridge.seed ^ SALT_HILL ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
+    let texel = 2.0 * ridge.half_texel;
+    var cell = HILL_CELL * field.y;
+    var a = along / (field.z * cell);
+    var b = across / cell;
+    let s = sin(HILL_TURN);
+    let c = cos(HILL_TURN);
+    var weights = HILL_WEIGHTS;
+    var sum = 0.0;
+    for (var i = 0u; i < 10u; i++) {
+        let keep = smooth_between(2.0 * texel, 4.0 * texel, cell);
+        if keep <= 0.0 {
+            break;
+        }
+        let turned = vec2<f32>(a * c - b * s, a * s + b * c);
+        let z = 2.0 * f32(i) + f32(side);
+        sum += weights[i] * keep * noise3(vec3<f32>(turned, z), seed).x;
+        a = 2.0 * turned.x;
+        b = 2.0 * turned.y;
+        cell = 0.5 * cell;
+    }
+    return sum * field.x / VALUE_RMS;
+}
 
 // `lerp_table` in `ridge.rs`, for a table of 5 points.
 fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
@@ -1870,8 +1929,11 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let faults = grow * grown * ridge_faults(k, side, (u - lower) * km, len * km, x);
     let held = BLOCK_MEAN * ridge.mean_throw * grow * grown;
     let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);
+    let field = ridge_hill_field();
+    let hills = ridge_hills(field, band_group, side, group_along, x * ridge.spacing);
     let blocks = pond(faults, fill) - (pond(held, fill) - held)
-        + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x);
+        + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x)
+        + grow * grown * hills * field.x / (field.x + fill);
     let valley = ridge.valley * (1.0 + VALLEY_ALONG * (2.0 * ends - 1.0));
     let down = DOWN * valley * (1.0 - VALLEY_END * fade_out) * bump(from_axis / DOWN_KM);
     var inside = 0.0;
