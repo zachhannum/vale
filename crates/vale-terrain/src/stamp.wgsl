@@ -112,6 +112,7 @@ const SHAPE = 15u;
 // The start set of the tiles holds the levels from the start of the stroke.
 const PAINT = 16u;
 const SEAMOUNTS = 17u;
+const ABYSSAL = 18u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -1479,10 +1480,40 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
     let r = ridge.radius;
     let wide = noise3(p / (0.9 * r), ridge.seed ^ 0x51ed270bu);
     let fine = noise3(p / (0.37 * r), ridge.seed ^ 0x2f6b8a35u);
+    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u), patch_noise(p));
+}
+
+// `patch_noise` in `ridge.rs`.
+fn patch_noise(p: vec3<f32>) -> f32 {
     let km = ridge.world_km;
-    let area = noise3(p * (km / PATCH_KM), ridge.seed ^ SALT_PATCH).x
+    return noise3(p * (km / PATCH_KM), ridge.seed ^ SALT_PATCH).x
         + 0.5 * noise3(p * (km / (PATCH_FINE * PATCH_KM)), ridge.seed ^ SALT_PATCH).y;
-    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u), area);
+}
+
+// The level of a texel after an abyssal hills pass. The steps are those of
+// `AbyssalPlan::level`. The first segment holds the frame: the origin, then
+// the direction of the fabric.
+fn abyssal_level(at: vec2<i32>, old: f32) -> f32 {
+    let amount = amount_at(group.stamps[0], at);
+    if amount <= 0.0 {
+        return old;
+    }
+    let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+    let p = normalize(texel_dir(group.face, at));
+    let origin = ridge.segments[0].n;
+    let along = ridge.segments[0].m0;
+    let x = dot(p, along);
+    let y = dot(p, cross(origin, along));
+    let z = dot(p, origin);
+    let km = ridge.world_km;
+    let place = vec2<f32>(atan2(x, z) * km, atan2(y, length(vec2<f32>(x, z))) * km);
+    let area = patch_of(patch_noise(p));
+    let height = ridge_hills(0, 0u, place.x, place.y, area)
+        + ridge_texture(0, 0u, place.x, place.y, area.x)
+        - ridge.hill_mean * area.x * area.y;
+    let target_level = start + height * ridge.level;
+    let change = (target_level - old) * min(amount, 1.0);
+    return limited(old, clamp(old + floor(change + 0.5), 0.0, 65535.0));
 }
 
 // The shader keeps each distance along the line as a distance from the
@@ -2483,6 +2514,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     }
     if group.mode == SEAMOUNTS {
         return vec4<u32>(u32(seamounts_level(at)), 0u, 0u, 0u);
+    }
+    if group.mode == ABYSSAL {
+        return vec4<u32>(u32(abyssal_level(at, value)), 0u, 0u, 0u);
     }
     if group.mode == RANGE {
         let point = ridge_place(normalize(texel_dir(group.face, at)));

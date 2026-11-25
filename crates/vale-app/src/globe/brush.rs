@@ -583,7 +583,8 @@ impl Tip<'_> {
                 | Mode::Warp
                 | Mode::Push
                 | Mode::Noise
-                | Mode::Seamounts => flow,
+                | Mode::Seamounts
+                | Mode::AbyssalHills => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
                 Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint => {
@@ -810,6 +811,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Range
         | Mode::Basin
         | Mode::Seamounts
+        | Mode::AbyssalHills
         | Mode::Noise => 1,
     }
 }

@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
+use crate::abyssal::AbyssalPlan;
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::basin::BasinCut;
 use crate::channel::{ChannelCut, ChannelShape};
@@ -107,6 +108,9 @@ pub enum Mode {
     /// The mode of the seamounts brush. A stamp of this mode changes
     /// nothing. `Heightmap::seamounts` makes the change.
     Seamounts,
+    /// The mode of the abyssal hills brush. A stamp of this mode changes
+    /// nothing. `Heightmap::abyssal` makes the change.
+    AbyssalHills,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1159,7 +1163,12 @@ impl Heightmap {
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
         if matches!(
             stamp.mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Seamounts
+            Mode::Erode
+                | Mode::OceanRidge
+                | Mode::Range
+                | Mode::Basin
+                | Mode::Seamounts
+                | Mode::AbyssalHills
         ) {
             return 0;
         }
@@ -1312,7 +1321,8 @@ impl Heightmap {
                             | Mode::OceanRidge
                             | Mode::Range
                             | Mode::Basin
-                            | Mode::Seamounts => continue,
+                            | Mode::Seamounts
+                            | Mode::AbyssalHills => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1623,6 +1633,34 @@ impl Heightmap {
                                 changed += 1;
                             }
                         }
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Paints the abyssal hills of a plan. Each texel under the brush moves
+    /// toward its level from before the stroke plus the hills, by the effect
+    /// of the brush. Call this in a stroke. Returns the number of texels
+    /// that changed.
+    pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        let mut changed = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            let falloff = Falloff::new(face, &plan.stamp, self.n);
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let Some(amount) = falloff.texel(x, y, &self.flat) else {
+                        continue;
+                    };
+                    let p = self.texel_dir(face, x, y);
+                    let old = self.texel(face, x, y);
+                    let new = plan.level(self.level_before(face, x, y), old, amount, p);
+                    if new != old {
+                        self.set(face, x, y, new);
+                        changed += 1;
                     }
                 }
             }

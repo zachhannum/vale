@@ -7,6 +7,7 @@
 //! feature adds a copy of the heightmap in wgpu textures, and the same brush
 //! and the coarser levels as a shader.
 
+mod abyssal;
 mod bands;
 mod basin;
 mod channel;
@@ -36,6 +37,7 @@ mod swatch;
 mod tiles;
 mod zonal;
 
+pub use abyssal::{AbyssalHills, AbyssalPlan, AbyssalStroke};
 pub use bands::{
     Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, SEA_LEVEL, Stop, StopLine,
     sample_ramp, sea_colors,

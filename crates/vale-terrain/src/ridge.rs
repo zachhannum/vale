@@ -1102,25 +1102,26 @@ impl RidgePlan {
 }
 
 /// The faults and the abyssal hills of a stroke.
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct Faulting {
     /// The magma part of the spreading.
-    magma: f64,
+    pub(crate) magma: f64,
     /// The mean distance between two faults, in kilometers.
-    spacing: f64,
+    pub(crate) spacing: f64,
     /// Half of the texel step, in kilometers.
-    half_texel: f64,
+    pub(crate) half_texel: f64,
     /// The 16-bit steps of one kilometer of height.
-    level: f64,
+    pub(crate) level: f64,
     /// The throw unit of a fault, in kilometers.
-    hill_height: f64,
+    pub(crate) hill_height: f64,
     /// The scale of the faults, in `FAULT_LENGTH`, `HILL_CELL`, and
     /// `BACK_TILT` units.
-    hill_scale: f64,
+    pub(crate) hill_scale: f64,
     /// The mean height of the hills where all faults show at full throw,
     /// in kilometers.
-    hill_mean: f64,
+    pub(crate) hill_mean: f64,
     /// The height unit of the fine texture, in kilometers.
-    texture_height: f64,
+    pub(crate) texture_height: f64,
 }
 
 impl Faulting {
