@@ -58,8 +58,8 @@ pub const UNDO_RIVER: &str = "Undo river";
 pub const CLEAR_OUTLINE: &str = "Clear";
 /// The hint of the ocean ridge mode.
 pub const RIDGE_HINT: &str = "Draw the center line of the ridge.";
-/// The hint of a held ocean ridge or basin.
-pub const HELD_HINT: &str = "Change the settings, then apply.";
+/// The hint of a held ocean ridge.
+pub const HELD_HINT: &str = "Draw a fracture zone across the ridge, or apply.";
 /// The buttons on the canvas that end a held ocean ridge or basin.
 pub const APPLY: &str = "Apply";
 pub const DISCARD: &str = "Discard";

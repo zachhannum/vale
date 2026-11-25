@@ -16223,6 +16223,31 @@ fn a_held_ocean_ridge_has_its_buttons_on_the_canvas() {
     }
     h.run_steps(4);
     assert!(h.state().globe.holding().is_some());
+    assert!(h.query_by_label(panels::HELD_HINT).is_some());
+    // A stroke across the line draws a fracture zone, and the ridge stays
+    // held.
+    h.state_mut().globe.pen_down();
+    for i in 0..=20 {
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(-1.0, -11.0 + 0.5 * f64::from(i))),
+            flow: 0.5,
+            radius: 0.08,
+        };
+        h.state_mut()
+            .globe
+            .pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    for _ in 0..400 {
+        h.step();
+        if h.state().globe.held_idle() {
+            break;
+        }
+    }
+    h.run_steps(4);
+    assert!(h.state().globe.holding().is_some());
+    assert_eq!(h.state().globe.fracture_preview().len(), 1);
     screenshot::save(&mut h, "pad-held-ridge");
     // The buttons are on the canvas, beside the open panel.
     let (_, panel) = h.state().pad.panels[0];
