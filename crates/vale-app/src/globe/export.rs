@@ -44,7 +44,7 @@ pub type ExportResult = Result<Exported, String>;
 /// returns after the file is complete. `progress` gets the count of the rows
 /// that are done.
 ///
-/// With no raster record, the levels are from -6000 m to 6000 m.
+/// With no raster record, the levels are in the default elevation range.
 pub fn write_heightmap(
     map: &Heightmap,
     world: &World,

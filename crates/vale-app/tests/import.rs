@@ -435,6 +435,33 @@ fn a_16_bit_image_comes_in_with_no_loss_and_no_seam() {
 }
 
 #[test]
+fn an_import_maps_the_levels_to_the_range_of_the_layer() {
+    use vale_app::ui::{LayerRef, RasterSpec};
+    use vale_terrain::Elevation;
+    // The north half is level 0, and the south half is level 65,535.
+    let levels = image_levels(WIDTH, HEIGHT, |_, lat| if lat > 0.0 { 0 } else { u16::MAX });
+    let png = save_png("range.png", WIDTH, HEIGHT, levels);
+    let mut state = state();
+    let range = Elevation::new(-11000.0, 9000.0).unwrap();
+    let spec = RasterSpec::height_in("Height", FACE_SIZE, range);
+    let id = state.add_raster(spec).unwrap();
+    state.select(Some(LayerRef::Raster(id)));
+    state.run_action(Action::ImportHeightmap(png));
+    assert!(state.status.starts_with("Imported"), "{}", state.status);
+    assert_eq!(state.doc.project.rasters().len(), 1);
+    let map = state.globe.raster_map(id).unwrap();
+    assert_eq!(map.elevation(), range);
+    let meters = |lat: f64| range.meters(map.sample(lonlat_dir(0.0, lat)));
+    assert_eq!(meters(80.0), -11000.0);
+    assert_eq!(meters(-80.0), 9000.0);
+}
+
+/// The direction of a longitude and a latitude in degrees.
+fn lonlat_dir(lon: f64, lat: f64) -> [f64; 3] {
+    vale_terrain::math::lonlat_to_dir(lon, lat)
+}
+
+#[test]
 fn an_image_of_one_level_gives_that_level_at_each_texel() {
     const LEVEL: u16 = 12_345;
     let levels = vec![LEVEL; WIDTH * HEIGHT];
