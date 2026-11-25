@@ -3392,6 +3392,25 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
 }
 
 #[test]
+fn the_ocean_ridge_panel_has_a_hills_slider() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush hills").is_none());
+    choose_mode(&mut h, "Ocean ridge");
+    assert!(control(&h, "Brush hills").is_some());
+    assert_eq!(h.state().globe.brush.ridge_hills, 1.0);
+    // The strip keeps Size and Magma.
+    assert!(control(&h, "Strip magma").is_some());
+    assert!(control(&h, "Strip hills").is_none());
+    for (text, value) in [("0", 0.0), ("900", 2.0), ("150", 1.5)] {
+        type_value(&mut h, "Brush hills", text);
+        let hills = h.state().globe.brush.ridge_hills;
+        assert!((hills - value).abs() < 1e-6, "{text}: {hills}");
+    }
+    check_controls(&h, "the Hills slider");
+}
+
+#[test]
 fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
     open_group(&mut h, ModeGroup::Terrain);
@@ -3409,7 +3428,9 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     // Each row of the panel and the edge age line show.
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let rows = ["Brush size", "Brush flow"].into_iter().chain(RIDGE_ROWS);
+    let rows = ["Brush size", "Brush flow", "Brush hills"]
+        .into_iter()
+        .chain(RIDGE_ROWS);
     let fields = rows.map(|row| format!("{row} value"));
     for row in fields.chain(["Brush floor", "Brush ceiling"].map(String::from)) {
         let rect = control(&h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
@@ -3418,10 +3439,12 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let line = h.get_by_label(&edge_age_line(&h)).rect();
     assert!(panel.contains_rect(line), "{line:?} in {panel:?}");
     check_controls(&h, "744 high with the Ocean ridge panel");
+    screenshot::save(&mut h, "pad-ocean-ridge-744");
     // With the two limits on, the panel stays on the screen, and the rows
-    // scroll to the level of the ceiling.
-    tap(&mut h, "Brush floor");
+    // scroll to the level of the ceiling. The ceiling goes first, because
+    // the level of the floor pushes it below the panel.
     tap(&mut h, "Brush ceiling");
+    tap(&mut h, "Brush floor");
     let brush = h.state().globe.brush;
     assert!(brush.floor_on && brush.ceiling_on);
     let (_, panel) = h.state().pad.panels[0];
