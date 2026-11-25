@@ -79,6 +79,7 @@ fn has_strength(mode: Mode) -> bool {
             | Mode::Terrace
             | Mode::Shape
             | Mode::OceanRidge
+            | Mode::AbyssalHills
     )
 }
 
@@ -101,6 +102,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::OceanRidge => out.extend([Magma, Hills]),
         Mode::Warp => out.extend([Strength, Scale]),
         Mode::Flatten => out.push(Rate),
+        Mode::AbyssalHills => out.extend([Rate, Hills]),
         Mode::Paint => out.extend([Opacity, Value]),
         Mode::Noise => out.extend([Raise, Lower, Scale, Grain]),
         Mode::Terrace => out.push(Step),
@@ -140,6 +142,7 @@ pub fn default_pins(mode: Mode) -> [Slider; 2] {
         Mode::Shape => Shape,
         Mode::OceanRidge => Magma,
         Mode::Seamounts => Density,
+        Mode::AbyssalHills => Hills,
         _ => Strength,
     };
     [Size, second]
@@ -257,6 +260,7 @@ mod tests {
             (Mode::Range, [Size, Strength]),
             (Mode::Basin, [Strength, Density]),
             (Mode::Seamounts, [Size, Density]),
+            (Mode::AbyssalHills, [Size, Hills]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }

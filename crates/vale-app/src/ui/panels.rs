@@ -21,11 +21,12 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
+    OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -42,6 +43,8 @@ pub const RANGE: &str = "Range";
 pub const BASIN: &str = "Basin";
 /// The name of the seamounts mode of the brush.
 pub const SEAMOUNTS: &str = "Seamounts";
+/// The name of the abyssal hills mode of the brush.
+pub const ABYSSAL_HILLS: &str = "Abyssal hills";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1470,6 +1473,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Range, RANGE),
             (Mode::Basin, BASIN),
             (Mode::Seamounts, SEAMOUNTS),
+            (Mode::AbyssalHills, ABYSSAL_HILLS),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1612,6 +1616,17 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
+    } else if globe.brush.mode == Mode::AbyssalHills {
+        let brush = &mut globe.brush;
+        number::slider("Rate", &mut brush.abyssal_rate_mm, ABYSSAL_RATE_MM)
+            .step(1.0)
+            .decimals(0)
+            .suffix(" mm/yr")
+            .show(ui);
+        number::slider("Hills", &mut brush.abyssal_hills, RIDGE_HILLS)
+            .percent()
+            .show(ui);
+        seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)
             .percent()

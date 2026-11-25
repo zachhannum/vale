@@ -17,11 +17,11 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::Tool;
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION, FLATTEN_RATE,
-    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
-    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
-    shape_text,
+    ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
+    RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
+    SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
+    WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -232,7 +232,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 12] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -245,6 +245,11 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 12] = [
     (panels::RANGE, Icon::Range, Mode::Range),
     (panels::BASIN, Icon::Basin, Mode::Basin),
     (panels::SEAMOUNTS, Icon::Seamounts, Mode::Seamounts),
+    (
+        panels::ABYSSAL_HILLS,
+        Icon::AbyssalHills,
+        Mode::AbyssalHills,
+    ),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3220,6 +3225,11 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         // The motion of the pen and the flow set the distance of a push.
         Mode::Push => {}
         Mode::Flatten => row(ui, controls, state, Slider::Rate),
+        Mode::AbyssalHills => {
+            row(ui, controls, state, Slider::Rate);
+            row(ui, controls, state, Slider::Hills);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
         Mode::Paint => {
             row(ui, controls, state, Slider::Opacity);
             row(ui, controls, state, Slider::Value);
@@ -3481,6 +3491,14 @@ pub(super) fn brush_slider(
                     .default(defaults.scale_km);
                 set(number, &mut brush.scale_km);
             }
+            Slider::Rate if mode == Mode::AbyssalHills => {
+                let number = Number::new(name, brush.abyssal_rate_mm, ABYSSAL_RATE_MM)
+                    .label(label)
+                    .unit("mm/yr")
+                    .step(1.0)
+                    .default(defaults.abyssal_rate_mm);
+                set(number, &mut brush.abyssal_rate_mm);
+            }
             Slider::Rate => {
                 let number =
                     fraction(brush.flatten_rate, FLATTEN_RATE).default(defaults.flatten_rate);
@@ -3577,6 +3595,11 @@ pub(super) fn brush_slider(
                     .text(panels::signed_percent)
                     .default(0.0);
                 set(number, &mut brush.ridge_magma);
+            }
+            Slider::Hills if mode == Mode::AbyssalHills => {
+                let number =
+                    fraction(brush.abyssal_hills, RIDGE_HILLS).default(defaults.abyssal_hills);
+                set(number, &mut brush.abyssal_hills);
             }
             Slider::Hills => {
                 let number = fraction(brush.ridge_hills, RIDGE_HILLS).default(defaults.ridge_hills);

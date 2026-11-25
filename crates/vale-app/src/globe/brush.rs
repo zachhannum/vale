@@ -5,10 +5,10 @@ use std::f64::consts::FRAC_PI_2;
 use std::time::Instant;
 
 use vale_terrain::{
-    BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape, ELEV_MAX,
-    ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits, MAX_BRUSH_RADIUS,
-    MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Seamounts, Stamp, StampPlan, meters_to_level,
-    talus_levels,
+    AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
+    ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits,
+    MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Seamounts, Stamp, StampPlan,
+    meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -54,8 +54,8 @@ pub const RIDGE_CREST_M: std::ops::RangeInclusive<f64> = -6000.0..=6000.0;
 pub const RIDGE_SPREAD_MM: std::ops::RangeInclusive<f64> = 10.0..=150.0;
 /// The limits of the magma setting of the ocean ridge mode.
 pub const RIDGE_MAGMA: std::ops::RangeInclusive<f64> = -0.25..=0.15;
-/// The limits of the hills setting of the ocean ridge mode, the part of
-/// the height of the abyssal hills of the model.
+/// The limits of the hills setting of the ocean ridge mode and of the
+/// abyssal hills mode, the part of the height of the hills of the model.
 pub const RIDGE_HILLS: std::ops::RangeInclusive<f64> = 0.0..=2.0;
 /// The limits of the segment length of the ocean ridge mode, in kilometers.
 pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
@@ -70,6 +70,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
+/// The limits of the full spreading rate of the abyssal hills mode, in
+/// millimeters per year.
+pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
 /// The limits of the channel width setting, in kilometers.
 pub const CHANNEL_KM: std::ops::RangeInclusive<f64> = CHANNEL_WIDTHS_KM.0..=CHANNEL_WIDTHS_KM.1;
 /// The limits of the floodplain setting, in kilometers.
@@ -183,6 +186,12 @@ pub struct BrushSettings {
     pub seamount_density: f64,
     /// The characteristic height of the seamounts mode, in meters.
     pub seamount_height_m: f64,
+    /// The full spreading rate of the abyssal hills mode, in millimeters
+    /// per year.
+    pub abyssal_rate_mm: f64,
+    /// The height of the hills of the abyssal hills mode, as a part of the
+    /// height of the model.
+    pub abyssal_hills: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -240,6 +249,8 @@ impl Default for BrushSettings {
             basin_lakes: 0.0,
             seamount_density: 50.0,
             seamount_height_m: 400.0,
+            abyssal_rate_mm: 60.0,
+            abyssal_hills: 1.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -282,6 +293,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | Terrace
             | Shape
             | Seamounts
+            | AbyssalHills
     )
 }
 
@@ -401,6 +413,18 @@ impl BrushSettings {
         Seamounts {
             density: self.seamount_density,
             height_m: self.seamount_height_m,
+            world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The settings of an abyssal hills stroke. `world_km` is the radius of
+    /// the world.
+    pub fn abyssal_spec(&self, world_km: f64, seed: u32) -> AbyssalHills {
+        AbyssalHills {
+            rate: self.abyssal_rate_mm,
+            hills: self.abyssal_hills.clamp(0.0, 2.0),
             world_km,
             seed,
             limits: self.limits(),

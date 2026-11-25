@@ -14,8 +14,8 @@ use std::collections::HashMap;
 
 use vale_store::{ImageId, LayerId, RasterId};
 use vale_terrain::{
-    ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, SeamountPlan,
+    AbyssalPlan, ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid,
+    GpuTiles, Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, SeamountPlan,
     StampPipeline, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
@@ -2961,6 +2961,23 @@ impl LineOp {
     }
 }
 
+/// The plan of one stamp of a seamounts stroke or of an abyssal hills
+/// stroke.
+pub enum SeaOp {
+    Seamounts(Box<SeamountPlan>),
+    Abyssal(Box<AbyssalPlan>),
+}
+
+impl SeaOp {
+    /// The rectangles of the plan, one for each face.
+    pub fn rects(&self) -> &[Option<TexelRect>; FACES] {
+        match self {
+            SeaOp::Seamounts(plan) => &plan.rects,
+            SeaOp::Abyssal(plan) => &plan.rects,
+        }
+    }
+}
+
 /// One change of the GPU heightmap. The changes run in the order of the queue.
 pub enum Op {
     /// Sets all texels to one level.
@@ -2977,10 +2994,10 @@ pub enum Op {
         stroke: u64,
         time: Instant,
     },
-    /// One stamp of a seamounts stroke. `time` is the frame that read its
-    /// pen sample.
-    Seamounts {
-        plan: Box<SeamountPlan>,
+    /// One stamp of a seamounts stroke or of an abyssal hills stroke.
+    /// `time` is the frame that read its pen sample.
+    Sea {
+        plan: SeaOp,
         stroke: u64,
         time: Instant,
     },
@@ -3638,16 +3655,20 @@ impl Batch<'_> {
                 self.count_passes(stroke, passes);
                 self.stamps.push((stroke, time));
             }
-            Op::Seamounts { plan, stroke, time } => {
+            Op::Sea { plan, stroke, time } => {
                 let queue = self.queue;
-                if !heights.seamounts(queue, self.encoder(), &plan) {
+                let add = |enc: &mut wgpu::CommandEncoder| match &plan {
+                    SeaOp::Seamounts(plan) => heights.seamounts(queue, enc, plan),
+                    SeaOp::Abyssal(plan) => heights.abyssal(queue, enc, plan),
+                };
+                if !add(self.encoder()) {
                     self.submit();
                     heights.begin_batch();
-                    let added = heights.seamounts(queue, self.encoder(), &plan);
+                    let added = add(self.encoder());
                     debug_assert!(added, "an empty batch takes one plan");
                 }
-                self.mark_full(&plan.rects);
-                let passes = plan.rects.iter().flatten().count() as u32;
+                self.mark_full(plan.rects());
+                let passes = plan.rects().iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
                 self.stamps.push((stroke, time));
             }
