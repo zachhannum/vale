@@ -359,102 +359,89 @@ impl RidgePlan {
         let full_rate = 2.0 * spec.spread * spec.world_km;
         let m = magma_share(full_rate) + spec.magma;
         let spacing = lerp_table(&FAULT_SPACING, m);
-        let throw = HILL_RELIEF * KAPPA * lerp_table(&FAULT_HEAVE, m) * DIP_TAN;
-        let (hill, hill_width, hill_aspect) = hill_field(full_rate, throw);
+        let hill_scale = (spacing / HILL_SPACING).clamp(1.0, HILL_SCALE_MAX);
+        let hill_height = hill_rms(full_rate) / HILL_RMS_UNIT;
         Faulting {
             magma: m,
             spacing,
-            throw,
-            box_half: (0.5 * self.step() * spec.world_km / spacing).min(MAX_BOX),
             half_texel: 0.5 * self.step() * spec.world_km,
             level: self.relief,
-            hill,
-            hill_width,
-            hill_aspect,
+            hill_height,
+            hill_scale,
+            hill_mean: hill_height * HILL_MEAN_UNIT,
         }
     }
 
-    /// The height of the fault blocks on one side of the axis, in kilometers
-    /// of throw. Each crest segment `k` has its own faults. `along` is the
-    /// distance from the start of the segment in kilometers, `len` is the
-    /// length of the segment in kilometers, and `x` is the distance from the
-    /// axis in fault spacings. The faults are in rows along the line, one
-    /// row for each fault spacing. Each fault is one piece of a row. Its
-    /// height is exactly zero outside its window, so the sum does not depend
-    /// on the cells that the search starts from.
-    fn faults(&self, f: &Faulting, k: i32, side: u32, [along, len]: [f64; 2], x: f64) -> f64 {
-        self.fault_sum(f, [k, 0], side, [along, len], x)
+    /// The abyssal hills of one side of the axis, in kilometers, at `along`
+    /// kilometers along the group `group` and `across` kilometers from the
+    /// crest. Each hill is a lens along the fabric. It is steeper on the
+    /// side that faces the axis, as the normal faults that lift it face the
+    /// axis. The hills are in cells, `HILLS` in each cell, at seeded places,
+    /// so they overlap en echelon and their spacing varies. A hill is zero
+    /// outside its window, so the sum does not depend on the cells that the
+    /// search starts from.
+    fn hills(&self, f: &Faulting, group: i32, side: u32, [along, across]: [f64; 2]) -> f64 {
+        self.hill_sum(f, [group, 0], side, [along, across])
     }
 
-    /// `faults`, with a search of `extra` more cells on each side.
-    fn fault_sum(
+    /// `hills`, with a search of `extra` more cells on each side.
+    fn hill_sum(
         &self,
         f: &Faulting,
-        [k, extra]: [i32; 2],
+        [group, extra]: [i32; 2],
         side: u32,
-        [along, len]: [f64; 2],
-        x: f64,
+        [along, across]: [f64; 2],
     ) -> f64 {
-        let seed = self.ridge.seed ^ SALT_FAULT;
-        let b = f.box_half;
+        let seed = self.ridge.seed ^ SALT_HILL ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let draw = |i: i32, j: i32, channel: u32| {
-            let key = (k as u32)
-                .wrapping_mul(32)
-                .wrapping_add(side * 16 + channel);
-            unit(hash(i as u32, j as u32, key, seed))
+            unit(hash(i as u32, j as u32, side * 64 + channel, seed))
         };
-        let reach = WIDTH_MAX.max(SCARP_MAX) + b;
-        let first = ((x - PLACE_SPREAD - reach).floor() as i32 - extra).max(0);
-        let last = (x + PLACE_SPREAD - 1.0 + reach).floor() as i32 + extra;
+        let (sp, s) = (f.spacing, f.hill_scale);
+        let (cell_along, cell_across) = (HILL_CELL[0] * s, HILL_CELL[1] * sp);
+        // A hill is wider and longer by about a texel, and lower by as much,
+        // so it keeps its volume and does not alias.
+        let blur = f.half_texel;
+        let reach_along = 0.5 * (HILL_LENGTH[1] * s).hypot(blur);
+        let reach_across =
+            (1.0 - STEEP) * (HILL_WIDTH[1] * sp).hypot(blur) + HILL_TILT * reach_along;
+        let cells = |x: f64, reach: f64, cell: f64| {
+            ((x - reach) / cell).floor() as i32 - extra
+                ..=((x + reach) / cell).floor() as i32 + extra
+        };
         let mut sum = 0.0;
-        // A throw: a smallest throw plus a part from an exponential
-        // distribution.
-        let throw =
-            |u: f64| f.throw * (THROW_MIN + (1.0 - THROW_MIN) * (-(1.0 - u).ln()).min(THROW_MAX));
-        let (spacing, heave) = (
-            lerp_table(&FAULT_SPACING, f.magma),
-            lerp_table(&FAULT_HEAVE, f.magma),
-        );
-        for i in first..=last {
-            // Row `i` of faults has pieces of one length, with its own
-            // phase.
-            let piece = (throw(draw(i, -1, 0)) / GAMMA).clamp(PIECE_MIN, PIECE_MAX);
-            let phase = draw(i, -1, 1);
-            let cell = (along / piece + phase).floor() as i32;
-            for j in cell - 1 - extra..=cell + 1 + extra {
-                let middle =
-                    f64::from(j) + 0.5 - phase + PIECE_JITTER * (2.0 * draw(i, j, 3) - 1.0);
-                let half = 0.5 * (1.0 + OVERLAP * draw(i, j, 4));
-                // The throw is the mean over a box one texel long.
-                let smooth = f.half_texel.min(MAX_SMOOTH * piece);
-                let (start, end) = ((middle - half) * piece, (middle + half) * piece);
-                if along <= start - smooth || along >= end + smooth {
-                    continue;
+        for i in cells(along, reach_along, cell_along) {
+            for j in cells(across, reach_across, cell_across) {
+                for n in 0..HILLS {
+                    let d = |channel: u32| draw(i, j, n * 8 + channel);
+                    let middle = (f64::from(i) + d(0)) * cell_along;
+                    let place = (f64::from(j) + d(1)) * cell_across;
+                    // The length has a log-normal shape between its limits.
+                    let ratio = HILL_LENGTH[1] / HILL_LENGTH[0];
+                    let length = HILL_LENGTH[0] * s * ratio.powf(0.5 * (d(2) + d(3)));
+                    let width = sp * mix(HILL_WIDTH[0], HILL_WIDTH[1], d(4));
+                    let tall =
+                        HEIGHT_MIN + (1.0 - HEIGHT_MIN) * (-(1.0 - d(5)).ln()).min(HEIGHT_MAX);
+                    let (long, wide) = (length.hypot(blur), width.hypot(blur));
+                    let q = 2.0 * (along - middle) / long;
+                    if q.abs() >= 1.0 {
+                        continue;
+                    }
+                    let tilt = HILL_TILT * (2.0 * d(6) - 1.0);
+                    let y = across - place - tilt * (along - middle);
+                    // Most hills face the axis: their steep side is toward
+                    // the crest.
+                    let y = if d(7) < INWARD { y } else { -y };
+                    let thin = 1.0 - q * q;
+                    let half = if y < 0.0 { STEEP } else { 1.0 - STEEP };
+                    let z = y / (half * wide * (TIP + (1.0 - TIP) * thin));
+                    if z.abs() >= 1.0 {
+                        continue;
+                    }
+                    // A wide hill is high, so the slopes of the hills are alike.
+                    let broad = width / (sp * 0.5 * (HILL_WIDTH[0] + HILL_WIDTH[1]));
+                    let height = f.hill_height * tall * broad * (length / long) * (width / wide);
+                    sum += height * thin * thin * (1.0 - z * z).powi(2);
                 }
-                // The middle of a segment has more magma than its ends, so
-                // its faults are lower and closer together. At the ends,
-                // some rows have no piece.
-                let place = middle * piece / len;
-                let magma = f.magma + SEGMENT_MAGMA * (std::f64::consts::TAU * (place - 0.5)).cos();
-                let grown = lerp_table(&FAULT_HEAVE, magma) / heave;
-                let keep = (spacing / lerp_table(&FAULT_SPACING, magma)).min(1.0);
-                let kept = smoothstep(-KEEP_SOFT, KEEP_SOFT, keep - draw(i, j, 8));
-                let q = (2.0 * along - start - end) / (end - start);
-                let bow = (1.0 - q * q).max(0.0);
-                let taper = ellipse(q, 2.0 * smooth / (end - start));
-                // Each piece is a fault with its own throw and place. Most
-                // faults face the axis.
-                let height = throw(draw(i, j, 5)) * grown;
-                let inward = draw(i, j, 2) < INWARD;
-                let at = f64::from(i)
-                    + 0.5
-                    + FAULT_JITTER * (2.0 * draw(i, j, 1) - 1.0)
-                    + STEP_OVER * (2.0 * draw(i, j, 6) - 1.0)
-                    + BOW * (2.0 * draw(i, j, 7) - 1.0) * bow;
-                let scarp = (height / (DIP_TAN * f.spacing)).clamp(1e-6, SCARP_MAX);
-                let y = if inward { x - at } else { at - x };
-                let width = (BLOCK_WIDTH * (height / f.throw).sqrt()).clamp(WIDTH_MIN, WIDTH_MAX);
-                sum += height * taper * kept * block(y, scarp, width, b);
             }
         }
         sum
@@ -511,36 +498,6 @@ impl RidgePlan {
             }
         }
         sum
-    }
-
-    /// The abyssal hills that the faults do not make, in kilometers, at
-    /// `[along, across]` kilometers. They are a sum of octaves of value
-    /// noise with the anisotropic von Kármán spectrum of Goff and Jordan
-    /// (1988). Each octave turns by `HILL_TURN` in the stretched plane, so
-    /// the lattice of the noise does not show. Octaves of less than two
-    /// texels fade out. The segments of group `group` share the hills of a
-    /// side.
-    fn hills(&self, f: &Faulting, group: i32, side: u32, [along, across]: [f64; 2]) -> f64 {
-        if f.hill <= 0.0 {
-            return 0.0;
-        }
-        let seed = self.ridge.seed ^ SALT_HILL ^ (group as u32).wrapping_mul(0x9e37_79b9);
-        let texel = 2.0 * f.half_texel;
-        let mut cell = HILL_CELL * f.hill_width;
-        let (mut a, mut b) = (along / (f.hill_aspect * cell), across / cell);
-        let (sin, cos) = HILL_TURN.sin_cos();
-        let mut sum = 0.0;
-        for (i, weight) in HILL_WEIGHTS.iter().enumerate() {
-            let keep = smoothstep(2.0 * texel, 4.0 * texel, cell);
-            if keep <= 0.0 {
-                break;
-            }
-            (a, b) = (a * cos - b * sin, a * sin + b * cos);
-            let z = 2.0 * i as f64 + f64::from(side);
-            sum += weight * keep * noise3([a, b, z], seed)[0];
-            (a, b, cell) = (2.0 * a, 2.0 * b, 0.5 * cell);
-        }
-        sum * f.hill / VALUE_RMS
     }
 
     /// Lumps of lava from 0 to about 1 high, at `[along, across]`
@@ -646,8 +603,8 @@ impl RidgePlan {
         let (top, foot) = (depth(0.0), depth(age(r)));
         let lift = (f64::from(spec.crest) - old).max(0.0);
         let f = self.faulting();
-        let mean = BLOCK_MEAN * f.throw * f.level;
-        // Ground at the crest level gets no faults.
+        let mean = f.hill_mean * f.level;
+        // Ground at the crest level gets no hills.
         let low = (lift / (HILL_TOP * mean + 1.0)).min(1.0);
         // The blocks and the troughs fade toward the reach.
         let fade = 1.0 - smoothstep(HILL_FADE, REACH, far);
@@ -745,9 +702,8 @@ impl RidgePlan {
             let sag = SAG * noise.slow[0].clamp(0.0, 1.0);
             let w = swell * (1.0 - sag);
             let rise = taper * (w * (lift - low * flat) - low * sunk * w * (2.0 - w)).max(0.0);
-            // The magma of the segment changes with the age, so the faults
-            // are closer together in some bands and farther apart in others.
-            // The throw grows with the spacing.
+            // The magma of the segment changes with the age, so the hills
+            // are higher in some bands and lower in others.
             // The segments between two transform faults share the bands of
             // the magma, so the bands go on past an offset with no transform
             // fault. The bands are of the age with a sign from the middle of
@@ -764,9 +720,6 @@ impl RidgePlan {
                 noise1_round(tau, group as u32, 0, magma_seed)
             };
             let (band, slope) = band_at(across - center);
-            let (zero, _) = band_at(crest - center);
-            let away = if off < 0.0 { -1.0 } else { 1.0 };
-            let rows = away * MAGMA_BAND * MAGMA_MYR * v * km / f.spacing;
             let rate = 1.0 + MAGMA_BAND * slope;
             let grown = rate.powf(-THROW_SPACING);
             let toward = if (self.shift(&sg, next) - crest) * off > 0.0 {
@@ -774,27 +727,22 @@ impl RidgePlan {
             } else {
                 1.0
             };
-            let x = from_crest * km / f.spacing
-                + rows * (band - zero)
-                + HOOK_ROWS * hook * hook * toward;
-            let along = [(u - lower) * km, len * km];
-            let faults = grow * grown * self.faults(&f, k, side, along, x);
-            // Sediment ponds in the lows between the blocks, up to twice its
-            // thickness above the low of the hills: `HILL_LOW` of the mean
-            // height of the blocks. It fills `POND` of the depth of a low
-            // below that level, and the hills above it keep their tops. The
-            // depth of the age is the depth with the sediment, so the blocks
-            // are lower by about the rise of their mean.
-            let held = BLOCK_MEAN * f.throw * grow * grown;
+            // The hills follow the distance from the crest, and hook with
+            // the faults near the ends of the segment.
+            let hill_across = from_crest * km + HOOK_ROWS * hook * hook * toward * f.spacing;
+            let hills = grow * grown * self.hills(&f, group, side, [group_along, hill_across]);
+            // Sediment ponds in the lows between the hills, up to twice its
+            // thickness above the low of the hills: `HILL_LOW` of their mean
+            // height. It fills `POND` of the depth of a low below that
+            // level, and the hills above it keep their tops. The depth of
+            // the age is the depth with the sediment, so the hills are lower
+            // by about the rise of their mean.
+            let held = f.hill_mean * grow * grown;
             let fill = (2.0 * SEDIMENT_RATE * tau - HILL_LOW * held).max(0.0);
-            let blocks = pond(faults, fill) - (pond(held, fill) - held);
+            let blocks = pond(hills, fill) - (pond(held, fill) - held);
             // More magma gives a thicker crust, so the bands of the magma
             // are also small, smooth bands of the depth.
             let blocks = blocks + grow * MAGMA_RELIEF * 0.5 * (1.0 + band);
-            // The rest of the abyssal hills. They follow the rows of the
-            // faults, and sediment thicker than their height buries them.
-            let hills = self.hills(&f, group, side, [group_along, x * f.spacing]);
-            let blocks = blocks + grow * grown * hills * f.hill / (f.hill + fill);
             // The axial valley is deeper at the ends of the segment. A broad
             // down-warp and the staircase of the large faults of its walls
             // make it, and the faults lift the rift mountains.
@@ -912,14 +860,13 @@ pub(crate) struct RidgeShape {
     /// The depth at the crest and at the brush radius, in meters.
     pub top: f64,
     pub foot: f64,
-    /// The mean height of the blocks, in 16-bit steps.
+    /// The mean height of the hills, in 16-bit steps.
     pub mean: f64,
     pub magma: f64,
     pub spacing: f64,
-    pub throw: f64,
-    /// The heave of a fault at the magma part, in kilometers.
-    pub heave: f64,
-    pub box_half: f64,
+    pub hill_height: f64,
+    pub hill_scale: f64,
+    pub hill_mean: f64,
     pub half_texel: f64,
     pub level: f64,
     /// The depth of the axial valley and the height of the axial high, in
@@ -959,12 +906,12 @@ impl RidgePlan {
             round,
             top: depth(0.0),
             foot: depth(age(r)),
-            mean: BLOCK_MEAN * f.throw * f.level,
+            mean: f.hill_mean * f.level,
             magma: f.magma,
             spacing: f.spacing,
-            throw: f.throw,
-            heave: lerp_table(&FAULT_HEAVE, f.magma),
-            box_half: f.box_half,
+            hill_height: f.hill_height,
+            hill_scale: f.hill_scale,
+            hill_mean: f.hill_mean,
             half_texel: f.half_texel,
             level: f.level,
             valley,
@@ -977,26 +924,22 @@ impl RidgePlan {
     }
 }
 
-/// The faults of a stroke.
+/// The faults and the abyssal hills of a stroke.
 struct Faulting {
     /// The magma part of the spreading.
     magma: f64,
     /// The mean distance between two faults, in kilometers.
     spacing: f64,
-    /// The mean throw of a fault, in kilometers.
-    throw: f64,
-    /// Half of the texel step, in fault spacings.
-    box_half: f64,
     /// Half of the texel step, in kilometers.
     half_texel: f64,
-    /// The 16-bit steps of one kilometer of throw.
+    /// The 16-bit steps of one kilometer of height.
     level: f64,
-    /// The RMS height of the hills that the faults do not make, their
-    /// characteristic width across the fabric, both in kilometers, and
-    /// their length along the fabric in widths.
-    hill: f64,
-    hill_width: f64,
-    hill_aspect: f64,
+    /// The height unit of a hill, in kilometers.
+    hill_height: f64,
+    /// The length of the hills, in `HILL_LENGTH` and `HILL_CELL` units.
+    hill_scale: f64,
+    /// The mean height of the hills, in kilometers.
+    hill_mean: f64,
 }
 
 /// The fracture zone along the trace of a boundary.
@@ -1065,7 +1008,6 @@ const CURVE: f64 = 0.3;
 const SALT_BEND: u32 = 0x51ed_270b;
 const SALT_BEND_FINE: u32 = 0x2f6b_8a35;
 const SALT_SLOW: u32 = 0x7a3c_91d7;
-const SALT_FAULT: u32 = 0x1b87_3593;
 const SALT_TURN: u32 = 0x6c8e_9cf5;
 const SALT_MIGRATE: u32 = 0x3d4f_a1c7;
 const SALT_MAGMA: u32 = 0x9b05_688c;
@@ -1145,14 +1087,6 @@ const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 600.0), (50.0, 300.0), (100.0, 10
 /// The shortest crest segment for its depth and its magma, as a part of the
 /// mean length.
 const SHORTEST_PART: f64 = 0.2;
-
-/// The magma part of the spreading at the middle of a crest segment is
-/// higher than its mean by this number, and at the ends it is lower.
-const SEGMENT_MAGMA: f64 = 0.03;
-
-/// A piece of a fault at the end of a segment fades in over this part of
-/// the chance that it is there.
-const KEEP_SOFT: f64 = 0.1;
 
 /// The age of a cell of the noise of the magma, in millions of years, and
 /// the largest change of the spacing of the faults, as a part of the
@@ -1411,21 +1345,10 @@ fn depth(age: f64) -> f64 {
     }
 }
 
-/// The abyssal hills at a full spreading rate in millimeters per year, and
-/// the mean throw of a fault in kilometers. The RMS height of all hills is
-/// `HILL_RMS` over the square root of the rate (Malinverno 1991; Goff
-/// 1991), and the faults make `FAULT_RMS` of the mean throw of it. The
-/// first number is the RMS height of the rest, in kilometers. The second
-/// and the third are the width and the aspect of `Faulting`.
-fn hill_field(full_rate: f64, throw: f64) -> (f64, f64, f64) {
-    let all = HILL_RMS / full_rate.max(HILL_SLOWEST).sqrt();
-    let rest = (all * all - (FAULT_RMS * throw).powi(2)).max(0.0).sqrt();
-    let t = ((full_rate - HILL_RATES[0]) / (HILL_RATES[1] - HILL_RATES[0])).clamp(0.0, 1.0);
-    (
-        rest,
-        mix(HILL_WIDTH[0], HILL_WIDTH[1], t),
-        mix(HILL_ASPECT[0], HILL_ASPECT[1], t),
-    )
+/// The RMS height of the abyssal hills at a full spreading rate in
+/// millimeters per year, in kilometers.
+fn hill_rms(full_rate: f64) -> f64 {
+    HILL_RMS / full_rate.max(HILL_SLOWEST).sqrt()
 }
 
 /// The magma part of the spreading at a full spreading rate in millimeters
@@ -1454,20 +1377,12 @@ fn lerp_table(table: &[(f64, f64)], x: f64) -> f64 {
 /// per year (Behn and Ito 2008).
 const MAGMA_SHARE: [(f64, f64); 3] = [(20.0, 0.75), (50.0, 0.85), (100.0, 0.95)];
 
-/// The distance between faults and the heave of a fault at a magma part, in
-/// kilometers (Buck, Lavier, and Poliakov 2005; Behn and Ito 2008).
+/// The distance between faults at a magma part, in kilometers (Buck,
+/// Lavier, and Poliakov 2005; Behn and Ito 2008).
 const FAULT_SPACING: [(f64, f64); 5] = [(0.5, 8.0), (0.6, 5.0), (0.7, 4.0), (0.8, 3.0), (0.9, 2.0)];
-const FAULT_HEAVE: [(f64, f64); 5] = [(0.5, 5.0), (0.6, 2.5), (0.7, 1.2), (0.8, 0.7), (0.9, 0.3)];
 
 /// The tangent of the dip of a fault, about 50 degrees.
 const DIP_TAN: f64 = 1.2;
-
-/// The throw of a fault divided by its heave and the tangent of its dip.
-const KAPPA: f64 = 0.42;
-
-/// The height of an abyssal hill as a part of the throw of its fault.
-/// Slides off the scarp make the hills lower.
-const HILL_RELIEF: f64 = 0.6;
 
 /// The 16-bit steps of one kilometer of height.
 const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
@@ -1479,93 +1394,55 @@ const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
 const HILL_RMS: f64 = 1.0;
 const HILL_SLOWEST: f64 = 10.0;
 
-/// The RMS height of the fault blocks, in mean throws.
-const FAULT_RMS: f64 = 0.7;
+/// The shortest and the longest hill, in kilometers, and the narrowest and
+/// the widest hill, in fault spacings. The hills of a fast ridge are 5 to
+/// 40 km long and 1 to 4 km wide (Macdonald and others 1996; Goff 1991).
+/// The lengths have a log-normal shape between the limits.
+const HILL_LENGTH: [f64; 2] = [8.0, 50.0];
+const HILL_WIDTH: [f64; 2] = [1.0, 3.5];
 
-/// The characteristic width of the abyssal hills across the fabric, in
-/// kilometers, and their length along it, in widths, at the slow and the
-/// fast full spreading rate of `HILL_RATES`. The hills are wider and less
-/// long on slow ridges (Goff 1991; Goff and others 1997). The faults are
-/// long, so the noise needs only a small aspect for the anisotropy of real
-/// sea floor.
-const HILL_RATES: [f64; 2] = [20.0, 80.0];
-const HILL_WIDTH: [f64; 2] = [4.0, 2.5];
-const HILL_ASPECT: [f64; 2] = [1.2, 1.5];
+/// Larger fault spacings give longer hills: the lengths scale by the
+/// spacing over `HILL_SPACING` kilometers, from 1 to `HILL_SCALE_MAX`.
+const HILL_SPACING: f64 = 2.0;
+const HILL_SCALE_MAX: f64 = 2.0;
 
-/// The cell of the first octave of the hills, in characteristic widths.
-/// Its wavelength is 4 times the corner wavelength of the spectrum.
-const HILL_CELL: f64 = 4.0 * std::f64::consts::PI;
+/// The cells of the hills: along the fabric in kilometers, and across it
+/// in fault spacings, with `HILLS` hills in each cell.
+const HILL_CELL: [f64; 2] = [25.0, 2.0];
+const HILLS: u32 = 2;
 
-/// The turn of each octave of the hills, in radians: the golden part of a
-/// right angle.
-const HILL_TURN: f64 = 0.971;
+/// The largest turn of a hill from the fabric, as a tangent.
+const HILL_TILT: f64 = 0.1;
 
-/// The weights of the octaves of the hills. Octave `i` has 2 to the power
-/// `i` over 4 times the corner wavenumber, and its weight is the root of
-/// the von Kármán power of an octave there, with a Hurst number of 0.9
-/// (Goff and Jordan 1988). The sum of their squares is 1.
-const HILL_WEIGHTS: [f64; 10] = [
-    0.267, 0.4577, 0.5857, 0.4905, 0.3067, 0.1716, 0.093, 0.05, 0.0268, 0.0144,
-];
-#[cfg(test)]
-const HURST: f64 = 0.9;
+/// The part of the width of a hill on its steep side, and the width at
+/// its tips as a part of the width at its middle.
+const STEEP: f64 = 0.4;
+const TIP: f64 = 0.4;
 
-/// The RMS of one part of `noise3`.
-const VALUE_RMS: f64 = 0.429;
+/// The height of a hill in height units: a smallest height plus a part
+/// from an exponential distribution, up to `HEIGHT_MAX`.
+const HEIGHT_MIN: f64 = 0.3;
+const HEIGHT_MAX: f64 = 2.0;
 
-/// The smallest throw of a fault as a part of the mean throw, and the
-/// largest exponential part, in mean throws.
-const THROW_MIN: f64 = 0.6;
-const THROW_MAX: f64 = 3.0;
+/// The RMS height and the mean height of the hills, in height units. See
+/// the test `the_hills_have_their_rms_and_mean_height`.
+const HILL_RMS_UNIT: f64 = 0.58;
+const HILL_MEAN_UNIT: f64 = 0.5;
 
-/// The largest move of a fault across the line from the middle of its
-/// cell, in fault spacings.
-const FAULT_JITTER: f64 = 0.4;
-
-/// The part of the faults that face the axis.
+/// The part of the hills that face the axis.
 const INWARD: f64 = 0.8;
 
-/// The throw of a fault divided by its length.
-const GAMMA: f64 = 0.02;
-
-/// The shortest and the longest piece of a fault, in kilometers.
-const PIECE_MIN: f64 = 10.0;
-const PIECE_MAX: f64 = 30.0;
-
-/// The largest move of the middle of a piece along the line, and the
-/// largest overlap of two pieces, in piece lengths.
+/// The largest move of the middle of a piece of a wall fault along the
+/// line, and the largest overlap of two pieces, in piece lengths.
 const PIECE_JITTER: f64 = 0.15;
 const OVERLAP: f64 = 0.3;
 
-/// The largest step of a piece across the line from its fault, and the
-/// largest bow of a piece, in fault spacings.
-const STEP_OVER: f64 = 0.3;
-const BOW: f64 = 0.2;
-
-/// The largest distance of a scarp from the middle of its cell, in fault
-/// spacings.
-const PLACE_SPREAD: f64 = 0.5 + FAULT_JITTER + STEP_OVER + BOW;
-
-/// The width of a block behind its scarp, in fault spacings, is
-/// `BLOCK_WIDTH` times the square root of its throw in mean throws, from
-/// `WIDTH_MIN` to `WIDTH_MAX`. A scarp is no wider than `SCARP_MAX` fault
-/// spacings.
-const BLOCK_WIDTH: f64 = 2.5;
-const WIDTH_MIN: f64 = 1.0;
-const WIDTH_MAX: f64 = 5.0;
-const SCARP_MAX: f64 = 0.4;
-
-/// The largest half width of the box that smooths the blocks, in fault
-/// spacings, and along a piece, in piece lengths.
-const MAX_BOX: f64 = 2.0;
+/// The largest smoothing of a wall fault along a piece, in piece lengths.
 const MAX_SMOOTH: f64 = 0.3;
 
-/// The mean height of the blocks, in mean throws.
-const BLOCK_MEAN: f64 = 1.08;
-
-/// The highest block, in mean heights of the blocks. Ground this close
-/// below the Crest setting gets lower blocks.
-const HILL_TOP: f64 = 3.6;
+/// The highest hills, in mean heights of the hills. Ground this close
+/// below the Crest setting gets lower hills.
+const HILL_TOP: f64 = 8.0;
 
 /// The throw of a fault grows over this number of fault spacings from the
 /// axis.
@@ -2087,7 +1964,6 @@ mod tests {
         let (low, mid, high) = (faulting(-0.2), faulting(0.0), faulting(0.1));
         assert!(low.magma < mid.magma && mid.magma < high.magma);
         assert!(low.spacing > mid.spacing && mid.spacing > high.spacing);
-        assert!(low.throw > mid.throw && mid.throw > high.throw);
         // A faster ridge has more magma, so its faults are closer.
         let fast = Ridge {
             spread: 4.0 * spec().spread,
@@ -2282,29 +2158,62 @@ mod tests {
     }
 
     #[test]
-    fn the_sum_of_the_faults_has_each_fault_in_its_window() {
+    fn the_sum_of_the_hills_has_each_hill_in_its_window() {
         let plan = rough(spec(), FINE);
         let f = plan.faulting();
         // The full rate of 25 mm per year gives a magma part of 0.767.
         assert!((f.spacing - 3.33).abs() < 0.01, "{}", f.spacing);
-        assert!(f.box_half > 0.1 && f.box_half < 0.5, "{}", f.box_half);
         let mut positive = 0;
-        for k in 0..4 {
-            for a in 0..300 {
-                let along = f64::from(a) * 2.13 - 300.0;
-                for xi in 0..300 {
-                    let x = f64::from(xi) * 0.071;
-                    let sum = plan.faults(&f, k, 0, [along, 130.0], x);
+        for group in 0..3 {
+            for a in 0..200 {
+                let along = f64::from(a) * 1.13 - 100.0;
+                for c in 0..200 {
+                    let across = f64::from(c) * 0.37;
+                    let sum = plan.hills(&f, group, 1, [along, across]);
                     assert!(sum >= 0.0);
                     positive += usize::from(sum > 0.0);
                     // A search that starts from more cells gives the same
                     // sum.
-                    let more = plan.fault_sum(&f, [k, 3], 0, [along, 130.0], x);
-                    assert_eq!(sum, more, "{k} {along} {x}");
+                    let more = plan.hill_sum(&f, [group, 2], 1, [along, across]);
+                    assert_eq!(sum, more, "{group} {along} {across}");
                 }
             }
         }
-        assert!(positive > 300000, "{positive}");
+        assert!(positive > 80000, "{positive}");
+    }
+
+    #[test]
+    fn the_hills_have_their_rms_and_mean_height() {
+        // A fast ridge on a small world, so a texel is small beside a hill.
+        let plan = rough(
+            Ridge {
+                spread: 55.0 / 1000.0,
+                world_km: 1000.0,
+                ..spec()
+            },
+            FINE,
+        );
+        let f = plan.faulting();
+        let (mut sum, mut squares, mut n) = (0.0, 0.0, 0.0);
+        for a in 0..400 {
+            for c in 0..400 {
+                let at = [f64::from(a) * 1.7, f64::from(c) * 0.61];
+                let h = plan.hills(&f, 0, 0, at) / f.hill_height;
+                (sum, squares, n) = (sum + h, squares + h * h, n + 1.0);
+            }
+        }
+        let mean = sum / n;
+        let rms = (squares / n - mean * mean).sqrt();
+        assert!((mean - HILL_MEAN_UNIT).abs() < 0.01, "a mean of {mean}");
+        assert!((rms - HILL_RMS_UNIT).abs() < 0.01, "an RMS of {rms}");
+    }
+
+    #[test]
+    fn abyssal_hills_are_lower_on_fast_ridges() {
+        // Malinverno (1991); Goff (1991).
+        for (rate, rms) in [(20.0, 0.224), (110.0, 0.095)] {
+            assert!((hill_rms(rate) - rms).abs() < 0.005, "at {rate} mm/yr");
+        }
     }
 
     #[test]
@@ -3074,46 +2983,5 @@ mod tests {
         lay(&mut map, full(), &dirs);
         map.cancel_stroke();
         assert!(levels(&map) == before);
-    }
-
-    #[test]
-    fn hill_weights_follow_the_von_karman_spectrum() {
-        let raw: Vec<f64> = (0..HILL_WEIGHTS.len())
-            .map(|i| {
-                let q = 2f64.powi(i as i32) / 4.0;
-                q / (1.0 + q * q).powf(0.5 * (HURST + 1.0))
-            })
-            .collect();
-        let norm = raw.iter().map(|w| w * w).sum::<f64>().sqrt();
-        for (w, r) in HILL_WEIGHTS.iter().zip(&raw) {
-            assert!((w - r / norm).abs() < 1e-4, "{w} against {}", r / norm);
-        }
-        // `VALUE_RMS` is the RMS of a part of `noise3` on a plane.
-        let mut sum = 0.0;
-        let n = 400;
-        for i in 0..n {
-            for j in 0..n {
-                let p = [f64::from(i) * 0.37, f64::from(j) * 0.41, 3.0];
-                sum += noise3(p, 7)[0].powi(2);
-            }
-        }
-        let rms = (sum / f64::from(n * n)).sqrt();
-        assert!((rms - VALUE_RMS).abs() < 0.01, "an RMS of {rms}");
-    }
-
-    #[test]
-    fn abyssal_hills_are_lower_and_longer_on_fast_ridges() {
-        for (rate, rms) in [(20.0, 0.224), (110.0, 0.095)] {
-            let m = magma_share(rate);
-            let throw = HILL_RELIEF * KAPPA * lerp_table(&FAULT_HEAVE, m) * DIP_TAN;
-            let (rest, _, _) = hill_field(rate, throw);
-            let all = rest.hypot(FAULT_RMS * throw);
-            assert!((all - rms).abs() < 0.005, "{all} km at {rate} mm/yr");
-        }
-        let (_, slow_width, slow_aspect) = hill_field(20.0, 0.1);
-        let (_, fast_width, fast_aspect) = hill_field(110.0, 0.1);
-        assert!(fast_width < slow_width && fast_aspect > slow_aspect);
-        // The hills are a few kilometers wide and longer than wide.
-        assert!((2.0..=5.0).contains(&fast_width) && fast_aspect > 1.0);
     }
 }
