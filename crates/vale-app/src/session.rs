@@ -651,6 +651,17 @@ impl Session {
         self.file.undo_limit()
     }
 
+    /// Sets the limit of the size of the undo log of the file, in bytes.
+    pub fn set_undo_limit(&mut self, bytes: u64) {
+        self.file.set_undo_limit(bytes);
+    }
+
+    /// The size of the undo step of a change to each tile of a raster that
+    /// the file holds, in bytes.
+    pub fn raster_tile_bytes(&self, id: RasterId) -> Result<u64, StoreError> {
+        self.file.raster_tile_bytes(id)
+    }
+
     /// Updates the record of each raster from its heightmap, the style of
     /// each raster layer from its record, and the styles of the maps. Each
     /// saved state has a style for each layer in each map with no map style

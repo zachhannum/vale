@@ -2378,3 +2378,195 @@ fn the_reference_scale_is_an_undo_step_and_survives_a_reopen() {
     assert!(session.undo(&mut doc, &mut []).unwrap());
     assert_eq!(reference(&doc), None);
 }
+
+/// A world with a project file and a height layer from -11,000 m to
+/// 9,000 m with a peak of 8,500 m.
+fn peak_world(path: &std::path::Path) -> (AppState, RasterId) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.session = Some(Session::open(path, &mut state.doc).unwrap());
+    let range = Elevation::new(-11000.0, 9000.0).unwrap();
+    let id = state
+        .add_raster(RasterSpec::height_in("Height", 256, range))
+        .unwrap();
+    state.select(Some(LayerRef::Raster(id)));
+    let map = &mut state.globe.map;
+    map.begin_stroke();
+    for x in 100..110 {
+        map.set(0, x, 100, range.level(8500.0));
+        map.set(0, x, 101, range.level(-9000.0));
+        map.set(0, x, 102, range.level(1234.0));
+    }
+    assert!(map.end_stroke());
+    state.save_waiting().unwrap();
+    (state, id)
+}
+
+/// The range of the record of a raster layer.
+fn record_range(state: &AppState, id: RasterId) -> (f64, f64) {
+    let raster = state.doc.project.raster(id).unwrap();
+    (raster.value_min, raster.value_max)
+}
+
+#[test]
+fn a_new_height_layer_has_its_range_and_the_stops_of_the_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let (state, id) = peak_world(&dir.path().join("project.gpkg"));
+    assert_eq!(record_range(&state, id), (-11000.0, 9000.0));
+    let map = state.globe.raster_map(id).unwrap();
+    let range = map.elevation();
+    assert_eq!((range.min, range.max), (-11000.0, 9000.0));
+    // The sea is below sea level.
+    assert!(range.meters(map.base()) < 0.0);
+    let stops = map.bands.stops();
+    assert!(stops.iter().any(|s| s.value == 0.0));
+    // A height layer must hold sea level.
+    let mut state = state;
+    let bad = Elevation {
+        min: 0.0,
+        max: 100.0,
+    };
+    assert!(
+        state
+            .add_raster(RasterSpec::height_in("Bad", 64, bad))
+            .is_none()
+    );
+}
+
+#[test]
+fn a_range_change_is_one_undo_step_with_the_tiles_and_the_stops() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, id) = peak_world(&dir.path().join("project.gpkg"));
+    let old_range = state.globe.map.elevation();
+    let old_texels = layer_texels(&state, id);
+    let old_stops = state.doc.project.raster(id).unwrap().stops.clone();
+    let new = Elevation::default();
+    assert!(!state.range_change_too_large(id));
+
+    // Keep elevations: the peak stops at 6,000 m, and each other texel
+    // keeps its meters.
+    let changed = state.set_raster_range(id, new, vale_terrain::RangeMode::Keep);
+    assert_eq!(changed, Ok(true));
+    assert_eq!(record_range(&state, id), (-6000.0, 6000.0));
+    let map = state.globe.raster_map(id).unwrap();
+    assert_eq!(map.elevation(), new);
+    assert_eq!(map.get(0, 100, 100), u16::MAX);
+    assert_eq!(map.get(0, 100, 101), 0);
+    let kept = new.meters(map.get(0, 100, 102));
+    assert!((kept - 1234.0).abs() <= new.meters_per_level() / 2.0 + 1e-9);
+    let base = new.meters(map.base());
+    assert!((base - old_range.meters(old_texels[0])).abs() <= new.meters_per_level());
+    let stops = state.doc.project.raster(id).unwrap().stops.clone();
+    assert!(stops.iter().all(|s| (-6000.0..=6000.0).contains(&s.value)));
+    assert!(stops.iter().any(|s| s.value == 0.0));
+    let after = layer_texels(&state, id);
+    assert_eq!(texels(&stored_map(&state, id)), after);
+    // The brush follows the range.
+    state.globe.sync_maps();
+    assert_eq!(state.globe.brush.value_range, (-6000.0, 6000.0));
+
+    // One undo puts back the range, the tiles, and the stops.
+    assert!(state.can_undo());
+    state.undo();
+    assert_eq!(record_range(&state, id), (-11000.0, 9000.0));
+    assert_eq!(state.globe.raster_map(id).unwrap().elevation(), old_range);
+    assert_eq!(layer_texels(&state, id), old_texels);
+    assert_eq!(state.doc.project.raster(id).unwrap().stops, old_stops);
+    state.globe.sync_maps();
+    assert_eq!(state.globe.brush.value_range, (-11000.0, 9000.0));
+    state.redo();
+    assert_eq!(record_range(&state, id), (-6000.0, 6000.0));
+    assert_eq!(layer_texels(&state, id), after);
+    assert_eq!(state.doc.project.raster(id).unwrap().stops, stops);
+    state.undo();
+
+    // Stretch terrain: each level stays, and a stop is at 0 m.
+    let stretch = vale_terrain::RangeMode::Stretch;
+    assert_eq!(state.set_raster_range(id, new, stretch), Ok(true));
+    assert_eq!(record_range(&state, id), (-6000.0, 6000.0));
+    assert_eq!(layer_texels(&state, id), old_texels);
+    let stops = &state.doc.project.raster(id).unwrap().stops;
+    assert!(stops.iter().any(|s| s.value == 0.0));
+    state.undo();
+    assert_eq!(record_range(&state, id), (-11000.0, 9000.0));
+    assert_eq!(state.doc.project.raster(id).unwrap().stops, old_stops);
+
+    // A range that does not hold sea level changes nothing.
+    let bad = Elevation {
+        min: 50.0,
+        max: 6000.0,
+    };
+    assert!(state.set_raster_range(id, bad, stretch).is_err());
+    assert_eq!(record_range(&state, id), (-11000.0, 9000.0));
+}
+
+#[test]
+fn a_range_change_larger_than_the_undo_limit_has_no_undo_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, id) = peak_world(&dir.path().join("project.gpkg"));
+    assert!(state.can_undo());
+    state.session.as_mut().unwrap().set_undo_limit(10);
+    assert!(state.range_change_too_large(id));
+    let keep = vale_terrain::RangeMode::Keep;
+    assert_eq!(
+        state.set_raster_range(id, Elevation::default(), keep),
+        Ok(true)
+    );
+    assert_eq!(record_range(&state, id), (-6000.0, 6000.0));
+    assert!(!state.can_undo());
+}
+
+#[test]
+fn the_range_of_a_height_layer_survives_a_save_and_a_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("project.gpkg");
+    let (mut state, id) = peak_world(&path);
+    let keep = vale_terrain::RangeMode::Keep;
+    let range = Elevation::new(-8000.0, 7000.0).unwrap();
+    assert_eq!(state.set_raster_range(id, range, keep), Ok(true));
+    let levels = layer_texels(&state, id);
+    let stops = state.doc.project.raster(id).unwrap().stops.clone();
+    state.save_waiting().unwrap();
+    drop(state);
+
+    let mut doc = Document::empty();
+    let session = Session::open(&path, &mut doc).unwrap();
+    let raster = doc.project.raster(id).unwrap();
+    assert_eq!((raster.value_min, raster.value_max), (-8000.0, 7000.0));
+    assert_eq!(raster.stops, stops);
+    let map = session.load_map(raster).unwrap();
+    assert_eq!(map.elevation(), range);
+    assert_eq!(texels(&map), levels);
+}
+
+#[test]
+fn a_layer_with_only_its_reduced_heightmap_changes_its_range() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut state, height, rain) = large_world(&dir.path().join("project.gpkg"));
+    paint_layer(&mut state, height, 45.0, 35.3);
+    let before = stored_map(&state, height);
+    paint_layer(&mut state, rain, 10.0, -40.0);
+    assert!(state.globe.raster_map(height).is_none());
+
+    let range = Elevation::new(-3000.0, 3000.0).unwrap();
+    let keep = vale_terrain::RangeMode::Keep;
+    assert_eq!(state.set_raster_range(height, range, keep), Ok(true));
+    let after = stored_map(&state, height);
+    assert_eq!(after.elevation(), range);
+    let old = before.elevation();
+    let place = lonlat_to_dir(45.0, 35.3);
+    let (was, now) = (
+        old.meters(before.sample(place)),
+        range.meters(after.sample(place)),
+    );
+    assert!(
+        (now - was.clamp(-3000.0, 3000.0)).abs() <= old.meters_per_level(),
+        "{was} {now}"
+    );
+    // The reduced heightmap follows the file, and a save keeps the range.
+    state.save_waiting().unwrap();
+    assert_eq!(record_range(&state, height), (-3000.0, 3000.0));
+    state.undo();
+    assert_eq!(record_range(&state, height), (old.min, old.max));
+    assert!(same_tiles(&stored_map(&state, height), &before));
+}
