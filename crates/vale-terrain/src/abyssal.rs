@@ -1,20 +1,22 @@
 //! The abyssal hills brush.
 //!
 //! The brush paints the abyssal hills of the Ocean ridge flank on any sea
-//! floor. A stroke has one frame: an origin and the direction of the fabric
-//! there. The hills are a function of the place in that frame, so the
-//! stamps of a stroke paint one field. Each stamp moves a texel toward its
-//! level from before the stroke plus the hills, as the Paint mode moves it
-//! toward its target.
+//! floor. It is a line brush, as the Ocean ridge brush is: the pen draws a
+//! line, and each texel near the line gets a place on it, the distance
+//! along the line and the distance across it. The hills are a function of
+//! that place, so the faults run along the stroke and bend with it. A plan
+//! lays the hills on the ground from before the stroke, so a later plan can
+//! lay the part near the new points again.
 
 use std::f64::consts::FRAC_PI_2;
+use std::ops::Deref;
 
-use crate::channel::ChannelShape;
-use crate::cube::FACES;
-use crate::heightmap::{Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, Stamp, TexelRect, brush_rect};
-use crate::math::{V3, angle, cross, dot, length, normalize};
-use crate::ridge::{Faulting, LEVELS_PER_KM, RidgePlan, fit_of, patch_noise, patch_of};
-use crate::seamount::{FABRIC_COHERENCE, SeaFloor, sea_floor};
+use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, falloff};
+use crate::line::{LinePlan, LinePoint, REACH, StrokeLine, TAPER, smoothstep};
+use crate::math::V3;
+use crate::ridge::{
+    Faulting, LEVELS_PER_KM, RidgePlan, TAPER_WIDTH, fit_of, patch_noise, patch_of,
+};
 
 /// The settings of an abyssal hills stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,37 +41,38 @@ pub struct AbyssalHills {
     pub scale: f64,
 }
 
-/// The texels that one stamp of an abyssal hills stroke changes.
+/// The texels that new points of an abyssal hills stroke change, and the
+/// segments of the line that give the levels there.
 #[derive(Clone, Debug)]
 pub struct AbyssalPlan {
-    /// The brush of the stamp: its center, radius, hardness, flow, and
-    /// limits. Its mode is `Mode::AbyssalHills`.
-    pub stamp: Stamp,
-    /// The number of texels along one side of a face.
-    pub face_size: usize,
-    /// The rectangle of each face that changes. A stamp before the frame of
-    /// the stroke has none.
-    pub rects: [Option<TexelRect>; FACES],
-    /// The origin of the frame and the direction of the fabric there, unit
-    /// vectors.
-    pub frame: [V3; 2],
+    /// The settings, inside their limits.
+    pub spec: AbyssalHills,
+    /// The brush radius, in radians: half of the width of the hills.
+    pub radius: f64,
+    /// The part of the radius with the full height.
+    pub hardness: f64,
+    pub line: LinePlan,
     pub(crate) faulting: Faulting,
-    pub(crate) world_km: f64,
 }
 
-/// The frame of one abyssal hills stroke.
+impl Deref for AbyssalPlan {
+    type Target = LinePlan;
+
+    fn deref(&self) -> &LinePlan {
+        &self.line
+    }
+}
+
+/// The line of one abyssal hills stroke.
 #[derive(Clone, Debug)]
 pub struct AbyssalStroke {
     spec: AbyssalHills,
     face_size: usize,
-    floor: Option<SeaFloor>,
-    first: Option<V3>,
-    frame: Option<[V3; 2]>,
+    line: Option<StrokeLine>,
+    hardness: f64,
+    /// The number of points that the plans so far cover.
+    from: usize,
 }
-
-/// On floor with no fabric, a stamp sets the frame when the pen has moved
-/// this part of the brush radius from the first stamp.
-const MOTION: f64 = 0.1;
 
 impl AbyssalStroke {
     /// Starts a stroke on a heightmap with `face_size` texels along one side
@@ -79,68 +82,77 @@ impl AbyssalStroke {
             rate: spec.rate.max(1.0),
             hills: spec.hills.clamp(0.0, 2.0),
             world_km: spec.world_km.max(1.0),
+            scale: spec.scale.clamp(1.0, 10.0),
             ..spec
         };
         AbyssalStroke {
             spec,
             face_size,
-            floor: None,
-            first: None,
-            frame: None,
+            line: None,
+            hardness: 0.0,
+            from: 0,
         }
     }
 
-    /// The sea floor under the first stamp.
-    pub fn floor(&self) -> Option<SeaFloor> {
-        self.floor
+    /// The number of points of the line.
+    pub fn len(&self) -> usize {
+        self.line.as_ref().map_or(0, StrokeLine::len)
     }
 
-    /// The origin of the frame and the direction of the fabric there.
-    pub fn frame(&self) -> Option<[V3; 2]> {
-        self.frame
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
-    /// The plan of a stamp with its center at unit direction `center`, a
-    /// radius in radians, a hardness, and a flow from 0 to 1. `map` holds
-    /// the ground from before the stroke.
-    ///
-    /// The first stamp reads the fabric of the floor with `sea_floor`. With
-    /// a clear fabric, the first stamp sets the frame. On floor with no
-    /// fabric, the hills run in the direction of the stroke: the first stamp
-    /// that is `MOTION` radii from the first stamp sets the frame, and the
-    /// stamps before it change nothing.
-    pub fn stamp(
+    /// Adds a pen sample at unit direction `center`, with a radius in
+    /// radians, a hardness, and a flow from 0 to 1, and returns the plan of
+    /// the texels that change. The first sample sets the radius and the
+    /// hardness of the stroke. The flow sets the height of the hills along
+    /// the line. The hills show once the line has two points.
+    pub fn stamp(&mut self, center: V3, radius: f64, hardness: f64, flow: f64) -> AbyssalPlan {
+        self.line_of(radius, hardness)
+            .push(center, flow.clamp(0.0, 1.0));
+        self.next_plan()
+    }
+
+    /// Adds pen samples at once, as `stamp` adds one, and returns the plans
+    /// of the texels that change. A plan covers 16 new points at most.
+    pub fn stamps(
         &mut self,
-        map: &Heightmap,
-        center: V3,
+        centers: &[V3],
         radius: f64,
         hardness: f64,
         flow: f64,
-    ) -> AbyssalPlan {
+    ) -> Vec<AbyssalPlan> {
+        let line = self.line_of(radius, hardness);
+        for &center in centers {
+            line.push(center, flow.clamp(0.0, 1.0));
+        }
+        let mut plans = vec![self.next_plan()];
+        while self.from < self.len() {
+            plans.push(self.next_plan());
+        }
+        plans
+    }
+
+    /// The line of the stroke. The first call makes it.
+    fn line_of(&mut self, radius: f64, hardness: f64) -> &mut StrokeLine {
         let n = self.face_size;
         let step = FRAC_PI_2 / n as f64;
-        let center = normalize(center);
-        let radius = radius.clamp(2.0 * step, MAX_BRUSH_RADIUS);
-        if self.frame.is_none() {
-            let floor = *self
-                .floor
-                .get_or_insert_with(|| sea_floor(map, center, 3.0 * radius));
-            if floor.coherence >= FABRIC_COHERENCE {
-                self.frame = Some([center, along_at(center, floor.fabric)]);
-            } else {
-                let first = *self.first.get_or_insert(center);
-                if angle(first, center) >= MOTION * radius {
-                    let motion = [
-                        center[0] - first[0],
-                        center[1] - first[1],
-                        center[2] - first[2],
-                    ];
-                    self.frame = Some([center, along_at(center, motion)]);
-                }
-            }
+        if self.line.is_none() {
+            let radius = radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / REACH);
+            self.hardness = hardness.clamp(0.0, 0.999);
+            self.line = Some(StrokeLine::new(radius, n));
         }
+        self.line.as_mut().expect("the line is there")
+    }
+
+    /// The plan of the points from the end of the plans before it.
+    fn next_plan(&mut self) -> AbyssalPlan {
+        let line = self.line.as_ref().expect("a stamp makes the line");
+        let plan = line.plan(self.from);
+        self.from = plan.end;
         let km = self.spec.world_km;
-        let half_texel = 0.5 * step * km;
+        let half_texel = 0.5 * FRAC_PI_2 / self.face_size as f64 * km;
         let faulting = Faulting::new(
             self.spec.rate,
             0.0,
@@ -151,38 +163,12 @@ impl AbyssalStroke {
             ],
             LEVELS_PER_KM,
         );
-        let rects = match self.frame {
-            Some(_) => std::array::from_fn(|face| brush_rect(n, face, center, radius)),
-            None => [None; FACES],
-        };
         AbyssalPlan {
-            stamp: Stamp {
-                center,
-                radius,
-                hardness: hardness.clamp(0.0, 1.0),
-                flow: flow.clamp(0.0, 1.0),
-                mode: Mode::AbyssalHills,
-                level: 0,
-                strength: self.spec.hills,
-                lower: 0.0,
-                talus: 0.0,
-                scale: 0.0,
-                seed: self.spec.seed,
-                motion: [0.0; 3],
-                ridged: false,
-                invert: false,
-                relief: 0.0,
-                grain: 0.0,
-                channel: ChannelShape::default(),
-                limits: self.spec.limits,
-            },
-            face_size: n,
-            rects,
-            frame: self
-                .frame
-                .unwrap_or([center, along_at(center, [0.0, 0.0, 1.0])]),
+            spec: self.spec,
+            radius: line.radius(),
+            hardness: self.hardness,
+            line: plan,
             faulting,
-            world_km: km,
         }
     }
 }
@@ -190,77 +176,59 @@ impl AbyssalStroke {
 impl AbyssalPlan {
     /// Whether the plan changes nothing.
     pub fn is_empty(&self) -> bool {
-        self.rects.iter().all(Option::is_none)
+        self.line.rects.iter().all(Option::is_none)
     }
 
-    /// The place of a unit direction in the frame: the distances along the
-    /// fabric and across it, in kilometers on the sphere.
-    pub(crate) fn place(&self, p: V3) -> [f64; 2] {
-        let [origin, along] = self.frame;
-        let across = cross(origin, along);
-        let (x, y, z) = (dot(p, along), dot(p, across), dot(p, origin));
-        [
-            x.atan2(z) * self.world_km,
-            y.atan2(x.hypot(z)) * self.world_km,
-        ]
-    }
-
-    /// The height of the hills at a unit direction above their local mean,
-    /// in 16-bit steps.
-    pub fn hills(&self, p: V3) -> f64 {
+    /// The height of the hills above their local mean, in 16-bit steps, at
+    /// a place on the line and its unit direction `p`.
+    pub(crate) fn hills(&self, at: LinePoint, p: V3) -> f64 {
         let f = &self.faulting;
-        let seed = self.stamp.seed;
-        let at = self.place(p);
-        let patch = patch_of(patch_noise(p, self.world_km / f.fit.sqrt(), seed));
-        let height = RidgePlan::hills(seed, f, 0, 0, at, patch)
-            + RidgePlan::texture(seed, f, 0, 0, at, patch[0])
+        let (seed, km) = (self.spec.seed, self.spec.world_km);
+        let place = [at.u * km, at.across * km];
+        let patch = patch_of(patch_noise(p, km / f.fit.sqrt(), seed));
+        let height = RidgePlan::hills(seed, f, 0, 0, place, patch)
+            + RidgePlan::texture(seed, f, 0, 0, place, patch[0])
             - f.hill_mean * patch[0] * patch[1];
         height * f.level
     }
 
-    /// The level of a texel at unit direction `p`, with level `start` from
-    /// before the stroke, level `old` now, and the effect `amount` of the
-    /// brush there. The texel moves toward `start` plus the hills by the
-    /// effect, and it does not go past that level.
-    pub fn level(&self, start: u16, old: u16, amount: f64, p: V3) -> u16 {
-        let target = f64::from(start) + self.hills(p);
-        let old = f64::from(old);
-        let new = (old + (target - old) * amount.min(1.0))
-            .round()
-            .clamp(0.0, 65535.0);
-        self.stamp.limits.apply(old, new) as u16
+    /// The weight of the hills at a place on the line: the flow, times the
+    /// falloff of the brush across the line, times the taper near an end.
+    /// Near an end, the hills are also narrower.
+    pub(crate) fn weight(&self, at: LinePoint) -> f64 {
+        let r = self.radius;
+        let taper = smoothstep(0.0, TAPER * r, at.end);
+        let width = r * (TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper);
+        let d = at.across.hypot(at.past) / width;
+        if d >= 1.0 {
+            return 0.0;
+        }
+        at.flow * taper * falloff(d, self.hardness)
     }
-}
 
-/// The unit vector square to `center` nearest to `v`. A `v` along
-/// `center` gives north, or the x axis at a pole.
-fn along_at(center: V3, v: V3) -> V3 {
-    let k = dot(v, center);
-    let t = [
-        v[0] - center[0] * k,
-        v[1] - center[1] * k,
-        v[2] - center[2] * k,
-    ];
-    if length(t) > 1e-12 {
-        return normalize(t);
+    /// The new level of a texel with the level `start` from before the
+    /// stroke, at a place on the line and its unit direction `p`.
+    pub(crate) fn level(&self, start: u16, at: LinePoint, p: V3) -> u16 {
+        let weight = self.weight(at);
+        if weight <= 0.0 {
+            return start;
+        }
+        let change = self.hills(at, p) * weight;
+        let old = f64::from(start);
+        let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
+        self.spec.limits.apply(old, new) as u16
     }
-    let east = cross([0.0, 0.0, 1.0], center);
-    if length(east) < 1e-12 {
-        return [1.0, 0.0, 0.0];
-    }
-    normalize(cross(center, normalize(east)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cube::meters_to_level;
-    use crate::math::lonlat_to_dir;
-    use crate::ridge::{Ridge, RidgeLine};
+    use crate::cube::{FACES, meters_to_level};
+    use crate::heightmap::Heightmap;
+    use crate::math::{angle, dot, lonlat_to_dir, normalize};
+    use crate::seamount::sea_floor;
 
-    const N: usize = 512;
     const WORLD_KM: f64 = 1000.0;
-    const RADIUS: f64 = 0.05;
 
     fn spec() -> AbyssalHills {
         AbyssalHills {
@@ -274,44 +242,37 @@ mod tests {
         }
     }
 
-    fn flat() -> Heightmap {
-        Heightmap::new(N, meters_to_level(-4000.0))
+    fn flat(n: usize) -> Heightmap {
+        Heightmap::new(n, meters_to_level(-4000.0))
     }
 
-    /// The stamps of a stroke east along the equator.
-    fn east(count: usize) -> Vec<V3> {
+    /// Paints a stroke through `points` in one undo step.
+    fn paint(map: &mut Heightmap, spec: AbyssalHills, points: &[V3], radius: f64, flow: f64) {
+        let mut stroke = AbyssalStroke::new(spec, map.face_size());
+        map.begin_stroke();
+        for &p in points {
+            let plan = stroke.stamp(p, radius, 0.5, flow);
+            map.abyssal(&plan);
+        }
+        map.end_stroke();
+    }
+
+    /// Points from `a` to `b` in degrees of longitude and latitude.
+    fn points(a: (f64, f64), b: (f64, f64), count: usize) -> Vec<V3> {
         (0..count)
-            .map(|i| lonlat_to_dir(i as f64 * 0.5, 0.0))
+            .map(|i| {
+                let t = i as f64 / (count - 1) as f64;
+                lonlat_to_dir(a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+            })
             .collect()
     }
 
-    /// Paints a stroke in one undo step. Returns the plans.
-    fn paint(
-        map: &mut Heightmap,
-        spec: AbyssalHills,
-        centers: &[V3],
-        flow: f64,
-    ) -> Vec<AbyssalPlan> {
-        let start = map.snapshot();
-        let mut stroke = AbyssalStroke::new(spec, N);
-        map.begin_stroke();
-        let plans: Vec<AbyssalPlan> = centers
-            .iter()
-            .map(|&c| {
-                let plan = stroke.stamp(&start, c, RADIUS, 0.5, flow);
-                map.abyssal(&plan);
-                plan
-            })
-            .collect();
-        map.end_stroke();
-        plans
-    }
-
     fn levels(map: &Heightmap) -> Vec<u16> {
+        let n = map.face_size();
         let mut out = Vec::new();
         for face in 0..FACES {
-            for y in 0..N {
-                for x in 0..N {
+            for y in 0..n {
+                for x in 0..n {
                     out.push(map.get(face, x as i64, y as i64));
                 }
             }
@@ -321,92 +282,133 @@ mod tests {
 
     #[test]
     fn the_hills_appear_under_the_brush_and_not_past_it() {
-        let mut map = flat();
+        let (n, radius) = (512, 0.05);
+        let mut map = flat(n);
         let base = map.base();
-        let centers = east(6);
-        let plans = paint(&mut map, spec(), &centers, 1.0);
-        // On flat floor, the first stamp waits for the direction of the
-        // stroke.
-        assert!(plans[0].is_empty());
-        assert!(!plans[1].is_empty());
+        let line = points((0.0, 0.0), (12.0, 0.0), 13);
+        paint(&mut map, spec(), &line, radius, 1.0);
+        let fine = points((0.0, 0.0), (12.0, 0.0), 600);
         let mut changed = 0;
         for face in 0..FACES {
-            for y in 0..N {
-                for x in 0..N {
+            for y in 0..n {
+                for x in 0..n {
                     let level = map.get(face, x as i64, y as i64);
                     let p = map.texel_dir(face, x, y);
-                    let near = centers
-                        .iter()
-                        .map(|&c| angle(c, p))
-                        .fold(f64::MAX, f64::min);
-                    if near >= RADIUS {
+                    let near = fine.iter().map(|&c| angle(c, p)).fold(f64::MAX, f64::min);
+                    if near >= radius {
                         assert_eq!(level, base, "a texel past the brush");
                     }
                     changed += usize::from(level != base);
                 }
             }
         }
-        assert!(changed > 800, "{changed} texels changed");
+        assert!(changed > 1500, "{changed} texels changed");
+    }
+
+    /// The points of an arc of radius 0.15 radians around the place of
+    /// longitude and latitude 0, at angles in degrees.
+    fn arc(angles: impl Iterator<Item = f64>) -> Vec<V3> {
+        angles
+            .map(|t| {
+                let t = t.to_radians();
+                normalize([1.0, 0.15 * t.cos(), 0.15 * t.sin()])
+            })
+            .collect()
     }
 
     #[test]
-    fn a_texel_moves_toward_its_target_and_never_past_it() {
-        let mut map = flat();
-        let start = map.snapshot();
-        let mut stroke = AbyssalStroke::new(spec(), N);
-        map.begin_stroke();
-        stroke.stamp(&start, lonlat_to_dir(0.0, 0.0), RADIUS, 0.3, 0.6);
-        let plan = stroke.stamp(&start, lonlat_to_dir(0.5, 0.0), RADIUS, 0.3, 0.6);
-        assert!(!plan.is_empty());
-        let rects: Vec<(usize, TexelRect)> = (0..FACES)
-            .filter_map(|face| Some((face, plan.rects[face]?)))
-            .collect();
-        let read = |map: &Heightmap| {
-            let mut out = Vec::new();
-            for &(face, r) in &rects {
-                for y in r.y0..r.y1 {
-                    for x in r.x0..r.x1 {
-                        out.push(map.get(face, x as i64, y as i64));
-                    }
-                }
-            }
-            out
-        };
-        let mut targets = Vec::new();
-        for &(face, r) in &rects {
-            for y in r.y0..r.y1 {
-                for x in r.x0..r.x1 {
-                    let p = map.texel_dir(face, x, y);
-                    targets.push(f64::from(start.get(face, x as i64, y as i64)) + plan.hills(p));
-                }
-            }
+    fn the_faults_follow_a_curved_stroke() {
+        let mut map = flat(1024);
+        let line = arc((0..=36).map(|i| f64::from(i) * 5.0));
+        paint(
+            &mut map,
+            AbyssalHills {
+                fit: true,
+                ..spec()
+            },
+            &line,
+            0.04,
+            1.0,
+        );
+        for t in [30.0_f64, 60.0, 90.0, 120.0, 150.0] {
+            let p = arc([t].into_iter())[0];
+            let tangent = normalize([0.0, -t.to_radians().sin(), t.to_radians().cos()]);
+            let floor = sea_floor(&map, p, 0.02);
+            let along = dot(floor.fabric, tangent).abs();
+            assert!(
+                floor.coherence > 0.3,
+                "at {t}: a coherence of {}",
+                floor.coherence
+            );
+            assert!(along > 0.9, "at {t}: the fabric is {along} along the line");
         }
-        let mut last = read(&map);
-        for _ in 0..4 {
-            map.abyssal(&plan);
-            let now = read(&map);
-            for ((&old, &new), &target) in last.iter().zip(&now).zip(&targets) {
-                let (old, new) = (f64::from(old), f64::from(new));
-                assert!((new - target).abs() <= (old - target).abs() + 0.5);
-                assert!((new - target) * (old - target) >= -0.5);
-            }
-            last = now;
+    }
+
+    /// The largest change of the level between two texels side by side on
+    /// a great circle from `a` to `b`, in steps of a tenth of a texel.
+    fn largest_step(map: &Heightmap, a: V3, b: V3) -> u16 {
+        let steps = (angle(a, b) / (0.1 * FRAC_PI_2 / map.face_size() as f64)) as usize;
+        let mut last = map.sample(a);
+        let mut worst = 0;
+        for i in 1..=steps {
+            let t = i as f64 / steps as f64;
+            let p = normalize([
+                a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t,
+            ]);
+            let level = map.sample(p);
+            worst = worst.max(level.abs_diff(last));
+            last = level;
         }
-        map.end_stroke();
+        worst
+    }
+
+    #[test]
+    fn a_sharp_bend_has_no_seam() {
+        let mut map = flat(1024);
+        // East along the equator, then north at longitude 5.
+        let mut line = points((0.0, 0.0), (5.0, 0.0), 11);
+        line.extend(points((5.0, 0.5), (5.0, 5.0), 10));
+        paint(
+            &mut map,
+            AbyssalHills {
+                fit: true,
+                ..spec()
+            },
+            &line,
+            0.04,
+            1.0,
+        );
+        // Across the straight part, and through the corner from the inside
+        // to the outside.
+        let straight = largest_step(&map, lonlat_to_dir(2.5, -2.0), lonlat_to_dir(2.5, 2.0));
+        let corner = largest_step(&map, lonlat_to_dir(3.5, 1.5), lonlat_to_dir(6.5, -1.5));
+        assert!(straight > 0, "no hills");
+        assert!(
+            corner <= 2 * straight + 2,
+            "a step of {corner} at the corner, {straight} on the straight part"
+        );
     }
 
     #[test]
     fn the_mean_level_stays_near_the_start() {
-        let mut map = flat();
+        let mut map = flat(512);
         let base = f64::from(map.base());
-        paint(&mut map, spec(), &east(12), 1.0);
+        paint(
+            &mut map,
+            spec(),
+            &points((0.0, 0.0), (16.0, 0.0), 17),
+            0.05,
+            1.0,
+        );
         let (mut sum, mut squares, mut count) = (0.0, 0.0, 0.0);
         for face in 0..FACES {
-            for y in 0..N {
-                for x in 0..N {
+            for y in 0..512 {
+                for x in 0..512 {
                     let p = map.texel_dir(face, x, y);
                     // The middle of the stroke, where the hills are full.
-                    if angle(p, lonlat_to_dir(2.75, 0.0)) > 0.04 {
+                    if angle(p, lonlat_to_dir(8.0, 0.0)) > 0.045 {
                         continue;
                     }
                     let d = f64::from(map.get(face, x as i64, y as i64)) - base;
@@ -424,60 +426,13 @@ mod tests {
     }
 
     #[test]
-    fn the_fabric_follows_the_floor_or_the_stroke() {
-        // On flat floor, the hills run along the stroke.
-        let map = flat();
-        let mut stroke = AbyssalStroke::new(spec(), N);
-        for c in east(3) {
-            stroke.stamp(&map, c, RADIUS, 0.5, 1.0);
-        }
-        let [origin, along] = stroke.frame().unwrap();
-        assert!(angle(origin, lonlat_to_dir(0.5, 0.0)) < 1e-9);
-        assert!(dot(along, [0.0, 1.0, 0.0]) > 0.99, "{along:?}");
-        // On the flank of a ridge along a meridian, the hills run north,
-        // even for a stroke east.
-        let mut ridge_map = flat();
-        let ridge = Ridge {
-            radius: 0.2,
-            crest: meters_to_level(-2600.0),
-            segment: 0.4,
-            offset: 0.0,
-            spread: 55.0 / WORLD_KM,
-            magma: 0.0,
-            world_km: WORLD_KM,
-            seed: 1,
-            limits: Limits::default(),
-            hills: 0.0,
-            fit: false,
-            scale: 1.0,
-        };
-        let mut line = RidgeLine::new(ridge, N);
-        for i in 0..=16 {
-            line.push(lonlat_to_dir(5.0, -30.0 + 60.0 * f64::from(i) / 16.0), 1.0);
-        }
-        ridge_map.begin_stroke();
-        let mut from = 0;
-        while from < line.len() {
-            let plan = line.plan(from);
-            ridge_map.ridge(&plan);
-            from = plan.end;
-        }
-        ridge_map.end_stroke();
-        let mut stroke = AbyssalStroke::new(spec(), N);
-        let plan = stroke.stamp(&ridge_map, lonlat_to_dir(0.0, 0.0), RADIUS, 0.5, 1.0);
-        assert!(!plan.is_empty());
-        assert!(stroke.floor().unwrap().coherence >= FABRIC_COHERENCE);
-        let [_, along] = stroke.frame().unwrap();
-        assert!(dot(along, [0.0, 0.0, 1.0]).abs() > 0.95, "{along:?}");
-    }
-
-    #[test]
     fn equal_strokes_give_equal_levels_and_one_undo_puts_back_the_ground() {
-        let mut a = flat();
-        let mut b = flat();
+        let mut a = flat(512);
+        let mut b = flat(512);
         let before = levels(&a);
-        paint(&mut a, spec(), &east(5), 0.8);
-        paint(&mut b, spec(), &east(5), 0.8);
+        let line = points((0.0, 0.0), (3.0, 1.0), 7);
+        paint(&mut a, spec(), &line, 0.05, 0.8);
+        paint(&mut b, spec(), &line, 0.05, 0.8);
         assert_eq!(levels(&a), levels(&b));
         assert_ne!(levels(&a), before);
         assert!(a.undo());
@@ -487,16 +442,22 @@ mod tests {
     #[test]
     fn the_hills_setting_scales_the_hills() {
         let plan = |hills: f64| {
-            let map = flat();
-            let mut stroke = AbyssalStroke::new(AbyssalHills { hills, ..spec() }, N);
-            stroke.stamp(&map, lonlat_to_dir(0.0, 0.0), RADIUS, 0.5, 1.0);
-            stroke.stamp(&map, lonlat_to_dir(0.5, 0.0), RADIUS, 0.5, 1.0)
+            let mut stroke = AbyssalStroke::new(AbyssalHills { hills, ..spec() }, 512);
+            stroke.stamp(lonlat_to_dir(0.0, 0.0), 0.05, 0.5, 1.0);
+            stroke.stamp(lonlat_to_dir(1.0, 0.0), 0.05, 0.5, 1.0)
         };
         let (none, one, two) = (plan(0.0), plan(1.0), plan(2.0));
         for i in 0..50 {
-            let p = lonlat_to_dir(0.5 + 0.02 * f64::from(i), 0.3);
-            assert_eq!(none.hills(p), 0.0);
-            assert!((two.hills(p) - 2.0 * one.hills(p)).abs() < 1e-9);
+            let at = LinePoint {
+                u: 0.0003 * f64::from(i),
+                across: 0.01,
+                past: 0.0,
+                flow: 1.0,
+                end: 1.0,
+            };
+            let p = lonlat_to_dir(0.02 * f64::from(i), 0.5);
+            assert_eq!(none.hills(at, p), 0.0);
+            assert!((two.hills(at, p) - 2.0 * one.hills(at, p)).abs() < 1e-9);
         }
     }
 }

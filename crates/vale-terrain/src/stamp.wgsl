@@ -1496,30 +1496,36 @@ fn patch_noise(p: vec3<f32>) -> f32 {
         + 0.5 * noise3(p * (km / (PATCH_FINE * PATCH_KM)), ridge.seed ^ SALT_PATCH).y;
 }
 
-// The level of a texel after an abyssal hills pass. The steps are those of
-// `AbyssalPlan::level`. The first segment holds the frame: the origin, then
-// the direction of the fabric.
-fn abyssal_level(at: vec2<i32>, old: f32) -> f32 {
-    let amount = amount_at(group.stamps[0], at);
-    if amount <= 0.0 {
+// The level of a texel after an abyssal hills pass, from its level `old`
+// from before the stroke. The steps are those of `AbyssalPlan::level`. The
+// hardness is in `range_height`.
+fn abyssal_level(at: RidgePoint, p: vec3<f32>, old: f32) -> f32 {
+    let r = ridge.radius;
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let width = r * (TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper);
+    let d = sqrt(at.across * at.across + at.past2) / width;
+    if d >= 1.0 {
         return old;
     }
-    let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
-    let p = normalize(texel_dir(group.face, at));
-    let origin = ridge.segments[0].n;
-    let along = ridge.segments[0].m0;
-    let x = dot(p, along);
-    let y = dot(p, cross(origin, along));
-    let z = dot(p, origin);
+    let hard = ridge.range_height;
+    var envelope = 1.0;
+    if d > hard {
+        let k = (d - hard) / (1.0 - hard);
+        envelope = 1.0 - k * k * (3.0 - 2.0 * k);
+    }
+    let weight = at.flow * taper * envelope;
+    if weight <= 0.0 {
+        return old;
+    }
     let km = ridge.world_km;
-    let place = vec2<f32>(atan2(x, z) * km, atan2(y, length(vec2<f32>(x, z))) * km);
+    let along = at.cell * ridge.segment_km + at.rest * km;
+    let across = at.across * km;
     let area = patch_of(patch_noise(p));
-    let height = ridge_hills(0, 0u, place.x, place.y, area)
-        + ridge_texture(0, 0u, place.x, place.y, area.x)
+    let height = ridge_hills(0, 0u, along, across, area)
+        + ridge_texture(0, 0u, along, across, area.x)
         - ridge.hill_mean * area.x * area.y;
-    let target_level = start + height * ridge.level;
-    let change = (target_level - old) * min(amount, 1.0);
-    return limited(old, clamp(old + floor(change + 0.5), 0.0, 65535.0));
+    let change = height * ridge.level * weight;
+    return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 
 // The shader keeps each distance along the line as a distance from the
@@ -2528,7 +2534,15 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         return vec4<u32>(u32(seamounts_level(at)), 0u, 0u, 0u);
     }
     if group.mode == ABYSSAL {
-        return vec4<u32>(u32(abyssal_level(at, value)), 0u, 0u, 0u);
+        // The pass lays the hills on the ground from before the stroke.
+        let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+        let p = normalize(texel_dir(group.face, at));
+        let point = ridge_place(p);
+        value = start;
+        if point.on {
+            value = limited(start, abyssal_level(point, p, start));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
     if group.mode == RANGE {
         let point = ridge_place(normalize(texel_dir(group.face, at)));

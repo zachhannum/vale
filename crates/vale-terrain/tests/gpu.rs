@@ -4235,11 +4235,6 @@ fn gpu_seamounts_match_cpu_across_a_face_edge() {
 /// for the hills of an ocean ridge.
 const ABYSSAL_TOLERANCE: u16 = 2;
 
-/// The largest difference after a long abyssal hills stroke. Each stamp
-/// moves a texel toward its target and rounds, so after many stamps a
-/// texel can be one more level apart.
-const ABYSSAL_STROKE_TOLERANCE: u16 = 3;
-
 /// The result of one abyssal hills stroke on the GPU and on the CPU.
 struct AbyssalRun {
     difference: u16,
@@ -4269,7 +4264,7 @@ fn abyssal_run(start: &Heightmap, centers: &[V3], radius: f64) -> AbyssalRun {
     let mut enc = gpu.encoder();
     let mut batches = 1;
     for &center in centers {
-        let plan = stroke.stamp(start, center, radius, 0.4, 0.7);
+        let plan = stroke.stamp(center, radius, 0.4, 0.7);
         cpu.abyssal(&plan);
         if !map.abyssal(&gpu.queue, &mut enc, &plan) {
             gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
@@ -4296,40 +4291,42 @@ fn abyssal_run(start: &Heightmap, centers: &[V3], radius: f64) -> AbyssalRun {
     }
 }
 
+/// One plan: a line of two points on a slope.
 #[test]
 #[ignore = "gpu"]
-fn gpu_abyssal_hills_match_cpu_for_one_stamp() {
+fn gpu_abyssal_hills_match_cpu_for_one_plan() {
     let start = sea_slope(1024, 10.0, 5.0);
-    let run = abyssal_run(&start, &[lonlat_to_dir(10.0, 5.0)], 0.05);
+    let centers = [lonlat_to_dir(8.0, 5.0), lonlat_to_dir(12.0, 5.0)];
+    let run = abyssal_run(&start, &centers, 0.05);
     let changed: usize = run.changed.iter().sum();
     eprintln!(
-        "one abyssal hills stamp: {changed} texels, difference {}",
+        "one abyssal hills plan: {changed} texels, difference {}",
         run.difference
     );
-    assert!(changed > 2000, "{changed} texels changed");
+    assert!(changed > 800, "{changed} texels changed");
     assert!(run.difference <= ABYSSAL_TOLERANCE, "{}", run.difference);
 }
 
-/// A stroke of more stamps than one batch holds, on flat floor, so the
-/// direction of the stroke sets the fabric.
+/// A curved stroke of more plans than one batch holds, on flat floor.
 #[test]
 #[ignore = "gpu"]
-fn gpu_abyssal_hills_match_cpu_for_a_stroke() {
+fn gpu_abyssal_hills_match_cpu_for_a_curved_stroke() {
     let start = Heightmap::new(1024, vale_terrain::meters_to_level(-4000.0));
-    let centers = seamount_line((8.0, 4.0), (12.0, 6.0), 40);
+    let centers: Vec<V3> = (0..=60)
+        .map(|i| {
+            let t = f64::from(i) * 3.0_f64.to_radians();
+            lonlat_to_dir(10.0 + 6.0 * t.cos(), 5.0 + 6.0 * t.sin())
+        })
+        .collect();
     let run = abyssal_run(&start, &centers, 0.04);
     let changed: usize = run.changed.iter().sum();
     eprintln!(
-        "abyssal hills stroke: {changed} texels, {} batches, difference {}",
+        "abyssal hills curved stroke: {changed} texels, {} batches, difference {}",
         run.batches, run.difference
     );
     assert!(run.batches > 1, "{} batches", run.batches);
-    assert!(changed > 3000, "{changed} texels changed");
-    assert!(
-        run.difference <= ABYSSAL_STROKE_TOLERANCE,
-        "{}",
-        run.difference
-    );
+    assert!(changed > 6000, "{changed} texels changed");
+    assert!(run.difference <= ABYSSAL_TOLERANCE, "{}", run.difference);
 }
 
 /// A stroke from face 0 to face 2. The edge between them is at 45 degrees
@@ -4345,7 +4342,7 @@ fn gpu_abyssal_hills_match_cpu_across_a_face_edge() {
         run.changed, run.difference
     );
     assert!(
-        run.changed[0] > 500 && run.changed[2] > 500,
+        run.changed[0] > 300 && run.changed[2] > 300,
         "{:?}",
         run.changed
     );

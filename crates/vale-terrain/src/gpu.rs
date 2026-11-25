@@ -311,7 +311,8 @@ struct RidgeUniforms {
     band_km: f32,
     segment_depth: f32,
     /// The numbers of a range pass: the height, the ridge spacing, the
-    /// piece length, and the tilt of a crest.
+    /// piece length, and the tilt of a crest. An abyssal hills pass has its
+    /// hardness as the height.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
@@ -1690,45 +1691,35 @@ impl GpuHeightmap {
         true
     }
 
-    /// Adds the hills of an abyssal hills plan to `enc`, with one pass for
-    /// each face of the plan. The result is that of `Heightmap::abyssal`.
-    /// The plan comes from an `AbyssalStroke` with the same face size.
+    /// Adds the abyssal hills of a plan to `enc`, as `ridge` adds an ocean
+    /// ridge. The result is that of `Heightmap::abyssal`. A plan takes one
+    /// of the `RIDGE_SLOTS` of a batch.
     ///
     /// A pass reads the ground from before the stroke in the start set of
-    /// the pool, as a paint stamp does. Thus call `begin_stroke` at the
-    /// start of each stroke, before its first plan. A tile that the plan
-    /// can change gets memory.
-    ///
-    /// Returns `false` and adds nothing if the batch is full. A plan takes
-    /// one of the `RIDGE_SLOTS` of a batch. Then submit `enc`, call
-    /// `begin_batch`, and add the plan to a new encoder.
+    /// the pool, as a seamounts pass does. Thus call `begin_stroke` at the
+    /// start of each stroke, before its first plan.
     pub fn abyssal(
         &self,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         plan: &AbyssalPlan,
     ) -> bool {
-        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
-        let passes = plan.rects.iter().flatten().count() as u32;
-        if passes == 0 {
-            return true;
-        }
-        let first_slot = self.used_slots.load(Ordering::Relaxed);
-        let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
-        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
-            return false;
-        }
-        self.used_slots
-            .store(first_slot + passes, Ordering::Relaxed);
-        self.used_ridge_slots
-            .store(ridge_slot + 1, Ordering::Relaxed);
-        // The hill numbers go where the hill functions of the shader read
-        // them, and the frame goes in the first segment: the origin, then
-        // the direction of the fabric.
+        let spec = &plan.spec;
         let f = &plan.faulting;
-        let mut header = RidgeUniforms {
-            world_km: plan.world_km as f32,
-            seed: plan.stamp.seed,
+        // The cell of the distances along the line is the brush radius.
+        let cell = plan.radius;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: plan.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * plan.radius).sin() as f32,
+            world_km: spec.world_km as f32,
+            seed: spec.seed,
             level: f.level as f32,
             spacing: f.spacing as f32,
             hill_height: f.hill_height as f32,
@@ -1738,52 +1729,22 @@ impl GpuHeightmap {
             fit: f.fit as f32,
             lift: f.lift as f32,
             texture_height: f.texture_height as f32,
+            segment_km: (cell * spec.world_km) as f32,
+            range_height: plan.hardness as f32,
             ..bytemuck::Zeroable::zeroed()
         };
-        let [origin, along] = plan.frame;
-        header.segments[0][..3].copy_from_slice(&origin.map(|c| c as f32));
-        header.segments[0][4..7].copy_from_slice(&along.map(|c| c as f32));
-        let used = size_of::<RidgeUniforms>() - (LINE_SEGMENTS - 1) * size_of::<[f32; 16]>();
-        let ridge_offset = ridge_slot * self.ridge_slot_size;
-        queue.write_buffer(
-            &self.ridge_uniforms,
-            u64::from(ridge_offset),
-            &bytemuck::bytes_of(&header)[..used],
-        );
-        let stamp = StampPlan {
-            stamp: plan.stamp,
-            rects: plan.rects,
-            reach: 1,
-        };
-        let state = &mut *self.state();
-        let touched = plan.rects.iter().enumerate();
-        let touched: Vec<_> = touched
-            .filter_map(|(face, rect)| Some((face, (*rect)?)))
-            .collect();
-        for &(face, rect) in &touched {
-            self.keep_start(queue, enc, state, face, rect);
+        let passes = plan.rects.iter().flatten().count() as u32;
+        let free = STAMP_SLOTS - self.used_slots.load(Ordering::Relaxed);
+        let ridge_free = self.used_ridge_slots.load(Ordering::Relaxed) < RIDGE_SLOTS;
+        if passes > 0 && passes <= free && ridge_free {
+            let state = &mut *self.state();
+            for (face, rect) in plan.rects.iter().enumerate() {
+                if let Some(rect) = *rect {
+                    self.keep_start(queue, enc, state, face, rect);
+                }
+            }
         }
-        for (slot, (face, rect)) in (first_slot..).zip(touched) {
-            let offset = slot * self.slot_size;
-            let mut uniforms = Uniforms {
-                face: face as u32,
-                mode: 18,
-                size: self.face_size as i32,
-                count: 1,
-                origin: [rect.x0 as i32, rect.y0 as i32],
-                limits: packed(plan.stamp.limits),
-                ..bytemuck::Zeroable::zeroed()
-            };
-            uniforms.stamps[0] = FaceStamp::new(self.face_size, face, rect, &stamp);
-            let used = size_of::<Uniforms>() - (GROUP_STAMPS - 1) * size_of::<FaceStamp>();
-            queue.write_buffer(
-                &self.uniforms,
-                u64::from(offset),
-                &bytemuck::bytes_of(&uniforms)[..used],
-            );
-            self.pass(queue, enc, state, face, rect, [offset, ridge_offset, 0]);
-        }
-        true
+        self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header)
     }
 
     /// Writes the drops of a rectangle of cells to one layer of a drop

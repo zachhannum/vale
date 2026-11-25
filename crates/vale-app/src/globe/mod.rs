@@ -479,7 +479,7 @@ impl SeaStroke {
                     (!plan.is_empty()).then(|| SeaOp::Seamounts(Box::new(plan)))
                 }
                 SeaBrush::Abyssal(stroke) => {
-                    let plan = stroke.stamp(map, center, radius, hardness, flow);
+                    let plan = stroke.stamp(center, radius, hardness, flow);
                     (!plan.is_empty()).then(|| SeaOp::Abyssal(Box::new(plan)))
                 }
             };

@@ -4356,7 +4356,7 @@ fn an_abyssal_hills_stroke_gives_the_levels_of_the_cpu_stroke() {
     let mut abyssal = AbyssalStroke::new(spec, n);
     cpu.begin_stroke();
     for s in &stamps {
-        let plan = abyssal.stamp(&cpu, s.center, s.radius, s.hardness, s.flow);
+        let plan = abyssal.stamp(s.center, s.radius, s.hardness, s.flow);
         cpu.abyssal(&plan);
     }
     cpu.end_stroke();

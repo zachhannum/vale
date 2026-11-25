@@ -1640,32 +1640,11 @@ impl Heightmap {
         changed
     }
 
-    /// Paints the abyssal hills of a plan. Each texel under the brush moves
-    /// toward its level from before the stroke plus the hills, by the effect
-    /// of the brush. Call this in a stroke. Returns the number of texels
-    /// that changed.
+    /// Lays the abyssal hills of a plan on the ground from before the
+    /// stroke, as `ridge` lays an ocean ridge. Call this in a stroke.
+    /// Returns the number of texels that changed.
     pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
-        assert_eq!(plan.face_size, self.n, "the face size of the plan");
-        let mut changed = 0;
-        for (face, rect) in plan.rects.into_iter().enumerate() {
-            let Some(rect) = rect else { continue };
-            let falloff = Falloff::new(face, &plan.stamp, self.n);
-            for y in rect.y0..rect.y1 {
-                for x in rect.x0..rect.x1 {
-                    let Some(amount) = falloff.texel(x, y, &self.flat) else {
-                        continue;
-                    };
-                    let p = self.texel_dir(face, x, y);
-                    let old = self.texel(face, x, y);
-                    let new = plan.level(self.level_before(face, x, y), old, amount, p);
-                    if new != old {
-                        self.set(face, x, y, new);
-                        changed += 1;
-                    }
-                }
-            }
-        }
-        changed
+        self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
     }
 
     /// The level at a direction, from the 4 texels around it.
