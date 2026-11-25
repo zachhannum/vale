@@ -17,10 +17,11 @@ use super::world_form::{self, WorldForm};
 use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panels};
 use crate::globe::Tool;
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION, FLATTEN_RATE,
-    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -231,7 +232,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 11] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -243,6 +244,12 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 11] = [
     (panels::OCEAN_RIDGE, Icon::OceanRidge, Mode::OceanRidge),
     (panels::RANGE, Icon::Range, Mode::Range),
     (panels::BASIN, Icon::Basin, Mode::Basin),
+    (panels::SEAMOUNTS, Icon::Seamounts, Mode::Seamounts),
+    (
+        panels::ABYSSAL_HILLS,
+        Icon::AbyssalHills,
+        Mode::AbyssalHills,
+    ),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3196,7 +3203,10 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .unit("mm/yr");
             apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
             row(ui, controls, state, Slider::Magma);
+            row(ui, controls, state, Slider::Hills);
+            row(ui, controls, state, Slider::Scale);
             let brush = &mut state.globe.brush;
+            widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", &mut brush.ridge_fit);
             let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
                 .label("Segment")
                 .step(10.0)
@@ -3217,6 +3227,14 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         // The motion of the pen and the flow set the distance of a push.
         Mode::Push => {}
         Mode::Flatten => row(ui, controls, state, Slider::Rate),
+        Mode::AbyssalHills => {
+            row(ui, controls, state, Slider::Rate);
+            row(ui, controls, state, Slider::Hills);
+            row(ui, controls, state, Slider::Scale);
+            let fit = &mut state.globe.brush.abyssal_fit;
+            widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", fit);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
         Mode::Paint => {
             row(ui, controls, state, Slider::Opacity);
             row(ui, controls, state, Slider::Value);
@@ -3247,6 +3265,11 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
     if mode == Mode::Range {
         row(ui, controls, state, Slider::Spacing);
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
+    if mode == Mode::Seamounts {
+        row(ui, controls, state, Slider::Density);
+        raster::note(ui, SEAMOUNT_DENSITY_NOTE);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
     if mode == Mode::Basin {
@@ -3326,6 +3349,12 @@ pub(super) enum Place<'f> {
     Strip(&'f mut dyn for<'n> FnMut(Number<'n>, &mut egui::Ui, &mut Controls) -> Option<f64>),
 }
 
+/// The name of the switch of the ocean ridge mode and of the abyssal hills
+/// mode that makes the hills at least as large as the map needs.
+pub const FIT_TO_MAP: &str = "Brush fit to map";
+/// The note under the density of the seamounts mode.
+pub const SEAMOUNT_DENSITY_NOTE: &str = "Density per 10,000 km²";
+
 /// The name of the button in the header of the Brush panel that gives the
 /// mode its default pins.
 pub const RESET_PINS: &str = "Reset pins";
@@ -3355,6 +3384,7 @@ pub fn slider_name(slider: Slider) -> &'static str {
         Slider::Branching => "Brush branching",
         Slider::RainShadow => "Brush rain shadow",
         Slider::Magma => "Brush magma",
+        Slider::Hills => "Brush hills",
     }
 }
 
@@ -3383,6 +3413,7 @@ pub fn slider_label(mode: Mode, slider: Slider) -> &'static str {
         Slider::Branching => "Branching",
         Slider::RainShadow => "Rain shadow",
         Slider::Magma => "Magma",
+        Slider::Hills => "Hills",
     }
 }
 
@@ -3450,17 +3481,39 @@ pub(super) fn brush_slider(
                 let number = km(brush.warp_km, WARP_KM).log().default(defaults.warp_km);
                 set(number, &mut brush.warp_km);
             }
+            Slider::Strength if mode == Mode::Seamounts => {
+                let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
+                    .log()
+                    .default(defaults.seamount_height_m);
+                set(number, &mut brush.seamount_height_m);
+            }
             Slider::Strength => {
                 let number = meters(brush.strength_m, STRENGTH_M)
                     .log()
                     .default(defaults.strength_m);
                 set(number, &mut brush.strength_m);
             }
+            Slider::Scale if matches!(mode, Mode::OceanRidge | Mode::AbyssalHills) => {
+                let value = match mode {
+                    Mode::OceanRidge => &mut brush.ridge_scale,
+                    _ => &mut brush.abyssal_scale,
+                };
+                let number = fraction(*value, HILL_SCALE).log().default(1.0);
+                set(number, value);
+            }
             Slider::Scale => {
                 let number = km(brush.scale_km, SCALE_KM)
                     .log()
                     .default(defaults.scale_km);
                 set(number, &mut brush.scale_km);
+            }
+            Slider::Rate if mode == Mode::AbyssalHills => {
+                let number = Number::new(name, brush.abyssal_rate_mm, ABYSSAL_RATE_MM)
+                    .label(label)
+                    .unit("mm/yr")
+                    .step(1.0)
+                    .default(defaults.abyssal_rate_mm);
+                set(number, &mut brush.abyssal_rate_mm);
             }
             Slider::Rate => {
                 let number =
@@ -3519,6 +3572,14 @@ pub(super) fn brush_slider(
                     .default(defaults.range_spacing_km);
                 set(number, &mut brush.range_spacing_km);
             }
+            Slider::Density if mode == Mode::Seamounts => {
+                let number = Number::new(name, brush.seamount_density, SEAMOUNT_DENSITY)
+                    .label(label)
+                    .text(|density| format!("{density:.0}"))
+                    .log()
+                    .default(defaults.seamount_density);
+                set(number, &mut brush.seamount_density);
+            }
             Slider::Density => {
                 let number = km(brush.basin_density_km, BASIN_DENSITY)
                     .log()
@@ -3550,6 +3611,15 @@ pub(super) fn brush_slider(
                     .text(panels::signed_percent)
                     .default(0.0);
                 set(number, &mut brush.ridge_magma);
+            }
+            Slider::Hills if mode == Mode::AbyssalHills => {
+                let number =
+                    fraction(brush.abyssal_hills, RIDGE_HILLS).default(defaults.abyssal_hills);
+                set(number, &mut brush.abyssal_hills);
+            }
+            Slider::Hills => {
+                let number = fraction(brush.ridge_hills, RIDGE_HILLS).default(defaults.ridge_hills);
+                set(number, &mut brush.ridge_hills);
             }
         }
     }

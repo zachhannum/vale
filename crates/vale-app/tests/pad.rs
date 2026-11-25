@@ -678,9 +678,20 @@ fn each_control_is_large_and_is_outside_the_system_bands() {
         for group in ModeGroup::ALL {
             open_group(&mut h, group);
             let modes = h.state().pad.flyouts.rect.unwrap();
-            for (name, ..) in group.modes() {
-                let row = control(&h, name).unwrap_or_else(|| panic!("{size:?}: {name}"));
-                assert!(modes.contains_rect(row), "{size:?}: {name}");
+            let screen = h.state().pad.rects.unwrap().screen;
+            assert!(screen.contains_rect(modes), "{size:?}: {modes:?}");
+            // A list that is taller than the room scrolls to the rows past
+            // its bottom.
+            let shown =
+                |h: &Pad, name: &str| control(h, name).is_some_and(|r| modes.contains_rect(r));
+            let names = group.modes().iter().map(|(name, ..)| *name);
+            let hidden: Vec<&str> = names.filter(|name| !shown(&h, name)).collect();
+            if !hidden.is_empty() {
+                let from = modes.center();
+                drag(&mut h, from, from - vec2(0.0, modes.height()), None);
+            }
+            for name in hidden {
+                assert!(shown(&h, name), "{size:?}: {name}");
             }
             let what = format!("{size:?} with the {} modes", group.name());
             check_controls(&h, &what);
@@ -2691,6 +2702,170 @@ fn the_shape_mode_is_in_the_terrain_cell_and_has_a_shape() {
 }
 
 #[test]
+fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush density").is_none());
+    choose_mode(&mut h, "Seamounts");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Seamounts)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (brush.seamount_density, brush.seamount_height_m),
+        (50.0, 400.0)
+    );
+    // The strip has Size and Density.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip density").is_some());
+    assert!(control(&h, "Strip height").is_none());
+    // The panel has the size, the hardness, the flow, the height, the
+    // density, and the seed.
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush strength",
+        "Brush density",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    let label = vale_app::ui::pad::slider_label(Mode::Seamounts, vale_app::strip::Slider::Strength);
+    assert_eq!(label, "Height");
+    let note = vale_app::ui::pad::SEAMOUNT_DENSITY_NOTE;
+    assert!(h.query_by_label(note).is_some());
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush density", "0", 1.0),
+        ("Brush density", "9000", 500.0),
+        ("Brush strength", "10", 50.0),
+        ("Brush strength", "9000", 3000.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush density" => brush.seamount_density,
+            _ => brush.seamount_height_m,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    // The height does not change the strength of the other modes.
+    assert_eq!(h.state().globe.brush.strength_m, 1500.0);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Seamounts mode");
+    screenshot::save(&mut h, "pad-seamounts");
+}
+
+#[test]
+fn the_seamounts_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Seamounts").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    screenshot::save(&mut h, "pad-seamounts-modes-744");
+    tap(&mut h, "Seamounts");
+    assert_eq!(h.state().globe.brush.mode, Mode::Seamounts);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    check_controls(&h, "744 high with the Seamounts panel");
+    screenshot::save(&mut h, "pad-seamounts-744");
+}
+
+#[test]
+fn the_abyssal_hills_mode_is_in_the_terrain_cell_and_has_its_sliders() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Abyssal hills");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::AbyssalHills)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!((brush.abyssal_rate_mm, brush.abyssal_hills), (60.0, 1.0));
+    // The strip has Size and Hills.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip hills").is_some());
+    assert!(control(&h, "Strip rate").is_none());
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush rate",
+        "Brush hills",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    assert!(control(&h, "Brush strength").is_none());
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush rate", "1", 10.0),
+        ("Brush rate", "900", 200.0),
+        ("Brush hills", "0", 0.0),
+        ("Brush hills", "900", 2.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush rate" => brush.abyssal_rate_mm,
+            _ => brush.abyssal_hills,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    // The settings of the other modes stay.
+    let brush = h.state().globe.brush;
+    assert_eq!((brush.flatten_rate, brush.ridge_hills), (0.3, 1.0));
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Abyssal hills mode");
+}
+
+#[test]
+fn the_abyssal_hills_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Abyssal hills").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    screenshot::save(&mut h, "pad-abyssal-modes-744");
+    tap(&mut h, "Abyssal hills");
+    assert_eq!(h.state().globe.brush.mode, Mode::AbyssalHills);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    let rows = ["Brush rate value", "Brush hills value", "Brush scale value"];
+    for row in rows
+        .into_iter()
+        .chain([vale_app::ui::pad::FIT_TO_MAP, "Brush seed value"])
+    {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Abyssal hills panel");
+    screenshot::save(&mut h, "pad-abyssal-744");
+}
+
+#[test]
 fn the_brush_panel_of_the_push_mode_has_no_strength() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
@@ -3308,6 +3483,71 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
     check_controls(&h, "the Ocean ridge mode");
 }
 
+/// The scale and the fit of the hills of the brush mode.
+fn hill_scale(h: &Pad, mode: Mode) -> (f64, bool) {
+    let b = h.state().globe.brush;
+    match mode {
+        Mode::OceanRidge => (b.ridge_scale, b.ridge_fit),
+        _ => (b.abyssal_scale, b.abyssal_fit),
+    }
+}
+
+#[test]
+fn the_sea_modes_have_a_scale_and_a_fit_of_their_own() {
+    use vale_app::ui::pad::FIT_TO_MAP;
+    // The portrait iPad has the height for all the rows of the modes.
+    let mut h = pad(BOARDS[1]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, FIT_TO_MAP).is_none());
+    for (name, mode, scale) in [
+        ("Ocean ridge", Mode::OceanRidge, 3.0),
+        ("Abyssal hills", Mode::AbyssalHills, 6.0),
+    ] {
+        choose_mode(&mut h, name);
+        assert_eq!(h.state().globe.brush.mode, mode);
+        assert_eq!(hill_scale(&h, mode), (1.0, true), "{name}");
+        let (hills, fit) = (control(&h, "Brush hills").unwrap(), control(&h, FIT_TO_MAP));
+        let row = control(&h, "Brush scale").unwrap();
+        assert!(hills.top() < row.top() && row.top() < fit.unwrap().top());
+        assert!(control(&h, "Strip scale").is_none());
+        // A typed value past an end gives the end.
+        for (text, value) in [("0", 1.0), ("9000", 10.0)] {
+            type_value(&mut h, "Brush scale", text);
+            assert_eq!(hill_scale(&h, mode).0, value, "{name} {text}");
+        }
+        type_value(&mut h, "Brush scale", &format!("{}", scale * 100.0));
+        tap(&mut h, FIT_TO_MAP);
+        assert_eq!(hill_scale(&h, mode), (scale, false), "{name}");
+        check_controls(&h, &format!("the scale of {name}"));
+    }
+    // Each mode keeps its own values.
+    assert_eq!(hill_scale(&h, Mode::OceanRidge), (3.0, false));
+    choose_mode(&mut h, "Ocean ridge");
+    tap(&mut h, FIT_TO_MAP);
+    assert_eq!(hill_scale(&h, Mode::OceanRidge), (3.0, true));
+    assert_eq!(hill_scale(&h, Mode::AbyssalHills), (6.0, false));
+    assert_eq!(h.state().globe.brush.scale_km, 200.0);
+}
+
+#[test]
+fn the_ocean_ridge_panel_has_a_hills_slider() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush hills").is_none());
+    choose_mode(&mut h, "Ocean ridge");
+    assert!(control(&h, "Brush hills").is_some());
+    assert_eq!(h.state().globe.brush.ridge_hills, 1.0);
+    // The strip keeps Size and Magma.
+    assert!(control(&h, "Strip magma").is_some());
+    assert!(control(&h, "Strip hills").is_none());
+    for (text, value) in [("0", 0.0), ("900", 2.0), ("150", 1.5)] {
+        type_value(&mut h, "Brush hills", text);
+        let hills = h.state().globe.brush.ridge_hills;
+        assert!((hills - value).abs() < 1e-6, "{text}: {hills}");
+    }
+    check_controls(&h, "the Hills slider");
+}
+
 #[test]
 fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     let mut h = pad((1133.0, 744.0));
@@ -3323,33 +3563,46 @@ fn the_ocean_ridge_mode_fits_on_the_smallest_ipad() {
     check_controls(&h, "744 high with the brush modes");
     tap(&mut h, "Ocean ridge");
     tap(&mut h, "Brush settings");
-    // Each row of the panel and the edge age line show.
+    // Each row of the settings of the ridge shows. The panel scrolls to
+    // the edge age line and the limits.
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let rows = ["Brush size", "Brush flow"].into_iter().chain(RIDGE_ROWS);
+    let rows = ["Brush size", "Brush flow", "Brush hills", "Brush scale"]
+        .into_iter()
+        .chain(RIDGE_ROWS);
     let fields = rows.map(|row| format!("{row} value"));
-    for row in fields.chain(["Brush floor", "Brush ceiling"].map(String::from)) {
-        let rect = control(&h, &row).unwrap_or_else(|| panic!("no control `{row}`"));
+    let fit = vale_app::ui::pad::FIT_TO_MAP.to_string();
+    let shown = |h: &Pad, row: &str| {
+        let rect = control(h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    };
+    for row in fields.chain([fit]) {
+        shown(&h, &row);
     }
+    check_controls(&h, "744 high with the Ocean ridge panel");
+    screenshot::save(&mut h, "pad-ocean-ridge-744");
+    let from = control(&h, "Brush magma").unwrap().center();
+    drag(&mut h, from, from - vec2(4.0, 200.0), None);
     let line = h.get_by_label(&edge_age_line(&h)).rect();
     assert!(panel.contains_rect(line), "{line:?} in {panel:?}");
-    check_controls(&h, "744 high with the Ocean ridge panel");
     // With the two limits on, the panel stays on the screen, and the rows
-    // scroll to the level of the ceiling.
-    tap(&mut h, "Brush floor");
+    // scroll to the level of the ceiling. The ceiling goes first, because
+    // the level of the floor pushes it below the panel.
+    shown(&h, "Brush ceiling");
     tap(&mut h, "Brush ceiling");
+    shown(&h, "Brush floor");
+    tap(&mut h, "Brush floor");
     let brush = h.state().globe.brush;
     assert!(brush.floor_on && brush.ceiling_on);
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
-    let from = control(&h, "Brush magma").unwrap().center();
-    drag(&mut h, from, from - vec2(4.0, 200.0), None);
+    let from = control(&h, "Brush offset value").unwrap().center();
+    drag(&mut h, from, from - vec2(4.0, 300.0), None);
     assert_eq!(h.state().globe.brush, brush);
     for row in ["Brush floor level value", "Brush ceiling level value"] {
-        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
-        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+        shown(&h, row);
     }
+    screenshot::save(&mut h, "pad-ocean-ridge-744-limits");
     check_controls(&h, "744 high with the Ocean ridge limits");
 }
 

@@ -12,6 +12,7 @@ use std::num::NonZeroU64;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::abyssal::AbyssalPlan;
 use crate::bands::SEA_LEVEL;
 use crate::channel::{ChannelBuffers, ChannelLines, ChannelShape};
 use crate::cube::{FACES, meters_to_level};
@@ -23,6 +24,7 @@ use crate::heightmap::{
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
+use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
 use crate::tiles::{Pool, TILES_WGSL, tiles_layout};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
@@ -34,6 +36,12 @@ pub const GROUP_STAMPS: usize = 32;
 
 /// The number of ocean ridge plans in one batch.
 pub const RIDGE_SLOTS: u32 = 8;
+
+/// The number of seamount plans in one batch.
+pub const SEAMOUNT_SLOTS: u32 = 8;
+
+/// The bytes of the volcanoes of one seamount plan.
+const SEAMOUNT_BYTES: u32 = (PLAN_VOLCANOES * VOLCANO_FLOATS * 4) as u32;
 
 /// A group stops before the stamp that makes its rectangle on a face larger
 /// than this number of times the largest stamp rectangle on that face. Each
@@ -219,6 +227,7 @@ struct BindParts {
     layout: wgpu::BindGroupLayout,
     uniforms: wgpu::Buffer,
     ridge_uniforms: wgpu::Buffer,
+    volcanoes: wgpu::Buffer,
     /// The views of bindings 1 to 6.
     views: [wgpu::TextureView; 6],
 }
@@ -238,6 +247,7 @@ impl BindParts {
         let mut entries = vec![
             buffer(0, &self.uniforms, size_of::<Uniforms>()),
             buffer(7, &self.ridge_uniforms, size_of::<RidgeUniforms>()),
+            buffer(14, &self.volcanoes, SEAMOUNT_BYTES as usize),
         ];
         for (i, view) in self.views.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
@@ -288,9 +298,9 @@ struct RidgeUniforms {
     mean: f32,
     magma: f32,
     spacing: f32,
-    mean_throw: f32,
-    heave: f32,
-    box_half: f32,
+    hill_height: f32,
+    hill_scale: f32,
+    hill_mean: f32,
     half_texel: f32,
     turn_cell: f32,
     blend: f32,
@@ -301,17 +311,26 @@ struct RidgeUniforms {
     band_km: f32,
     segment_depth: f32,
     /// The numbers of a range pass: the height, the ridge spacing, the
-    /// piece length, and the tilt of a crest.
+    /// piece length, and the tilt of a crest. An abyssal hills pass has its
+    /// hardness as the height.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    /// The fit factor of the abyssal hills, the scale of the height of the
+    /// faults, the height unit of the texture, and the length of `segment`
+    /// in kilometers. The shader gets the distance along the line in
+    /// kilometers from it with fewer rounding steps.
+    fit: f32,
+    lift: f32,
+    texture_height: f32,
+    segment_km: f32,
     segments: [[f32; 16]; LINE_SEGMENTS],
 }
 
-// The segments start at the offset of the array of `stamp.wgsl`: 36 numbers
+// The segments start at the offset of the array of `stamp.wgsl`: 40 numbers
 // of 4 bytes, a multiple of 16.
-const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 36 * 4);
+const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 40 * 4);
 
 fn packed(limits: Limits) -> u32 {
     u32::from(limits.floor) | u32::from(limits.ceiling) << 16
@@ -411,6 +430,11 @@ pub struct GpuHeightmap {
     ridge_uniforms: wgpu::Buffer,
     ridge_slot_size: u32,
     used_ridge_slots: AtomicU32,
+    /// One slot of `volcano_slot_size` bytes for each seamount plan of a
+    /// batch.
+    volcanoes: wgpu::Buffer,
+    volcano_slot_size: u32,
+    used_seamount_slots: AtomicU32,
 }
 
 fn extent(rect: TexelRect) -> wgpu::Extent3d {
@@ -502,6 +526,16 @@ impl StampPipeline {
                 storage_entry(11),
                 storage_entry(12),
                 storage_entry(13),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 14,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: true,
+                        min_binding_size: NonZeroU64::new(u64::from(SEAMOUNT_BYTES)),
+                    },
+                    count: None,
+                },
             ],
         });
         let tiles_layout = tiles_layout(device);
@@ -678,11 +712,20 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let volcano_slot_size =
+            SEAMOUNT_BYTES.next_multiple_of(device.limits().min_storage_buffer_offset_alignment);
+        let volcanoes = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("seamount volcanoes"),
+            size: u64::from(volcano_slot_size * SEAMOUNT_SLOTS),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let bind_parts = BindParts {
             layout: pipeline.layout.clone(),
             uniforms,
             ridge_uniforms,
+            volcanoes,
             views: [
                 channels_view.clone(),
                 window_view.clone(),
@@ -723,12 +766,15 @@ impl GpuHeightmap {
             pipeline: pipeline.pipeline.clone(),
             uniforms: bind_parts.uniforms.clone(),
             ridge_uniforms: bind_parts.ridge_uniforms.clone(),
+            volcanoes: bind_parts.volcanoes.clone(),
             bind_parts,
             bind: Mutex::new(bind),
             slot_size,
             used_slots: AtomicU32::new(0),
             ridge_slot_size,
             used_ridge_slots: AtomicU32::new(0),
+            volcano_slot_size,
+            used_seamount_slots: AtomicU32::new(0),
         }
     }
 
@@ -921,6 +967,7 @@ impl GpuHeightmap {
     pub fn begin_batch(&self) {
         self.used_slots.store(0, Ordering::Relaxed);
         self.used_ridge_slots.store(0, Ordering::Relaxed);
+        self.used_seamount_slots.store(0, Ordering::Relaxed);
     }
 
     /// Adds one stamp to `enc`. The plan comes from a `Heightmap` with the
@@ -961,7 +1008,12 @@ impl GpuHeightmap {
         let mode = first.stamp.mode;
         if matches!(
             mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+            Mode::Erode
+                | Mode::OceanRidge
+                | Mode::Range
+                | Mode::Basin
+                | Mode::Seamounts
+                | Mode::AbyssalHills
         ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
@@ -1031,7 +1083,12 @@ impl GpuHeightmap {
                     Mode::Smooth => 2,
                     Mode::Flatten => 3,
                     Mode::Carve => 4,
-                    Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => 5,
+                    Mode::Erode
+                    | Mode::OceanRidge
+                    | Mode::Range
+                    | Mode::Basin
+                    | Mode::Seamounts
+                    | Mode::AbyssalHills => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
@@ -1075,9 +1132,9 @@ impl GpuHeightmap {
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
             if copy_last {
-                self.draw(enc, state, i, rect, [offset, 0]);
+                self.draw(enc, state, i, rect, [offset, 0, 0]);
             } else {
-                self.pass(queue, enc, state, face, rect, [offset, 0]);
+                self.pass(queue, enc, state, face, rect, [offset, 0, 0]);
             }
         }
         if copy_last {
@@ -1090,7 +1147,7 @@ impl GpuHeightmap {
 
     /// Adds one pass to `enc` for a rectangle of one face, and the copies of
     /// its result to the tiles. `offsets` are the places of the uniforms of
-    /// the pass and of the ridge plan.
+    /// the pass, of the ridge plan, and of the volcanoes.
     fn pass(
         &self,
         queue: &wgpu::Queue,
@@ -1098,7 +1155,7 @@ impl GpuHeightmap {
         state: &mut State,
         face: usize,
         rect: TexelRect,
-        offsets: [u32; 2],
+        offsets: [u32; 3],
     ) {
         self.ensure(queue, state, face, rect);
         self.draw(enc, state, 0, rect, offsets);
@@ -1179,14 +1236,14 @@ impl GpuHeightmap {
 
     /// Adds one pass to `enc` that draws a rectangle of one face to the
     /// render target `target`. `offsets` are the places of the uniforms of
-    /// the pass and of the ridge plan.
+    /// the pass, of the ridge plan, and of the volcanoes.
     fn draw(
         &self,
         enc: &mut wgpu::CommandEncoder,
         state: &mut State,
         target: usize,
         rect: TexelRect,
-        offsets: [u32; 2],
+        offsets: [u32; 3],
     ) {
         let size = extent(rect);
         let scratch = self.scratch(&mut state.scratch[target], rect);
@@ -1392,7 +1449,7 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            self.pass(queue, enc, state, face, rect, [offset, 0]);
+            self.pass(queue, enc, state, face, rect, [offset, 0, 0]);
         }
         true
     }
@@ -1442,9 +1499,9 @@ impl GpuHeightmap {
             mean: shape.mean as f32,
             magma: shape.magma as f32,
             spacing: shape.spacing as f32,
-            mean_throw: shape.throw as f32,
-            heave: shape.heave as f32,
-            box_half: shape.box_half as f32,
+            hill_height: shape.hill_height as f32,
+            hill_scale: shape.hill_scale as f32,
+            hill_mean: shape.hill_mean as f32,
             half_texel: shape.half_texel as f32,
             turn_cell: shape.turn_cell as f32,
             blend: shape.blend as f32,
@@ -1454,6 +1511,10 @@ impl GpuHeightmap {
             flat_floor: shape.flat_floor as f32,
             band_km: shape.band_km as f32,
             segment_depth: shape.segment_depth as f32,
+            fit: shape.fit as f32,
+            lift: shape.lift as f32,
+            texture_height: shape.texture_height as f32,
+            segment_km: (cell * spec.world_km) as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
@@ -1553,9 +1614,137 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            self.pass(queue, enc, state, face, rect, [offset, ridge_offset]);
+            self.pass(queue, enc, state, face, rect, [offset, ridge_offset, 0]);
         }
         true
+    }
+
+    /// Adds the volcanoes of a seamount plan to `enc`, with one pass for
+    /// each face of the plan. The result is that of `Heightmap::seamounts`.
+    /// The plan comes from a `SeamountStroke` with the same face size.
+    ///
+    /// A pass reads the ground from before the stroke in the start set of
+    /// the pool, as a paint stamp does. Thus call `begin_stroke` at the
+    /// start of each stroke, before its first plan. A tile that the plan
+    /// can change gets memory.
+    ///
+    /// Returns `false` and adds nothing if the batch is full. A batch holds
+    /// `SEAMOUNT_SLOTS` plans at most. Then submit `enc`, call
+    /// `begin_batch`, and add the plan to a new encoder.
+    pub fn seamounts(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &SeamountPlan,
+    ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        assert!(plan.volcanoes.len() <= PLAN_VOLCANOES, "the volcanoes");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let volcano_slot = self.used_seamount_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || volcano_slot == SEAMOUNT_SLOTS {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_seamount_slots
+            .store(volcano_slot + 1, Ordering::Relaxed);
+        let volcano_offset = volcano_slot * self.volcano_slot_size;
+        let floats = plan.floats();
+        if !floats.is_empty() {
+            queue.write_buffer(
+                &self.volcanoes,
+                u64::from(volcano_offset),
+                bytemuck::cast_slice(&floats),
+            );
+        }
+        let state = &mut *self.state();
+        let touched = plan.rects.iter().enumerate();
+        let touched: Vec<_> = touched
+            .filter_map(|(face, rect)| Some((face, (*rect)?)))
+            .collect();
+        for &(face, rect) in &touched {
+            self.keep_start(queue, enc, state, face, rect);
+        }
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 17,
+                size: self.face_size as i32,
+                count: plan.volcanoes.len() as u32,
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(plan.limits),
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, [offset, 0, volcano_offset]);
+        }
+        true
+    }
+
+    /// Adds the abyssal hills of a plan to `enc`, as `ridge` adds an ocean
+    /// ridge. The result is that of `Heightmap::abyssal`. A plan takes one
+    /// of the `RIDGE_SLOTS` of a batch.
+    ///
+    /// A pass reads the ground from before the stroke in the start set of
+    /// the pool, as a seamounts pass does. Thus call `begin_stroke` at the
+    /// start of each stroke, before its first plan.
+    pub fn abyssal(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &AbyssalPlan,
+    ) -> bool {
+        let spec = &plan.spec;
+        let f = &plan.faulting;
+        // The cell of the distances along the line is the brush radius.
+        let cell = plan.radius;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: plan.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * plan.radius).sin() as f32,
+            world_km: spec.world_km as f32,
+            seed: spec.seed,
+            level: f.level as f32,
+            spacing: f.spacing as f32,
+            hill_height: f.hill_height as f32,
+            hill_scale: f.hill_scale as f32,
+            hill_mean: f.hill_mean as f32,
+            half_texel: f.half_texel as f32,
+            fit: f.fit as f32,
+            lift: f.lift as f32,
+            texture_height: f.texture_height as f32,
+            segment_km: (cell * spec.world_km) as f32,
+            range_height: plan.hardness as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        let passes = plan.rects.iter().flatten().count() as u32;
+        let free = STAMP_SLOTS - self.used_slots.load(Ordering::Relaxed);
+        let ridge_free = self.used_ridge_slots.load(Ordering::Relaxed) < RIDGE_SLOTS;
+        if passes > 0 && passes <= free && ridge_free {
+            let state = &mut *self.state();
+            for (face, rect) in plan.rects.iter().enumerate() {
+                if let Some(rect) = *rect {
+                    self.keep_start(queue, enc, state, face, rect);
+                }
+            }
+        }
+        self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header)
     }
 
     /// Writes the drops of a rectangle of cells to one layer of a drop

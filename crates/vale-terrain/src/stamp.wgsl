@@ -111,6 +111,8 @@ const TERRACE = 14u;
 const SHAPE = 15u;
 // The start set of the tiles holds the levels from the start of the stroke.
 const PAINT = 16u;
+const SEAMOUNTS = 17u;
+const ABYSSAL = 18u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -201,9 +203,9 @@ struct RidgeLine {
     mean: f32,
     magma: f32,
     spacing: f32,
-    mean_throw: f32,
-    heave: f32,
-    box_half: f32,
+    hill_height: f32,
+    hill_scale: f32,
+    hill_mean: f32,
     half_texel: f32,
     turn_cell: f32,
     blend: f32,
@@ -220,10 +222,20 @@ struct RidgeLine {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
+    // The fit factor of the abyssal hills.
+    fit: f32,
+    lift: f32,
+    texture_height: f32,
+    // The length of `segment` in kilometers.
+    segment_km: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
 @group(0) @binding(7) var<uniform> ridge: RidgeLine;
+
+// The volcanoes of a seamount pass, `VOLCANO_FLOATS` numbers for each, as
+// in `SeamountPlan::floats`. `group.count` is the number of volcanoes.
+@group(0) @binding(14) var<storage, read> volcanoes: array<f32>;
 
 // The same number as `WINDOW_MARGIN` in `flow.rs`.
 const WINDOW_MARGIN = 8.0;
@@ -1039,7 +1051,6 @@ const RIDGE_REACH = 1.5;
 const BEND_ALONG = 0.08;
 const BEND_ACROSS = 0.08;
 const CURVE = 0.3;
-const SALT_FAULT = 0x1b873593u;
 const SALT_TURN = 0x6c8e9cf5u;
 const SALT_MIGRATE = 0x3d4fa1c7u;
 const SALT_TRACE_WARP = 0x8e2b4d61u;
@@ -1047,6 +1058,12 @@ const SALT_MAGMA = 0x9b05688cu;
 const SALT_WALL = 0x4c95e1a3u;
 const SALT_LUMP = 0x2d8e7f19u;
 const SALT_FRACTURE = 0x5f3ac2e1u;
+const SALT_HILL = 0x7e4b15d3u;
+const SALT_PATCH = 0x1f83d9abu;
+const SALT_WARP = 0x5be0cd19u;
+const SALT_GABOR = 0x6a09e667u;
+const SALT_LINK = 0x3c6ef372u;
+const SALT_GRAIN = 0xa54ff53au;
 const JITTER = 0.3;
 const SECOND_ORDER_KM = 130.0;
 const GROUP_SHIFT = 0.8;
@@ -1060,8 +1077,6 @@ const TRACE_WARP_OLD_MYR = 10.0;
 const TRACE_WARP_STEP_MYR = 0.05;
 const MIGRATE_ROUND = 0.5;
 const SHORTEST_PART = 0.2;
-const SEGMENT_MAGMA = 0.03;
-const KEEP_SOFT = 0.1;
 const MAGMA_MYR = 2.0;
 const MAGMA_BAND = 0.26;
 const THROW_SPACING = 0.65;
@@ -1072,7 +1087,6 @@ const WAVE_KM = 40.0;
 const SEGMENT_MYR = 6.0;
 const SEGMENT_CHANGE = 0.35;
 const HOOK_PART = 0.15;
-const HOOK_ROWS = 1.0;
 const TROUGH_DEPTH = 1.3;
 const TROUGH_OFFSET_KM = 100.0;
 const TROUGH_POWER = 1.3;
@@ -1144,24 +1158,10 @@ const TAPER = 1.2;
 const TAPER_WIDTH = 0.2;
 const FOOT = 0.25;
 const DIP_TAN = 1.2;
-const THROW_MIN = 0.6;
-const THROW_MAX = 3.0;
-const FAULT_JITTER = 0.4;
 const INWARD = 0.8;
-const GAMMA = 0.02;
-const PIECE_MIN = 10.0;
-const PIECE_MAX = 30.0;
 const PIECE_JITTER = 0.15;
 const OVERLAP = 0.3;
-const STEP_OVER = 0.3;
-const BOW = 0.2;
-const PLACE_SPREAD = 0.5 + FAULT_JITTER + STEP_OVER + BOW;
-const BLOCK_WIDTH = 2.5;
-const WIDTH_MIN = 1.0;
-const WIDTH_MAX = 5.0;
-const SCARP_MAX = 0.4;
-const BLOCK_MEAN = 1.08;
-const HILL_TOP = 3.6;
+const HILL_TOP = 4.0;
 const GROW = 1.5;
 const HILL_FADE = 0.8;
 const MAX_SMOOTH = 0.3;
@@ -1173,13 +1173,63 @@ const FAULT_SPACING = array<vec2<f32>, 5>(
     vec2<f32>(0.8, 3.0),
     vec2<f32>(0.9, 2.0),
 );
-const FAULT_HEAVE = array<vec2<f32>, 5>(
-    vec2<f32>(0.5, 5.0),
-    vec2<f32>(0.6, 2.5),
-    vec2<f32>(0.7, 1.2),
-    vec2<f32>(0.8, 0.7),
-    vec2<f32>(0.9, 0.3),
-);
+
+// The abyssal hills of `ridge.rs`.
+const FAULT_LENGTH = vec2<f32>(15.0, 60.0);
+const HILL_CELL = vec2<f32>(25.0, 3.0);
+const HILLS = 2u;
+const HILL_TILT = 0.05;
+const SCARP_KM = 0.5;
+const BACK_TILT = vec2<f32>(3.0, 8.0);
+const GRABENS = 0.2;
+const GRABEN = vec2<f32>(0.3, 2.0);
+const THROW_MIN = 0.3;
+const THROW_MAX = 2.0;
+const THROW_CAP = 1.1;
+const PATCH_KM = 80.0;
+const PATCH_FINE = 0.43;
+const PATCH_EDGE = 0.6;
+const PATCH_THROW = vec2<f32>(0.5, 1.3);
+const PATCH_DENSITY = vec2<f32>(0.4, 0.85);
+const SHOW_SOFT = 0.15;
+const HILL_WARP = vec2<f32>(40.0, 10.0);
+const HILL_WARP_KM = 1.5;
+const GABOR_CELL = 4.0;
+const GABOR_ASPECT = 1.5;
+const GABOR_STRETCH = vec2<f32>(3.0, 1.0);
+const LINK_KM = 10.0;
+const LINK_GAP = 0.1;
+const RELAY = 0.3;
+const STEP_KM = 0.6;
+const ROUGH_KM = 0.15;
+const ROUGH_ALONG = 2.5;
+const VARY = vec2<f32>(0.35, 0.2);
+const VARY_KM = vec2<f32>(5.0, 1.5);
+const SHARP = 0.6;
+const FACE_ROUGH_KM = 0.08;
+const FACE_KM = 0.9;
+const GULLY = 0.3;
+const GULLY_KM = 1.0;
+const GRAIN = 0.15;
+const GRAIN_KM = 0.8;
+const GRAIN_TURN = 0.6;
+const GABOR_KERNELS = 3u;
+const GABOR_WIDTH = 2.5;
+const GABOR_OCTAVES = vec2<f32>(-1.0, 4.0);
+const HURST = 0.9;
+const GABOR_SHARE = 1.0 / 3.0;
+const GABOR_RMS_UNIT = 0.336;
+const HILL_RMS_UNIT = 0.479;
+const GABOR_PER_THROW = GABOR_SHARE * HILL_RMS_UNIT / (GABOR_RMS_UNIT * 0.9428090415820634);
+
+// `patch_of` in `ridge.rs`.
+fn patch_of(noise: f32) -> vec2<f32> {
+    let w = smooth_between(-PATCH_EDGE, PATCH_EDGE, noise);
+    return vec2<f32>(
+        ridge_mix(PATCH_THROW.x, PATCH_THROW.y, w),
+        ridge_mix(PATCH_DENSITY.x, PATCH_DENSITY.y, w),
+    );
+}
 
 // `lerp_table` in `ridge.rs`, for a table of 5 points.
 fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
@@ -1428,6 +1478,7 @@ fn ridge_place(p: vec3<f32>) -> RidgePoint {
 struct RidgeNoise {
     bend: vec3<f32>,
     slow: vec3<f32>,
+    area: f32,
 }
 
 // The steps are those of `RidgePlan::noise`.
@@ -1435,7 +1486,46 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
     let r = ridge.radius;
     let wide = noise3(p / (0.9 * r), ridge.seed ^ 0x51ed270bu);
     let fine = noise3(p / (0.37 * r), ridge.seed ^ 0x2f6b8a35u);
-    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u));
+    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u), patch_noise(p));
+}
+
+// `patch_noise` in `ridge.rs`.
+fn patch_noise(p: vec3<f32>) -> f32 {
+    let km = ridge.world_km / sqrt(ridge.fit);
+    return noise3(p * (km / PATCH_KM), ridge.seed ^ SALT_PATCH).x
+        + 0.5 * noise3(p * (km / (PATCH_FINE * PATCH_KM)), ridge.seed ^ SALT_PATCH).y;
+}
+
+// The level of a texel after an abyssal hills pass, from its level `old`
+// from before the stroke. The steps are those of `AbyssalPlan::level`. The
+// hardness is in `range_height`.
+fn abyssal_level(at: RidgePoint, p: vec3<f32>, old: f32) -> f32 {
+    let r = ridge.radius;
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let width = r * (TAPER_WIDTH + (1.0 - TAPER_WIDTH) * taper);
+    let d = sqrt(at.across * at.across + at.past2) / width;
+    if d >= 1.0 {
+        return old;
+    }
+    let hard = ridge.range_height;
+    var envelope = 1.0;
+    if d > hard {
+        let k = (d - hard) / (1.0 - hard);
+        envelope = 1.0 - k * k * (3.0 - 2.0 * k);
+    }
+    let weight = at.flow * taper * envelope;
+    if weight <= 0.0 {
+        return old;
+    }
+    let km = ridge.world_km;
+    let along = at.cell * ridge.segment_km + at.rest * km;
+    let across = at.across * km;
+    let area = patch_of(patch_noise(p));
+    let height = ridge_hills(0, 0u, along, across, area)
+        + ridge_texture(0, 0u, along, across, area.x)
+        - ridge.hill_mean * area.x * area.y;
+    let change = height * ridge.level * weight;
+    return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 
 // The shader keeps each distance along the line as a distance from the
@@ -1625,69 +1715,183 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     return vec4<f32>(depth, half_len, height, side);
 }
 
-// A throw of `RidgePlan::fault_sum` from a number from 0 to 1.
-fn ridge_throw(u: f32) -> f32 {
-    return ridge.mean_throw * (THROW_MIN + (1.0 - THROW_MIN) * min(-ln_precise(1.0 - u), THROW_MAX));
+// One segment of `RidgePlan::linked`: segment `m` at `r` segments from
+// its start.
+fn ridge_link(fault: u32, m: i32, r: f32) -> vec2<f32> {
+    let seed = ridge.seed ^ SALT_LINK;
+    let half_relay = 0.5 * RELAY;
+    let ramp = smooth_between(-half_relay, half_relay, r)
+        * (1.0 - smooth_between(1.0 - half_relay, 1.0 + half_relay, r));
+    let u = unit(hash(vec3<u32>(bitcast<u32>(m), fault, 0u), seed));
+    let link_throw = smooth_between(LINK_GAP, LINK_GAP + 0.3, u) * (0.5 + u);
+    let place = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(m), fault, 1u), seed)) - 1.0;
+    return vec2<f32>(link_throw * ramp, place);
 }
 
-// `RidgePlan::faults`.
-fn ridge_faults(k: i32, side: u32, along: f32, len: f32, x: f32) -> f32 {
-    let seed = ridge.seed ^ SALT_FAULT;
-    let b = ridge.box_half;
-    let key = bitcast<u32>(k) * 32u + side * 16u;
-    let reach = max(WIDTH_MAX, SCARP_MAX) + b;
-    let first = max(i32(floor(x - PLACE_SPREAD - reach)), 0);
-    let last = i32(floor(x + PLACE_SPREAD - 1.0 + reach));
-    let spacing = ridge.spacing;
-    let heave = ridge.heave;
+// The face of a scarp of `RidgePlan::hill_sum`.
+fn ridge_face(y: f32, scarp: f32, back: f32, blur: f32, gully: f32) -> f32 {
+    let on_face = bump((y + 0.5 * scarp) / (scarp + blur));
+    return block(y, scarp, back, blur) * (1.0 + gully * on_face);
+}
+
+// `RidgePlan::hills`.
+fn ridge_hills(band_group: i32, side: u32, along_in: f32, across_fit: f32, area: vec2<f32>) -> f32 {
+    let along = along_in / ridge.fit;
+    let across_in = across_fit / ridge.fit;
+    let seed = ridge.seed ^ SALT_HILL ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
+    let sp = ridge.spacing;
+    let s = ridge.hill_scale;
+    let bend = noise3(
+        vec3<f32>(along / (HILL_WARP.x * s), across_in / (HILL_WARP.y * s), f32(side)),
+        seed ^ SALT_WARP,
+    );
+    let across = across_in + HILL_WARP_KM * s * bend.x;
+    let cell_along = HILL_CELL.x * s;
+    let cell_across = HILL_CELL.y * sp;
+    let blur = ridge.half_texel / ridge.fit;
+    let fine_vary = VARY.y * smooth_between(2.0 * blur, 4.0 * blur, VARY_KM.y * s);
+    let fine_face = smooth_between(2.0 * blur, 4.0 * blur, FACE_KM);
+    let fine_rough = ROUGH_KM * smooth_between(2.0 * blur, 4.0 * blur, ROUGH_ALONG);
+    let fine_gully = GULLY * smooth_between(2.0 * blur, 4.0 * blur, GULLY_KM);
+    let fine_grain = GRAIN * smooth_between(2.0 * blur, 4.0 * blur, GRAIN_KM * s);
+    let reach_along = 0.5 * length(vec2<f32>(FAULT_LENGTH.y * s, blur));
+    let reach_across = 0.5 * GRABEN.y + SCARP_KM + BACK_TILT.y * s + blur
+        + HILL_TILT * reach_along + STEP_KM * s + ROUGH_KM + FACE_ROUGH_KM + SCARP_KM * SHARP
+        + 0.5 * GRABEN.y * VARY.x + BACK_TILT.y * s * VARY.x;
+    let ratio = FAULT_LENGTH.y / FAULT_LENGTH.x;
     var sum = 0.0;
-    for (var i = first; i <= last; i++) {
-        let piece = clamp(
-            ridge_throw(unit(hash(vec3<u32>(bitcast<u32>(i), 0xffffffffu, key), seed))) / GAMMA,
-            PIECE_MIN,
-            PIECE_MAX,
-        );
-        let phase = unit(hash(vec3<u32>(bitcast<u32>(i), 0xffffffffu, key + 1u), seed));
-        let cell = i32(floor(along / piece + phase));
-        for (var j = cell - 1; j <= cell + 1; j++) {
+    for (var i = i32(floor((along - reach_along) / cell_along));
+        i <= i32(floor((along + reach_along) / cell_along)); i++) {
+        for (var j = i32(floor((across - reach_across) / cell_across));
+            j <= i32(floor((across + reach_across) / cell_across)); j++) {
             let at = vec2<u32>(bitcast<u32>(i), bitcast<u32>(j));
-            let middle = f32(j) + 0.5 - phase
-                + PIECE_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 3u), seed)) - 1.0);
-            let half_len = 0.5 * (1.0 + OVERLAP * unit(hash(vec3<u32>(at, key + 4u), seed)));
-            let soft_end = min(ridge.half_texel, MAX_SMOOTH * piece);
-            let start = (middle - half_len) * piece;
-            let end = (middle + half_len) * piece;
-            if along <= start - soft_end || along >= end + soft_end {
-                continue;
+            for (var n = 0u; n < HILLS; n++) {
+                let key = side * 64u + n * 16u;
+                let shown = smooth_between(
+                    -SHOW_SOFT,
+                    SHOW_SOFT,
+                    area.y - unit(hash(vec3<u32>(at, key + 8u), seed)),
+                );
+                if shown <= 0.0 {
+                    continue;
+                }
+                let middle = (f32(i) + unit(hash(vec3<u32>(at, key), seed))) * cell_along;
+                let place = (f32(j) + unit(hash(vec3<u32>(at, key + 1u), seed))) * cell_across;
+                let longer = max(
+                    unit(hash(vec3<u32>(at, key + 2u), seed)),
+                    unit(hash(vec3<u32>(at, key + 3u), seed)),
+                );
+                let fault_length = FAULT_LENGTH.x * s * pow_precise(ratio, longer);
+                let long = length(vec2<f32>(fault_length, blur));
+                let q = 2.0 * (along - middle) / long;
+                if abs(q) >= 1.0 {
+                    continue;
+                }
+                let tall = THROW_MIN + (1.0 - THROW_MIN)
+                    * min(-ln_precise(1.0 - unit(hash(vec3<u32>(at, key + 4u), seed))), THROW_MAX);
+                let t = along - middle;
+                let fault = hash(vec3<u32>(at, key + 9u), seed);
+                let z = t / (LINK_KM * s) + unit(hash(vec3<u32>(at, key + 10u), seed));
+                let zk = floor(z);
+                let rest = z - zk;
+                let k = i32(zk);
+                let vary = 1.0
+                    + VARY.x * noise1(t / (VARY_KM.x * s), fault, 3u, seed).x
+                    + fine_vary * noise1(t / (VARY_KM.y * s), fault, 4u, seed).x;
+                let units = area.x * tall * (fault_length / long) * (1.0 - q * q) * vary;
+                let back = ridge_mix(BACK_TILT.x, BACK_TILT.y, unit(hash(vec3<u32>(at, key + 5u), seed))) * s
+                    * (1.0 + VARY.x * noise1(t / (VARY_KM.x * s), fault, 5u, seed).x);
+                let scarp = SCARP_KM * (1.0 + SHARP * fine_face * noise1(t / FACE_KM, fault, 6u, seed).x);
+                let tilt = HILL_TILT * (2.0 * unit(hash(vec3<u32>(at, key + 6u), seed)) - 1.0);
+                let rough = fine_rough * noise1(t / ROUGH_ALONG, fault, 2u, seed).x
+                    + FACE_ROUGH_KM * fine_face * noise1(t / FACE_KM, fault, 7u, seed).x;
+                let y0 = across - place - tilt * t - rough;
+                let gully = fine_gully * noise1(t / GULLY_KM, fault, 8u, seed).x;
+                let kind = unit(hash(vec3<u32>(at, key + 7u), seed));
+                let half_gap = 0.5 * ridge_mix(GRABEN.x, GRABEN.y, kind / GRABENS)
+                    * (1.0 + VARY.x * noise1(t / (VARY_KM.x * s), fault, 9u, seed).x);
+                var shape = 0.0;
+                for (var m = 0; m < 3; m++) {
+                    let link = ridge_link(fault, k + m - 1, rest + 1.0 - f32(m));
+                    if link.x <= 0.0 {
+                        continue;
+                    }
+                    let y = y0 - STEP_KM * s * link.y;
+                    var one = 0.0;
+                    if kind < GRABENS {
+                        one = ridge_face(y - half_gap, scarp, back, blur, gully)
+                            + ridge_face(-y - half_gap, scarp, back, blur, gully);
+                    } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
+                        one = ridge_face(y, scarp, back, blur, gully);
+                    } else {
+                        one = ridge_face(-y, scarp, back, blur, gully);
+                    }
+                    shape += THROW_CAP * tanh_precise(units * link.x / THROW_CAP) * one;
+                }
+                sum += ridge.hill_height * shown * shape;
             }
-            let place = middle * piece / len;
-            let magma = ridge.magma + SEGMENT_MAGMA * cos_turn(place - 0.5);
-            let grown = lerp_table(FAULT_HEAVE, magma) / heave;
-            let keep = min(spacing / lerp_table(FAULT_SPACING, magma), 1.0);
-            let kept = smooth_between(
-                -KEEP_SOFT,
-                KEEP_SOFT,
-                keep - unit(hash(vec3<u32>(at, key + 8u), seed)),
-            );
-            let q = (2.0 * along - start - end) / (end - start);
-            let bow = max(1.0 - q * q, 0.0);
-            let taper = ellipse(q, 2.0 * soft_end / (end - start));
-            let height = ridge_throw(unit(hash(vec3<u32>(at, key + 5u), seed))) * grown;
-            let inward = unit(hash(vec3<u32>(at, key + 2u), seed)) < INWARD;
-            let place_across = f32(i) + 0.5
-                + FAULT_JITTER * (2.0 * unit(hash(vec3<u32>(at, key + 1u), seed)) - 1.0)
-                + STEP_OVER * (2.0 * unit(hash(vec3<u32>(at, key + 6u), seed)) - 1.0)
-                + BOW * (2.0 * unit(hash(vec3<u32>(at, key + 7u), seed)) - 1.0) * bow;
-            let scarp = clamp(height / (DIP_TAN * spacing), 1e-6, SCARP_MAX);
-            var y = place_across - x;
-            if inward {
-                y = x - place_across;
-            }
-            let width = clamp(BLOCK_WIDTH * sqrt(height / ridge.mean_throw), WIDTH_MIN, WIDTH_MAX);
-            sum += height * taper * kept * block(y, scarp, width, b);
         }
     }
-    return sum;
+    let gs = sin(GRAIN_TURN);
+    let gc = cos(GRAIN_TURN);
+    let grain = noise3(
+        vec3<f32>(
+            (along * gc - across * gs) / (GRAIN_KM * s),
+            (along * gs + across * gc) / (GRAIN_KM * s),
+            f32(side),
+        ),
+        seed ^ SALT_GRAIN,
+    );
+    return sum * (1.0 + fine_grain * grain.x);
+}
+
+// `RidgePlan::texture`.
+fn ridge_texture(band_group: i32, side: u32, along_in: f32, across_in: f32, scale: f32) -> f32 {
+    let grow = sqrt(ridge.fit);
+    let along = along_in / grow;
+    let across = across_in / grow;
+    let seed = ridge.seed ^ SALT_GABOR ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
+    let s = ridge.hill_scale;
+    let cell = GABOR_CELL * s;
+    let x = across / cell;
+    let y = along / (GABOR_ASPECT * cell);
+    let ix = i32(floor(x));
+    let iy = i32(floor(y));
+    let texel = 2.0 * ridge.half_texel / grow;
+    let corner = 8.0 * PI_4 * GABOR_WIDTH * s;
+    var sum = 0.0;
+    for (var i = ix - 1; i <= ix + 1; i++) {
+        for (var j = iy - 1; j <= iy + 1; j++) {
+            let at = vec2<u32>(bitcast<u32>(i), bitcast<u32>(j));
+            for (var n = 0u; n < GABOR_KERNELS; n++) {
+                let key = side * 64u + n * 8u;
+                let dx = x - f32(i) - unit(hash(vec3<u32>(at, key), seed));
+                let dy = y - f32(j) - unit(hash(vec3<u32>(at, key + 1u), seed));
+                let r2 = dx * dx + dy * dy;
+                if r2 >= 1.0 {
+                    continue;
+                }
+                let octave = ridge_mix(GABOR_OCTAVES.x, GABOR_OCTAVES.y, unit(hash(vec3<u32>(at, key + 2u), seed)));
+                let q = exp2(octave);
+                let wavelength = corner / q;
+                let keep = smooth_between(2.0 * texel, 4.0 * texel, wavelength);
+                if keep <= 0.0 {
+                    continue;
+                }
+                let weight = q / pow_precise(1.0 + q * q, 0.5 * (HURST + 1.0));
+                let part = (octave - GABOR_OCTAVES.x) / (GABOR_OCTAVES.y - GABOR_OCTAVES.x);
+                let stretch = ridge_mix(GABOR_STRETCH.x, GABOR_STRETCH.y, part);
+                let angle = 8.0 * PI_4 * unit(hash(vec3<u32>(at, key + 3u), seed));
+                let ax = dx * cell;
+                let ay = dy * GABOR_ASPECT * cell;
+                let phase = (ax * cos(angle) + ay * sin(angle) / stretch) / wavelength
+                    + unit(hash(vec3<u32>(at, key + 4u), seed));
+                let window = (1.0 - r2) * (1.0 - r2);
+                sum += keep * weight * window * cos_turn(phase);
+            }
+        }
+    }
+    return sum * ridge.texture_height * scale;
 }
 
 // `RidgePlan::walls`.
@@ -1768,6 +1972,8 @@ struct RidgeTexel {
     // The noise of the swell, and the sag, of `RidgePlan::level_in`.
     swell: f32,
     sag: f32,
+    // The patch noise of `RidgeNoise`.
+    area: f32,
 }
 
 // The age of the sea floor at a distance from the crest, as `age` in
@@ -1828,7 +2034,9 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let wall = ridge_mix(WALL_WIDTH.x, WALL_WIDTH.y, ends);
     let grow_end = floor_half + GROW * ridge.spacing + ridge.texel * km;
     let grow = smooth_between(0.5 * floor_half, grow_end, min(from_axis, from_crest * km));
-    let flat_part = grow * (ridge.mean + MAGMA_MEAN * MAGMA_RELIEF * level);
+    let area = patch_of(at.area);
+    let local = area.x * area.y;
+    let flat_part = grow * (ridge.mean * local + MAGMA_MEAN * MAGMA_RELIEF * level);
     let near_axis = 1.0
         - ridge.valley_part * (1.0 - smooth_between(0.0, RISE_BEND_KM, from_crest * km));
     let from_rise = max(ridge_mix(from_axis / km, from_crest, near_axis), ridge.flat_floor)
@@ -1850,22 +2058,18 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
         0u,
         magma_seed,
     );
-    let zero = noise1_round(
-        ((crest - center) / v + WAVE_MYR * wave) / MAGMA_MYR,
-        bitcast<u32>(band_group),
-        0u,
-        magma_seed,
-    ).x;
-    let away = select(1.0, -1.0, off < 0.0);
-    let rows = away * MAGMA_BAND * MAGMA_MYR * v * km / ridge.spacing;
     let rate = 1.0 + MAGMA_BAND * band.y;
     let grown = pow_precise(rate, -THROW_SPACING);
     let toward = select(1.0, -1.0, (next_shift - crest) * off > 0.0);
-    let x = from_crest * km / ridge.spacing + rows * (band.x - zero) + HOOK_ROWS * hook * hook * toward;
-    let faults = grow * grown * ridge_faults(k, side, (u - lower) * km, len * km, x);
-    let held = BLOCK_MEAN * ridge.mean_throw * grow * grown;
+    let hill_across = from_crest * km;
+    let line_along = f32(at.cell) * ridge.segment_km + u * km;
+    let hills = grow * grown * ridge_hills(0, side, line_along, hill_across, area);
+    let held = ridge.hill_mean * local * grow * grown;
     let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);
-    let blocks = pond(faults, fill) - (pond(held, fill) - held)
+    let texture = ridge_texture(0, side, line_along, hill_across, area.x);
+    let buried = ridge.hill_height / max(ridge.hill_height + fill, 1e-9);
+    let blocks = pond(hills, fill) - (pond(held, fill) - held)
+        + grow * grown * texture * buried
         + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x);
     let valley = ridge.valley * (1.0 + VALLEY_ALONG * (2.0 * ends - 1.0));
     let down = DOWN * valley * (1.0 - VALLEY_END * fade_out) * bump(from_axis / DOWN_KM);
@@ -1916,10 +2120,10 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let u = bent - cells * cell_len;
     let across = at.across + BEND_ACROSS * r * hold * noise.bend.y;
     let lift = max(ridge.crest - old, 0.0);
-    let low = min(lift / (HILL_TOP * ridge.mean + 1.0), 1.0);
+    let low = min(lift / (HILL_TOP * ridge.hill_height / ridge.lift * ridge.level + 1.0), 1.0);
     let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
     let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
-    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag);
+    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area);
     let blend_width = ridge.blend;
     let turn = ridge_turn(across / v);
     let i = cell + i32(floor((u - turn.x) / cell_len));
@@ -2065,6 +2269,198 @@ fn limited(old: f32, next: f32) -> f32 {
     return min(next, high);
 }
 
+// The constants of `seamount.rs`, with the same names but for `CONE_FOOT`
+// for `FOOT` and `SLIDE_APRON` for `APRON`, and the places in
+// `Volcano`.
+const VOLCANO_FLOATS = 56u;
+const RIFT_WIDTH = 0.3;
+const CONE_FOOT = 0.35;
+const SLIDE_APRON = 1.9;
+const V_CENTER = 0u;
+const V_AXIS = 3u;
+const V_GROWTH = 6u;
+const V_HEIGHT = 7u;
+const V_RADIUS = 8u;
+const V_SHIELD = 9u;
+const V_TOP = 10u;
+const V_CRATER_RADIUS = 11u;
+const V_CRATER_DEPTH = 12u;
+const V_CONES = 13u;
+const V_CONE_OFFSET = 14u;
+const V_CONE_HEIGHT = 18u;
+const V_CONE_SIDE = 48u;
+const V_CONE_TURN = 52u;
+const V_STRETCH = 22u;
+const V_RIFTS = 23u;
+const V_RIFT_ANGLE = 24u;
+const V_RIFT_SIZE = 28u;
+const V_OUTLINE = 29u;
+const V_OUTLINE_PHASE = 32u;
+const V_SLIDE = 35u;
+const V_GULLIES = 41u;
+const V_GULLY_SIZE = 42u;
+const V_SEED = 43u;
+const V_FLEX = 44u;
+const V_FLEX_LENGTH = 45u;
+const V_REACH = 46u;
+
+// Number `i` of volcano `v`.
+fn volcano(v: u32, i: u32) -> f32 {
+    return volcanoes[v * VOLCANO_FLOATS + i];
+}
+
+fn volcano_v3(v: u32, i: u32) -> vec3<f32> {
+    return vec3<f32>(volcano(v, i), volcano(v, i + 1u), volcano(v, i + 2u));
+}
+
+// The cosine of an angle.
+fn cos_any(a: f32) -> f32 {
+    return cos_turn(a / (8.0 * PI_4));
+}
+
+// The sine of an angle.
+fn sin_any(a: f32) -> f32 {
+    return cos_turn(a / (8.0 * PI_4) - 0.25);
+}
+
+// The angle of a point from the x axis, from -PI to PI. The angle of the
+// origin is 0.
+fn atan2_any(y: f32, x: f32) -> f32 {
+    let ax = abs(x);
+    let ay = abs(y);
+    if ax == 0.0 && ay == 0.0 {
+        return 0.0;
+    }
+    var a = atan_unit(min(ax, ay) / max(ax, ay));
+    if ay > ax {
+        a = 2.0 * PI_4 - a;
+    }
+    if x < 0.0 {
+        a = 4.0 * PI_4 - a;
+    }
+    if y < 0.0 {
+        a = -a;
+    }
+    return a;
+}
+
+// An angle in the range from -PI to PI. The steps are those of `wrap` in
+// `seamount.rs`.
+fn wrap_angle(a: f32) -> f32 {
+    let t = a + 4.0 * PI_4;
+    let turn = 8.0 * PI_4;
+    return t - turn * floor(t / turn) - 4.0 * PI_4;
+}
+
+// The steps of `foot` of `seamount.rs`.
+fn volcano_foot(u: f32) -> f32 {
+    if u >= CONE_FOOT {
+        return u;
+    }
+    if u > -CONE_FOOT {
+        return (u + CONE_FOOT) * (u + CONE_FOOT) / (4.0 * CONE_FOOT);
+    }
+    return 0.0;
+}
+
+// The steps of `Volcano::profile`.
+fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
+    var outline = 1.0;
+    for (var k = 0u; k < 3u; k++) {
+        let phase = volcano(v, V_OUTLINE_PHASE + k);
+        outline += volcano(v, V_OUTLINE + k) * cos_any(f32(k + 1u) * theta - phase);
+    }
+    let shield = volcano(v, V_SHIELD);
+    var star = 0.0;
+    let rifts = u32(volcano(v, V_RIFTS));
+    for (var k = 0u; k < rifts; k++) {
+        let off = wrap_angle(theta - volcano(v, V_RIFT_ANGLE + k)) / RIFT_WIDTH;
+        star += exp_precise(-off * off);
+    }
+    star = 1.0 + volcano(v, V_RIFT_SIZE) * shield * star;
+    var re = r / (outline * star);
+    let around = volcano(v, V_GULLIES) / (8.0 * PI_4);
+    let seed = u32(volcano(v, V_SEED)) + index;
+    let q = vec3<f32>(cos_any(theta) * around, sin_any(theta) * around, re * 3.0);
+    let n = noise3(q, seed);
+    let fade = 1.0 - smooth_between(1.0 - CONE_FOOT, 1.0 + CONE_FOOT, re);
+    re = re * (1.0 + 0.05 * n.x * fade);
+    let x = volcano_foot(1.0 - re);
+    var f = x + (x * sqrt(x) - x) * shield;
+    f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * max(1.0 - re, 0.0);
+    let top = volcano(v, V_TOP);
+    f = min(f, top) / top;
+    let crater_radius = volcano(v, V_CRATER_RADIUS);
+    if crater_radius > 0.0 {
+        f = min(f, 1.0 - crater_radius);
+        if re < crater_radius {
+            let k = re / crater_radius;
+            f -= volcano(v, V_CRATER_DEPTH) * (1.0 - k * k);
+        }
+    }
+    var apron = 0.0;
+    for (var s = 0u; s < 2u; s++) {
+        let depth = volcano(v, V_SLIDE + 3u * s + 2u);
+        if depth <= 0.0 {
+            continue;
+        }
+        let off = wrap_angle(theta - volcano(v, V_SLIDE + 3u * s));
+        let width = volcano(v, V_SLIDE + 3u * s + 1u);
+        var k = off / width;
+        let scar = smooth_between(0.2, 0.5, re) * (1.0 - smooth_between(0.85, 1.05, re));
+        f *= 1.0 - depth * exp_precise(-k * k) * scar;
+        k = off / (1.3 * width);
+        let lobe = smooth_between(0.8, 1.0, re) * (1.0 - smooth_between(1.0, SLIDE_APRON, re));
+        let hummocks = noise3(vec3<f32>(q.x * 6.0, q.y * 6.0, re * 8.0), seed ^ 1u);
+        apron += depth * 0.15 * exp_precise(-k * k) * lobe * (0.7 + 0.3 * hummocks.z);
+    }
+    return max(f, 0.0) + apron;
+}
+
+// The steps of `Volcano::full_levels`: the change of the level at a unit
+// direction at full growth.
+fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
+    let c = volcano_v3(v, V_CENTER);
+    let reach = volcano(v, V_REACH);
+    if dot(p, c) <= cos_series(vec2<f32>(reach)).x {
+        return 0.0;
+    }
+    let a = volcano_v3(v, V_AXIS);
+    let b = cross(c, a);
+    let x = dot(p, a);
+    let y = dot(p, b);
+    let d = sqrt(x * x + y * y);
+    let radius = volcano(v, V_RADIUS);
+    let u = x / radius;
+    let w = y / radius;
+    var edifice = 0.0;
+    let cones = u32(volcano(v, V_CONES));
+    for (var i = 0u; i < cones; i++) {
+        let du = (u - volcano(v, V_CONE_OFFSET + i)) / volcano(v, V_STRETCH);
+        let dw = w - volcano(v, V_CONE_SIDE + i);
+        let r = sqrt(du * du + dw * dw);
+        let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
+        edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
+    }
+    edifice *= volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
+    let xi = d / volcano(v, V_FLEX_LENGTH);
+    var moat = volcano(v, V_FLEX) * exp_precise(-xi) * (cos_any(xi) + sin_any(xi));
+    moat *= 1.0 - smooth_between(0.6 * reach, reach, d);
+    return edifice - moat;
+}
+
+// The level of a texel after a seamount pass, from its level from before
+// the stroke. The steps are those of `SeamountPlan::level`.
+fn seamounts_level(at: vec2<i32>) -> f32 {
+    let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+    let p = normalize(texel_dir(group.face, at));
+    var sum = 0.0;
+    for (var v = 0u; v < group.count; v++) {
+        sum += volcano(v, V_GROWTH) * volcano_levels(v, p);
+    }
+    return limited(start, clamp(floor(start + sum + 0.5), 0.0, 65535.0));
+}
+
 // The change of the level of a texel from one weather stamp. Each pair of
 // texels that are side by side moves a whole number of levels from the higher
 // texel to the lower one. The limits bound the move. The steps are those of
@@ -2131,6 +2527,20 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let point = ridge_place(p);
         if point.on {
             value = limited(value, ridge_level(point, ridge_noise(p), value));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == SEAMOUNTS {
+        return vec4<u32>(u32(seamounts_level(at)), 0u, 0u, 0u);
+    }
+    if group.mode == ABYSSAL {
+        // The pass lays the hills on the ground from before the stroke.
+        let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+        let p = normalize(texel_dir(group.face, at));
+        let point = ridge_place(p);
+        value = start;
+        if point.on {
+            value = limited(start, abyssal_level(point, p, start));
         }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }

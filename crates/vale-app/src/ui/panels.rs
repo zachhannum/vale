@@ -21,11 +21,12 @@ use super::{
 use vale_terrain::Mode;
 
 use crate::globe::brush::{
-    BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM,
-    needs_height, shape_text,
+    ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M,
+    OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -40,6 +41,10 @@ pub const OCEAN_RIDGE: &str = "Ocean ridge";
 pub const RANGE: &str = "Range";
 /// The name of the basin mode of the brush.
 pub const BASIN: &str = "Basin";
+/// The name of the seamounts mode of the brush.
+pub const SEAMOUNTS: &str = "Seamounts";
+/// The name of the abyssal hills mode of the brush.
+pub const ABYSSAL_HILLS: &str = "Abyssal hills";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1467,6 +1472,8 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::OceanRidge, OCEAN_RIDGE),
             (Mode::Range, RANGE),
             (Mode::Basin, BASIN),
+            (Mode::Seamounts, SEAMOUNTS),
+            (Mode::AbyssalHills, ABYSSAL_HILLS),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1501,13 +1508,18 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
+/// The text of a density of the seamounts mode.
+fn density_text(density: f64) -> String {
+    format!("{density:.0} per 10,000 km²")
+}
+
 /// The name of the strength slider. In the uplift mode, the strength is the
 /// rate of the uplift, and in the range mode and the basin mode the height
 /// of the ground.
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range | Mode::Basin => "Height",
+        Mode::Range | Mode::Basin | Mode::Seamounts => "Height",
         _ => "Strength",
     }
 }
@@ -1574,6 +1586,14 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .step(1.0)
             .format(|percent| signed_percent(percent / 100.0))
             .show(ui);
+        number::slider("Hills", &mut brush.ridge_hills, RIDGE_HILLS)
+            .percent()
+            .show(ui);
+        number::slider("Scale", &mut brush.ridge_scale, HILL_SCALE)
+            .log()
+            .percent()
+            .show(ui);
+        ui.checkbox(&mut brush.ridge_fit, "Fit to map");
         number::stepper("Segment", &mut brush.ridge_segment_km)
             .range(RIDGE_SEGMENT_KM)
             .step(10.0)
@@ -1601,6 +1621,22 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         seed(ui, state);
     } else if globe.brush.mode == Mode::Push {
         // The motion of the pen and the flow set the distance.
+    } else if globe.brush.mode == Mode::AbyssalHills {
+        let brush = &mut globe.brush;
+        number::slider("Rate", &mut brush.abyssal_rate_mm, ABYSSAL_RATE_MM)
+            .step(1.0)
+            .decimals(0)
+            .suffix(" mm/yr")
+            .show(ui);
+        number::slider("Hills", &mut brush.abyssal_hills, RIDGE_HILLS)
+            .percent()
+            .show(ui);
+        number::slider("Scale", &mut brush.abyssal_scale, HILL_SCALE)
+            .log()
+            .percent()
+            .show(ui);
+        ui.checkbox(&mut brush.abyssal_fit, "Fit to map");
+        seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)
             .percent()
@@ -1651,6 +1687,17 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         } else if brush.mode == Mode::Shape {
             number::slider("Shape", &mut brush.shape, SHAPE)
                 .format(shape_text)
+                .show(ui);
+        } else if brush.mode == Mode::Seamounts {
+            number::slider("Height", &mut brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
+            number::slider("Density", &mut brush.seamount_density, SEAMOUNT_DENSITY)
+                .log()
+                .format(density_text)
                 .show(ui);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {
@@ -1704,6 +1751,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .log()
             .suffix(" km")
             .show(ui);
+        seed(ui, state);
+    }
+    if state.globe.brush.mode == Mode::Seamounts {
         seed(ui, state);
     }
     let globe = &mut state.globe;

@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, TAU};
 use std::sync::Arc;
 
+use crate::abyssal::AbyssalPlan;
 use crate::bands::{Bands, SEA_LEVEL};
 use crate::basin::BasinCut;
 use crate::channel::{ChannelCut, ChannelShape};
@@ -14,9 +15,10 @@ use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level,
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
-use crate::math::{V3, add, cross, dot, length, normalize, scale};
+use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
+use crate::seamount::{SeamountPlan, Volcano};
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -103,6 +105,12 @@ pub enum Mode {
     /// The mode of the basin brush. A stamp of this mode changes nothing.
     /// `Heightmap::basin` makes the change.
     Basin,
+    /// The mode of the seamounts brush. A stamp of this mode changes
+    /// nothing. `Heightmap::seamounts` makes the change.
+    Seamounts,
+    /// The mode of the abyssal hills brush. A stamp of this mode changes
+    /// nothing. `Heightmap::abyssal` makes the change.
+    AbyssalHills,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1155,7 +1163,12 @@ impl Heightmap {
     pub fn stamp(&mut self, stamp: &Stamp) -> usize {
         if matches!(
             stamp.mode,
-            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin
+            Mode::Erode
+                | Mode::OceanRidge
+                | Mode::Range
+                | Mode::Basin
+                | Mode::Seamounts
+                | Mode::AbyssalHills
         ) {
             return 0;
         }
@@ -1304,7 +1317,12 @@ impl Heightmap {
                             Mode::Terrace => {
                                 old + (terrace_level(old, sea, stamp.level) - old) * amount.min(1.0)
                             }
-                            Mode::Erode | Mode::OceanRidge | Mode::Range | Mode::Basin => continue,
+                            Mode::Erode
+                            | Mode::OceanRidge
+                            | Mode::Range
+                            | Mode::Basin
+                            | Mode::Seamounts
+                            | Mode::AbyssalHills => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1579,6 +1597,61 @@ impl Heightmap {
         self.lay(&plan.line, |start, at, _| plan.level(start, at))
     }
 
+    /// Grows the volcanoes of a plan on the ground from before the stroke.
+    /// Call this in a stroke. Returns the number of texels that changed.
+    pub fn seamounts(&mut self, plan: &SeamountPlan) -> usize {
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        const BLOCK: usize = 32;
+        let mut changed = 0;
+        let mut near = Vec::new();
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for by in (rect.y0..rect.y1).step_by(BLOCK) {
+                for bx in (rect.x0..rect.x1).step_by(BLOCK) {
+                    let (x1, y1) = ((bx + BLOCK).min(rect.x1), (by + BLOCK).min(rect.y1));
+                    // The volcanoes that reach the block. A texel that no
+                    // grown volcano reaches keeps its level.
+                    let middle = self.texel_dir(face, (bx + x1) / 2, (by + y1) / 2);
+                    let corners = [(bx, by), (x1 - 1, y1 - 1), (bx, y1 - 1), (x1 - 1, by)];
+                    let far = corners
+                        .map(|(x, y)| angle(middle, self.texel_dir(face, x, y)))
+                        .into_iter()
+                        .fold(0.0, f64::max)
+                        + 2.0 * FRAC_PI_2 / self.n as f64;
+                    let reaches = |v: &Volcano| angle(v.center(), middle) < v.reach() + far;
+                    if !plan.volcanoes[..plan.grown].iter().any(reaches) {
+                        continue;
+                    }
+                    near.clear();
+                    near.extend(plan.volcanoes.iter().filter(|v| reaches(v)));
+                    for y in by..y1 {
+                        for x in bx..x1 {
+                            let p = self.texel_dir(face, x, y);
+                            let new = plan.level_of(&near, self.level_before(face, x, y), p);
+                            if new != self.texel(face, x, y) {
+                                self.set(face, x, y, new);
+                                changed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// Lays the abyssal hills of a plan on the ground from before the
+    /// stroke, as `ridge` lays an ocean ridge. Call this in a stroke.
+    /// Returns the number of texels that changed.
+    pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
+        self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
+    }
+
+    /// The level at a direction, from the 4 texels around it.
+    pub(crate) fn level_at(&self, d: V3) -> f64 {
+        self.level_between(d, true)
+    }
+
     /// Writes the texels of a basin. Returns the number of texels that it
     /// wrote.
     pub fn basin(&mut self, cut: &BasinCut) -> usize {
@@ -1626,7 +1699,7 @@ impl Heightmap {
     /// texel grid continues past the face edges, and the level of a texel
     /// there comes from this function without `past`. If not, the texels at
     /// the face edge continue.
-    fn level_between(&self, d: V3, past: bool) -> f64 {
+    pub(crate) fn level_between(&self, d: V3, past: bool) -> f64 {
         let (face, a, b) = face_of(d);
         let at = |a: f64| (warp(a) + 1.0) * 0.5 * self.n as f64 - 0.5;
         self.level_on_face(face, at(a), at(b), past)
@@ -5185,6 +5258,9 @@ mod tests {
             world_km: 6371.0,
             seed: 7,
             limits: Limits::default(),
+            hills: 1.0,
+            fit: false,
+            scale: 1.0,
         };
         let mut line = RidgeLine::new(spec, map.face_size());
         map.begin_stroke();

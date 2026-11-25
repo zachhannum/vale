@@ -7,6 +7,7 @@
 //! feature adds a copy of the heightmap in wgpu textures, and the same brush
 //! and the coarser levels as a shader.
 
+mod abyssal;
 mod bands;
 mod basin;
 mod channel;
@@ -25,15 +26,18 @@ mod polygonize;
 mod pyramid;
 mod rain;
 mod range;
+mod realism;
 mod reduce;
 mod ridge;
 mod route;
+mod seamount;
 mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
 mod tiles;
 mod zonal;
 
+pub use abyssal::{AbyssalHills, AbyssalPlan, AbyssalStroke};
 pub use bands::{
     Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, SEA_LEVEL, Stop, StopLine,
     sample_ramp, sea_colors,
@@ -56,7 +60,9 @@ pub use flow::{
     WINDOW_MARGIN, Window, WindowHeights, channel_map, window_channels,
 };
 #[cfg(feature = "gpu")]
-pub use gpu::{GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, STAMP_SLOTS, StampPipeline};
+pub use gpu::{
+    GROUP_STAMPS, GpuHeightmap, RIDGE_SLOTS, Readback, SEAMOUNT_SLOTS, STAMP_SLOTS, StampPipeline,
+};
 pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
@@ -68,9 +74,17 @@ pub use polygonize::{BandRings, Contours, Trace, polygonize};
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
+pub use realism::{
+    MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism, Reference, SLOPE_BINS_DEG,
+    WEDGE_HALF_WIDTH, realism,
+};
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
 pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
+pub use seamount::{
+    FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,
+    VOLCANO_FLOATS, Volcano, elastic_km, gdh1_age, sea_floor,
+};
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
 };
