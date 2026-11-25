@@ -131,6 +131,10 @@ pub struct Args {
     /// of the selected height layer, and turn the hillshade on.
     #[arg(long)]
     pub hillshade_page: bool,
+    /// With --layout pad and --panel layers: open the page of the elevation
+    /// range of the selected height layer.
+    #[arg(long)]
+    pub range_page: bool,
     /// Open the form of a new world or of the world of the project.
     #[arg(long, value_enum, value_name = "FORM")]
     pub world_form: Option<FormMode>,
@@ -691,6 +695,12 @@ pub fn apply_import(args: &Args, state: &mut AppState, wait: bool) -> anyhow::Re
         state.set_raster_hillshade(id, true);
         state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
         state.pad.page = Some(crate::ui::pad::Page::Hillshade);
+    }
+    if args.range_page
+        && let Some(id) = state.selected_raster()
+    {
+        state.pad.layer = Some(crate::ui::LayerRef::Raster(id));
+        state.pad.page = Some(crate::ui::pad::Page::Range);
     }
     if let Some(name) = &args.table {
         let layers = state.doc.project.layers();

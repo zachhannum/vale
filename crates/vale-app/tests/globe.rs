@@ -6813,6 +6813,9 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
     let sea = h.state().globe.map.bands.sea().unwrap();
     h.state_mut().globe.preview.selected = Some((id, sea));
     h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::raster::LINE)
+        .scroll_to_me();
+    h.run();
     h.get_by_label(vale_app::ui::pad::raster::LINE).click();
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.on);

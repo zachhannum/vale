@@ -521,6 +521,7 @@ fn check_controls(h: &Pad, what: &str) {
                     "Brush",
                     panels_menu::CLOSE_ALL,
                     panels_menu::RESET_LAYOUT,
+                    panels_menu::SNAP_TILE,
                 ];
                 let add = add || in_panels && tiles.contains(&name);
                 let pane_menu = in_pane_menu
@@ -22661,5 +22662,74 @@ fn the_style_section_sets_the_reference_scale() {
             state.doc.project.world.radius_km * 1000.0 / state.globe.radius(),
         );
         assert_eq!(reference(&h), Some(current.round()), "{what}");
+    }
+}
+
+#[test]
+fn the_range_page_of_a_height_layer_applies_keep_and_stretch() {
+    use vale_app::ui::pad::height_range::{
+        APPLY, HIGHEST_FIELD, KEEP_HINT, LOWEST_FIELD, MODES, RANGE, STRETCH_HINT,
+    };
+    for size in [BOARDS[0], BOARDS[3]] {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let height = open_height(&mut h);
+        let map = &mut h.state_mut().globe.map;
+        map.set(0, 1, 0, Elevation::default().level(5000.0));
+        h.run_steps(2);
+        scroll_to(&mut h, RANGE);
+        tap(&mut h, RANGE);
+        assert_eq!(h.state().pad.page, Some(Page::Range), "{what}");
+        for name in [LOWEST_FIELD, HIGHEST_FIELD, MODES[0], MODES[1]] {
+            scroll_to(&mut h, name);
+            let card = panel(&h, Panel::Layers).unwrap();
+            let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
+            assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
+            assert!(rect.height() >= 44.0, "{what}: {name} is {rect:?}");
+        }
+        check_controls(&h, &format!("{what} with the range page"));
+        screenshot::save(&mut h, &format!("pad-range-{}", size.0));
+        // Keep elevations is first and on. The range of the layer changes
+        // nothing.
+        assert!(h.query_by_label(KEEP_HINT).is_some(), "{what}");
+        assert!(disabled(&h, APPLY), "{what}");
+        type_text(&mut h, LOWEST_FIELD, "50");
+        assert!(disabled(&h, APPLY), "{what}");
+        assert!(h.query_by_label(vale_app::ui::RANGE_NOTE).is_some());
+
+        // Keep elevations: the peak stops at the new highest elevation.
+        type_text(&mut h, LOWEST_FIELD, "-3000");
+        type_text(&mut h, HIGHEST_FIELD, "3000");
+        scroll_to(&mut h, APPLY);
+        let card = panel(&h, Panel::Layers).unwrap();
+        let rect = control(&h, APPLY).unwrap_or_else(|| panic!("{what}: no {APPLY}"));
+        assert!(card.contains_rect(rect), "{what}: {APPLY} is {rect:?}");
+        check_controls(&h, &format!("{what} with a new range"));
+        tap(&mut h, APPLY);
+        let raster = h.state().doc.project.raster(height).unwrap().clone();
+        assert_eq!((raster.value_min, raster.value_max), (-3000.0, 3000.0));
+        let map = h.state().globe.raster_map(height).unwrap();
+        assert_eq!(map.get(0, 1, 0), u16::MAX, "{what}");
+        let range = map.elevation();
+        let kept = range.meters(map.get(0, 0, 0));
+        assert!(
+            (kept - 100.0).abs() <= range.meters_per_level(),
+            "{what}: {kept}"
+        );
+        let before = (map.get(0, 0, 0), map.get(0, 1, 0), map.base());
+
+        // Stretch terrain: each level stays.
+        scroll_to(&mut h, MODES[1]);
+        tap(&mut h, MODES[1]);
+        assert!(h.query_by_label(STRETCH_HINT).is_some(), "{what}");
+        type_text(&mut h, LOWEST_FIELD, "-6000");
+        type_text(&mut h, HIGHEST_FIELD, "6000");
+        scroll_to(&mut h, APPLY);
+        tap(&mut h, APPLY);
+        let raster = h.state().doc.project.raster(height).unwrap();
+        assert_eq!((raster.value_min, raster.value_max), (-6000.0, 6000.0));
+        let map = h.state().globe.raster_map(height).unwrap();
+        assert_eq!((map.get(0, 0, 0), map.get(0, 1, 0), map.base()), before);
+        assert!(disabled(&h, APPLY), "{what}");
     }
 }

@@ -462,6 +462,31 @@ fn the_toolbar_toggles_the_graticule() {
 }
 
 #[test]
+fn the_desktop_panel_of_a_height_layer_changes_its_range() {
+    use vale_app::ui::pad::height_range::{APPLY, HIGHEST_FIELD, LOWEST_FIELD, MODES, RANGE};
+    let mut h = globe_harness();
+    let id = h
+        .state_mut()
+        .add_raster(RasterSpec::height("Height", 64))
+        .unwrap();
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(3);
+    h.get_by_label(RANGE).click();
+    h.run_steps(2);
+    assert!(h.query_by_label(MODES[0]).is_some());
+    h.get_by_label(MODES[1]).click();
+    h.run_steps(2);
+    type_in(&mut h, LOWEST_FIELD, "-11000");
+    type_in(&mut h, HIGHEST_FIELD, "9000");
+    h.get_by_label(APPLY).click();
+    h.run_steps(3);
+    let raster = h.state().doc.project.raster(id).unwrap();
+    assert_eq!((raster.value_min, raster.value_max), (-11000.0, 9000.0));
+    let range = h.state().globe.raster_map(id).unwrap().elevation();
+    assert_eq!((range.min, range.max), (-11000.0, 9000.0));
+}
+
+#[test]
 fn the_side_list_shows_a_raster_layer_per_map() {
     let mut h = harness();
     let height = RasterSpec::height("Height", 64);

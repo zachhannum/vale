@@ -50,6 +50,7 @@ pub mod fonts;
 pub mod furniture;
 pub mod geometry;
 pub mod grid_labels;
+pub mod height_range;
 pub mod icons;
 pub mod label_text;
 pub mod labels;
@@ -423,6 +424,8 @@ pub enum Page {
     Stops,
     Hillshade,
     Blend,
+    /// The elevation range of a height layer.
+    Range,
     /// The field with this index.
     Field(usize),
     NewField,
@@ -476,6 +479,8 @@ pub struct PadState {
     /// and the width that the drag asks for, which can be below the
     /// narrowest dock.
     pub width_drag: Option<(f32, f32)>,
+    /// The edit of the elevation range of a height layer.
+    pub range: Option<height_range::RangeEdit>,
     /// The selection of the Atlas in the last frame.
     pub atlas_selection: Option<crate::ui::atlas::AtlasSelection>,
     /// The tab of the frame of the Atlas in the last frame.
@@ -2325,7 +2330,14 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         (Some(_), Some(Page::Collections | Page::CopyStyle)) => true,
         (
             Some(LayerRef::Raster(_)),
-            Some(Page::Ramps | Page::Stops | Page::Hillshade | Page::Blend | Page::RampLabels(_)),
+            Some(
+                Page::Ramps
+                | Page::Stops
+                | Page::Hillshade
+                | Page::Blend
+                | Page::Range
+                | Page::RampLabels(_),
+            ),
         ) => true,
         (Some(LayerRef::Image(_)), Some(Page::Blend)) => true,
         (
@@ -2409,6 +2421,9 @@ pub(super) fn panel_head(state: &mut AppState, panel: Panel) -> Head {
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Blend) => {
             ("pad-blend", raster::BLEND, Some(name))
+        }
+        (Panel::Layers, Some(LayerRef::Raster(_))) if page == Some(Page::Range) => {
+            ("pad-range", height_range::RANGE, Some(name))
         }
         (Panel::Layers, Some(LayerRef::Raster(_))) => (
             "pad-layer",
@@ -2728,6 +2743,7 @@ pub(super) fn panel_body(
                 raster::hillshade_body(ui, state, controls, id);
             }
             Some(Page::Blend) => raster::blend_body(ui, state, controls, id),
+            Some(Page::Range) => height_range::body(ui, state, controls, id),
             _ => raster_body(ui, state, controls, id),
         },
         (Panel::Layers, Some(LayerRef::Image(id))) => match page {
@@ -4130,7 +4146,11 @@ fn raster_body(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls,
     }
     state.pad.name = Some((of, text));
     raster::unit_row(ui, state, controls, id);
-    widgets::value_row(ui, "Values", &range);
+    if height {
+        height_range::open_row(ui, state, controls, id);
+    } else {
+        widgets::value_row(ui, "Values", &range);
+    }
     widgets::value_row(ui, "Pixel size", &pixel_size);
     if let Some(layer) = layer {
         collection::open_row(ui, state, controls, layer);
