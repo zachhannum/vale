@@ -158,8 +158,10 @@ fn manual_seamounts_next_to_the_pacific_flank() {
     let raw = root.join("target/gebco/pacific-flank.f32");
     let bytes = std::fs::read(&raw).expect("run scripts/gebco-reference.sh pacific-flank");
     let gebco: Vec<f32> = bytes
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&b| f32::from_le_bytes(b))
         .collect();
     let painted = pacific_flank();
     compare(&painted, &reference, 0.0);
