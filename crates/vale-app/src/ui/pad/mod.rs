@@ -1643,13 +1643,15 @@ fn brush_size<'a>(
     let range = brush.radius_km_range(globe_radius, world_km);
     let km = brush.radius_km(globe_radius, world_km);
     let (unit_km, symbol) = world::large_unit(units);
-    let mut number = Number::new(name, km, range)
+    let mut number = Number::new(name, km, range.clone())
         .label("Size")
         .log()
         .shown(1.0 / unit_km, symbol)
         .text(move |km| world::distance(km, units))
         .preview(move |km| (km / world_km * globe_radius) as f32);
-    if brush.lock.is_none() {
+    if brush.size_is_fixed() {
+        number = number.default(*range.end());
+    } else if brush.lock.is_none() {
         let points = BrushSettings::default().size_points;
         number = number.default(brush_radius(points, globe_radius) * world_km);
     }
@@ -3682,7 +3684,9 @@ fn flatten_rows(
 ) {
     let globe_radius = globe.radius();
     let mut lock = globe.brush.lock.is_some();
-    if widgets::switch_row(ui, controls, LOCK_SIZE, LOCK_SIZE, &mut lock) {
+    if !globe.brush.size_is_fixed()
+        && widgets::switch_row(ui, controls, LOCK_SIZE, LOCK_SIZE, &mut lock)
+    {
         globe.brush.set_lock(lock, globe_radius);
     }
     if globe.brush.mode != Mode::Flatten {
