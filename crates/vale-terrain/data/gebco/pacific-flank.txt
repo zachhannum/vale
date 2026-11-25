@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: 10.470 to 12.730 N, -106.504 to -104.196 E
+# Fetched: 2026-11-25
+# Made by: scripts/gebco-reference.sh pacific-flank
+
+region = East Pacific Rise west flank, 11.6 N
+center = -105.35, 11.6
+size = 512
+cell_m = 460
+band_m = 1840, 60000
+fabric_deg = -10
+spectral_slope = -2.4843
+anisotropy = 4.5461
+rms_m = 102.69
+slope_histogram = 0.26826, 0.28579, 0.27909, 0.13598, 0.02696, 0.00390, 0.00003

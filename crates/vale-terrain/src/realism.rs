@@ -18,6 +18,10 @@ pub const MIN_WAVELENGTH_CELLS: f64 = 4.0;
 /// The half width of the wedges of wavenumber direction of the anisotropy.
 pub const WEDGE_HALF_WIDTH: f64 = FRAC_PI_8;
 
+/// The reference text of a flank of the East Pacific Rise with seamounts,
+/// from GEBCO.
+pub const PACIFIC_FLANK: &str = include_str!("../data/gebco/pacific-flank.txt");
+
 /// A square grid of heights in meters on a plane. Row 0 is the south edge,
 /// and each row runs from west to east. `size` is a power of two.
 #[derive(Clone, Debug, PartialEq)]
@@ -546,6 +550,14 @@ mod tests {
         let at = |i: usize, j: usize| patch.heights[j * 8 + i];
         assert!(at(7, 3) - at(0, 3) > 300.0);
         assert!(at(3, 7) - at(3, 0) > 0.3 && at(3, 7) - at(3, 0) < 1.0);
+    }
+
+    #[test]
+    fn realism_pacific_flank_parses() {
+        let reference = Reference::parse(PACIFIC_FLANK).unwrap();
+        assert!(reference.size.is_power_of_two());
+        assert!(reference.band_m.0 >= MIN_WAVELENGTH_CELLS * reference.cell_m);
+        assert!(reference.realism.anisotropy > 1.0);
     }
 
     #[test]
