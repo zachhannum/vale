@@ -638,6 +638,16 @@ impl ProjectFile {
         self.undo_limit
     }
 
+    /// The size of the compressed images of all tiles of a raster, in
+    /// bytes. A step that changes each tile of the raster holds this much.
+    pub fn raster_tile_bytes(&self, raster: RasterId) -> Result<u64, StoreError> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(SUM(LENGTH(data)), 0) FROM vale_raster_tile WHERE raster_id = ?1",
+            [raster.0],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Sets the limit of the size of the undo log. The next edit, undo, or
     /// redo removes the steps that are over the limit. A step that is larger
     /// than the limit goes.
@@ -7801,6 +7811,24 @@ mod tests {
         stroke(&mut file, 5);
         assert_eq!((steps(&file), file.undo_bytes()), (0, 0));
         assert!(!file.can_undo());
+    }
+
+    #[test]
+    fn the_tile_bytes_of_a_raster_are_those_of_a_step_with_each_tile() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, height, _) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert_eq!(file.raster_tile_bytes(height).unwrap(), 0);
+        let tiles = vec![(key(0, 0, 0), noise(1)), (key(1, 0, 0), noise(2))];
+        file.save_tiles(&project, &[put(height, &tiles, vec![])])
+            .unwrap();
+        let bytes = file.raster_tile_bytes(height).unwrap();
+        assert!(bytes > 0);
+        let tiles = vec![(key(0, 0, 0), noise(3)), (key(1, 0, 0), noise(4))];
+        file.save_tiles(&project, &[put(height, &tiles, vec![])])
+            .unwrap();
+        // The step holds the two old images and a little more.
+        assert!(file.undo_bytes() >= bytes && file.undo_bytes() < bytes + 4096);
     }
 
     #[test]
