@@ -71,6 +71,7 @@ impl Painted {
             limits: Limits::default(),
             hills: 1.0,
             fit: true,
+            scale: 1.0,
         };
         let mut line = RidgeLine::new(spec, FACE_SIZE);
         for i in 0..=16 {
@@ -219,6 +220,7 @@ fn abyssal_flank() -> Painted {
         rate: 110.0,
         hills: 1.0,
         fit: true,
+        scale: 1.0,
         world_km: WORLD_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),
@@ -391,6 +393,7 @@ fn coarse_ridge(n: usize, fit: bool) -> Heightmap {
         limits: Limits::default(),
         hills: 1.0,
         fit,
+        scale: 1.0,
     };
     let mut line = RidgeLine::new(spec, n);
     let lon = 200.0 / EARTH_KM * 180.0 / std::f64::consts::PI;
@@ -419,6 +422,7 @@ fn coarse_abyssal(n: usize, fit: bool) -> Heightmap {
         seed: RIDGE_SEED,
         limits: Limits::default(),
         fit,
+        scale: 1.0,
     };
     let start = map.snapshot();
     let mut stroke = AbyssalStroke::new(spec, n);
@@ -468,7 +472,7 @@ fn fit_hills_show_on_a_coarse_map() {
         );
         assert!(on.0 > 2.0, "{name}: an anisotropy of {}", on.0);
         assert!(
-            on.1 > 0.15,
+            on.1 > 0.05,
             "{name}: {} of the slopes above 2 degrees",
             on.1
         );
@@ -510,6 +514,44 @@ fn manual_fit_on_coarse_maps() {
     }
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let out = root.join("target/realism/fit.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
+}
+
+/// The abyssal hills at the scale of the reference patch, at 1, 2, 4, and
+/// 8 times their real size, side by side.
+#[test]
+#[ignore = "manual"]
+fn manual_abyssal_hills_at_each_scale() {
+    let reference = Reference::parse(PACIFIC_FLANK).unwrap();
+    let n = reference.size;
+    let scales = [1.0, 2.0, 4.0, 8.0];
+    let mut image = image::RgbImage::new((scales.len() * n) as u32, n as u32);
+    for (i, scale) in scales.into_iter().enumerate() {
+        let mut painted = Painted::new(REFERENCE_DEPTH_M);
+        let spec = AbyssalHills {
+            rate: 110.0,
+            hills: 1.0,
+            world_km: WORLD_KM,
+            seed: RIDGE_SEED,
+            limits: Limits::default(),
+            fit: true,
+            scale,
+        };
+        let start = painted.map.snapshot();
+        let mut stroke = AbyssalStroke::new(spec, FACE_SIZE);
+        painted.map.begin_stroke();
+        for lat in [-2.0, 0.0] {
+            let plan = stroke.stamp(&start, lonlat_to_dir(0.0, lat), 0.18, 0.95, 1.0);
+            painted.map.abyssal(&plan);
+        }
+        painted.map.end_stroke();
+        let heights = painted.patch(&reference).heights;
+        draw(&mut image, &heights, n, reference.cell_m, [i * n, 0]);
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/scale.png");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());

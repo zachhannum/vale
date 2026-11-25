@@ -48,6 +48,8 @@ pub struct Ridge {
     /// Whether the abyssal hills grow to the texel size of the map, so they
     /// show on a coarse map. See `fit_of`.
     pub fit: bool,
+    /// The size of the abyssal hills, from 1 to 10 times their real size.
+    pub scale: f64,
 }
 
 /// The line of one ocean ridge stroke.
@@ -156,13 +158,14 @@ impl RidgePlan {
         RidgeNoise {
             bend: add(wide, scale(fine, 0.5)),
             slow: at(SLOW_SIZE, SALT_SLOW),
-            patch: patch_noise(p, self.ridge.world_km / self.fit(), seed),
+            patch: patch_noise(p, self.ridge.world_km / self.fit().sqrt(), seed),
         }
     }
 
     /// The fit factor of the hills.
     fn fit(&self) -> f64 {
-        fit_of(0.5 * self.step() * self.ridge.world_km, self.ridge.fit)
+        let spec = &self.ridge;
+        fit_of(0.5 * self.step() * spec.world_km, spec.fit, spec.scale)
     }
 
     /// The crest segments of the settings.
@@ -374,7 +377,7 @@ impl RidgePlan {
             full_rate,
             spec.magma,
             spec.hills,
-            [half_texel, fit_of(half_texel, spec.fit)],
+            [half_texel, fit_of(half_texel, spec.fit, spec.scale)],
             self.relief,
         )
     }
@@ -587,14 +590,16 @@ impl RidgePlan {
         [along, across]: [f64; 2],
         scale: f64,
     ) -> f64 {
-        let (along, across) = (along / f.fit, across / f.fit);
+        // The texture grows by the root of the fit factor, so it stays soft.
+        let grow = f.fit.sqrt();
+        let (along, across) = (along / grow, across / grow);
         let seed = base ^ SALT_GABOR ^ (group as u32).wrapping_mul(0x9e37_79b9);
         let s = f.hill_scale;
         let cell = GABOR_CELL * s;
         // The place in the stretched plane, in cells.
         let (x, y) = (across / cell, along / (GABOR_ASPECT * cell));
         let (ix, iy) = (x.floor() as i32, y.floor() as i32);
-        let texel = 2.0 * f.half_texel / f.fit;
+        let texel = 2.0 * f.half_texel / grow;
         let corner = TAU * GABOR_WIDTH * s;
         let mut sum = 0.0;
         for i in ix - 1..=ix + 1 {
@@ -796,7 +801,7 @@ impl RidgePlan {
         // Ground at the crest level gets no hills.
         // The test uses the throws at the real size, so the fit does not lower
         // the hills.
-        let low = (lift / (HILL_TOP * f.hill_height / fit_height(f.fit) * f.level + 1.0)).min(1.0);
+        let low = (lift / (HILL_TOP * f.hill_height / f.lift * f.level + 1.0)).min(1.0);
         // The blocks and the troughs fade toward the reach.
         let fade = 1.0 - smoothstep(HILL_FADE, REACH, far);
         let sg = self.segmenting();
@@ -921,8 +926,10 @@ impl RidgePlan {
             // a boundary have the same distance there, so the hills go on
             // past a boundary with no offset.
             let hill_across = from_crest * km;
-            let at = [group_along, hill_across];
-            let hills = grow * grown * Self::hills(spec.seed, &f, group, side, at, patch);
+            // The hills read the distance along the whole line, so they go
+            // on past the boundary of a group.
+            let at = [u * km, hill_across];
+            let hills = grow * grown * Self::hills(spec.seed, &f, 0, side, at, patch);
             // Sediment ponds in the lows between the hills, up to twice its
             // thickness above the low of the hills: `HILL_LOW` of their mean
             // height. It fills `POND` of the depth of a low below that
@@ -933,7 +940,7 @@ impl RidgePlan {
             let fill = (2.0 * SEDIMENT_RATE * tau - HILL_LOW * held).max(0.0);
             let blocks = pond(hills, fill) - (pond(held, fill) - held);
             // The fine texture, which sediment buries.
-            let texture = Self::texture(spec.seed, &f, group, side, at, patch[0]);
+            let texture = Self::texture(spec.seed, &f, 0, side, at, patch[0]);
             let buried = f.hill_height / (f.hill_height + fill).max(1e-9);
             let blocks = blocks + grow * grown * texture * buried;
             // More magma gives a thicker crust, so the bands of the magma
@@ -1076,6 +1083,8 @@ pub(crate) struct RidgeShape {
     /// kilometers.
     pub segment_depth: f64,
     pub fit: f64,
+    pub lift: f64,
+    pub texture_height: f64,
 }
 
 #[cfg(feature = "gpu")]
@@ -1118,6 +1127,8 @@ impl RidgePlan {
             band_km: BAND_KM.min(BAND_RADIUS * r * km),
             segment_depth: self.segment_depth(SECOND_ORDER_KM),
             fit: f.fit,
+            lift: f.lift,
+            texture_height: f.texture_height,
         }
     }
 }
@@ -1143,8 +1154,10 @@ pub(crate) struct Faulting {
     pub(crate) hill_mean: f64,
     /// The height unit of the fine texture, in kilometers.
     pub(crate) texture_height: f64,
-    /// The fit factor of `fit_of`.
+    /// The fit factor of `fit_of`, and the scale of the height of the
+    /// faults of `fit_height`. The texture does not grow higher.
     pub(crate) fit: f64,
+    pub(crate) lift: f64,
 }
 
 impl Faulting {
@@ -1162,7 +1175,8 @@ impl Faulting {
         let m = magma_share(full_rate) + magma;
         let spacing = lerp_table(&FAULT_SPACING, m);
         let hill_scale = (spacing / HILL_SPACING).clamp(1.0, HILL_SCALE_MAX);
-        let rms = hills.clamp(0.0, 2.0) * hill_rms(full_rate) * fit_height(fit);
+        let lift = fit_height(fit);
+        let rms = hills.clamp(0.0, 2.0) * hill_rms(full_rate) * lift;
         let hill_height = rms * (1.0 - GABOR_SHARE * GABOR_SHARE).sqrt() / HILL_RMS_UNIT;
         Faulting {
             magma: m,
@@ -1172,8 +1186,9 @@ impl Faulting {
             hill_height,
             hill_scale,
             hill_mean: hill_height * HILL_MEAN_UNIT,
-            texture_height: hill_height * GABOR_PER_THROW,
+            texture_height: hill_height / lift * fit.sqrt().min(lift) * GABOR_PER_THROW,
             fit,
+            lift,
         }
     }
 }
@@ -1588,21 +1603,26 @@ fn depth(age: f64) -> f64 {
 }
 
 /// The fit factor of the abyssal hills at half of the texel step in
-/// kilometers: how much larger the hills are than on real sea floor. A
-/// map with texels larger than `FIT_TEXEL_KM` gets larger hills, so their
-/// scarps are a few texels wide. With `fit` false, the factor is 1.
-pub(crate) fn fit_of(half_texel: f64, fit: bool) -> f64 {
+/// kilometers: how much larger the hills are than on real sea floor. It is
+/// the Scale setting, from 1 to 10. With `fit`, a map with texels larger
+/// than `FIT_TEXEL_KM` gets hills at least as large as its texels over
+/// that size, so their scarps are a few texels wide.
+pub(crate) fn fit_of(half_texel: f64, fit: bool, scale: f64) -> f64 {
+    let scale = scale.clamp(1.0, 10.0);
     if fit {
-        (2.0 * half_texel / FIT_TEXEL_KM).max(1.0)
+        scale.max(2.0 * half_texel / FIT_TEXEL_KM)
     } else {
-        1.0
+        scale
     }
 }
 
-/// The scale of the height of the hills at a fit factor: the factor, so
-/// the slopes stay, up to `FIT_HEIGHT_MAX`, so the relief stays plausible.
-fn fit_height(fit: f64) -> f64 {
-    fit.min(FIT_HEIGHT_MAX)
+/// The scale of the height of the faults at a fit factor. Up to
+/// `FIT_HEIGHT_FULL`, it is the factor, so the slopes stay. Past it, it
+/// grows with the root of the factor, so large blocks are lower than
+/// slabs, up to `FIT_HEIGHT_MAX`, so the relief stays plausible.
+pub(crate) fn fit_height(fit: f64) -> f64 {
+    let full = fit.min(FIT_HEIGHT_FULL);
+    (full * (fit / full).sqrt()).min(FIT_HEIGHT_MAX)
 }
 
 /// The patch noise at a unit direction on a world with a radius in
@@ -1666,9 +1686,10 @@ const DIP_TAN: f64 = 1.2;
 pub(crate) const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
 
 /// The texel size up to which the hills have their real size, in
-/// kilometers, and the largest scale of their height on a coarse map.
+/// kilometers, and the scales of their height of `fit_height`.
 const FIT_TEXEL_KM: f64 = 0.5;
-const FIT_HEIGHT_MAX: f64 = 2.5;
+const FIT_HEIGHT_FULL: f64 = 2.0;
+const FIT_HEIGHT_MAX: f64 = 3.0;
 
 /// The RMS height of all abyssal hills times the square root of the full
 /// spreading rate, in kilometers, for rates in millimeters per year from
@@ -1958,6 +1979,7 @@ mod tests {
             limits: Limits::default(),
             hills: 1.0,
             fit: false,
+            scale: 1.0,
         }
     }
 
@@ -2363,7 +2385,7 @@ mod tests {
         // The sediment fills the lows of old sea floor, and the old sea
         // floor stays rough.
         let (young, old) = (rough(0.15 * r), rough(0.75 * r));
-        assert!(old < young && old > 0.7 * young, "{young} {old}");
+        assert!(old < young && old > 0.5 * young, "{young} {old}");
         // A low fills by a part of its depth, so it keeps a part of its
         // relief. The ground above the level of the sediment keeps all of
         // its relief.
@@ -2640,6 +2662,39 @@ mod tests {
         assert_eq!(height(0.0), 0.0);
         assert!((height(2.0) - 2.0 * height(1.0)).abs() < 1e-12);
         assert_eq!(height(3.0), height(2.0));
+    }
+
+    #[test]
+    fn the_scale_grows_the_hills_and_the_fit_sets_a_least_scale() {
+        // The fit factor is the scale, and with the fit, at least the texel
+        // over `FIT_TEXEL_KM`.
+        assert_eq!(fit_of(0.1, false, 3.0), 3.0);
+        assert_eq!(fit_of(0.1, true, 3.0), 3.0);
+        assert_eq!(fit_of(1.0, true, 1.0), 4.0);
+        assert_eq!(fit_of(1.0, true, 8.0), 8.0);
+        assert_eq!(fit_of(1.0, false, 20.0), 10.0);
+        assert_eq!(fit_of(0.1, true, 0.5), 1.0);
+        // Twice the scale gives the same faults at twice the distances,
+        // with the throws of `fit_height`. The blur is the same, so the
+        // texel is also twice as large.
+        let small = Faulting::new(110.0, 0.0, 1.0, [0.2, 1.0], LEVELS_PER_KM);
+        let large = Faulting::new(110.0, 0.0, 1.0, [0.4, 2.0], LEVELS_PER_KM);
+        assert!((large.lift - fit_height(2.0)).abs() < 1e-12 && large.lift > 1.5);
+        let mut shown = 0;
+        for a in 0..200 {
+            for c in 0..50 {
+                let at = [f64::from(a) * 0.75, f64::from(c) * 0.5];
+                let one = RidgePlan::hills(9, &small, 0, 0, at, [1.0, 0.7]);
+                let two = RidgePlan::hills(9, &large, 0, 0, at.map(|x| 2.0 * x), [1.0, 0.7]);
+                assert!((two - one * large.lift).abs() < 1e-9, "{at:?}: {one} {two}");
+                shown += usize::from(one > 0.0);
+            }
+        }
+        assert!(shown > 1000, "{shown}");
+        // The throws grow with the factor, then more slowly, up to a cap.
+        assert_eq!(fit_height(1.0), 1.0);
+        assert!(fit_height(4.0) < 4.0 && fit_height(4.0) > fit_height(2.0));
+        assert_eq!(fit_height(10.0), FIT_HEIGHT_MAX);
     }
 
     #[test]

@@ -5281,6 +5281,7 @@ mod tests {
             limits: Limits::default(),
             hills: 1.0,
             fit: false,
+            scale: 1.0,
         };
         let mut line = RidgeLine::new(spec, map.face_size());
         map.begin_stroke();

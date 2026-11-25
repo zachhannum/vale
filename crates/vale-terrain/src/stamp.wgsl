@@ -224,9 +224,10 @@ struct RidgeLine {
     range_tilt: f32,
     // The fit factor of the abyssal hills.
     fit: f32,
-    unused0: f32,
-    unused1: f32,
-    unused2: f32,
+    lift: f32,
+    texture_height: f32,
+    // The length of `segment` in kilometers.
+    segment_km: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
 }
 
@@ -1161,7 +1162,6 @@ const INWARD = 0.8;
 const PIECE_JITTER = 0.15;
 const OVERLAP = 0.3;
 const HILL_TOP = 4.0;
-const FIT_HEIGHT_MAX = 2.5;
 const GROW = 1.5;
 const HILL_FADE = 0.8;
 const MAX_SMOOTH = 0.3;
@@ -1491,7 +1491,7 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
 
 // `patch_noise` in `ridge.rs`.
 fn patch_noise(p: vec3<f32>) -> f32 {
-    let km = ridge.world_km / ridge.fit;
+    let km = ridge.world_km / sqrt(ridge.fit);
     return noise3(p * (km / PATCH_KM), ridge.seed ^ SALT_PATCH).x
         + 0.5 * noise3(p * (km / (PATCH_FINE * PATCH_KM)), ridge.seed ^ SALT_PATCH).y;
 }
@@ -1841,8 +1841,9 @@ fn ridge_hills(band_group: i32, side: u32, along_in: f32, across_fit: f32, area:
 
 // `RidgePlan::texture`.
 fn ridge_texture(band_group: i32, side: u32, along_in: f32, across_in: f32, scale: f32) -> f32 {
-    let along = along_in / ridge.fit;
-    let across = across_in / ridge.fit;
+    let grow = sqrt(ridge.fit);
+    let along = along_in / grow;
+    let across = across_in / grow;
     let seed = ridge.seed ^ SALT_GABOR ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
     let s = ridge.hill_scale;
     let cell = GABOR_CELL * s;
@@ -1850,7 +1851,7 @@ fn ridge_texture(band_group: i32, side: u32, along_in: f32, across_in: f32, scal
     let y = along / (GABOR_ASPECT * cell);
     let ix = i32(floor(x));
     let iy = i32(floor(y));
-    let texel = 2.0 * ridge.half_texel / ridge.fit;
+    let texel = 2.0 * ridge.half_texel / grow;
     let corner = 8.0 * PI_4 * GABOR_WIDTH * s;
     var sum = 0.0;
     for (var i = ix - 1; i <= ix + 1; i++) {
@@ -1884,7 +1885,7 @@ fn ridge_texture(band_group: i32, side: u32, along_in: f32, across_in: f32, scal
             }
         }
     }
-    return sum * ridge.hill_height * GABOR_PER_THROW * scale;
+    return sum * ridge.texture_height * scale;
 }
 
 // `RidgePlan::walls`.
@@ -2055,10 +2056,11 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let grown = pow_precise(rate, -THROW_SPACING);
     let toward = select(1.0, -1.0, (next_shift - crest) * off > 0.0);
     let hill_across = from_crest * km;
-    let hills = grow * grown * ridge_hills(band_group, side, group_along, hill_across, area);
+    let line_along = f32(at.cell) * ridge.segment_km + u * km;
+    let hills = grow * grown * ridge_hills(0, side, line_along, hill_across, area);
     let held = ridge.hill_mean * local * grow * grown;
     let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);
-    let texture = ridge_texture(band_group, side, group_along, hill_across, area.x);
+    let texture = ridge_texture(0, side, line_along, hill_across, area.x);
     let buried = ridge.hill_height / max(ridge.hill_height + fill, 1e-9);
     let blocks = pond(hills, fill) - (pond(held, fill) - held)
         + grow * grown * texture * buried
@@ -2112,7 +2114,7 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let u = bent - cells * cell_len;
     let across = at.across + BEND_ACROSS * r * hold * noise.bend.y;
     let lift = max(ridge.crest - old, 0.0);
-    let low = min(lift / (HILL_TOP * ridge.hill_height / min(ridge.fit, FIT_HEIGHT_MAX) * ridge.level + 1.0), 1.0);
+    let low = min(lift / (HILL_TOP * ridge.hill_height / ridge.lift * ridge.level + 1.0), 1.0);
     let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
     let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
     let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area);

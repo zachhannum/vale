@@ -3530,6 +3530,7 @@ fn ridge_spec(radius: f64) -> Ridge {
         limits: Limits::default(),
         hills: 1.0,
         fit: false,
+        scale: 1.0,
     }
 }
 
@@ -3835,6 +3836,20 @@ fn gpu_ridge_matches_cpu_at_a_cube_corner() {
 /// On a large face, the place of a texel needs most of the digits of a
 /// 32-bit number. The line is long, so the distance along it is large, and
 /// it goes in more than one plan.
+/// The hills at 4 times their real size.
+#[test]
+#[ignore = "gpu"]
+fn gpu_ridge_with_a_scale_matches_cpu() {
+    let start = smooth_ground(1024);
+    let spec = Ridge {
+        scale: 4.0,
+        spread: 55.0 / 6371.0,
+        ..ridge_spec(0.05)
+    };
+    let run = ridge_run(&start, spec, &[(-8.0, -4.0), (8.0, 4.0)], false, false);
+    assert_ridge("scale 4", &run, &[0]);
+}
+
 /// The hills grow to the texel size of a map of 2048 texels on an Earth.
 #[test]
 #[ignore = "gpu"]
@@ -3843,6 +3858,7 @@ fn gpu_ridge_with_fit_matches_cpu_on_a_large_face() {
     let places = [(-10.0, -6.0), (10.0, 6.0)];
     let spec = Ridge {
         fit: true,
+        scale: 1.0,
         spread: 55.0 / 6371.0,
         ..ridge_spec(0.03)
     };
@@ -4219,6 +4235,11 @@ fn gpu_seamounts_match_cpu_across_a_face_edge() {
 /// for the hills of an ocean ridge.
 const ABYSSAL_TOLERANCE: u16 = 2;
 
+/// The largest difference after a long abyssal hills stroke. Each stamp
+/// moves a texel toward its target and rounds, so after many stamps a
+/// texel can be one more level apart.
+const ABYSSAL_STROKE_TOLERANCE: u16 = 3;
+
 /// The result of one abyssal hills stroke on the GPU and on the CPU.
 struct AbyssalRun {
     difference: u16,
@@ -4237,6 +4258,7 @@ fn abyssal_run(start: &Heightmap, centers: &[V3], radius: f64) -> AbyssalRun {
         rate: 110.0,
         hills: 1.5,
         fit: true,
+        scale: 1.0,
         world_km: 1000.0,
         seed: 4,
         limits: Limits::default(),
@@ -4303,7 +4325,11 @@ fn gpu_abyssal_hills_match_cpu_for_a_stroke() {
     );
     assert!(run.batches > 1, "{} batches", run.batches);
     assert!(changed > 3000, "{changed} texels changed");
-    assert!(run.difference <= ABYSSAL_TOLERANCE, "{}", run.difference);
+    assert!(
+        run.difference <= ABYSSAL_STROKE_TOLERANCE,
+        "{}",
+        run.difference
+    );
 }
 
 /// A stroke from face 0 to face 2. The edge between them is at 45 degrees

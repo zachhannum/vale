@@ -368,6 +368,7 @@ impl BrushSettings {
             limits: self.limits(),
             hills: self.ridge_hills.clamp(0.0, 2.0),
             fit: true,
+            scale: 1.0,
         }
     }
 
@@ -427,6 +428,7 @@ impl BrushSettings {
             rate: self.abyssal_rate_mm,
             hills: self.abyssal_hills.clamp(0.0, 2.0),
             fit: true,
+            scale: 1.0,
             world_km,
             seed,
             limits: self.limits(),

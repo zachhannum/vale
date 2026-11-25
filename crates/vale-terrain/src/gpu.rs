@@ -316,10 +316,14 @@ struct RidgeUniforms {
     range_spacing: f32,
     range_piece: f32,
     range_tilt: f32,
-    /// The fit factor of the abyssal hills, and room up to a multiple of 16
-    /// bytes.
+    /// The fit factor of the abyssal hills, the scale of the height of the
+    /// faults, the height unit of the texture, and the length of `segment`
+    /// in kilometers. The shader gets the distance along the line in
+    /// kilometers from it with fewer rounding steps.
     fit: f32,
-    unused: [f32; 3],
+    lift: f32,
+    texture_height: f32,
+    segment_km: f32,
     segments: [[f32; 16]; LINE_SEGMENTS],
 }
 
@@ -1507,6 +1511,9 @@ impl GpuHeightmap {
             band_km: shape.band_km as f32,
             segment_depth: shape.segment_depth as f32,
             fit: shape.fit as f32,
+            lift: shape.lift as f32,
+            texture_height: shape.texture_height as f32,
+            segment_km: (cell * spec.world_km) as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
@@ -1729,6 +1736,8 @@ impl GpuHeightmap {
             hill_mean: f.hill_mean as f32,
             half_texel: f.half_texel as f32,
             fit: f.fit as f32,
+            lift: f.lift as f32,
+            texture_height: f.texture_height as f32,
             ..bytemuck::Zeroable::zeroed()
         };
         let [origin, along] = plan.frame;

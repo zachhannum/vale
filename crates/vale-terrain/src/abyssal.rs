@@ -34,6 +34,9 @@ pub struct AbyssalHills {
     /// Whether the hills grow to the texel size of the map, as for
     /// `Ridge::fit`.
     pub fit: bool,
+    /// The size of the hills, from 1 to 10 times their real size, as for
+    /// `Ridge::scale`.
+    pub scale: f64,
 }
 
 /// The texels that one stamp of an abyssal hills stroke changes.
@@ -142,7 +145,10 @@ impl AbyssalStroke {
             self.spec.rate,
             0.0,
             self.spec.hills,
-            [half_texel, fit_of(half_texel, self.spec.fit)],
+            [
+                half_texel,
+                fit_of(half_texel, self.spec.fit, self.spec.scale),
+            ],
             LEVELS_PER_KM,
         );
         let rects = match self.frame {
@@ -205,7 +211,7 @@ impl AbyssalPlan {
         let f = &self.faulting;
         let seed = self.stamp.seed;
         let at = self.place(p);
-        let patch = patch_of(patch_noise(p, self.world_km / f.fit, seed));
+        let patch = patch_of(patch_noise(p, self.world_km / f.fit.sqrt(), seed));
         let height = RidgePlan::hills(seed, f, 0, 0, at, patch)
             + RidgePlan::texture(seed, f, 0, 0, at, patch[0])
             - f.hill_mean * patch[0] * patch[1];
@@ -264,6 +270,7 @@ mod tests {
             seed: 3,
             limits: Limits::default(),
             fit: false,
+            scale: 1.0,
         }
     }
 
@@ -442,6 +449,7 @@ mod tests {
             limits: Limits::default(),
             hills: 0.0,
             fit: false,
+            scale: 1.0,
         };
         let mut line = RidgeLine::new(ridge, N);
         for i in 0..=16 {
