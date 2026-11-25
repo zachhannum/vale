@@ -8,8 +8,9 @@ use vale_terrain::{
     FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS, GpuHeightmap, GpuPyramid, GpuTiles,
     Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Mode, OuterFlow, Pyramid,
     RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
-    STAMP_SLOTS, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
-    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
+    SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan, TILE_SIZE,
+    TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout,
+    tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -4041,4 +4042,157 @@ fn gpu_ridge_keeps_an_older_part_of_the_line_in_the_corner_of_a_plan() {
     assert_ridge("older part in the corner of a plan", &run, &[0]);
     assert!(run.skipped < run.changed[0] / 20, "{}", run.skipped);
     assert!(run.plans > 3, "{}", run.plans);
+}
+
+/// The largest difference between a GPU level and a CPU level after a
+/// seamounts stroke. Each texel takes its level from before the stroke and
+/// the sum of the volcanoes once, so the differences do not add.
+const SEAMOUNT_TOLERANCE: u16 = 2;
+
+/// A sea floor at 4,000 m with a slope and low hills, within 0.3 radians of
+/// a place in degrees of longitude and latitude. The rest is at 4,000 m.
+fn sea_slope(n: usize, lon: f64, lat: f64) -> Heightmap {
+    let mut map = Heightmap::new(n, vale_terrain::meters_to_level(-4000.0));
+    let center = lonlat_to_dir(lon, lat);
+    for face in 0..FACES {
+        for y in 0..n {
+            for x in 0..n {
+                let p = map.texel_dir(face, x, y);
+                if angle(p, center) < 0.3 {
+                    let m = -4000.0 + 2000.0 * (p[2] - center[2]) + 40.0 * (p[0] * 300.0).sin();
+                    map.set(face, x, y, vale_terrain::meters_to_level(m));
+                }
+            }
+        }
+    }
+    map
+}
+
+/// The result of one seamounts stroke on the GPU and on the CPU.
+struct SeamountRun {
+    /// The largest difference between a GPU texel and a CPU texel.
+    difference: u16,
+    /// The number of texels that the stroke changed on the CPU, for each
+    /// face.
+    changed: [usize; FACES],
+    batches: usize,
+}
+
+/// Grows seamounts at stamp centers on `start`, on the CPU and on the GPU,
+/// as one stroke. One `SeamountStroke` makes the plans for both.
+fn seamount_run(start: &Heightmap, spec: Seamounts, centers: &[V3], radius: f64) -> SeamountRun {
+    let gpu = gpu();
+    let n = start.face_size();
+    let mut cpu = Heightmap::new(n, start.base());
+    for (face, rect) in start.allocated_rects() {
+        let mut data = Vec::new();
+        start.read_rect(face, rect, &mut data);
+        cpu.store_rect(face, rect, &data);
+    }
+    let map = gpu.copy_of(start);
+    let mut stroke = SeamountStroke::new(spec, n);
+    map.begin_stroke(&gpu.queue);
+    cpu.begin_stroke();
+    let mut enc = gpu.encoder();
+    let mut batches = 1;
+    for &center in centers {
+        let plan = stroke.stamp(&cpu, center, radius, 0.5, 0.6);
+        cpu.seamounts(&plan);
+        if !map.seamounts(&gpu.queue, &mut enc, &plan) {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            map.begin_batch();
+            batches += 1;
+            assert!(map.seamounts(&gpu.queue, &mut enc, &plan));
+        }
+    }
+    gpu.submit(enc);
+    map.begin_batch();
+    cpu.end_stroke();
+    let faces = gpu.read_all(&map);
+    let mut changed = [0; FACES];
+    for (face, count) in changed.iter_mut().enumerate() {
+        let (mut after, mut before) = (Vec::new(), Vec::new());
+        cpu.read_rect(face, full(n), &mut after);
+        start.read_rect(face, full(n), &mut before);
+        *count = after.iter().zip(&before).filter(|(a, b)| a != b).count();
+    }
+    SeamountRun {
+        difference: max_difference(&cpu, &faces),
+        changed,
+        batches,
+    }
+}
+
+fn seamount_spec(height_m: f64) -> Seamounts {
+    Seamounts {
+        density: 50.0,
+        height_m,
+        world_km: 1000.0,
+        seed: 11,
+        limits: Limits::default(),
+    }
+}
+
+/// Stamp centers on a line between two places in degrees of longitude and
+/// latitude.
+fn seamount_line(from: (f64, f64), to: (f64, f64), count: usize) -> Vec<V3> {
+    (0..count)
+        .map(|i| {
+            let t = i as f64 / (count - 1) as f64;
+            lonlat_to_dir(from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_seamounts_match_cpu_for_one_stamp() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let center = lonlat_to_dir(10.0, 5.0);
+    let run = seamount_run(&start, seamount_spec(1000.0), &[center], 0.05);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "one seamounts stamp: {changed} texels, difference {}",
+        run.difference
+    );
+    assert!(changed > 2000, "{changed} texels changed");
+    assert!(run.difference <= SEAMOUNT_TOLERANCE, "{}", run.difference);
+}
+
+/// A stroke of more stamps than one batch holds.
+#[test]
+#[ignore = "gpu"]
+fn gpu_seamounts_match_cpu_for_a_stroke() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let centers = seamount_line((8.0, 4.0), (12.0, 6.0), 40);
+    assert!(centers.len() > SEAMOUNT_SLOTS as usize);
+    let run = seamount_run(&start, seamount_spec(1500.0), &centers, 0.04);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "seamounts stroke: {changed} texels, difference {}",
+        run.difference
+    );
+    assert!(run.batches > 1, "{} batches", run.batches);
+    assert!(changed > 8000, "{changed} texels changed");
+    assert!(run.difference <= SEAMOUNT_TOLERANCE, "{}", run.difference);
+}
+
+/// A stroke from face 0 to face 2. The edge between them is at 45 degrees
+/// of longitude.
+#[test]
+#[ignore = "gpu"]
+fn gpu_seamounts_match_cpu_across_a_face_edge() {
+    let start = sea_slope(512, 45.0, 5.0);
+    let centers = seamount_line((42.0, 4.0), (48.0, 6.0), 30);
+    let run = seamount_run(&start, seamount_spec(1200.0), &centers, 0.04);
+    eprintln!(
+        "seamounts across a face edge: {:?}, difference {}",
+        run.changed, run.difference
+    );
+    assert!(
+        run.changed[0] > 1000 && run.changed[2] > 1000,
+        "{:?}",
+        run.changed
+    );
+    assert!(run.difference <= SEAMOUNT_TOLERANCE, "{}", run.difference);
 }
