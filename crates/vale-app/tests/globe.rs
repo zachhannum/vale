@@ -4367,10 +4367,8 @@ fn an_abyssal_hills_stroke_gives_the_levels_of_the_cpu_stroke() {
         .collect();
     let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
     assert!(changed > 1000, "{changed}");
-    // Each stamp rounds its levels, so a long stroke can drift by 3, as a
-    // stroke of raise stamps does.
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
-    assert!(worst.unwrap() <= 3, "{worst:?}");
+    assert!(worst.unwrap() <= 2, "{worst:?}");
 }
 
 /// The samples of the ocean ridge stroke of the pen: a line with a bend
