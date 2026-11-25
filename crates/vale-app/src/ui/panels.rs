@@ -1505,7 +1505,7 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
 }
 
 /// The text of a density of the seamounts mode.
-pub(super) fn density_text(density: f64) -> String {
+fn density_text(density: f64) -> String {
     format!("{density:.0} per 10,000 km²")
 }
 

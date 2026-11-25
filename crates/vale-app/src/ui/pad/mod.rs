@@ -3253,6 +3253,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
     if mode == Mode::Seamounts {
         row(ui, controls, state, Slider::Density);
+        raster::note(ui, SEAMOUNT_DENSITY_NOTE);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
     if mode == Mode::Basin {
@@ -3331,6 +3332,9 @@ pub(super) enum Place<'f> {
     Panel,
     Strip(&'f mut dyn for<'n> FnMut(Number<'n>, &mut egui::Ui, &mut Controls) -> Option<f64>),
 }
+
+/// The note under the density of the seamounts mode.
+pub const SEAMOUNT_DENSITY_NOTE: &str = "Density per 10,000 km²";
 
 /// The name of the button in the header of the Brush panel that gives the
 /// mode its default pins.
@@ -3534,7 +3538,7 @@ pub(super) fn brush_slider(
             Slider::Density if mode == Mode::Seamounts => {
                 let number = Number::new(name, brush.seamount_density, SEAMOUNT_DENSITY)
                     .label(label)
-                    .text(panels::density_text)
+                    .text(|density| format!("{density:.0}"))
                     .log()
                     .default(defaults.seamount_density);
                 set(number, &mut brush.seamount_density);

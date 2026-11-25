@@ -2724,6 +2724,8 @@ fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     }
     let label = vale_app::ui::pad::slider_label(Mode::Seamounts, vale_app::strip::Slider::Strength);
     assert_eq!(label, "Height");
+    let note = vale_app::ui::pad::SEAMOUNT_DENSITY_NOTE;
+    assert!(h.query_by_label(note).is_some());
     // A typed value past an end gives the end.
     for (row, text, value) in [
         ("Brush density", "0", 1.0),
@@ -2746,6 +2748,7 @@ fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     step(&mut h, "Brush seed", true);
     assert_eq!(h.state().doc.project.world.seed, seed + 1);
     check_controls(&h, "the Seamounts mode");
+    screenshot::save(&mut h, "pad-seamounts");
 }
 
 #[test]
@@ -2760,12 +2763,14 @@ fn the_seamounts_mode_fits_on_the_smallest_ipad() {
     drag(&mut h, from, from - vec2(0.0, menu.height()), None);
     let row = control(&h, "Seamounts").unwrap();
     assert!(menu.contains_rect(row), "{row:?}");
+    screenshot::save(&mut h, "pad-seamounts-modes-744");
     tap(&mut h, "Seamounts");
     assert_eq!(h.state().globe.brush.mode, Mode::Seamounts);
     tap(&mut h, "Brush settings");
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
     check_controls(&h, "744 high with the Seamounts panel");
+    screenshot::save(&mut h, "pad-seamounts-744");
 }
 
 #[test]
