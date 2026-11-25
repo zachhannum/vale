@@ -878,6 +878,84 @@ impl Bands {
             .map(|b| b.with_names(&self.names))
     }
 
+    /// The bands of a new range from `min` to `max` where each stop keeps
+    /// its value. The stops outside the new range, and the stops less than
+    /// `MIN_BAND` from a new end, go. Their bands join the band next to them
+    /// that is in the range. The ends move to `min` and `max`, and with a sea
+    /// split, a stop is at sea level. Returns `None` if the range is empty or
+    /// not finite.
+    pub fn with_range_kept(&self, min: f64, max: f64) -> Option<Bands> {
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
+        // The lowest band takes the color of the old band at its bottom.
+        let bottom = (min + MIN_BAND).clamp(self.min, self.max);
+        let first = self.stops.partition_point(|s| s.value <= bottom).max(1) - 1;
+        let first = first.min(self.colors.len() - 1);
+        let inner =
+            (first + 1..self.stops.len() - 1).map(|i| (self.stops[i].value, self.stops[i].line, i));
+        self.rebuilt(min, max, (first, inner.collect()))
+    }
+
+    /// The bands of a new range from `min` to `max` where each stop moves
+    /// with the range, so each level keeps its color. Then with a sea split,
+    /// a stop is at sea level: the nearest stop less than `MIN_BAND` from it
+    /// moves there, or a new stop splits the band there. Two stops that come
+    /// closer than `MIN_BAND` join their bands. Returns `None` if the range is
+    /// empty or not finite.
+    pub fn with_range_stretched(&self, min: f64, max: f64) -> Option<Bands> {
+        if !(min.is_finite() && max.is_finite() && min < max) {
+            return None;
+        }
+        let map = |v: f64| min + (v - self.min) * (max - min) / (self.max - self.min);
+        let inner =
+            (1..self.stops.len() - 1).map(|i| (map(self.stops[i].value), self.stops[i].line, i));
+        self.rebuilt(min, max, (0, inner.collect()))
+    }
+
+    /// The bands of a range from `min` to `max` with the colors and the names
+    /// of `self`. `first` is the old band of the lowest new band, and each
+    /// inner stop has a value, a line, and the old band above it.
+    fn rebuilt(
+        &self,
+        min: f64,
+        max: f64,
+        (first, mut inner): (usize, Vec<(f64, StopLine, usize)>),
+    ) -> Option<Bands> {
+        let split = splits(min, max, self.split);
+        clean_stops(min, max, split, &mut inner);
+        if split && !inner.iter().any(|s| s.0 == SEA_LEVEL) {
+            // A full list moves its nearest stop to sea level.
+            let full = inner.len() + 2 > MAX_BANDS;
+            let nearest = inner
+                .iter_mut()
+                .min_by(|a, b| a.0.abs().total_cmp(&b.0.abs()))
+                .filter(|s| s.0.abs() < MIN_BAND || full);
+            if let Some(stop) = nearest {
+                stop.0 = SEA_LEVEL;
+            } else {
+                let at = inner.partition_point(|s| s.0 < SEA_LEVEL);
+                let band = at.checked_sub(1).map_or(first, |below| inner[below].2);
+                inner.insert(at, (SEA_LEVEL, StopLine::default(), band));
+            }
+            clean_stops(min, max, split, &mut inner);
+        }
+        let ends = |value| Stop {
+            value,
+            line: StopLine::default(),
+        };
+        let stops: Vec<Stop> = std::iter::once(ends(min))
+            .chain(inner.iter().map(|&(value, line, _)| Stop { value, line }))
+            .chain(std::iter::once(ends(max)))
+            .collect();
+        let bands: Vec<usize> = std::iter::once(first)
+            .chain(inner.iter().map(|s| s.2))
+            .collect();
+        let colors: Vec<Rgb> = bands.iter().map(|&b| self.colors[b]).collect();
+        let names: Vec<String> = bands.iter().map(|&b| self.name(b).to_owned()).collect();
+        Bands::from_range_parts(min, max, self.split, &stops, &colors).map(|b| b.with_names(&names))
+    }
+
     /// The bands of `bands` that are in a part.
     fn window(&self, part: Part, bands: Range<usize>) -> Range<usize> {
         let p = self.part_bands(part);
@@ -955,6 +1033,37 @@ pub fn sample_ramp(colors: &[Rgb], count: usize, qualitative: bool) -> Vec<Rgb> 
             _ => blend(colors, k as f64 / (count - 1) as f64),
         })
         .collect()
+}
+
+/// Removes the inner stops that are less than `MIN_BAND` from an end of the
+/// range from `min` to `max` or from the stop below them, and keeps at most
+/// `MAX_BANDS` bands. A removed stop joins its band to the band below. With
+/// `split`, a stop at sea level stays, and the stop below it goes.
+fn clean_stops(min: f64, max: f64, split: bool, inner: &mut Vec<(f64, StopLine, usize)>) {
+    let sea = |v: f64| split && v == SEA_LEVEL;
+    inner.sort_by(|a, b| a.0.total_cmp(&b.0));
+    inner.retain(|s| sea(s.0) || (min + MIN_BAND..=max - MIN_BAND).contains(&s.0));
+    let mut kept: Vec<(f64, StopLine, usize)> = Vec::with_capacity(inner.len());
+    for &stop in inner.iter() {
+        while kept.last().is_some_and(|last| stop.0 - last.0 < MIN_BAND) {
+            if !sea(stop.0) {
+                break;
+            }
+            kept.pop();
+        }
+        let room = kept.last().is_none_or(|last| stop.0 - last.0 >= MIN_BAND);
+        if room {
+            kept.push(stop);
+        }
+    }
+    while kept.len() + 1 > MAX_BANDS {
+        let at = kept.iter().rposition(|s| !sea(s.0));
+        match at {
+            Some(i) => kept.remove(i),
+            None => break,
+        };
+    }
+    *inner = kept;
 }
 
 /// Whether a range has a sea split.
@@ -2281,5 +2390,52 @@ mod tests {
             sample_ramp(&g, 6, true),
             [g[0], g[1], g[2], g[3], g[0], g[1]]
         );
+    }
+
+    #[test]
+    fn with_range_kept_removes_the_stops_outside_and_keeps_sea_level() {
+        let old = Bands::default();
+        let mut named = old.clone();
+        named.set_name(1, "Deep");
+        let kept = named.with_range_kept(-3000.0, 3000.0).unwrap();
+        assert_eq!(
+            values(&kept),
+            [
+                -3000.0, -2000.0, -1000.0, -200.0, 0.0, 200.0, 500.0, 1000.0, 2000.0, 3000.0
+            ]
+        );
+        assert_eq!(kept.stops()[kept.sea().unwrap()].value, SEA_LEVEL);
+        // Each kept band has the color and the name of the old band at the
+        // same elevation.
+        assert_eq!(kept.colors()[0], old.colors()[1]);
+        assert_eq!(kept.name(0), "Deep");
+        assert_eq!(kept.colors()[1..], old.colors()[2..10]);
+        // A larger range keeps each stop.
+        let wide = old.with_range_kept(-11000.0, 9000.0).unwrap();
+        assert_eq!(values(&wide)[1..12], values(&old)[1..12]);
+        assert_eq!(band_colors(&wide), band_colors(&old));
+    }
+
+    #[test]
+    fn with_range_stretched_leaves_a_stop_at_sea_level() {
+        let old = Bands::default();
+        // The stops move up by 3000 m, and a new stop splits the band at
+        // sea level.
+        let up = old.with_range_stretched(-3000.0, 9000.0).unwrap();
+        let mut moved: Vec<f64> = values(&old).iter().map(|v| v + 3000.0).collect();
+        moved.push(SEA_LEVEL);
+        moved.sort_by(f64::total_cmp);
+        moved.dedup();
+        assert_eq!(values(&up), moved);
+        assert_eq!(up.stops()[up.sea().unwrap()].value, SEA_LEVEL);
+        // A stop less than `MIN_BAND` from sea level moves there.
+        let near = old.with_range_stretched(-6001.0, 6000.0).unwrap();
+        assert_eq!(near.stops().len(), old.stops().len());
+        assert_eq!(near.stops()[near.sea().unwrap()].value, SEA_LEVEL);
+        assert_eq!(band_colors(&near), band_colors(&old));
+        // A small range joins the stops that come too close.
+        let small = old.with_range_stretched(-100.0, 100.0).unwrap();
+        assert!(sorted(&small));
+        assert_eq!(small.stops()[small.sea().unwrap()].value, SEA_LEVEL);
     }
 }
