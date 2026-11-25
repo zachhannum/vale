@@ -434,9 +434,22 @@ impl RidgePlan {
         // keeps its volume and does not alias. Across the fabric, the
         // scarp is the mean over a box one texel wide.
         let blur = f.half_texel;
+        // Noise with features of less than two texels fades out.
+        let fine = |size: f64| smoothstep(2.0 * blur, 4.0 * blur, size);
+        let (fine_vary, fine_face) = (VARY[1] * fine(VARY_KM[1] * s), fine(FACE_KM));
+        let (fine_rough, fine_gully) = (ROUGH_KM * fine(ROUGH_ALONG), GULLY * fine(GULLY_KM));
         let reach_along = 0.5 * (FAULT_LENGTH[1] * s).hypot(blur);
-        let reach_across =
-            0.5 * GRABEN[1] + SCARP_KM + BACK_TILT[1] * s + blur + HILL_TILT * reach_along;
+        let reach_across = 0.5 * GRABEN[1]
+            + SCARP_KM
+            + BACK_TILT[1] * s
+            + blur
+            + HILL_TILT * reach_along
+            + STEP_KM * s
+            + ROUGH_KM
+            + FACE_ROUGH_KM
+            + SCARP_KM * SHARP
+            + 0.5 * GRABEN[1] * VARY[0]
+            + BACK_TILT[1] * s * VARY[0];
         let cells = |x: f64, reach: f64, cell: f64| {
             ((x - reach) / cell).floor() as i32 - extra
                 ..=((x + reach) / cell).floor() as i32 + extra
@@ -464,28 +477,93 @@ impl RidgePlan {
                     }
                     let tall = THROW_MIN + (1.0 - THROW_MIN) * (-(1.0 - d(4)).ln()).min(THROW_MAX);
                     let throw = f.hill_height * throw_scale * shown * tall * (length / long);
-                    let throw = throw * (1.0 - q * q);
+                    let t = along - middle;
+                    let fault = hash(i as u32, j as u32, side * 64 + n * 16 + 9, seed);
+                    let links = self.linked(fault, t / (LINK_KM * s) + d(10));
+                    // Noise along the fault at a few scales: the throw, the
+                    // back tilt, the width of a graben, the sharpness and the
+                    // place of the scarp, and the spurs and the gullies of
+                    // its face.
+                    let wiggle = |x: f64, channel: u32| noise1(x, fault, channel, seed).0;
+                    let vary = 1.0
+                        + VARY[0] * wiggle(t / (VARY_KM[0] * s), 3)
+                        + fine_vary * wiggle(t / (VARY_KM[1] * s), 4);
+                    let throw = throw * (1.0 - q * q) * vary;
                     let back = mix(BACK_TILT[0], BACK_TILT[1], d(5)) * s;
+                    let back = back * (1.0 + VARY[0] * wiggle(t / (VARY_KM[0] * s), 5));
+                    let scarp = SCARP_KM * (1.0 + SHARP * fine_face * wiggle(t / FACE_KM, 6));
                     let tilt = HILL_TILT * (2.0 * d(6) - 1.0);
-                    let y = across - place - tilt * (along - middle);
+                    let (rough, _) = noise1(t / ROUGH_ALONG, fault, 2, seed);
+                    let rough =
+                        fine_rough * rough + FACE_ROUGH_KM * fine_face * wiggle(t / FACE_KM, 7);
+                    let y = across - place - tilt * t - rough;
+                    let gully = fine_gully * wiggle(t / GULLY_KM, 8);
+                    let face = |y: f64| {
+                        let on_face = bump((y + 0.5 * scarp) / (scarp + blur));
+                        block(y, scarp, back, blur) * (1.0 + gully * on_face)
+                    };
                     // A fault that faces the axis has its low side toward
                     // the crest. A graben is two faults that face each
                     // other.
                     let kind = d(7);
-                    let shape = if kind < GRABENS {
-                        let half = 0.5 * mix(GRABEN[0], GRABEN[1], kind / GRABENS);
-                        block(y - half, SCARP_KM, back, blur)
-                            + block(-y - half, SCARP_KM, back, blur)
-                    } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
-                        block(y, SCARP_KM, back, blur)
-                    } else {
-                        block(-y, SCARP_KM, back, blur)
-                    };
+                    let half = 0.5 * mix(GRABEN[0], GRABEN[1], kind / GRABENS);
+                    let half = half * (1.0 + VARY[0] * wiggle(t / (VARY_KM[0] * s), 9));
+                    let mut shape = 0.0;
+                    for (link, step) in links {
+                        if link <= 0.0 {
+                            continue;
+                        }
+                        let y = y - STEP_KM * s * step;
+                        shape += link
+                            * if kind < GRABENS {
+                                face(y - half) + face(-y - half)
+                            } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
+                                face(y)
+                            } else {
+                                face(-y)
+                            };
+                    }
                     sum += throw * shape;
                 }
             }
         }
-        sum
+        // The blocks and the floors of the grabens are a little rough. The
+        // lattice of the noise turns from the fabric, so it does not show.
+        let (sin, cos) = GRAIN_TURN.sin_cos();
+        let grain = noise3(
+            [
+                (along * cos - across * sin) / (GRAIN_KM * s),
+                (along * sin + across * cos) / (GRAIN_KM * s),
+                f64::from(side),
+            ],
+            seed ^ SALT_GRAIN,
+        );
+        sum * (1.0 + GRAIN * fine(GRAIN_KM * s) * grain[0])
+    }
+
+    /// The segments of a fault that grew from linked segments (Cowie and
+    /// Scholz 1992; Macdonald and others 1996) at `z`, the place along the
+    /// fault in segments: for the segment before, this one, and the one
+    /// after, its throw factor and its place across the fabric, from minus
+    /// one to one. `fault` is the hash of the fault. Each segment has its own
+    /// throw, so the throw has several maxima, and a few segments are gaps.
+    /// The ends of two segments overlap by `RELAY` of a segment, en echelon,
+    /// and their throws taper there: a relay ramp.
+    fn linked(&self, fault: u32, z: f64) -> [(f64, f64); 3] {
+        let seed = self.ridge.seed ^ SALT_LINK;
+        let k = z.floor();
+        let rest = z - k;
+        let k = k as i32;
+        std::array::from_fn(|n| {
+            let m = k + n as i32 - 1;
+            let r = rest + 1.0 - n as f64;
+            let half = 0.5 * RELAY;
+            let ramp = smoothstep(-half, half, r) * (1.0 - smoothstep(1.0 - half, 1.0 + half, r));
+            let draw = |channel: u32| unit(hash(m as u32, fault, channel, seed));
+            let u = draw(0);
+            let throw = smoothstep(LINK_GAP, LINK_GAP + 0.3, u) * (0.5 + u);
+            (throw * ramp, 2.0 * draw(1) - 1.0)
+        })
     }
 
     /// The fine texture of the sea floor between and on the faults, in
@@ -534,8 +612,13 @@ impl RidgePlan {
                     }
                     let q = octave.exp2();
                     let weight = q / (1.0 + q * q).powf(0.5 * (HURST + 1.0));
+                    // Long waves are long along the fabric, and short waves
+                    // have no direction.
+                    let part = (octave - GABOR_OCTAVES[0]) / (GABOR_OCTAVES[1] - GABOR_OCTAVES[0]);
+                    let stretch = mix(GABOR_STRETCH[0], GABOR_STRETCH[1], part);
                     let (sin, cos) = (TAU * d(3)).sin_cos();
-                    let wave = (TAU * (cell / wavelength * (dx * cos + dy * sin) + d(4))).cos();
+                    let (ax, ay) = (dx * cell, dy * GABOR_ASPECT * cell);
+                    let wave = (TAU * ((ax * cos + ay * sin / stretch) / wavelength + d(4))).cos();
                     let window = (1.0 - r2) * (1.0 - r2);
                     sum += keep * weight * window * wave;
                 }
@@ -1130,6 +1213,8 @@ const SALT_HILL: u32 = 0x7e4b_15d3;
 const SALT_PATCH: u32 = 0x1f83_d9ab;
 const SALT_WARP: u32 = 0x5be0_cd19;
 const SALT_GABOR: u32 = 0x6a09_e667;
+const SALT_LINK: u32 = 0x3c6e_f372;
+const SALT_GRAIN: u32 = 0xa54f_f53a;
 const SALT_TRACE_WARP: u32 = 0x8e2b_4d61;
 
 /// The largest move of a boundary, as a part of the mean length of a crest
@@ -1568,6 +1653,41 @@ const SHOW_SOFT: f64 = 0.15;
 const HILL_WARP: [f64; 2] = [40.0, 10.0];
 const HILL_WARP_KM: f64 = 1.5;
 
+/// The segments of a fault: their length in kilometers, the part of them
+/// below which a segment is a gap, and the overlap of two segments, as a
+/// part of a segment.
+const LINK_KM: f64 = 10.0;
+const LINK_GAP: f64 = 0.1;
+const RELAY: f64 = 0.3;
+
+/// The largest step of a fault trace between segments, in kilometers, and
+/// the roughness of the trace: its largest move across the fabric and its
+/// feature size along it, in kilometers.
+const STEP_KM: f64 = 0.6;
+const ROUGH_KM: f64 = 0.15;
+const ROUGH_ALONG: f64 = 2.5;
+
+/// The noise along a fault: the largest change of the throw, the back
+/// tilt, and the width of a graben at two feature sizes in kilometers; the
+/// largest change of the width of the scarp; the largest move of the scarp
+/// and the largest change of the height of its face, with their feature
+/// sizes in kilometers. The face changes make spurs and gullies, as on a
+/// scarp with talus.
+const VARY: [f64; 2] = [0.35, 0.2];
+const VARY_KM: [f64; 2] = [5.0, 1.5];
+const SHARP: f64 = 0.6;
+const FACE_ROUGH_KM: f64 = 0.08;
+const FACE_KM: f64 = 0.9;
+const GULLY: f64 = 0.3;
+const GULLY_KM: f64 = 1.0;
+
+/// The roughness of the blocks: its largest change of their height, its
+/// feature size in kilometers, and the turn of its lattice from the
+/// fabric in radians.
+const GRAIN: f64 = 0.15;
+const GRAIN_KM: f64 = 0.8;
+const GRAIN_TURN: f64 = 0.6;
+
 /// The fine texture: its part of the RMS height of the hills, its cell
 /// across the fabric and its stretch along it, the kernels in each cell,
 /// and its characteristic width, all in kilometers. The wavelengths go
@@ -1576,6 +1696,10 @@ const HILL_WARP_KM: f64 = 1.5;
 const GABOR_SHARE: f64 = 1.0 / 3.0;
 const GABOR_CELL: f64 = 4.0;
 const GABOR_ASPECT: f64 = 1.5;
+
+/// The stretch of a wave of the texture along the fabric, at the longest
+/// and at the shortest wavelength.
+const GABOR_STRETCH: [f64; 2] = [3.0, 1.0];
 const GABOR_KERNELS: u32 = 3;
 const GABOR_WIDTH: f64 = 2.5;
 const GABOR_OCTAVES: [f64; 2] = [-1.0, 4.0];
@@ -1587,13 +1711,13 @@ const GABOR_RMS_UNIT: f64 = 0.336;
 
 /// The RMS height and the mean height of the hills, in height units. See
 /// the test `the_hills_have_their_rms_and_mean_height`.
-const HILL_RMS_UNIT: f64 = 0.723;
+const HILL_RMS_UNIT: f64 = 0.71;
 /// The texture unit over the throw unit, so the texture has its part of
 /// the RMS height.
 const GABOR_PER_THROW: f64 =
     GABOR_SHARE * HILL_RMS_UNIT / (GABOR_RMS_UNIT * 0.942_809_041_582_063_4);
 
-const HILL_MEAN_UNIT: f64 = 1.157;
+const HILL_MEAN_UNIT: f64 = 0.973;
 
 /// The part of the single faults that face the axis.
 const INWARD: f64 = 0.8;

@@ -1055,6 +1055,8 @@ const SALT_HILL = 0x7e4b15d3u;
 const SALT_PATCH = 0x1f83d9abu;
 const SALT_WARP = 0x5be0cd19u;
 const SALT_GABOR = 0x6a09e667u;
+const SALT_LINK = 0x3c6ef372u;
+const SALT_GRAIN = 0xa54ff53au;
 const JITTER = 0.3;
 const SECOND_ORDER_KM = 130.0;
 const GROUP_SHIFT = 0.8;
@@ -1186,13 +1188,30 @@ const HILL_WARP = vec2<f32>(40.0, 10.0);
 const HILL_WARP_KM = 1.5;
 const GABOR_CELL = 4.0;
 const GABOR_ASPECT = 1.5;
+const GABOR_STRETCH = vec2<f32>(3.0, 1.0);
+const LINK_KM = 10.0;
+const LINK_GAP = 0.1;
+const RELAY = 0.3;
+const STEP_KM = 0.6;
+const ROUGH_KM = 0.15;
+const ROUGH_ALONG = 2.5;
+const VARY = vec2<f32>(0.35, 0.2);
+const VARY_KM = vec2<f32>(5.0, 1.5);
+const SHARP = 0.6;
+const FACE_ROUGH_KM = 0.08;
+const FACE_KM = 0.9;
+const GULLY = 0.3;
+const GULLY_KM = 1.0;
+const GRAIN = 0.15;
+const GRAIN_KM = 0.8;
+const GRAIN_TURN = 0.6;
 const GABOR_KERNELS = 3u;
 const GABOR_WIDTH = 2.5;
 const GABOR_OCTAVES = vec2<f32>(-1.0, 4.0);
 const HURST = 0.9;
 const GABOR_SHARE = 1.0 / 3.0;
 const GABOR_RMS_UNIT = 0.336;
-const HILL_RMS_UNIT = 0.723;
+const HILL_RMS_UNIT = 0.71;
 const GABOR_PER_THROW = GABOR_SHARE * HILL_RMS_UNIT / (GABOR_RMS_UNIT * 0.9428090415820634);
 
 // `patch_of` in `ridge.rs`.
@@ -1652,6 +1671,25 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     return vec4<f32>(depth, half_len, height, side);
 }
 
+// One segment of `RidgePlan::linked`: segment `m` at `r` segments from
+// its start.
+fn ridge_link(fault: u32, m: i32, r: f32) -> vec2<f32> {
+    let seed = ridge.seed ^ SALT_LINK;
+    let half_relay = 0.5 * RELAY;
+    let ramp = smooth_between(-half_relay, half_relay, r)
+        * (1.0 - smooth_between(1.0 - half_relay, 1.0 + half_relay, r));
+    let u = unit(hash(vec3<u32>(bitcast<u32>(m), fault, 0u), seed));
+    let link_throw = smooth_between(LINK_GAP, LINK_GAP + 0.3, u) * (0.5 + u);
+    let place = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(m), fault, 1u), seed)) - 1.0;
+    return vec2<f32>(link_throw * ramp, place);
+}
+
+// The face of a scarp of `RidgePlan::hill_sum`.
+fn ridge_face(y: f32, scarp: f32, back: f32, blur: f32, gully: f32) -> f32 {
+    let on_face = bump((y + 0.5 * scarp) / (scarp + blur));
+    return block(y, scarp, back, blur) * (1.0 + gully * on_face);
+}
+
 // `RidgePlan::hills`.
 fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec2<f32>) -> f32 {
     let seed = ridge.seed ^ SALT_HILL ^ (bitcast<u32>(band_group) * 0x9e3779b9u);
@@ -1665,9 +1703,15 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
     let cell_along = HILL_CELL.x * s;
     let cell_across = HILL_CELL.y * sp;
     let blur = ridge.half_texel;
+    let fine_vary = VARY.y * smooth_between(2.0 * blur, 4.0 * blur, VARY_KM.y * s);
+    let fine_face = smooth_between(2.0 * blur, 4.0 * blur, FACE_KM);
+    let fine_rough = ROUGH_KM * smooth_between(2.0 * blur, 4.0 * blur, ROUGH_ALONG);
+    let fine_gully = GULLY * smooth_between(2.0 * blur, 4.0 * blur, GULLY_KM);
+    let fine_grain = GRAIN * smooth_between(2.0 * blur, 4.0 * blur, GRAIN_KM * s);
     let reach_along = 0.5 * length(vec2<f32>(FAULT_LENGTH.y * s, blur));
     let reach_across = 0.5 * GRABEN.y + SCARP_KM + BACK_TILT.y * s + blur
-        + HILL_TILT * reach_along;
+        + HILL_TILT * reach_along + STEP_KM * s + ROUGH_KM + FACE_ROUGH_KM + SCARP_KM * SHARP
+        + 0.5 * GRABEN.y * VARY.x + BACK_TILT.y * s * VARY.x;
     let ratio = FAULT_LENGTH.y / FAULT_LENGTH.x;
     var sum = 0.0;
     for (var i = i32(floor((along - reach_along) / cell_along));
@@ -1699,27 +1743,61 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across_in: f32, area: vec
                 }
                 let tall = THROW_MIN + (1.0 - THROW_MIN)
                     * min(-ln_precise(1.0 - unit(hash(vec3<u32>(at, key + 4u), seed))), THROW_MAX);
+                let t = along - middle;
+                let fault = hash(vec3<u32>(at, key + 9u), seed);
+                let z = t / (LINK_KM * s) + unit(hash(vec3<u32>(at, key + 10u), seed));
+                let zk = floor(z);
+                let rest = z - zk;
+                let k = i32(zk);
+                let vary = 1.0
+                    + VARY.x * noise1(t / (VARY_KM.x * s), fault, 3u, seed).x
+                    + fine_vary * noise1(t / (VARY_KM.y * s), fault, 4u, seed).x;
                 let fault_throw = ridge.hill_height * area.x * shown * tall * (fault_length / long)
-                    * (1.0 - q * q);
-                let back = ridge_mix(BACK_TILT.x, BACK_TILT.y, unit(hash(vec3<u32>(at, key + 5u), seed))) * s;
+                    * (1.0 - q * q) * vary;
+                let back = ridge_mix(BACK_TILT.x, BACK_TILT.y, unit(hash(vec3<u32>(at, key + 5u), seed))) * s
+                    * (1.0 + VARY.x * noise1(t / (VARY_KM.x * s), fault, 5u, seed).x);
+                let scarp = SCARP_KM * (1.0 + SHARP * fine_face * noise1(t / FACE_KM, fault, 6u, seed).x);
                 let tilt = HILL_TILT * (2.0 * unit(hash(vec3<u32>(at, key + 6u), seed)) - 1.0);
-                let y = across - place - tilt * (along - middle);
+                let rough = fine_rough * noise1(t / ROUGH_ALONG, fault, 2u, seed).x
+                    + FACE_ROUGH_KM * fine_face * noise1(t / FACE_KM, fault, 7u, seed).x;
+                let y0 = across - place - tilt * t - rough;
+                let gully = fine_gully * noise1(t / GULLY_KM, fault, 8u, seed).x;
                 let kind = unit(hash(vec3<u32>(at, key + 7u), seed));
+                let half_gap = 0.5 * ridge_mix(GRABEN.x, GRABEN.y, kind / GRABENS)
+                    * (1.0 + VARY.x * noise1(t / (VARY_KM.x * s), fault, 9u, seed).x);
                 var shape = 0.0;
-                if kind < GRABENS {
-                    let half_gap = 0.5 * ridge_mix(GRABEN.x, GRABEN.y, kind / GRABENS);
-                    shape = block(y - half_gap, SCARP_KM, back, blur)
-                        + block(-y - half_gap, SCARP_KM, back, blur);
-                } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
-                    shape = block(y, SCARP_KM, back, blur);
-                } else {
-                    shape = block(-y, SCARP_KM, back, blur);
+                for (var m = 0; m < 3; m++) {
+                    let link = ridge_link(fault, k + m - 1, rest + 1.0 - f32(m));
+                    if link.x <= 0.0 {
+                        continue;
+                    }
+                    let y = y0 - STEP_KM * s * link.y;
+                    var one = 0.0;
+                    if kind < GRABENS {
+                        one = ridge_face(y - half_gap, scarp, back, blur, gully)
+                            + ridge_face(-y - half_gap, scarp, back, blur, gully);
+                    } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
+                        one = ridge_face(y, scarp, back, blur, gully);
+                    } else {
+                        one = ridge_face(-y, scarp, back, blur, gully);
+                    }
+                    shape += link.x * one;
                 }
                 sum += fault_throw * shape;
             }
         }
     }
-    return sum;
+    let gs = sin(GRAIN_TURN);
+    let gc = cos(GRAIN_TURN);
+    let grain = noise3(
+        vec3<f32>(
+            (along * gc - across * gs) / (GRAIN_KM * s),
+            (along * gs + across * gc) / (GRAIN_KM * s),
+            f32(side),
+        ),
+        seed ^ SALT_GRAIN,
+    );
+    return sum * (1.0 + fine_grain * grain.x);
 }
 
 // `RidgePlan::texture`.
@@ -1753,8 +1831,12 @@ fn ridge_texture(band_group: i32, side: u32, along: f32, across: f32, scale: f32
                     continue;
                 }
                 let weight = q / pow_precise(1.0 + q * q, 0.5 * (HURST + 1.0));
+                let part = (octave - GABOR_OCTAVES.x) / (GABOR_OCTAVES.y - GABOR_OCTAVES.x);
+                let stretch = ridge_mix(GABOR_STRETCH.x, GABOR_STRETCH.y, part);
                 let angle = 8.0 * PI_4 * unit(hash(vec3<u32>(at, key + 3u), seed));
-                let phase = cell / wavelength * (dx * cos(angle) + dy * sin(angle))
+                let ax = dx * cell;
+                let ay = dy * GABOR_ASPECT * cell;
+                let phase = (ax * cos(angle) + ay * sin(angle) / stretch) / wavelength
                     + unit(hash(vec3<u32>(at, key + 4u), seed));
                 let window = (1.0 - r2) * (1.0 - r2);
                 sum += keep * weight * window * cos_turn(phase);
