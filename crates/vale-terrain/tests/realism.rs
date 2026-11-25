@@ -42,7 +42,8 @@ impl Painted {
     }
 
     /// An ocean ridge along a meridian east of the patch, so the patch is
-    /// on its west flank and the fabric runs north.
+    /// on its west flank and the fabric runs north. The line is long, so the
+    /// patch is far from the taper at its ends.
     fn ridge_flank(&mut self) {
         let spec = Ridge {
             radius: 0.24,
@@ -56,12 +57,17 @@ impl Painted {
             limits: Limits::default(),
         };
         let mut line = RidgeLine::new(spec, FACE_SIZE);
-        for i in 0..=64 {
-            let lat = -9.0 + 18.0 * f64::from(i) / 64.0;
+        for i in 0..=16 {
+            let lat = -30.0 + 60.0 * f64::from(i) / 16.0;
             line.push(lonlat_to_dir(8.0, lat), 1.0);
         }
         self.map.begin_stroke();
-        self.map.ridge(&line.plan(0));
+        let mut from = 0;
+        while from < line.len() {
+            let plan = line.plan(from);
+            self.map.ridge(&plan);
+            from = plan.end;
+        }
         self.map.end_stroke();
     }
 
@@ -114,7 +120,9 @@ fn flank_spec() -> Seamounts {
 }
 
 fn pacific_flank() -> Painted {
-    let mut painted = Painted::new(4000.0);
+    // The ground past the ridge is at the depth of the age curve at the
+    // brush radius: 4.4 million years.
+    let mut painted = Painted::new(3360.0);
     painted.ridge_flank();
     painted.seamounts(flank_spec());
     painted
@@ -126,7 +134,7 @@ fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
     let report = compare(&pacific_flank(), &reference, 0.0);
     let r = &reference.realism;
     assert!(
-        (report.spectral_slope - r.spectral_slope).abs() < 0.6,
+        (report.spectral_slope - r.spectral_slope).abs() < 0.4,
         "a spectral slope of {}",
         report.spectral_slope
     );
@@ -136,15 +144,23 @@ fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
         report.anisotropy
     );
     assert!(
-        report.rms_m > 0.3 * r.rms_m && report.rms_m < 2.0 * r.rms_m,
+        report.rms_m > 0.6 * r.rms_m && report.rms_m < 1.6 * r.rms_m,
         "an RMS of {} m",
         report.rms_m
     );
-    // Most of the floor is gentle, and a little of it is steep.
+    // The hills cover the floor, so little of it is flat. Most of the
+    // floor is gentle, and a little of it is steep.
+    let flat = report.slope_histogram[0];
     let gentle: f64 = report.slope_histogram[..4].iter().sum();
     let steep: f64 = report.slope_histogram[4..].iter().sum();
+    assert!(flat < 0.5, "{flat} of the slopes below 1 degree");
     assert!(gentle > 0.8, "{gentle} of the slopes below 8 degrees");
     assert!(steep > 0.005, "{steep} of the slopes above 8 degrees");
+    let apart: f64 = (report.slope_histogram.iter())
+        .zip(&r.slope_histogram)
+        .map(|(a, b)| (a - b).abs())
+        .sum();
+    assert!(apart < 0.5, "a slope histogram {apart} from the reference");
 }
 
 /// The painted patch and the reference patch side by side, with the same
