@@ -23,7 +23,7 @@ use crate::heightmap::{
 };
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::range::RangePlan;
-use crate::ridge::RidgePlan;
+use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
 use crate::tiles::{Pool, TILES_WGSL, tiles_layout};
 
@@ -325,12 +325,37 @@ struct RidgeUniforms {
     lift: f32,
     texture_height: f32,
     segment_km: f32,
+    /// The number of guides of an ocean ridge, and the number of seeded
+    /// transform faults that they make plain offsets.
+    guide_count: u32,
+    excluded_count: u32,
+    unused: [f32; 2],
     segments: [[f32; 16]; LINE_SEGMENTS],
+    /// The guides, in the order of their boundaries.
+    guides: [GuideUniforms; MAX_RIDGE_GUIDES],
+    /// The seeded transform faults that are plain offsets.
+    excluded: [i32; GUIDE_EXCLUDED],
 }
 
-// The segments start at the offset of the array of `stamp.wgsl`: 40 numbers
+// The segments start at the offset of the array of `stamp.wgsl`: 44 numbers
 // of 4 bytes, a multiple of 16.
-const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 40 * 4);
+const _: () = assert!(std::mem::offset_of!(RidgeUniforms, segments) == 44 * 4);
+
+/// One guide of an ocean ridge. The layout matches `RidgeGuide` in
+/// `stamp.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct GuideUniforms {
+    /// The boundary of the guide.
+    j: i32,
+    /// The place of the boundary at the crest, from `j` segment lengths.
+    rest: f32,
+    /// The result of `RidgePlan::group_part` for the group of the guide.
+    part: f32,
+    unused: f32,
+    /// The moves of the left side, then those of the right side.
+    samples: [f32; 2 * GUIDE_SAMPLES],
+}
 
 fn packed(limits: Limits) -> u32 {
     u32::from(limits.floor) | u32::from(limits.ceiling) << 16
@@ -1477,7 +1502,7 @@ impl GpuHeightmap {
         let shape = plan.shape();
         let cell = shape.length;
         let length_cell = (plan.length / cell + 0.5).floor();
-        let header = RidgeUniforms {
+        let mut header = RidgeUniforms {
             length: [
                 length_cell as f32,
                 (plan.length - length_cell * cell) as f32,
@@ -1515,8 +1540,26 @@ impl GpuHeightmap {
             lift: shape.lift as f32,
             texture_height: shape.texture_height as f32,
             segment_km: (cell * spec.world_km) as f32,
+            guide_count: plan.guides.list.len() as u32,
+            excluded_count: plan.guides.excluded.len() as u32,
             ..bytemuck::Zeroable::zeroed()
         };
+        for (to, guide) in header.guides.iter_mut().zip(&plan.guides.list) {
+            let mut samples = [0.0; 2 * GUIDE_SAMPLES];
+            for (to, m) in samples.iter_mut().zip(guide.m.iter().flatten()) {
+                *to = *m as f32;
+            }
+            *to = GuideUniforms {
+                j: guide.j,
+                rest: (guide.u0 - f64::from(guide.j) * cell) as f32,
+                part: guide.part as f32,
+                unused: 0.0,
+                samples,
+            };
+        }
+        for (to, &j) in header.excluded.iter_mut().zip(&plan.guides.excluded) {
+            *to = j;
+        }
         self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
     }
 
@@ -1587,8 +1630,13 @@ impl GpuHeightmap {
         for (to, segment) in line.segments.iter_mut().zip(&plan.segments) {
             *to = segment.to_f32(cell);
         }
-        let used = size_of::<RidgeUniforms>()
-            - (LINE_SEGMENTS - plan.segments.len()) * size_of::<[f32; 16]>();
+        // The buffer gets the segments in use, or all of it with guides.
+        let used = if line.guide_count > 0 {
+            size_of::<RidgeUniforms>()
+        } else {
+            std::mem::offset_of!(RidgeUniforms, segments)
+                + plan.segments.len() * size_of::<[f32; 16]>()
+        };
         let ridge_offset = ridge_slot * self.ridge_slot_size;
         queue.write_buffer(
             &self.ridge_uniforms,

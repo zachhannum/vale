@@ -176,6 +176,25 @@ struct RidgeSegment {
 // The same number as `RIDGE_SEGMENTS` in `ridge.rs`.
 const RIDGE_SEGMENTS = 128;
 
+// One drawn fracture zone of an ocean ridge, as `GuideUniforms` in `gpu.rs`.
+struct RidgeGuide {
+    // The boundary of the guide, and its place at the crest from `j`
+    // segment lengths.
+    j: i32,
+    rest: f32,
+    // The part of the group shift of the group of the guide.
+    part: f32,
+    unused: f32,
+    // The moves of `Guide::m`: the left side, then the right side.
+    samples: array<vec4<f32>, 16>,
+}
+
+// The numbers of `ridge.rs`.
+const MAX_RIDGE_GUIDES = 16;
+const GUIDE_SAMPLES = 32;
+const GUIDE_GROUP = 268435456;
+const GUIDE_JOINS = 8;
+
 // The settings and the segments of a ridge pass, with the numbers of
 // `RidgePlan::level` that are the same for each texel. The numbers are those
 // of `RidgeUniforms` in `gpu.rs`.
@@ -228,7 +247,16 @@ struct RidgeLine {
     texture_height: f32,
     // The length of `segment` in kilometers.
     segment_km: f32,
+    // The number of guides, and the number of seeded transform faults that
+    // they make plain offsets.
+    guide_count: u32,
+    excluded_count: u32,
+    unused_a: f32,
+    unused_b: f32,
     segments: array<RidgeSegment, RIDGE_SEGMENTS>,
+    // The guides, in the order of their boundaries.
+    guides: array<RidgeGuide, MAX_RIDGE_GUIDES>,
+    excluded: array<vec4<i32>, 16>,
 }
 
 @group(0) @binding(7) var<uniform> ridge: RidgeLine;
@@ -1538,34 +1566,185 @@ fn ridge_boundary(j: i32, cell: i32) -> f32 {
     return (f32(j - cell) + JITTER * jitter) * ridge.segment;
 }
 
-// `RidgePlan::group_start`.
-fn ridge_group_start(c: i32) -> i32 {
+// `RidgePlan::seeded_start`.
+fn ridge_seeded_start(c: i32) -> i32 {
     let choices = u32(ridge.group / 2 + 1);
     let h = ridge_hash(c, 1u, 0u, ridge.seed);
     return c * ridge.group + i32(h % choices);
 }
 
-// `RidgePlan::group`. The division rounds down, as `div_euclid` does.
-fn ridge_group(k: i32) -> i32 {
+// `RidgePlan::seeded_group`. The division rounds down, as `div_euclid` does.
+fn ridge_seeded_group(k: i32) -> i32 {
     var c = k / ridge.group;
     if c * ridge.group > k {
         c -= 1;
     }
-    if k >= ridge_group_start(c) {
+    if k >= ridge_seeded_start(c) {
         return c;
     }
     return c - 1;
 }
 
+// `RidgePlan::seeded_transform`.
+fn ridge_seeded_transform(j: i32) -> bool {
+    return j == ridge_seeded_start(ridge_seeded_group(j));
+}
+
+// Boundary `j` is in the list of the seeded transform faults that are plain
+// offsets.
+fn ridge_excluded(j: i32) -> bool {
+    for (var i = 0u; i < ridge.excluded_count; i++) {
+        if ridge.excluded[i / 4u][i % 4u] == j {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Group `c` is the group of a guide.
+fn ridge_guided(c: i32) -> bool {
+    return ridge.guide_count > 0u && c >= GUIDE_GROUP && c - GUIDE_GROUP < i32(ridge.guide_count);
+}
+
+// `RidgePlan::group_start`.
+fn ridge_group_start(c: i32) -> i32 {
+    if ridge_guided(c) {
+        return ridge.guides[c - GUIDE_GROUP].j;
+    }
+    return ridge_seeded_start(c);
+}
+
+// `RidgePlan::group`.
+fn ridge_group(k: i32) -> i32 {
+    var c = ridge_seeded_group(k);
+    if ridge.guide_count == 0u {
+        return c;
+    }
+    for (var n = 0; n < GUIDE_JOINS; n++) {
+        if !ridge_excluded(ridge_seeded_start(c)) {
+            break;
+        }
+        c -= 1;
+    }
+    var start = ridge_seeded_start(c);
+    var id = c;
+    for (var g = 0u; g < ridge.guide_count; g++) {
+        let j = ridge.guides[g].j;
+        if j <= k && j > start {
+            start = j;
+            id = GUIDE_GROUP + i32(g);
+        }
+    }
+    return id;
+}
+
 // `RidgePlan::transform`.
 fn ridge_transform(j: i32) -> bool {
-    return j == ridge_group_start(ridge_group(j));
+    if ridge.guide_count == 0u {
+        return ridge_seeded_transform(j);
+    }
+    for (var g = 0u; g < ridge.guide_count; g++) {
+        if ridge.guides[g].j == j {
+            return true;
+        }
+    }
+    return ridge_seeded_transform(j) && !ridge_excluded(j);
 }
 
 // `RidgePlan::group_shift`.
 fn ridge_group_shift(c: i32) -> f32 {
-    let part = 2.0 * unit(ridge_hash(c, 3u, 0u, ridge.seed)) - 1.0;
+    var part = 2.0 * unit(ridge_hash(c, 3u, 0u, ridge.seed)) - 1.0;
+    if ridge_guided(c) {
+        part = ridge.guides[c - GUIDE_GROUP].part;
+    }
     return ridge.offset * GROUP_SHIFT * part;
+}
+
+// Sample `i` of side `side` of guide `g`.
+fn ridge_guide_sample(g: u32, side: u32, i: u32) -> f32 {
+    let n = side * u32(GUIDE_SAMPLES) + i;
+    return ridge.guides[g].samples[n / 4u][n % 4u];
+}
+
+// `Guide::at`: the move of the trace of guide `g` at `across`, and its
+// change with `across`.
+fn ridge_guide_at(g: u32, across: f32) -> vec2<f32> {
+    let side = select(0u, 1u, across < 0.0);
+    let step = RIDGE_REACH * ridge.radius / f32(GUIDE_SAMPLES - 1);
+    let last = f32(GUIDE_SAMPLES - 1);
+    let x = min(abs(across) / step, last);
+    let k = min(u32(floor(x)), u32(GUIDE_SAMPLES - 2));
+    let t = x - f32(k);
+    let p0 = ridge_guide_sample(g, side, k);
+    let p1 = ridge_guide_sample(g, side, k + 1u);
+    var d0 = p1 - p0;
+    if k > 0u {
+        d0 = 0.5 * (p1 - ridge_guide_sample(g, side, k - 1u));
+    }
+    var d1 = p1 - p0;
+    if k + 1u < u32(GUIDE_SAMPLES - 1) {
+        d1 = 0.5 * (ridge_guide_sample(g, side, k + 2u) - p0);
+    }
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let value = (2.0 * t3 - 3.0 * t2 + 1.0) * p0
+        + (t3 - 2.0 * t2 + t) * d0
+        + (3.0 * t2 - 2.0 * t3) * p1
+        + (t3 - t2) * d1;
+    if x >= last {
+        return vec2<f32>(value, 0.0);
+    }
+    let slope = ((6.0 * t2 - 6.0 * t) * (p0 - p1)
+        + (3.0 * t2 - 4.0 * t + 1.0) * d0
+        + (3.0 * t2 - 2.0 * t) * d1) / step;
+    return vec2<f32>(value, select(slope, -slope, across < 0.0));
+}
+
+// The place of guide `g` at the crest, from the start of crest cell `cell`.
+fn ridge_guide_start(g: u32, cell: i32) -> f32 {
+    return f32(ridge.guides[g].j - cell) * ridge.segment + ridge.guides[g].rest;
+}
+
+// `Guides::turn`, with `b` from the start of crest cell `cell`.
+fn ridge_guide_turn(b: f32, cell: i32, across: f32) -> vec2<f32> {
+    let count = ridge.guide_count;
+    var n = 0u;
+    while n < count && ridge_guide_start(n, cell) <= b {
+        n++;
+    }
+    if n == 0u {
+        return ridge_guide_at(0u, across);
+    }
+    if n == count {
+        return ridge_guide_at(count - 1u, across);
+    }
+    let a0 = ridge_guide_start(n - 1u, cell);
+    let a1 = ridge_guide_start(n, cell);
+    let t = (b - a0) / (a1 - a0);
+    let m0 = ridge_guide_at(n - 1u, across);
+    let m1 = ridge_guide_at(n, across);
+    return m0 + t * (m1 - m0);
+}
+
+// `Guides::base`, with `u` and the result from the start of crest cell
+// `cell`.
+fn ridge_guide_base(u: f32, cell: i32, across: f32) -> f32 {
+    let count = ridge.guide_count;
+    var n = 0u;
+    while n < count && ridge_guide_start(n, cell) + ridge_guide_at(n, across).x <= u {
+        n++;
+    }
+    if n == 0u {
+        return u - ridge_guide_at(0u, across).x;
+    }
+    if n == count {
+        return u - ridge_guide_at(count - 1u, across).x;
+    }
+    let a0 = ridge_guide_start(n - 1u, cell);
+    let a1 = ridge_guide_start(n, cell);
+    let p0 = a0 + ridge_guide_at(n - 1u, across).x;
+    let p1 = a1 + ridge_guide_at(n, across).x;
+    return a0 + (u - p0) / (p1 - p0) * (a1 - a0);
 }
 
 // `RidgePlan::shift`.
@@ -2125,8 +2304,18 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
     let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area);
     let blend_width = ridge.blend;
-    let turn = ridge_turn(across / v);
-    let i = cell + i32(floor((u - turn.x) / cell_len));
+    // With guides, the turn is that of the guides at each boundary, and the
+    // search has one more boundary on each side.
+    var turn = vec2<f32>(0.0);
+    var i = 0;
+    var wide = 0;
+    if ridge.guide_count == 0u {
+        turn = ridge_turn(across / v);
+        i = cell + i32(floor((u - turn.x) / cell_len));
+    } else {
+        i = cell + i32(floor(ridge_guide_base(u, cell, across) / cell_len));
+        wide = 1;
+    }
     var rise = 0.0;
     var hills = 0.0;
     var deep = 0.0;
@@ -2134,11 +2323,15 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     var ridges = 0.0;
     var below = 0.0;
     var before = 0.0;
-    for (var j = i - 1; j <= i + 2; j++) {
-        let trace = ridge_trace(j, cell, across, turn);
+    for (var j = i - 1 - wide; j <= i + 2 + wide; j++) {
+        var turn_j = turn;
+        if ridge.guide_count > 0u {
+            turn_j = ridge_guide_turn(ridge_boundary(j, cell), cell, across);
+        }
+        let trace = ridge_trace(j, cell, across, turn_j);
         let off = (u - trace.x) / sqrt(trace.y * trace.y + 1.0);
         let past = smooth_between(-blend_width, blend_width, off);
-        if j > i - 1 {
+        if j > i - 1 - wide {
             let weight = before - past;
             if weight > 0.0 {
                 let parts = ridge_crest_segment(texel, j - 1, below, trace.x);
