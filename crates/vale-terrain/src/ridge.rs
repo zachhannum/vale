@@ -1396,9 +1396,9 @@ const OFFSET_TROUGH: f64 = 0.8;
 /// to the power `TROUGH_WIDENS`, from `TROUGH_KM_RANGE[0]` to
 /// `TROUGH_KM_RANGE[1]`. The floor of a trough is `TROUGH_FLOOR` of its
 /// width.
-const TROUGH_KM: f64 = 10.0;
+const TROUGH_KM: f64 = 5.0;
 const TROUGH_WIDENS: f64 = 0.8;
-const TROUGH_KM_RANGE: [f64; 2] = [2.0, 20.0];
+const TROUGH_KM_RANGE: [f64; 2] = [1.0, 10.0];
 const TROUGH_FLOOR: f64 = 0.3;
 
 /// Along the transform fault, and for `ACTIVE_MYR` past it, the trough is
@@ -1435,7 +1435,7 @@ const KINK_OLD_MYR: f64 = 6.0;
 /// side.
 const TROUGH_LEAST: f64 = 0.3;
 const TROUGH_LEAST_KM: f64 = 10.0;
-const OFFSET_HALF_KM: f64 = 5.0;
+const OFFSET_HALF_KM: f64 = 3.0;
 
 /// The part of the depth of a trough that sediment fills, over this number
 /// of millions of years.
@@ -1458,7 +1458,7 @@ const TRANSVERSE_WIDTH: f64 = 0.9;
 /// transform fault.
 const NODAL_DEPTH: f64 = 0.005;
 const NODAL_MAX: f64 = 0.6;
-const NODAL_KM: f64 = 12.0;
+const NODAL_KM: f64 = 8.0;
 const NODAL_ALONG_KM: f64 = 30.0;
 const NODAL_IN: f64 = 0.3;
 
@@ -1490,8 +1490,8 @@ const HIGH_KM: f64 = 5.0;
 /// each wall, in kilometers, at the middle and at the ends of a segment.
 /// The depth of the valley is `VALLEY_ALONG` less than the mean at the
 /// middle, and that much more at the ends (Macdonald 1982).
-const FLOOR_HALF: [f64; 2] = [5.0, 8.0];
-const WALL_WIDTH: [f64; 2] = [10.0, 14.0];
+const FLOOR_HALF: [f64; 2] = [3.0, 5.0];
+const WALL_WIDTH: [f64; 2] = [6.0, 9.0];
 const VALLEY_ALONG: f64 = 0.15;
 
 /// The axial valley is a down-warp of `DOWN` of its depth that is
@@ -1502,7 +1502,7 @@ const VALLEY_ALONG: f64 = 0.15;
 /// and gets lower over `MOUNT_KM` kilometers away from the axis: the rift
 /// mountains.
 const DOWN: f64 = 0.85;
-const DOWN_KM: f64 = 35.0;
+const DOWN_KM: f64 = 25.0;
 
 /// Past the walls of the axial valley, the young crust is a band that is
 /// `BAND` times the depth of the axial valley high, and `BAND_KM` kilometers
@@ -3077,7 +3077,7 @@ mod tests {
             let mut last = real(&plan, 0.3, across * r);
             for i in 1..40000 {
                 let new = real(&plan, 0.3 + f64::from(i) * fine, across * r);
-                assert!((new - last).abs() < 400.0, "{across} {i}: {last} {new}");
+                assert!((new - last).abs() < 500.0, "{across} {i}: {last} {new}");
                 last = new;
             }
         }
