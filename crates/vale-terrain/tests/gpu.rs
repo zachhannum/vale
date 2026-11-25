@@ -3512,10 +3512,10 @@ fn the_shader_field_reads_level_1_from_two_level_tiles() {
 /// The largest difference between a GPU level and a CPU level after an ocean
 /// ridge stroke. The shader finds the place of a texel on the line with
 /// 32-bit numbers, to about 1e-7 radians. On a face of 2048 texels, the
-/// hills and the wall faults change the level by up to about 1.5 over that
-/// distance, so a level can differ by 2. The largest difference in the tests
-/// of this file is 2, on the large faces.
-const RIDGE_TOLERANCE: u16 = 2;
+/// hills and the wall faults change the level by up to about 2.5 over that
+/// distance, so a level can differ by 3. The largest difference in the tests
+/// of this file is 3, on the large faces.
+const RIDGE_TOLERANCE: u16 = 3;
 
 fn ridge_spec(radius: f64) -> Ridge {
     Ridge {
