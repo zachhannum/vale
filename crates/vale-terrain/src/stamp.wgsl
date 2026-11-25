@@ -1075,7 +1075,6 @@ const WAVE_KM = 40.0;
 const SEGMENT_MYR = 6.0;
 const SEGMENT_CHANGE = 0.35;
 const HOOK_PART = 0.15;
-const HOOK_ROWS = 1.0;
 const TROUGH_DEPTH = 1.3;
 const TROUGH_OFFSET_KM = 100.0;
 const TROUGH_POWER = 1.3;
@@ -1164,15 +1163,16 @@ const FAULT_SPACING = array<vec2<f32>, 5>(
 );
 
 // The abyssal hills of `ridge.rs`.
-const HILL_LENGTH = vec2<f32>(8.0, 50.0);
-const HILL_WIDTH = vec2<f32>(1.0, 3.5);
-const HILL_CELL = vec2<f32>(25.0, 2.0);
+const FAULT_LENGTH = vec2<f32>(10.0, 40.0);
+const HILL_CELL = vec2<f32>(25.0, 3.0);
 const HILLS = 2u;
-const HILL_TILT = 0.1;
-const STEEP = 0.4;
-const TIP = 0.4;
-const HEIGHT_MIN = 0.3;
-const HEIGHT_MAX = 2.0;
+const HILL_TILT = 0.05;
+const SCARP_KM = 0.5;
+const BACK_TILT = vec2<f32>(3.0, 8.0);
+const GRABENS = 0.2;
+const GRABEN = vec2<f32>(0.3, 2.0);
+const THROW_MIN = 0.3;
+const THROW_MAX = 2.0;
 
 // `lerp_table` in `ridge.rs`, for a table of 5 points.
 fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
@@ -1626,11 +1626,10 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across: f32) -> f32 {
     let cell_along = HILL_CELL.x * s;
     let cell_across = HILL_CELL.y * sp;
     let blur = ridge.half_texel;
-    let reach_along = 0.5 * length(vec2<f32>(HILL_LENGTH.y * s, blur));
-    let reach_across = (1.0 - STEEP) * length(vec2<f32>(HILL_WIDTH.y * sp, blur))
+    let reach_along = 0.5 * length(vec2<f32>(FAULT_LENGTH.y * s, blur));
+    let reach_across = 0.5 * GRABEN.y + SCARP_KM + BACK_TILT.y * s + blur
         + HILL_TILT * reach_along;
-    let ratio = HILL_LENGTH.y / HILL_LENGTH.x;
-    let mean_width = sp * 0.5 * (HILL_WIDTH.x + HILL_WIDTH.y);
+    let ratio = FAULT_LENGTH.y / FAULT_LENGTH.x;
     var sum = 0.0;
     for (var i = i32(floor((along - reach_along) / cell_along));
         i <= i32(floor((along + reach_along) / cell_along)); i++) {
@@ -1643,31 +1642,30 @@ fn ridge_hills(band_group: i32, side: u32, along: f32, across: f32) -> f32 {
                 let place = (f32(j) + unit(hash(vec3<u32>(at, key + 1u), seed))) * cell_across;
                 let mixed = 0.5 * (unit(hash(vec3<u32>(at, key + 2u), seed))
                     + unit(hash(vec3<u32>(at, key + 3u), seed)));
-                let hill_length = HILL_LENGTH.x * s * pow_precise(ratio, mixed);
-                let width = sp * ridge_mix(HILL_WIDTH.x, HILL_WIDTH.y, unit(hash(vec3<u32>(at, key + 4u), seed)));
-                let tall = HEIGHT_MIN + (1.0 - HEIGHT_MIN)
-                    * min(-ln_precise(1.0 - unit(hash(vec3<u32>(at, key + 5u), seed))), HEIGHT_MAX);
-                let long = length(vec2<f32>(hill_length, blur));
-                let wide = length(vec2<f32>(width, blur));
+                let fault_length = FAULT_LENGTH.x * s * pow_precise(ratio, mixed);
+                let long = length(vec2<f32>(fault_length, blur));
                 let q = 2.0 * (along - middle) / long;
                 if abs(q) >= 1.0 {
                     continue;
                 }
+                let tall = THROW_MIN + (1.0 - THROW_MIN)
+                    * min(-ln_precise(1.0 - unit(hash(vec3<u32>(at, key + 4u), seed))), THROW_MAX);
+                let fault_throw = ridge.hill_height * tall * (fault_length / long) * (1.0 - q * q);
+                let back = ridge_mix(BACK_TILT.x, BACK_TILT.y, unit(hash(vec3<u32>(at, key + 5u), seed))) * s;
                 let tilt = HILL_TILT * (2.0 * unit(hash(vec3<u32>(at, key + 6u), seed)) - 1.0);
-                var y = across - place - tilt * (along - middle);
-                if unit(hash(vec3<u32>(at, key + 7u), seed)) >= INWARD {
-                    y = -y;
+                let y = across - place - tilt * (along - middle);
+                let kind = unit(hash(vec3<u32>(at, key + 7u), seed));
+                var shape = 0.0;
+                if kind < GRABENS {
+                    let half_gap = 0.5 * ridge_mix(GRABEN.x, GRABEN.y, kind / GRABENS);
+                    shape = block(y - half_gap, SCARP_KM, back, blur)
+                        + block(-y - half_gap, SCARP_KM, back, blur);
+                } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
+                    shape = block(y, SCARP_KM, back, blur);
+                } else {
+                    shape = block(-y, SCARP_KM, back, blur);
                 }
-                let thin = 1.0 - q * q;
-                let half_part = select(1.0 - STEEP, STEEP, y < 0.0);
-                let z = y / (half_part * wide * (TIP + (1.0 - TIP) * thin));
-                if abs(z) >= 1.0 {
-                    continue;
-                }
-                let height = ridge.hill_height * tall * (width / mean_width)
-                    * (hill_length / long) * (width / wide);
-                let edge = 1.0 - z * z;
-                sum += height * thin * thin * edge * edge;
+                sum += fault_throw * shape;
             }
         }
     }
@@ -1837,7 +1835,7 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let rate = 1.0 + MAGMA_BAND * band.y;
     let grown = pow_precise(rate, -THROW_SPACING);
     let toward = select(1.0, -1.0, (next_shift - crest) * off > 0.0);
-    let hill_across = from_crest * km + HOOK_ROWS * hook * hook * toward * ridge.spacing;
+    let hill_across = from_crest * km;
     let hills = grow * grown * ridge_hills(band_group, side, group_along, hill_across);
     let held = ridge.hill_mean * grow * grown;
     let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);

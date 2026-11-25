@@ -374,12 +374,15 @@ impl RidgePlan {
 
     /// The abyssal hills of one side of the axis, in kilometers, at `along`
     /// kilometers along the group `group` and `across` kilometers from the
-    /// crest. Each hill is a lens along the fabric. It is steeper on the
-    /// side that faces the axis, as the normal faults that lift it face the
-    /// axis. The hills are in cells, `HILLS` in each cell, at seeded places,
-    /// so they overlap en echelon and their spacing varies. A hill is zero
-    /// outside its window, so the sum does not depend on the cells that the
-    /// search starts from.
+    /// crest. The hills are the tilted blocks of normal faults (Macdonald
+    /// and others 1996). Each fault is a thin scarp along the fabric, and
+    /// the block behind it tilts back to the level of the floor over a few
+    /// kilometers. Most faults face the axis. Some faults are pairs that face
+    /// each other across a narrow graben. The throw of a fault tapers to
+    /// zero at its ends. The faults are in cells, `HILLS` in each cell, at
+    /// seeded places, so they overlap en echelon and their spacing varies.
+    /// A fault is zero outside its window, so the sum does not depend on the
+    /// cells that the search starts from.
     fn hills(&self, f: &Faulting, group: i32, side: u32, [along, across]: [f64; 2]) -> f64 {
         self.hill_sum(f, [group, 0], side, [along, across])
     }
@@ -398,16 +401,18 @@ impl RidgePlan {
         };
         let (sp, s) = (f.spacing, f.hill_scale);
         let (cell_along, cell_across) = (HILL_CELL[0] * s, HILL_CELL[1] * sp);
-        // A hill is wider and longer by about a texel, and lower by as much,
-        // so it keeps its volume and does not alias.
+        // A fault is longer by about a texel, and lower by as much, so it
+        // keeps its volume and does not alias. Across the fabric, the
+        // scarp is the mean over a box one texel wide.
         let blur = f.half_texel;
-        let reach_along = 0.5 * (HILL_LENGTH[1] * s).hypot(blur);
+        let reach_along = 0.5 * (FAULT_LENGTH[1] * s).hypot(blur);
         let reach_across =
-            (1.0 - STEEP) * (HILL_WIDTH[1] * sp).hypot(blur) + HILL_TILT * reach_along;
+            0.5 * GRABEN[1] + SCARP_KM + BACK_TILT[1] * s + blur + HILL_TILT * reach_along;
         let cells = |x: f64, reach: f64, cell: f64| {
             ((x - reach) / cell).floor() as i32 - extra
                 ..=((x + reach) / cell).floor() as i32 + extra
         };
+        let ratio = FAULT_LENGTH[1] / FAULT_LENGTH[0];
         let mut sum = 0.0;
         for i in cells(along, reach_along, cell_along) {
             for j in cells(across, reach_across, cell_across) {
@@ -416,31 +421,31 @@ impl RidgePlan {
                     let middle = (f64::from(i) + d(0)) * cell_along;
                     let place = (f64::from(j) + d(1)) * cell_across;
                     // The length has a log-normal shape between its limits.
-                    let ratio = HILL_LENGTH[1] / HILL_LENGTH[0];
-                    let length = HILL_LENGTH[0] * s * ratio.powf(0.5 * (d(2) + d(3)));
-                    let width = sp * mix(HILL_WIDTH[0], HILL_WIDTH[1], d(4));
-                    let tall =
-                        HEIGHT_MIN + (1.0 - HEIGHT_MIN) * (-(1.0 - d(5)).ln()).min(HEIGHT_MAX);
-                    let (long, wide) = (length.hypot(blur), width.hypot(blur));
+                    let length = FAULT_LENGTH[0] * s * ratio.powf(0.5 * (d(2) + d(3)));
+                    let long = length.hypot(blur);
                     let q = 2.0 * (along - middle) / long;
                     if q.abs() >= 1.0 {
                         continue;
                     }
+                    let tall = THROW_MIN + (1.0 - THROW_MIN) * (-(1.0 - d(4)).ln()).min(THROW_MAX);
+                    let throw = f.hill_height * tall * (length / long) * (1.0 - q * q);
+                    let back = mix(BACK_TILT[0], BACK_TILT[1], d(5)) * s;
                     let tilt = HILL_TILT * (2.0 * d(6) - 1.0);
                     let y = across - place - tilt * (along - middle);
-                    // Most hills face the axis: their steep side is toward
-                    // the crest.
-                    let y = if d(7) < INWARD { y } else { -y };
-                    let thin = 1.0 - q * q;
-                    let half = if y < 0.0 { STEEP } else { 1.0 - STEEP };
-                    let z = y / (half * wide * (TIP + (1.0 - TIP) * thin));
-                    if z.abs() >= 1.0 {
-                        continue;
-                    }
-                    // A wide hill is high, so the slopes of the hills are alike.
-                    let broad = width / (sp * 0.5 * (HILL_WIDTH[0] + HILL_WIDTH[1]));
-                    let height = f.hill_height * tall * broad * (length / long) * (width / wide);
-                    sum += height * thin * thin * (1.0 - z * z).powi(2);
+                    // A fault that faces the axis has its low side toward
+                    // the crest. A graben is two faults that face each
+                    // other.
+                    let kind = d(7);
+                    let shape = if kind < GRABENS {
+                        let half = 0.5 * mix(GRABEN[0], GRABEN[1], kind / GRABENS);
+                        block(y - half, SCARP_KM, back, blur)
+                            + block(-y - half, SCARP_KM, back, blur)
+                    } else if kind < GRABENS + INWARD * (1.0 - GRABENS) {
+                        block(y, SCARP_KM, back, blur)
+                    } else {
+                        block(-y, SCARP_KM, back, blur)
+                    };
+                    sum += throw * shape;
                 }
             }
         }
@@ -648,8 +653,7 @@ impl RidgePlan {
             );
             let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper);
             let sunk = self.segment_depth(len * km) * f.level * ends * deeper;
-            // Near the ends of the segment, the faults hook toward the
-            // crest of the next segment.
+            // The ends of the segment, and the segment past the nearer end.
             let (near, next) = if place < 0.5 {
                 (place, k.wrapping_sub(1))
             } else {
@@ -727,9 +731,10 @@ impl RidgePlan {
             } else {
                 1.0
             };
-            // The hills follow the distance from the crest, and hook with
-            // the faults near the ends of the segment.
-            let hill_across = from_crest * km + HOOK_ROWS * hook * hook * toward * f.spacing;
+            // The hills follow the distance from the crest. Both segments at
+            // a boundary have the same distance there, so the hills go on
+            // past a boundary with no offset.
+            let hill_across = from_crest * km;
             let hills = grow * grown * self.hills(&f, group, side, [group_along, hill_across]);
             // Sediment ponds in the lows between the hills, up to twice its
             // thickness above the low of the hills: `HILL_LOW` of their mean
@@ -934,9 +939,10 @@ struct Faulting {
     half_texel: f64,
     /// The 16-bit steps of one kilometer of height.
     level: f64,
-    /// The height unit of a hill, in kilometers.
+    /// The throw unit of a fault, in kilometers.
     hill_height: f64,
-    /// The length of the hills, in `HILL_LENGTH` and `HILL_CELL` units.
+    /// The scale of the faults, in `FAULT_LENGTH`, `HILL_CELL`, and
+    /// `BACK_TILT` units.
     hill_scale: f64,
     /// The mean height of the hills, in kilometers.
     hill_mean: f64,
@@ -1116,10 +1122,9 @@ const WAVE_KM: f64 = 40.0;
 const SEGMENT_MYR: f64 = 6.0;
 const SEGMENT_CHANGE: f64 = 0.35;
 
-/// The faults hook over this part of a crest segment at each end, by up to
-/// `HOOK_ROWS` fault spacings.
+/// The axial valley fades toward a transform fault over this part of a
+/// crest segment at each end.
 const HOOK_PART: f64 = 0.15;
-const HOOK_ROWS: f64 = 1.0;
 
 /// The depth of the trough of a fracture zone, in kilometers, is
 /// `TROUGH_DEPTH` times the offset in `TROUGH_OFFSET_KM` to the power
@@ -1394,42 +1399,45 @@ const LEVELS_PER_KM: f64 = 1000.0 * 65535.0 / (ELEV_MAX - ELEV_MIN);
 const HILL_RMS: f64 = 1.0;
 const HILL_SLOWEST: f64 = 10.0;
 
-/// The shortest and the longest hill, in kilometers, and the narrowest and
-/// the widest hill, in fault spacings. The hills of a fast ridge are 5 to
-/// 40 km long and 1 to 4 km wide (Macdonald and others 1996; Goff 1991).
-/// The lengths have a log-normal shape between the limits.
-const HILL_LENGTH: [f64; 2] = [8.0, 50.0];
-const HILL_WIDTH: [f64; 2] = [1.0, 3.5];
+/// The shortest and the longest fault of the hills, in kilometers. The
+/// lengths have a log-normal shape between the limits.
+const FAULT_LENGTH: [f64; 2] = [10.0, 40.0];
 
-/// Larger fault spacings give longer hills: the lengths scale by the
-/// spacing over `HILL_SPACING` kilometers, from 1 to `HILL_SCALE_MAX`.
+/// Larger fault spacings give longer faults and wider blocks: the lengths
+/// scale by the spacing over `HILL_SPACING` kilometers, from 1 to
+/// `HILL_SCALE_MAX`.
 const HILL_SPACING: f64 = 2.0;
 const HILL_SCALE_MAX: f64 = 2.0;
 
-/// The cells of the hills: along the fabric in kilometers, and across it
-/// in fault spacings, with `HILLS` hills in each cell.
-const HILL_CELL: [f64; 2] = [25.0, 2.0];
+/// The cells of the faults: along the fabric in kilometers, and across it
+/// in fault spacings, with `HILLS` faults in each cell.
+const HILL_CELL: [f64; 2] = [25.0, 3.0];
 const HILLS: u32 = 2;
 
-/// The largest turn of a hill from the fabric, as a tangent.
-const HILL_TILT: f64 = 0.1;
+/// The largest turn of a fault from the fabric, as a tangent.
+const HILL_TILT: f64 = 0.05;
 
-/// The part of the width of a hill on its steep side, and the width at
-/// its tips as a part of the width at its middle.
-const STEEP: f64 = 0.4;
-const TIP: f64 = 0.4;
+/// The width of a scarp, and the shortest and the longest back tilt of a
+/// block, in kilometers.
+const SCARP_KM: f64 = 0.5;
+const BACK_TILT: [f64; 2] = [3.0, 8.0];
 
-/// The height of a hill in height units: a smallest height plus a part
-/// from an exponential distribution, up to `HEIGHT_MAX`.
-const HEIGHT_MIN: f64 = 0.3;
-const HEIGHT_MAX: f64 = 2.0;
+/// The part of the faults that are pairs across a graben, and the
+/// narrowest and the widest graben, in kilometers.
+const GRABENS: f64 = 0.2;
+const GRABEN: [f64; 2] = [0.3, 2.0];
+
+/// The throw of a fault in height units: a smallest throw plus a part
+/// from an exponential distribution, up to `THROW_MAX`.
+const THROW_MIN: f64 = 0.3;
+const THROW_MAX: f64 = 2.0;
 
 /// The RMS height and the mean height of the hills, in height units. See
 /// the test `the_hills_have_their_rms_and_mean_height`.
-const HILL_RMS_UNIT: f64 = 0.58;
-const HILL_MEAN_UNIT: f64 = 0.5;
+const HILL_RMS_UNIT: f64 = 0.557;
+const HILL_MEAN_UNIT: f64 = 0.591;
 
-/// The part of the hills that face the axis.
+/// The part of the single faults that face the axis.
 const INWARD: f64 = 0.8;
 
 /// The largest move of the middle of a piece of a wall fault along the
@@ -2204,7 +2212,10 @@ mod tests {
         }
         let mean = sum / n;
         let rms = (squares / n - mean * mean).sqrt();
-        assert!((mean - HILL_MEAN_UNIT).abs() < 0.01, "a mean of {mean}");
+        assert!(
+            (mean - HILL_MEAN_UNIT).abs() < 0.01,
+            "a mean of {mean}, an RMS of {rms}"
+        );
         assert!((rms - HILL_RMS_UNIT).abs() < 0.01, "an RMS of {rms}");
     }
 
