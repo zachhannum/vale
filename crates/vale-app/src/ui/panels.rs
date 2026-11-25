@@ -22,7 +22,7 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M,
     OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
     RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
     SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
@@ -1589,6 +1589,11 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         number::slider("Hills", &mut brush.ridge_hills, RIDGE_HILLS)
             .percent()
             .show(ui);
+        number::slider("Scale", &mut brush.ridge_scale, HILL_SCALE)
+            .log()
+            .percent()
+            .show(ui);
+        ui.checkbox(&mut brush.ridge_fit, "Fit to map");
         number::stepper("Segment", &mut brush.ridge_segment_km)
             .range(RIDGE_SEGMENT_KM)
             .step(10.0)
@@ -1626,6 +1631,11 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         number::slider("Hills", &mut brush.abyssal_hills, RIDGE_HILLS)
             .percent()
             .show(ui);
+        number::slider("Scale", &mut brush.abyssal_scale, HILL_SCALE)
+            .log()
+            .percent()
+            .show(ui);
+        ui.checkbox(&mut brush.abyssal_fit, "Fit to map");
         seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)

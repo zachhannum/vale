@@ -99,10 +99,10 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         out.push(Flow);
     }
     match mode {
-        Mode::OceanRidge => out.extend([Magma, Hills]),
+        Mode::OceanRidge => out.extend([Magma, Hills, Scale]),
         Mode::Warp => out.extend([Strength, Scale]),
         Mode::Flatten => out.push(Rate),
-        Mode::AbyssalHills => out.extend([Rate, Hills]),
+        Mode::AbyssalHills => out.extend([Rate, Hills, Scale]),
         Mode::Paint => out.extend([Opacity, Value]),
         Mode::Noise => out.extend([Raise, Lower, Scale, Grain]),
         Mode::Terrace => out.push(Step),

@@ -18,10 +18,10 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
-    RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
-    SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
-    WARP_KM, needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3204,7 +3204,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
             row(ui, controls, state, Slider::Magma);
             row(ui, controls, state, Slider::Hills);
+            row(ui, controls, state, Slider::Scale);
             let brush = &mut state.globe.brush;
+            widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", &mut brush.ridge_fit);
             let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
                 .label("Segment")
                 .step(10.0)
@@ -3228,6 +3230,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         Mode::AbyssalHills => {
             row(ui, controls, state, Slider::Rate);
             row(ui, controls, state, Slider::Hills);
+            row(ui, controls, state, Slider::Scale);
+            let fit = &mut state.globe.brush.abyssal_fit;
+            widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", fit);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3344,6 +3349,9 @@ pub(super) enum Place<'f> {
     Strip(&'f mut dyn for<'n> FnMut(Number<'n>, &mut egui::Ui, &mut Controls) -> Option<f64>),
 }
 
+/// The name of the switch of the ocean ridge mode and of the abyssal hills
+/// mode that makes the hills at least as large as the map needs.
+pub const FIT_TO_MAP: &str = "Brush fit to map";
 /// The note under the density of the seamounts mode.
 pub const SEAMOUNT_DENSITY_NOTE: &str = "Density per 10,000 km²";
 
@@ -3484,6 +3492,14 @@ pub(super) fn brush_slider(
                     .log()
                     .default(defaults.strength_m);
                 set(number, &mut brush.strength_m);
+            }
+            Slider::Scale if matches!(mode, Mode::OceanRidge | Mode::AbyssalHills) => {
+                let value = match mode {
+                    Mode::OceanRidge => &mut brush.ridge_scale,
+                    _ => &mut brush.abyssal_scale,
+                };
+                let number = fraction(*value, HILL_SCALE).log().default(1.0);
+                set(number, value);
             }
             Slider::Scale => {
                 let number = km(brush.scale_km, SCALE_KM)

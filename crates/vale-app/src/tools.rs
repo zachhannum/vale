@@ -68,7 +68,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 31] = [
+const FLOATS: [Field<f64>; 33] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -84,6 +84,7 @@ const FLOATS: [Field<f64>; 31] = [
     ("ridge_spread_mm", |b| &mut b.ridge_spread_mm),
     ("ridge_magma", |b| &mut b.ridge_magma),
     ("ridge_hills", |b| &mut b.ridge_hills),
+    ("ridge_scale", |b| &mut b.ridge_scale),
     ("range_spacing_km", |b| &mut b.range_spacing_km),
     ("basin_density_km", |b| &mut b.basin_density_km),
     ("basin_age", |b| &mut b.basin_age),
@@ -92,6 +93,7 @@ const FLOATS: [Field<f64>; 31] = [
     ("seamount_height_m", |b| &mut b.seamount_height_m),
     ("abyssal_rate_mm", |b| &mut b.abyssal_rate_mm),
     ("abyssal_hills", |b| &mut b.abyssal_hills),
+    ("abyssal_scale", |b| &mut b.abyssal_scale),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -102,11 +104,13 @@ const FLOATS: [Field<f64>; 31] = [
     ("paint_opacity", |b| &mut b.opacity),
 ];
 
-const BOOLS: [Field<bool>; 4] = [
+const BOOLS: [Field<bool>; 6] = [
     ("noise_ridged", |b| &mut b.noise_ridged),
     ("noise_inverted", |b| &mut b.noise_inverted),
     ("floor_on", |b| &mut b.floor_on),
     ("ceiling_on", |b| &mut b.ceiling_on),
+    ("ridge_fit", |b| &mut b.ridge_fit),
+    ("abyssal_fit", |b| &mut b.abyssal_fit),
 ];
 
 /// A tool of the tool strip. Each brush mode is a tool.

@@ -70,6 +70,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
+/// The limits of the scale of the hills of the ocean ridge mode and of the
+/// abyssal hills mode, the factor of the horizontal sizes of the model.
+pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -172,6 +175,12 @@ pub struct BrushSettings {
     /// The height of the abyssal hills of the ocean ridge mode, as a part of
     /// the height of the model.
     pub ridge_hills: f64,
+    /// The factor of the horizontal sizes of the hills of the ocean ridge
+    /// mode, as `HILL_SCALE`.
+    pub ridge_scale: f64,
+    /// The hills of the ocean ridge mode are at least as large as the map
+    /// needs.
+    pub ridge_fit: bool,
     /// The mean distance between two ridges of the range mode, in
     /// kilometers.
     pub range_spacing_km: f64,
@@ -192,6 +201,10 @@ pub struct BrushSettings {
     /// The height of the hills of the abyssal hills mode, as a part of the
     /// height of the model.
     pub abyssal_hills: f64,
+    /// The scale and the fit of the hills of the abyssal hills mode, as
+    /// `ridge_scale` and `ridge_fit`.
+    pub abyssal_scale: f64,
+    pub abyssal_fit: bool,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -243,6 +256,8 @@ impl Default for BrushSettings {
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
             ridge_hills: 1.0,
+            ridge_scale: 1.0,
+            ridge_fit: true,
             range_spacing_km: 30.0,
             basin_density_km: 40.0,
             basin_age: 0.5,
@@ -251,6 +266,8 @@ impl Default for BrushSettings {
             seamount_height_m: 400.0,
             abyssal_rate_mm: 60.0,
             abyssal_hills: 1.0,
+            abyssal_scale: 1.0,
+            abyssal_fit: true,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -367,8 +384,8 @@ impl BrushSettings {
             seed,
             limits: self.limits(),
             hills: self.ridge_hills.clamp(0.0, 2.0),
-            fit: true,
-            scale: 1.0,
+            fit: self.ridge_fit,
+            scale: self.ridge_scale.clamp(1.0, 10.0),
         }
     }
 
@@ -427,8 +444,8 @@ impl BrushSettings {
         AbyssalHills {
             rate: self.abyssal_rate_mm,
             hills: self.abyssal_hills.clamp(0.0, 2.0),
-            fit: true,
-            scale: 1.0,
+            fit: self.abyssal_fit,
+            scale: self.abyssal_scale.clamp(1.0, 10.0),
             world_km,
             seed,
             limits: self.limits(),
@@ -895,6 +912,23 @@ mod tests {
 
     use super::*;
     use crate::globe::math::{dot, length, lonlat_to_dir};
+
+    #[test]
+    fn the_specs_of_the_hills_carry_their_scale_and_fit() {
+        let mut brush = BrushSettings::default();
+        let ridge = brush.ridge_spec(0.1, 6371.0, 7);
+        let abyssal = brush.abyssal_spec(6371.0, 7);
+        assert_eq!((ridge.scale, ridge.fit), (1.0, true));
+        assert_eq!((abyssal.scale, abyssal.fit), (1.0, true));
+        (brush.ridge_scale, brush.ridge_fit) = (4.0, false);
+        let abyssal = brush.abyssal_spec(6371.0, 7);
+        assert_eq!((abyssal.scale, abyssal.fit), (1.0, true));
+        let ridge = brush.ridge_spec(0.1, 6371.0, 7);
+        assert_eq!((ridge.scale, ridge.fit), (4.0, false));
+        (brush.abyssal_scale, brush.abyssal_fit) = (20.0, false);
+        let abyssal = brush.abyssal_spec(6371.0, 7);
+        assert_eq!((abyssal.scale, abyssal.fit), (10.0, false));
+    }
 
     #[test]
     fn the_ridge_spec_carries_the_hills_setting() {
