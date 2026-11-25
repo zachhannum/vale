@@ -108,7 +108,8 @@ pub struct BrushSettings {
     /// The radius on screen, in points.
     pub size_points: f32,
     /// The locked radius on the sphere, in radians. `None`: the radius
-    /// follows the zoom, and `size_points` sets it.
+    /// follows the zoom, and `size_points` sets it. The ocean ridge mode is
+    /// always locked, and `None` gives it its largest radius.
     pub lock: Option<f64>,
     pub hardness: f64,
     /// The part of the input flow that the brush applies, from 0 to 1.
@@ -314,10 +315,29 @@ pub fn needs_height(mode: Mode) -> bool {
     )
 }
 
-/// The limits of a locked radius, in radians.
-const LOCK_RADIUS: std::ops::RangeInclusive<f64> = 1e-4..=MAX_BRUSH_RADIUS;
+/// The smallest locked radius, in radians.
+const MIN_LOCK_RADIUS: f64 = 1e-4;
 
 impl BrushSettings {
+    /// The zoom does not change the size of the mode, because the size sets
+    /// the width of the ridge.
+    pub fn size_is_fixed(&self) -> bool {
+        self.mode == Mode::OceanRidge
+    }
+
+    /// The locked radius, in radians, with the lock that a fixed size
+    /// always has.
+    fn locked(&self) -> Option<f64> {
+        match self.lock {
+            None if self.size_is_fixed() => Some(self.max_radius()),
+            lock => lock,
+        }
+    }
+
+    fn clamp_lock(&self, angle: f64) -> f64 {
+        angle.clamp(MIN_LOCK_RADIUS, self.max_radius())
+    }
+
     /// The level that the mode paints toward. `None`: the level under the
     /// start of the stroke.
     pub fn target_level(&self) -> Option<u16> {
@@ -462,8 +482,8 @@ impl BrushSettings {
     /// The brush radius as an angle on the sphere, in radians. `globe_radius`
     /// is the radius of the globe on screen, in points.
     pub fn radius(&self, globe_radius: f64) -> f64 {
-        let radius = match self.lock {
-            Some(angle) => angle.clamp(*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+        let radius = match self.locked() {
+            Some(angle) => self.clamp_lock(angle),
             None => brush_radius(self.size_points, globe_radius),
         };
         radius.min(self.max_radius())
@@ -479,7 +499,7 @@ impl BrushSettings {
 
     /// The brush radius on screen, in points.
     pub fn points(&self, globe_radius: f64) -> f32 {
-        match self.lock {
+        match self.locked() {
             Some(_) => (self.radius(globe_radius) * globe_radius) as f32,
             None => self.size_points,
         }
@@ -488,7 +508,7 @@ impl BrushSettings {
     /// Locks the radius on the sphere, or lets it follow the zoom again. The
     /// brush keeps its size at this zoom.
     pub fn set_lock(&mut self, lock: bool, globe_radius: f64) {
-        if lock == self.lock.is_some() {
+        if self.size_is_fixed() || lock == self.lock.is_some() {
             return;
         }
         if !lock {
@@ -510,8 +530,8 @@ impl BrushSettings {
         globe_radius: f64,
         world_km: f64,
     ) -> std::ops::RangeInclusive<f64> {
-        let (min, max) = match self.lock {
-            Some(_) => (*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+        let (min, max) = match self.locked() {
+            Some(_) => (MIN_LOCK_RADIUS, self.max_radius()),
             None => (
                 brush_radius(*SIZE_POINTS.start(), globe_radius),
                 brush_radius(*SIZE_POINTS.end(), globe_radius),
@@ -524,8 +544,8 @@ impl BrushSettings {
     /// Sets the brush radius on the ground, in kilometers.
     pub fn set_radius_km(&mut self, km: f64, globe_radius: f64, world_km: f64) {
         let angle = km / world_km;
-        match &mut self.lock {
-            Some(lock) => *lock = angle.clamp(*LOCK_RADIUS.start(), *LOCK_RADIUS.end()),
+        match self.locked() {
+            Some(_) => self.lock = Some(self.clamp_lock(angle)),
             None => {
                 let points = (angle * globe_radius) as f32;
                 self.size_points = points.clamp(*SIZE_POINTS.start(), *SIZE_POINTS.end());
@@ -1381,10 +1401,33 @@ mod tests {
         let range = brush.radius_km_range(360.0, 6371.0);
         assert_eq!(*range.end(), MAX_RIDGE_RADIUS * 6371.0);
         assert!(*range.end() > 1500.0);
-        brush.size_points = 160.0;
+        brush.set_radius_km(1e6, 360.0, 6371.0);
         assert_eq!(brush.radius(360.0), MAX_RIDGE_RADIUS);
         brush.mode = Mode::Raise;
+        brush.lock = None;
+        brush.size_points = 160.0;
         assert_eq!(brush.radius(360.0), MAX_BRUSH_RADIUS);
+    }
+
+    #[test]
+    fn the_zoom_does_not_change_the_ocean_ridge_size() {
+        let mut brush = BrushSettings {
+            mode: Mode::OceanRidge,
+            ..BrushSettings::default()
+        };
+        // A new ridge brush has its largest radius at each zoom.
+        for globe_radius in [100.0, 360.0, 5000.0] {
+            assert_eq!(brush.radius(globe_radius), MAX_RIDGE_RADIUS);
+        }
+        brush.set_radius_km(500.0, 360.0, 5000.0);
+        for globe_radius in [100.0, 360.0, 5000.0] {
+            assert!((brush.radius_km(globe_radius, 5000.0) - 500.0).abs() < 1e-9);
+            let range = brush.radius_km_range(globe_radius, 5000.0);
+            assert_eq!(*range.end(), MAX_RIDGE_RADIUS * 5000.0);
+        }
+        // The lock switch does nothing for the mode.
+        brush.set_lock(false, 360.0);
+        assert!((brush.radius(5000.0) - 0.1).abs() < 1e-9);
     }
 
     #[test]

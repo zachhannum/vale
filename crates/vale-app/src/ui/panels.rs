@@ -1881,10 +1881,12 @@ pub(super) fn brush_settings(ui: &mut egui::Ui, state: &mut AppState) {
     let unit = state.shown_unit().to_string();
     let globe = &mut state.globe;
     let globe_radius = globe.radius();
-    let mut lock = globe.brush.lock.is_some();
-    let lock_box = ui.checkbox(&mut lock, "Lock size");
-    lock_box.on_hover_text("Keep the brush size on the ground while zooming");
-    globe.brush.set_lock(lock, globe_radius);
+    if !globe.brush.size_is_fixed() {
+        let mut lock = globe.brush.lock.is_some();
+        let lock_box = ui.checkbox(&mut lock, "Lock size");
+        lock_box.on_hover_text("Keep the brush size on the ground while zooming");
+        globe.brush.set_lock(lock, globe_radius);
+    }
     let mut finger = state.finger_paints();
     if ui
         .checkbox(&mut finger, crate::ui::pad::FINGER_PAINT)
