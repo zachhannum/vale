@@ -18,8 +18,8 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION, FLATTEN_RATE,
-    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
     SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
     shape_text,
 };
@@ -3198,6 +3198,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .unit("mm/yr");
             apply(number.stepper(ui, controls), &mut brush.ridge_spread_mm);
             row(ui, controls, state, Slider::Magma);
+            row(ui, controls, state, Slider::Hills);
             let brush = &mut state.globe.brush;
             let number = Number::new("Brush segment", brush.ridge_segment_km, RIDGE_SEGMENT_KM)
                 .label("Segment")
@@ -3365,6 +3366,7 @@ pub fn slider_name(slider: Slider) -> &'static str {
         Slider::Branching => "Brush branching",
         Slider::RainShadow => "Brush rain shadow",
         Slider::Magma => "Brush magma",
+        Slider::Hills => "Brush hills",
     }
 }
 
@@ -3393,6 +3395,7 @@ pub fn slider_label(mode: Mode, slider: Slider) -> &'static str {
         Slider::Branching => "Branching",
         Slider::RainShadow => "Rain shadow",
         Slider::Magma => "Magma",
+        Slider::Hills => "Hills",
     }
 }
 
@@ -3574,6 +3577,10 @@ pub(super) fn brush_slider(
                     .text(panels::signed_percent)
                     .default(0.0);
                 set(number, &mut brush.ridge_magma);
+            }
+            Slider::Hills => {
+                let number = fraction(brush.ridge_hills, RIDGE_HILLS).default(defaults.ridge_hills);
+                set(number, &mut brush.ridge_hills);
             }
         }
     }

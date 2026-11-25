@@ -23,7 +23,7 @@ use vale_terrain::Mode;
 use crate::globe::brush::{
     BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM, EROSION,
     FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
     TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
@@ -1581,6 +1581,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .factor(100.0)
             .step(1.0)
             .format(|percent| signed_percent(percent / 100.0))
+            .show(ui);
+        number::slider("Hills", &mut brush.ridge_hills, RIDGE_HILLS)
+            .percent()
             .show(ui);
         number::stepper("Segment", &mut brush.ridge_segment_km)
             .range(RIDGE_SEGMENT_KM)

@@ -67,7 +67,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 28] = [
+const FLOATS: [Field<f64>; 29] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -82,6 +82,7 @@ const FLOATS: [Field<f64>; 28] = [
     ("ridge_offset_km", |b| &mut b.ridge_offset_km),
     ("ridge_spread_mm", |b| &mut b.ridge_spread_mm),
     ("ridge_magma", |b| &mut b.ridge_magma),
+    ("ridge_hills", |b| &mut b.ridge_hills),
     ("range_spacing_km", |b| &mut b.range_spacing_km),
     ("basin_density_km", |b| &mut b.basin_density_km),
     ("basin_age", |b| &mut b.basin_age),

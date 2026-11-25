@@ -54,6 +54,9 @@ pub const RIDGE_CREST_M: std::ops::RangeInclusive<f64> = -6000.0..=6000.0;
 pub const RIDGE_SPREAD_MM: std::ops::RangeInclusive<f64> = 10.0..=150.0;
 /// The limits of the magma setting of the ocean ridge mode.
 pub const RIDGE_MAGMA: std::ops::RangeInclusive<f64> = -0.25..=0.15;
+/// The limits of the hills setting of the ocean ridge mode, the part of
+/// the height of the abyssal hills of the model.
+pub const RIDGE_HILLS: std::ops::RangeInclusive<f64> = 0.0..=2.0;
 /// The limits of the segment length of the ocean ridge mode, in kilometers.
 pub const RIDGE_SEGMENT_KM: std::ops::RangeInclusive<f64> = 100.0..=1500.0;
 /// The limits of the offset of the ocean ridge mode, in kilometers.
@@ -163,6 +166,9 @@ pub struct BrushSettings {
     /// The change of the magma part of the spreading of the ocean ridge
     /// mode.
     pub ridge_magma: f64,
+    /// The height of the abyssal hills of the ocean ridge mode, as a part of
+    /// the height of the model.
+    pub ridge_hills: f64,
     /// The mean distance between two ridges of the range mode, in
     /// kilometers.
     pub range_spacing_km: f64,
@@ -227,6 +233,7 @@ impl Default for BrushSettings {
             ridge_offset_km: 100.0,
             ridge_spread_mm: 25.0,
             ridge_magma: 0.0,
+            ridge_hills: 1.0,
             range_spacing_km: 30.0,
             basin_density_km: 40.0,
             basin_age: 0.5,
@@ -347,7 +354,7 @@ impl BrushSettings {
             world_km,
             seed,
             limits: self.limits(),
-            hills: 1.0,
+            hills: self.ridge_hills.clamp(0.0, 2.0),
         }
     }
 
@@ -858,6 +865,17 @@ mod tests {
 
     use super::*;
     use crate::globe::math::{dot, length, lonlat_to_dir};
+
+    #[test]
+    fn the_ridge_spec_carries_the_hills_setting() {
+        let mut brush = BrushSettings::default();
+        assert_eq!(brush.ridge_hills, 1.0);
+        assert_eq!(brush.ridge_spec(0.1, 6371.0, 7).hills, 1.0);
+        brush.ridge_hills = 0.4;
+        assert_eq!(brush.ridge_spec(0.1, 6371.0, 7).hills, 0.4);
+        brush.ridge_hills = 3.0;
+        assert_eq!(brush.ridge_spec(0.1, 6371.0, 7).hills, 2.0);
+    }
 
     fn sample(lon: f64, radius: f64) -> Sample {
         Sample {

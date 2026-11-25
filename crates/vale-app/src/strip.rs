@@ -31,10 +31,11 @@ pub enum Slider {
     Branching,
     RainShadow,
     Magma,
+    Hills,
 }
 
 /// The sliders, with their names in the file of the tools.
-pub const NAMES: [(Slider, &str); 22] = [
+pub const NAMES: [(Slider, &str); 23] = [
     (Slider::Size, "size"),
     (Slider::Hardness, "hardness"),
     (Slider::Flow, "flow"),
@@ -57,6 +58,7 @@ pub const NAMES: [(Slider, &str); 22] = [
     (Slider::Branching, "branching"),
     (Slider::RainShadow, "rain_shadow"),
     (Slider::Magma, "magma"),
+    (Slider::Hills, "hills"),
 ];
 
 /// The most sliders that the strip shows.
@@ -96,7 +98,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         out.push(Flow);
     }
     match mode {
-        Mode::OceanRidge => out.push(Magma),
+        Mode::OceanRidge => out.extend([Magma, Hills]),
         Mode::Warp => out.extend([Strength, Scale]),
         Mode::Flatten => out.push(Rate),
         Mode::Paint => out.extend([Opacity, Value]),
