@@ -2073,7 +2073,7 @@ fn limited(old: f32, next: f32) -> f32 {
 // The constants of `seamount.rs`, with the same names but for `CONE_FOOT`
 // for `FOOT` and `SLIDE_APRON` for `APRON`, and the places in
 // `Volcano`.
-const VOLCANO_FLOATS = 48u;
+const VOLCANO_FLOATS = 56u;
 const RIFT_WIDTH = 0.3;
 const CONE_FOOT = 0.15;
 const SLIDE_APRON = 1.9;
@@ -2089,6 +2089,8 @@ const V_CRATER_DEPTH = 12u;
 const V_CONES = 13u;
 const V_CONE_OFFSET = 14u;
 const V_CONE_HEIGHT = 18u;
+const V_CONE_SIDE = 48u;
+const V_CONE_TURN = 52u;
 const V_STRETCH = 22u;
 const V_RIFTS = 23u;
 const V_RIFT_ANGLE = 24u;
@@ -2152,7 +2154,7 @@ fn wrap_angle(a: f32) -> f32 {
 }
 
 // The steps of `Volcano::profile`.
-fn volcano_profile(v: u32, r: f32, theta: f32) -> f32 {
+fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     var outline = 1.0;
     for (var k = 0u; k < 3u; k++) {
         let phase = volcano(v, V_OUTLINE_PHASE + k);
@@ -2168,7 +2170,7 @@ fn volcano_profile(v: u32, r: f32, theta: f32) -> f32 {
     star = 1.0 + volcano(v, V_RIFT_SIZE) * shield * star;
     var re = r / (outline * star);
     let around = volcano(v, V_GULLIES) / (8.0 * PI_4);
-    let seed = u32(volcano(v, V_SEED));
+    let seed = u32(volcano(v, V_SEED)) + index;
     let q = vec3<f32>(cos_any(theta) * around, sin_any(theta) * around, re * 1.5);
     let n = noise3(q, seed);
     re = re * (1.0 + 0.05 * n.x);
@@ -2226,9 +2228,10 @@ fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
     let cones = u32(volcano(v, V_CONES));
     for (var i = 0u; i < cones; i++) {
         let du = (u - volcano(v, V_CONE_OFFSET + i)) / volcano(v, V_STRETCH);
-        let r = sqrt(du * du + w * w);
-        let theta = atan2_any(w, du);
-        edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta));
+        let dw = w - volcano(v, V_CONE_SIDE + i);
+        let r = sqrt(du * du + dw * dw);
+        let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
+        edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
     }
     edifice *= volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
     let xi = d / volcano(v, V_FLEX_LENGTH);

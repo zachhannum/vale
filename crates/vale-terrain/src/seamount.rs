@@ -15,7 +15,7 @@ use crate::line::{smoothstep, unit};
 use crate::math::{V3, angle, cross, dot, normalize};
 
 /// The number of 32-bit numbers of one volcano in `SeamountPlan::floats`.
-pub const VOLCANO_FLOATS: usize = 48;
+pub const VOLCANO_FLOATS: usize = 56;
 
 /// The largest number of volcanoes in one plan.
 pub const PLAN_VOLCANOES: usize = 256;
@@ -106,6 +106,8 @@ const SEED: usize = 43;
 const FLEX: usize = 44;
 const FLEX_LENGTH: usize = 45;
 const REACH: usize = 46;
+const CONE_SIDE: usize = 48;
+const CONE_TURN: usize = 52;
 
 /// The 16-bit steps of one meter.
 const LEVELS_PER_M: f64 = 65535.0 / (ELEV_MAX - ELEV_MIN);
@@ -248,9 +250,10 @@ impl Volcano {
         let mut edifice: f64 = 0.0;
         for i in 0..self.cones() {
             let du = (u - self.get(CONE_OFFSET + i)) / self.get(STRETCH);
-            let r = (du * du + v * v).sqrt();
-            let theta = v.atan2(du);
-            edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta));
+            let dv = v - self.get(CONE_SIDE + i);
+            let r = (du * du + dv * dv).sqrt();
+            let theta = dv.atan2(du) + self.get(CONE_TURN + i);
+            edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta, i as u32));
         }
         let edifice = edifice * height * (1.0 - smoothstep(0.85 * reach, reach, d));
         let xi = d / self.get(FLEX_LENGTH);
@@ -261,8 +264,8 @@ impl Volcano {
 
     /// The level at full growth over the ground, as a part of the height,
     /// at a distance `r` from the center of a cone in base radii, at an angle
-    /// `theta` from the axis.
-    fn profile(&self, r: f64, theta: f64) -> f64 {
+    /// `theta` from the axis. Each cone of a ridge has its own noise.
+    fn profile(&self, r: f64, theta: f64, cone: u32) -> f64 {
         let mut outline = 1.0;
         for k in 0..3 {
             let phase = self.get(OUTLINE_PHASE + k);
@@ -279,7 +282,7 @@ impl Volcano {
         // The noise is long down the slope and short around the summit, so
         // its features are lava ridges and gullies.
         let around = self.get(GULLIES) / TAU;
-        let seed = self.0[SEED] as u32;
+        let seed = (self.0[SEED] as u32).wrapping_add(cone);
         let q = [theta.cos() * around, theta.sin() * around, re * 1.5];
         let n = noise3(q, seed);
         let re = re * (1.0 + 0.05 * n[0]);
@@ -689,18 +692,53 @@ fn volcano(
     } else {
         1.0 + 0.15 * r(3)
     };
-    let spacing = 0.55 + 0.3 * r(4);
+    // The cones of a ridge are apart by uneven steps, off one line, and on
+    // a gentle bend. Each cone has its own turn, so no two have the same
+    // shape. The end cones are often smaller.
     let mut offsets = [0.0; 4];
+    let mut sides = [0.0; 4];
+    let mut turns = [0.0; 4];
     let mut heights = [0.0; 4];
+    let bend = 0.8 * (r(4) - 0.5);
     for i in 0..cones {
-        offsets[i] = (i as f64 - 0.5 * (cones - 1) as f64) * spacing * stretch
-            + 0.2 * (r(10 + i as u32) - 0.5);
+        let k = i as u32;
+        if i > 0 {
+            offsets[i] = offsets[i - 1] + (0.6 + 0.45 * r(10 + k)) * stretch;
+        }
+        if cones > 1 {
+            sides[i] = 0.6 * (r(44 + k) - 0.5);
+        }
+        turns[i] = if i == 0 { 0.0 } else { r(48 + k) * TAU };
+        let end = i == 0 || i == cones - 1;
         heights[i] = if i == cones / 2 {
             1.0
+        } else if end {
+            0.5 + 0.4 * r(14 + k)
         } else {
-            0.45 + 0.5 * r(14 + i as u32)
+            0.6 + 0.35 * r(14 + k)
         };
     }
+    let middle = 0.5 * (offsets[0] + offsets[cones - 1]);
+    let half = (0.5 * (offsets[cones - 1] - offsets[0])).max(1e-9);
+    for i in 0..cones {
+        offsets[i] -= middle;
+        if cones > 1 {
+            let t = offsets[i] / half;
+            sides[i] += bend * half * (t * t - 0.5);
+        }
+    }
+    // A ridge runs near the fabric, not exactly along it.
+    let axis = if cones > 1 {
+        let (s, c) = (0.7 * (r(52) - 0.5)).sin_cos();
+        let across = cross(center, axis);
+        normalize([
+            axis[0] * c + across[0] * s,
+            axis[1] * c + across[1] * s,
+            axis[2] * c + across[2] * s,
+        ])
+    } else {
+        axis
+    };
     let rifts = if shield > 0.0 {
         2 + (r(5) * 3.0) as usize
     } else {
@@ -714,7 +752,7 @@ fn volcano(
         0.03 + 0.04 * r(22),
     ];
     // The farthest place of the volcano, in base radii.
-    let along = offsets[..cones].iter().fold(0.0f64, |m, o| m.max(o.abs()));
+    let along = (0..cones).fold(0.0f64, |m, i| m.max(offsets[i].hypot(sides[i])));
     let slides = shield >= 0.5;
     let foot = if slides { APRON } else { 1.1 };
     let outline_max = 1.0 + outline.iter().sum::<f64>() + 0.05;
@@ -764,6 +802,8 @@ fn volcano(
     for i in 0..4 {
         put(&mut v, CONE_OFFSET + i, offsets[i]);
         put(&mut v, CONE_HEIGHT + i, heights[i]);
+        put(&mut v, CONE_SIDE + i, sides[i]);
+        put(&mut v, CONE_TURN + i, turns[i]);
     }
     put(&mut v, STRETCH, stretch);
     put(&mut v, RIFTS, rifts as f64);
@@ -1017,17 +1057,81 @@ mod tests {
         assert!(ridges.len() > 20, "{} ridges", ridges.len());
         for v in ridges {
             let h = v.height();
-            // The ridge is longer along the axis than across it.
-            let along = outline(v, 0.0, 0.1).max(outline(v, PI, 0.1));
-            let across = outline(v, FRAC_PI_2, 0.1).max(outline(v, -FRAC_PI_2, 0.1));
+            // The ridge is longer along the axis than across it: the second
+            // moments of the edifice above a tenth of its height.
+            let (mut w, mut mu, mut mv) = (0.0, 0.0, 0.0);
+            let (mut uu, mut vv) = (0.0, 0.0);
+            for j in -60..=60 {
+                for i in -60..=60 {
+                    let (x, y) = (f64::from(i) * 0.05, f64::from(j) * 0.05);
+                    if edifice(v, x.hypot(y), y.atan2(x)) > 0.1 * h {
+                        w += 1.0;
+                        mu += x;
+                        mv += y;
+                        uu += x * x;
+                        vv += y * y;
+                    }
+                }
+            }
+            let along = uu / w - (mu / w).powi(2);
+            let across = vv / w - (mv / w).powi(2);
             assert!(along > 1.5 * across, "{along} along, {across} across");
             // The ground between two cones stays high.
-            let (o0, o1) = (v.get(CONE_OFFSET), v.get(CONE_OFFSET + 1));
-            let middle = 0.5 * (o0 + o1);
-            let saddle = edifice(v, middle.abs(), if middle < 0.0 { PI } else { 0.0 });
+            let mu = 0.5 * (v.get(CONE_OFFSET) + v.get(CONE_OFFSET + 1));
+            let mv = 0.5 * (v.get(CONE_SIDE) + v.get(CONE_SIDE + 1));
+            let saddle = edifice(v, mu.hypot(mv), mv.atan2(mu));
             let low = v.get(CONE_HEIGHT).min(v.get(CONE_HEIGHT + 1));
             assert!(saddle > 0.2 * low * h, "a saddle at {saddle} of {h}");
         }
+    }
+
+    #[test]
+    fn the_cones_of_a_ridge_are_uneven() {
+        let all = volcanoes(&spec(), 0.1);
+        let ridges: Vec<_> = all.iter().filter(|v| v.cones() > 2).collect();
+        assert!(
+            ridges.len() > 10,
+            "{} ridges of 3 cones or more",
+            ridges.len()
+        );
+        let mut off_line = 0;
+        let mut turns = Vec::new();
+        for v in &ridges {
+            let k = v.cones();
+            // The distance of the middle cones from the line between the end
+            // cones, in base radii.
+            let (a, b) = ((0, k - 1), (CONE_OFFSET, CONE_SIDE));
+            let p = |i: usize| [v.get(b.0 + i), v.get(b.1 + i)];
+            let (p0, p1) = (p(a.0), p(a.1));
+            let (dx, dy) = (p1[0] - p0[0], p1[1] - p0[1]);
+            let far = (1..k - 1)
+                .map(|i| ((p(i)[0] - p0[0]) * dy - (p(i)[1] - p0[1]) * dx).abs() / dx.hypot(dy))
+                .fold(0.0, f64::max);
+            if far > 0.05 {
+                off_line += 1;
+            }
+            // The steps between the cones are uneven.
+            let steps: Vec<f64> = (1..k).map(|i| p(i)[0] - p(i - 1)[0]).collect();
+            assert!(steps.iter().all(|&s| s > 0.0));
+            turns.extend((1..k).map(|i| v.get(CONE_TURN + i)));
+        }
+        assert!(
+            off_line * 10 > ridges.len() * 8,
+            "{off_line} ridges off one line"
+        );
+        // Each cone after the first has its own turn, so its own shape.
+        let distinct = turns
+            .windows(2)
+            .filter(|w| (w[0] - w[1]).abs() > 0.1)
+            .count();
+        assert!(distinct * 10 > turns.len() * 8);
+        // The ridges do not all run along the fabric.
+        let fabric = [0.0, 0.0, 1.0];
+        let tilted = ridges
+            .iter()
+            .filter(|v| dot(v.v3(AXIS), fabric).abs() < 0.995)
+            .count();
+        assert!(tilted * 2 > ridges.len(), "{tilted} ridges off the fabric");
     }
 
     #[test]
