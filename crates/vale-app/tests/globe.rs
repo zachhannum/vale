@@ -4722,6 +4722,21 @@ fn fracture_samples() -> Vec<vale_app::globe::brush::Sample> {
         .collect()
 }
 
+/// The lowest level near each place of `fracture_samples`, within 1 degree
+/// of longitude.
+fn trough_levels(h: &Harness<'static, AppState>) -> Vec<u16> {
+    let map = &h.state().globe.map;
+    let places = (0..=28).map(|i| -10.0 + 0.5 * f64::from(i));
+    places
+        .map(|lat| {
+            let lons = (-20..=20).map(|k| 40.0 + 0.05 * f64::from(k));
+            lons.map(|lon| map.sample(lonlat_to_dir(lon, lat)))
+                .min()
+                .unwrap()
+        })
+        .collect()
+}
+
 /// The largest difference between two lists of levels.
 fn worst_difference(a: &[u16], b: &[u16]) -> u16 {
     a.iter().zip(b).map(|(a, b)| a.abs_diff(*b)).max().unwrap()
@@ -4749,10 +4764,7 @@ fn a_fracture_zone_across_a_held_ocean_ridge_deepens_the_ground_along_it() {
     let mut h = ridge_harness(7);
     pen_line(&mut h, |_| {});
     settle(&mut h);
-    let plain: Vec<u16> = fracture_samples()
-        .iter()
-        .map(|s| h.state().globe.map.sample(s.dir.unwrap()))
-        .collect();
+    let plain = trough_levels(&h);
     drop(h);
 
     let mut h = ridge_harness(7);
@@ -4767,10 +4779,7 @@ fn a_fracture_zone_across_a_held_ocean_ridge_deepens_the_ground_along_it() {
     assert_eq!(globe.fracture_preview().len(), 1);
     assert!(canvas_image(&mut h).as_raw() != held.as_raw());
     settle(&mut h);
-    let along: Vec<u16> = fracture_samples()
-        .iter()
-        .map(|s| h.state().globe.map.sample(s.dir.unwrap()))
-        .collect();
+    let along = trough_levels(&h);
     // The trough of the transform fault follows the drawn line.
     let sum = |levels: &[u16]| levels.iter().map(|&l| u64::from(l)).sum::<u64>();
     assert!(sum(&along) < sum(&plain), "{along:?} {plain:?}");
@@ -4830,10 +4839,16 @@ fn a_short_stroke_far_from_a_held_ocean_ridge_applies_it() {
         radius: 0.1,
     });
     pen_line_of(&mut h, far.collect(), |_| {});
-    run_until_idle(&mut h);
-    assert!(h.state().globe.fracture_preview().is_empty());
     // The new stroke is held or changed nothing. Without it, the levels
     // are those of the first ridge.
+    for _ in 0..400 {
+        let globe = &h.state().globe;
+        if globe.holding().is_some() || !globe.busy() {
+            break;
+        }
+        h.step();
+    }
+    assert!(h.state().globe.fracture_preview().is_empty());
     h.state_mut().globe.discard_held();
     run_until_idle(&mut h);
     assert!(all_levels(&h) == plain);
