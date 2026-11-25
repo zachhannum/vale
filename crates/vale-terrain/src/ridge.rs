@@ -10,9 +10,13 @@ use std::f64::consts::FRAC_PI_2;
 use std::ops::Deref;
 
 use crate::cube::{ELEV_MAX, ELEV_MIN};
-use crate::heightmap::{Limits, MAX_BRUSH_RADIUS, hash, noise3};
+use crate::heightmap::{Limits, hash, noise3};
 use crate::line::{LinePlan, LinePoint, REACH, StrokeLine, TAPER, bump, noise1, smoothstep, unit};
 use crate::math::{V3, add, scale};
+
+/// The largest radius of an ocean ridge stroke, in radians. On a world of
+/// the size of the Earth, the ridge is up to 3,060 km wide.
+pub const MAX_RIDGE_RADIUS: f64 = 0.24;
 
 /// The settings of an ocean ridge stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -74,7 +78,7 @@ impl RidgeLine {
     /// along one side of a face. The settings go inside their limits.
     pub fn new(spec: Ridge, face_size: usize) -> RidgeLine {
         let step = FRAC_PI_2 / face_size as f64;
-        let radius = spec.radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / REACH);
+        let radius = spec.radius.max(4.0 * step).min(MAX_RIDGE_RADIUS);
         let spec = Ridge {
             radius,
             segment: spec
@@ -2112,6 +2116,31 @@ mod tests {
             (crest - f64::from(CREST) + SAG * lift).abs() < 2.0,
             "{crest}"
         );
+    }
+
+    #[test]
+    fn a_ridge_is_up_to_3000_km_wide_on_an_earth_size_world() {
+        let km = 6371.0;
+        let wide = Ridge {
+            radius: 1500.0 / km,
+            ..spec()
+        };
+        let line = RidgeLine::new(wide, 1024);
+        assert!((line.spec().radius * km - 1500.0).abs() < 1e-9);
+        let wider = Ridge {
+            radius: 1.0,
+            ..spec()
+        };
+        assert_eq!(RidgeLine::new(wider, 1024).spec().radius, MAX_RIDGE_RADIUS);
+        // A stroke of the largest radius at a cube corner reaches each of
+        // the three faces at the corner.
+        let mut line = RidgeLine::new(wider, 1024);
+        let corner = normalize([1.0, 1.0, 1.0]);
+        line.push(corner, 1.0);
+        line.push(normalize([1.0, 1.0, 0.9]), 1.0);
+        let plan = line.plan(0);
+        let faces = plan.rects.iter().filter(|r| r.is_some()).count();
+        assert!(faces >= 3, "{faces}");
     }
 
     #[test]
