@@ -14,9 +14,9 @@ use vale_store::{
 };
 use vale_terrain::{
     Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep, FACES,
-    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL, Stamp,
-    TexelRect, Window, WindowHeights, max_level, meters_to_level, reduced_cap, reduced_face_size,
-    smoothing_level,
+    Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL,
+    SeamountPlan, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level,
+    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -63,7 +63,10 @@ pub mod zoom_test;
 use crate::extent::GpuExtent;
 use crate::pen::Pen;
 use basin::Basiner;
-use brush::{Backlog, BrushSettings, STAMP_SPACING, Sample, Stroke, plan_texels, set_world};
+use brush::{
+    Backlog, BrushSettings, FRAME_PASSES, FRAME_TEXELS, STAMP_SPACING, Sample, Stroke, plan_texels,
+    set_world,
+};
 use combine::PolygonMode;
 pub use detail::DetailRequest;
 use erode::{Eroder, Ground, Lift, brush_window, erode_window, near_side, range_window};
@@ -431,6 +434,36 @@ impl Basining {
     }
 }
 
+/// The volcanoes of a seamounts stroke. The stamps of the stroke grow
+/// them, and they do not go to the backlog.
+struct Seamounting {
+    stroke: SeamountStroke,
+    /// The plans that wait for the GPU, each with the time of its pen
+    /// sample.
+    plans: VecDeque<(SeamountPlan, Instant)>,
+}
+
+impl Seamounting {
+    /// Grows the volcanoes under each stamp. `map` holds the ground from
+    /// before the stroke.
+    fn extend(&mut self, map: &Heightmap, stamps: &[Stamp], time: Instant) {
+        for s in stamps {
+            let plan = self
+                .stroke
+                .stamp(map, s.center, s.radius, s.hardness, s.flow);
+            if !plan.is_empty() {
+                self.plans.push_back((plan, time));
+            }
+        }
+    }
+}
+
+/// The number of texels in the rectangles of a seamounts plan.
+fn seamount_texels(plan: &SeamountPlan) -> u64 {
+    let rects = plan.rects.iter().flatten();
+    rects.map(|r| ((r.x1 - r.x0) * (r.y1 - r.y0)) as u64).sum()
+}
+
 /// The stroke that the GPU works on.
 struct Active {
     id: u64,
@@ -447,6 +480,8 @@ struct Active {
     ridge: Option<Ridging>,
     /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
+    /// `Some`: the stroke is a seamounts stroke.
+    seamounts: Option<Seamounting>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
     /// `Some`: the stroke is an ocean ridge stroke or the rivers of a
@@ -3449,7 +3484,7 @@ impl Globe {
                     }
                     self.strokes += 1;
                     self.map.begin_stroke();
-                    if self.brush.mode == Mode::Paint {
+                    if matches!(self.brush.mode, Mode::Paint | Mode::Seamounts) {
                         // The stamps of the last stroke are in the queue
                         // before this change.
                         let tag = self.tag();
@@ -3461,6 +3496,13 @@ impl Globe {
                     let erode = (self.brush.mode == Mode::Erode).then(Eroding::default);
                     let eroding = self.brush.mode == Mode::Uplift && self.brush.erosion > 0.0;
                     let uplift = eroding.then(Uplifting::default);
+                    let seamounts = (self.brush.mode == Mode::Seamounts).then(|| {
+                        let spec = self.brush.seamount_spec(self.world_km, self.world_seed);
+                        Seamounting {
+                            stroke: SeamountStroke::new(spec, self.map.face_size()),
+                            plans: VecDeque::new(),
+                        }
+                    });
                     self.stroke = Some(Active {
                         id: self.strokes,
                         stroke: Stroke::default(),
@@ -3470,6 +3512,7 @@ impl Globe {
                         uplift,
                         ridge: None,
                         basin: None,
+                        seamounts,
                         outline: None,
                         held: None,
                         ended: false,
@@ -3552,6 +3595,10 @@ impl Globe {
                             if let Some(outline) = &mut active.outline {
                                 outline.extend(stamps.drain(..).map(|s| s.center));
                             }
+                            if let Some(seamounts) = &mut active.seamounts {
+                                seamounts.extend(map, &stamps, time);
+                                stamps.clear();
+                            }
                             for stamp in &mut stamps {
                                 set_world(
                                     stamp,
@@ -3596,6 +3643,11 @@ impl Globe {
                             let spec = self.brush.basin_spec(km, self.world_seed, rain);
                             let usable = BasinLine::new(spec, &outline, n).has_outline();
                             self.basin_outline = usable.then_some(outline);
+                        }
+                        if let Some(seamounts) = &mut active.seamounts {
+                            let time = active.sampled.unwrap_or_else(Instant::now);
+                            seamounts.extend(map, &stamps, time);
+                            stamps.clear();
                         }
                         for stamp in &mut stamps {
                             set_world(
@@ -4155,6 +4207,31 @@ impl Globe {
             let (plan, stroke) = (Box::new(plan), active.id);
             self.link.push(tag, Op::Stamp { plan, stroke, time });
         }
+        if let Some(seamounts) = &mut active.seamounts {
+            let (mut passes, mut texels, mut count) = (0, 0, 0);
+            while let Some((plan, _)) = seamounts.plans.front() {
+                let more = plan.rects.iter().flatten().count();
+                let more_texels = seamount_texels(plan);
+                let full = passes + more > FRAME_PASSES || texels + more_texels > FRAME_TEXELS;
+                if full && count > 0 {
+                    break;
+                }
+                let Some((plan, time)) = seamounts.plans.pop_front() else {
+                    break;
+                };
+                (passes, texels, count) = (passes + more, texels + more_texels, count + 1);
+                for (touched, rect) in active.touched.iter_mut().zip(plan.rects) {
+                    if let Some(rect) = rect {
+                        *touched = Some(union(*touched, rect));
+                    }
+                }
+                let (plan, stroke) = (Box::new(plan), active.id);
+                self.link.push(tag, Op::Seamounts { plan, stroke, time });
+            }
+            if count > 0 {
+                self.stats.stamps(active.id, count, texels);
+            }
+        }
         self.stats.backlog = self.backlog.len();
         if !active.ended || !self.backlog.is_empty() || active.reading.is_some() {
             return;
@@ -4174,6 +4251,13 @@ impl Globe {
         // step has the whole stroke.
         if let Some(ridge) = &active.ridge
             && (!ridge.all_sent() || ridge.range.as_ref().is_some_and(|r| !r.done))
+        {
+            return;
+        }
+        if active
+            .seamounts
+            .as_ref()
+            .is_some_and(|s| !s.plans.is_empty())
         {
             return;
         }

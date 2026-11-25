@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use vale_store::{ImageId, LayerId, RasterId};
 use vale_terrain::{
     ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid, GpuTiles,
-    Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, StampPipeline,
-    StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
+    Heightmap, MAX_BANDS, PyramidPipelines, RangePlan, Readback, RidgePlan, SeamountPlan,
+    StampPipeline, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
 };
 
 use super::compile::{Compiled, render_pipeline};
@@ -2977,6 +2977,13 @@ pub enum Op {
         stroke: u64,
         time: Instant,
     },
+    /// One stamp of a seamounts stroke. `time` is the frame that read its
+    /// pen sample.
+    Seamounts {
+        plan: Box<SeamountPlan>,
+        stroke: u64,
+        time: Instant,
+    },
     /// One step of an erode stroke.
     Erode { stroke: u64, step: Arc<ErodeStep> },
     /// The ocean ridge or the range of the new points of a stroke. `ground`
@@ -3628,6 +3635,19 @@ impl Batch<'_> {
                 let rects = plan.rects();
                 self.mark_full(rects);
                 let passes = rects.iter().flatten().count() as u32;
+                self.count_passes(stroke, passes);
+                self.stamps.push((stroke, time));
+            }
+            Op::Seamounts { plan, stroke, time } => {
+                let queue = self.queue;
+                if !heights.seamounts(queue, self.encoder(), &plan) {
+                    self.submit();
+                    heights.begin_batch();
+                    let added = heights.seamounts(queue, self.encoder(), &plan);
+                    debug_assert!(added, "an empty batch takes one plan");
+                }
+                self.mark_full(&plan.rects);
+                let passes = plan.rects.iter().flatten().count() as u32;
                 self.count_passes(stroke, passes);
                 self.stamps.push((stroke, time));
             }
