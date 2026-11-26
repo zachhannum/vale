@@ -5,10 +5,11 @@ use std::path::Path;
 
 use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, Heightmap, Limits, Margin,
-    MarginStroke, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke,
-    Seamounts, US_EAST_MARGIN, WindowHeights, erode_margin, margin_window, meters_to_level,
-    realism,
+    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII, HOTSPOT_HEIGHT_M,
+    HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine, LINE_SPACING, Limits,
+    Margin, MarginStroke, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine,
+    SeamountStroke, Seamounts, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
+    hotspot_window, margin_window, meters_to_level, realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -612,6 +613,91 @@ fn manual_margin_next_to_its_reference() {
     let reference = Reference::parse(US_EAST_MARGIN).unwrap();
     let gebco = gebco_patch("us-east-margin");
     save_side_by_side("us-east-margin", &earth_margin(), &reference, &gebco);
+}
+
+/// The length of the hotspot test stroke, in kilometers.
+const HOTSPOT_KM: f64 = 1200.0;
+
+/// A hotspot track at the default settings on a floor at 5,400 m, on a
+/// world of the size of the Earth, at the scale of the Hawaiian Islands. The
+/// stroke runs 1,200 km from the west-northwest to its end at the place of
+/// Kilauea in the reference patch: 210 km east and 150 km south of the
+/// middle. The erosion is at 50%.
+fn earth_hotspot() -> Painted {
+    let mut painted = Painted::earth(5400.0);
+    let n = painted.map.face_size();
+    let km = |d: f64| d / EARTH_KM;
+    // The old Pacific floor around the islands has abyssal hills. In the
+    // reference patch, their trend is near N75W.
+    let hills = AbyssalHills {
+        rate: 100.0,
+        hills: 0.3,
+        fit: true,
+        scale: 1.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let trend = -75f64.to_radians();
+    let fabric: Vec<V3> = (-8..=8)
+        .map(|i| offset(painted.center, trend, km(150.0 * f64::from(i))))
+        .collect();
+    paint_abyssal(&mut painted.map, hills, &fabric, 0.15);
+    let spec = Hotspot {
+        radius: HOTSPOT_RADIUS_KM / EARTH_KM,
+        height_m: HOTSPOT_HEIGHT_M,
+        speed_mm: HOTSPOT_SPEED_MM,
+        reefs: false,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let end = offset(painted.center, std::f64::consts::FRAC_PI_2, km(210.0));
+    let end = offset(end, std::f64::consts::PI, km(150.0));
+    let start = offset(end, -60f64.to_radians(), km(HOTSPOT_KM));
+    let mut line = HotspotLine::new(spec, n);
+    let count = (km(HOTSPOT_KM) / (LINE_SPACING * spec.radius)).ceil() as usize;
+    let tangent = cross(normalize(cross(start, end)), start);
+    for i in 0..=count {
+        let (sin, cos) = (km(HOTSPOT_KM) * i as f64 / count as f64).sin_cos();
+        line.push(add(scale(start, cos), scale(tangent, sin)), 1.0);
+    }
+    line.finish(&painted.map);
+    let window = hotspot_window(&line, n);
+    let mut erosion = Erosion::window_alone(&WindowHeights::new(&painted.map, window));
+    erosion.set_branching(spec.seed, 0.5);
+    let step = erode_hotspot(&mut erosion, &line, 0.5);
+    painted.map.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        painted.map.hotspot(&plan);
+        from = plan.end;
+    }
+    painted.map.erode(&step);
+    painted.map.end_stroke();
+    painted
+}
+
+const HOTSPOT_LIMITS: Within = MARGIN_LIMITS;
+
+#[test]
+fn a_hotspot_track_is_near_the_hawaiian_islands() {
+    let reference = Reference::parse(HAWAII).unwrap();
+    let (report, _) = compare(&earth_hotspot(), &reference, reference.direction());
+    assert_within(&report, &reference, &HOTSPOT_LIMITS);
+}
+
+/// The test stroke of a hotspot track beside its reference patch, from
+/// `scripts/gebco-reference.sh hawaii`.
+#[test]
+#[ignore = "manual"]
+fn manual_hotspot_next_to_its_reference() {
+    let reference = Reference::parse(HAWAII).unwrap();
+    let gebco = gebco_patch("hawaii");
+    let painted = earth_hotspot();
+    compare(&painted, &reference, reference.direction());
+    save_side_by_side("hawaii", &painted, &reference, &gebco);
 }
 
 /// The patch of a reference region from `scripts/gebco-reference.sh`.

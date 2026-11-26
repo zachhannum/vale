@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: 16.229 to 24.971 N, -162.122 to -152.478 E
+# Fetched: 2026-11-26
+# Made by: scripts/gebco-reference.sh hawaii
+
+region = Hawaiian Islands, 20.6 N
+center = -157.3, 20.6
+size = 1024
+cell_m = 920
+band_m = 3680, 225000
+fabric_deg = -60
+spectral_slope = -3.6706
+anisotropy = 1.5472
+rms_m = 1221.93
+slope_histogram = 0.55942, 0.16847, 0.11211, 0.08171, 0.06074, 0.01737, 0.00018
