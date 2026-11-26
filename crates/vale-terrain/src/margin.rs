@@ -118,12 +118,9 @@ const SCAR_DEPTH: f64 = 260.0;
 /// scar.
 const DEBRIS_PART: f64 = 0.45;
 
-/// How much more fine relief the slope has than the rise.
-const SLOPE_ROUGH: f64 = 1.5;
-
 /// The sizes of the features of the fine relief, in kilometers, and their
 /// heights on the rise, in meters.
-const RELIEF: [(f64, f64); 4] = [(40.0, 40.0), (16.0, 50.0), (7.0, 55.0), (3.5, 45.0)];
+const RELIEF: [(f64, f64); 4] = [(40.0, 20.0), (16.0, 15.0), (7.0, 10.0), (3.5, 6.0)];
 
 /// The number of cells along one side of a distance field, at most.
 pub const FIELD_CELLS: usize = 384;
@@ -1254,12 +1251,9 @@ impl MarginPlan {
         } = self.shape(at.d, x, self.width(at.coast), tan);
         let mut level = base;
         level += self.scars(at, down, slope, rise);
-        // The fine relief is low on the shelf, highest on the slope, and high
-        // on the rise, and it fades near the coast.
-        let on_slope = smoothstep(0.0, 0.15 * slope, down)
-            * (1.0 - smoothstep(0.8 * slope, slope + 0.1 * rise, down));
-        let rough = (0.3 + 0.7 * smoothstep(0.0, slope, down) + SLOPE_ROUGH * on_slope)
-            * smoothstep(0.0, 0.3 * w, at.d);
+        // The fine relief is low on the shelf and high on the rise, and it
+        // fades near the coast.
+        let rough = (0.3 + 0.7 * smoothstep(0.0, slope, down)) * smoothstep(0.0, 0.3 * w, at.d);
         if relief {
             level += rough * self.relief(at.p);
         }

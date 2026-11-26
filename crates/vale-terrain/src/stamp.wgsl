@@ -1595,7 +1595,6 @@ const MARGIN_BREAK_ROUND = 30.0;
 const MARGIN_TOP = -0.5;
 const MARGIN_SCAR_KM = 70.0;
 const MARGIN_SCAR_TEXELS = 48.0;
-const MARGIN_SLOPE_ROUGH = 1.5;
 const MARGIN_SCAR_DEPTH = 260.0;
 const MARGIN_DEBRIS_PART = 0.45;
 const SALT_MARGIN_WANDER = 0x6d617267u;
@@ -1754,16 +1753,13 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
     // The fine relief.
     let least = 2.0 * texel;
     let sizes = array<f32, 4>(40.0, 16.0, 7.0, 3.5);
-    let heights = array<f32, 4>(40.0, 50.0, 55.0, 45.0);
+    let heights = array<f32, 4>(20.0, 15.0, 10.0, 6.0);
     var relief = 0.0;
     for (var k = 0u; k < 4u; k++) {
         let fade = smooth_between(least, 2.0 * least, sizes[k]);
         relief += margin_noise(p, sizes[k], SALT_MARGIN_RELIEF + k).x * heights[k] * fade;
     }
-    let on_slope = smooth_between(0.0, 0.15 * slope, down)
-        * (1.0 - smooth_between(0.8 * slope, slope + 0.1 * rise, down));
-    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down) + MARGIN_SLOPE_ROUGH * on_slope)
-        * smooth_between(0.0, 0.3 * w, at.d);
+    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down)) * smooth_between(0.0, 0.3 * w, at.d);
     level += rough * relief;
     let fade = smooth_between(MARGIN_RISE_FADE, 1.0, t);
     return min(level + (old - level) * fade, max(MARGIN_TOP, old));

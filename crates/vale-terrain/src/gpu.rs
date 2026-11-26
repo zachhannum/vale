@@ -22,7 +22,7 @@ use crate::heightmap::{
     Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
 };
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
-use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MarginPlan};
+use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -40,6 +40,13 @@ pub const RIDGE_SLOTS: u32 = 8;
 
 /// The number of seamount plans in one batch.
 pub const SEAMOUNT_SLOTS: u32 = 8;
+
+/// The most cells along one side of the window of an erode step.
+const DROP_CELLS: usize = if MARGIN_CELLS > WINDOW_CELLS {
+    MARGIN_CELLS
+} else {
+    WINDOW_CELLS
+};
 
 /// The bytes of the distance field of a margin pass.
 const MARGIN_FIELD_BYTES: u32 = (FIELD_CELLS * FIELD_CELLS * FIELD_FLOATS * 4) as u32;
@@ -732,7 +739,8 @@ impl GpuHeightmap {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let window_drops = cell_texture("erode window drops", WINDOW_CELLS, 1);
+        // The window of a margin stroke can be larger than that of a brush.
+        let window_drops = cell_texture("erode window drops", DROP_CELLS, 1);
         let window_drops_view = window_drops.create_view(&wgpu::TextureViewDescriptor::default());
         // A new texture holds zeros, and a fill level of 0 is no fill.
         let fills = cell_texture("fill levels", cells, FACES);
@@ -1436,7 +1444,7 @@ impl GpuHeightmap {
                 None
             }
             ErodeGrid::Window(window) => {
-                assert!(window.cells <= WINDOW_CELLS, "the window size");
+                assert!(window.cells <= DROP_CELLS, "the window size");
                 assert_eq!(window.face_size, n, "the face size");
                 Some(window)
             }
