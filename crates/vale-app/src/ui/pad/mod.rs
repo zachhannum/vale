@@ -3184,7 +3184,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         hint_rows(ui, panels::MARGIN_HINT);
     }
     if mode == Mode::Hotspot {
-        hint_rows(ui, panels::hotspot_hint(&state.globe));
+        hint_rows(ui, panels::HOTSPOT_HINT);
     }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {

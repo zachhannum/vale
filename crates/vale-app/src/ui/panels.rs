@@ -53,8 +53,6 @@ pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
 pub const HOTSPOT: &str = "Hotspot track";
 /// The hint of the hotspot track mode.
 pub const HOTSPOT_HINT: &str = "Draw the track toward the hotspot.";
-/// The hint of a held hotspot track.
-pub const HOTSPOT_HELD_HINT: &str = "Change the settings, or apply.";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1520,15 +1518,6 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
-/// The hint of the hotspot track mode.
-pub fn hotspot_hint(globe: &crate::globe::Globe) -> &'static str {
-    if globe.holding().is_some() {
-        HOTSPOT_HELD_HINT
-    } else {
-        HOTSPOT_HINT
-    }
-}
-
 /// The age of a hotspot track for each 1,000 km, for example "11 Myr for
 /// each 1,000 km".
 pub(super) fn hotspot_age_text(brush: &crate::globe::brush::BrushSettings) -> String {
@@ -1564,7 +1553,7 @@ fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
         Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         Mode::Margin => ui.label(MARGIN_HINT),
-        Mode::Hotspot => ui.label(hotspot_hint(globe)),
+        Mode::Hotspot => ui.label(HOTSPOT_HINT),
         _ => return,
     };
 }

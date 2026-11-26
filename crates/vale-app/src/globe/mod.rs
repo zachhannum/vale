@@ -14,8 +14,8 @@ use vale_store::{
 };
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
-    FACES, Heightmap, Hotspot, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid,
-    Rain, RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
+    FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
+    RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
     WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
     reduced_face_size, smoothing_level,
 };
@@ -422,13 +422,10 @@ impl Ridging {
         best
     }
 
-    /// Resends each plan of the line, and erodes a hotspot track again.
+    /// Resends each plan of the line.
     fn resend(&mut self) {
         self.sent = 0;
         self.pieces.clear();
-        if let Some(hotspot) = &mut self.hotspot {
-            (hotspot.asked, hotspot.done) = (false, false);
-        }
     }
 }
 
@@ -437,7 +434,8 @@ impl Ridging {
 /// step goes to the GPU.
 #[derive(Clone, Copy)]
 struct HotspotErosion {
-    /// The erosion setting and the branching setting of the step.
+    /// The erosion setting and the branching setting at the start of the
+    /// stroke.
     amount: f64,
     branching: f64,
     /// The line went to the worker.
@@ -660,8 +658,8 @@ struct Active {
     sea: Option<SeaStroke>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
-    /// `Some`: the stroke is an ocean ridge stroke, a hotspot track stroke,
-    /// or the rivers of a basin. Its texels wait for `apply_held`.
+    /// `Some`: the stroke is an ocean ridge stroke or the rivers of a
+    /// basin. Its texels wait for `apply_held`.
     held: Option<Held>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
@@ -670,9 +668,8 @@ struct Active {
     reading: Option<usize>,
 }
 
-/// An ocean ridge, a hotspot track, or a basin that shows on the GPU. After
-/// the pen goes up, it follows the settings of the brush until it is
-/// applied or discarded.
+/// An ocean ridge or a basin that shows on the GPU. After the pen goes up,
+/// it follows the settings of the brush until it is applied or discarded.
 struct Held {
     mode: Mode,
     /// The size and the size lock of the brush that gave `radius`.
@@ -698,16 +695,6 @@ struct Held {
 enum HeldSpec {
     Ridge(Ridge),
     Basin(BasinSpec),
-    /// A hotspot track, with the erosion and the branching of its step.
-    Hotspot(Hotspot, f64, f64),
-}
-
-impl HeldSpec {
-    /// The settings of a hotspot track of `brush` with this radius.
-    fn hotspot(brush: &BrushSettings, radius: f64, km: f64, seed: u32) -> HeldSpec {
-        let spec = brush.hotspot_spec(radius, km, seed);
-        HeldSpec::Hotspot(spec, brush.erosion.clamp(0.0, 1.0), brush.branching)
-    }
 }
 
 /// The strips of each rectangle of `plan`, with `RIDGE_PIECE_TEXELS` texels
@@ -2788,8 +2775,9 @@ impl Globe {
         Some((screen(outline), Vec::new()))
     }
 
-    /// The center line of an ocean ridge or the line of a hotspot track in
-    /// screen points, while the pen draws it and while it is held.
+    /// The center line of an ocean ridge in screen points, while the pen
+    /// draws it and while it is held, or the line of a hotspot track while
+    /// the pen draws it.
     pub fn ridge_preview(&self) -> Option<Vec<Pos2>> {
         let active = self
             .stroke
@@ -3821,20 +3809,11 @@ impl Globe {
                                     None => active.outline = Some(Vec::new()),
                                 }
                             }
-                            let spec = match self.brush.mode {
-                                Mode::OceanRidge => Some(HeldSpec::Ridge(self.brush.ridge_spec(
-                                    sample.radius,
-                                    km,
-                                    seed,
-                                ))),
-                                Mode::Hotspot => {
-                                    Some(HeldSpec::hotspot(&self.brush, sample.radius, km, seed))
-                                }
-                                _ => None,
-                            };
-                            if let Some(spec) = spec {
+                            if self.brush.mode == Mode::OceanRidge {
+                                let spec = self.brush.ridge_spec(sample.radius, km, seed);
+                                let spec = HeldSpec::Ridge(spec);
                                 active.held = Some(Held {
-                                    mode: self.brush.mode,
+                                    mode: Mode::OceanRidge,
                                     size: (self.brush.size_points, self.brush.lock),
                                     radius: sample.radius,
                                     drawn_flow: self.brush.flow,
@@ -4160,7 +4139,6 @@ impl Globe {
         let spec = match held.spec {
             HeldSpec::Ridge(_) => HeldSpec::Ridge(self.brush.ridge_spec(held.radius, km, seed)),
             HeldSpec::Basin(_) => HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain)),
-            HeldSpec::Hotspot(..) => HeldSpec::hotspot(&self.brush, held.radius, km, seed),
         };
         let wanted = (spec, self.brush.flow);
         if wanted != held.wanted {
@@ -4183,7 +4161,7 @@ impl Globe {
                 }
                 let smaller = match held.spec {
                     HeldSpec::Ridge(old) => spec.radius < old.radius,
-                    _ => false,
+                    HeldSpec::Basin(_) => false,
                 };
                 (held.spec, held.flow) = wanted;
                 let scale = held.flow / held.drawn_flow.max(1e-6);
@@ -4204,35 +4182,6 @@ impl Globe {
                 // are not smaller. Thus the old ridge shows until the new
                 // one covers it. A smaller ridge needs the ground back
                 // first.
-                if smaller {
-                    restore(&self.map, &self.link, tag, &mut active.touched);
-                }
-            }
-            (HeldSpec::Hotspot(spec, amount, branching), Some(ridge), _) => {
-                if in_flight {
-                    return;
-                }
-                let smaller = match held.spec {
-                    HeldSpec::Hotspot(old, ..) => spec.radius < old.radius,
-                    _ => false,
-                };
-                (held.spec, held.flow) = wanted;
-                let scale = held.flow / held.drawn_flow.max(1e-6);
-                let mut line = HotspotLine::new(spec, n);
-                for &(dir, flow) in &ridge.points {
-                    line.push(dir, (flow * scale).min(1.0));
-                }
-                // The heightmap holds the ground from before the stroke.
-                line.finish(&self.map);
-                ridge.line = BrushLine::Hotspot(line);
-                // A step of the old settings does not arrive.
-                self.eroder.cancel();
-                ridge.resend();
-                if let Some(hotspot) = &mut ridge.hotspot {
-                    (hotspot.amount, hotspot.branching) = (amount, branching);
-                }
-                // As an ocean ridge, a smaller track needs the ground back
-                // first. The plans write over the old step.
                 if smaller {
                     restore(&self.map, &self.link, tag, &mut active.touched);
                 }
@@ -4321,9 +4270,6 @@ impl Globe {
         let tag = self.tag();
         if let Some(active) = &mut self.stroke {
             self.basiner.cancel();
-            if active.ridge.as_ref().is_some_and(|r| r.hotspot.is_some()) {
-                self.eroder.cancel();
-            }
             restore(&self.map, &self.link, tag, &mut active.touched);
         }
         self.map.end_stroke();
@@ -4336,7 +4282,8 @@ impl Globe {
     ///
     /// The plans of a frame go after the GPU did the plans before them, and
     /// they hold at most `LINE_TEXELS_PER_FRAME` texels after the first
-    /// one. An ocean ridge goes to the GPU after the pen goes up.
+    /// one. An ocean ridge and a hotspot track go to the GPU after the pen
+    /// goes up.
     fn ridge(&mut self, now: Instant, in_flight: bool) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
@@ -4345,7 +4292,8 @@ impl Globe {
         let Some(ridge) = &mut active.ridge else {
             return;
         };
-        if in_flight || (active.held.is_some() && !active.ended) {
+        let later = active.held.is_some() || ridge.hotspot.is_some();
+        if in_flight || (later && !active.ended) {
             return;
         }
         let time = active.sampled.unwrap_or(now);
