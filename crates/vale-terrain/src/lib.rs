@@ -70,8 +70,9 @@ pub use heightmap::{
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
 };
 pub use hotspot::{
-    HOTSPOT_HEIGHT_M, HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM,
-    HOTSPOT_SPEED_RANGE, Hotspot, HotspotLine, HotspotPlan,
+    HOTSPOT_ERODE_RATE, HOTSPOT_ERODE_STEPS, HOTSPOT_HEIGHT_M, HOTSPOT_HEIGHT_RANGE,
+    HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot, HotspotLine, HotspotPlan,
+    erode_hotspot, hotspot_window,
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};

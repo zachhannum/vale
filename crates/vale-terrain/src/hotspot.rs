@@ -7,14 +7,17 @@
 //! A texel near the line gets the swell of the hotspot, the moats of the
 //! volcanoes, and the volcanoes, each by its age.
 
+use std::cell::Cell;
 use std::f64::consts::FRAC_PI_2;
 use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::cube::{ELEV_MIN, FACES};
+use crate::erode::{ErodeBrush, ErodeStep, Erosion};
+use crate::flow::Window;
 use crate::heightmap::{Heightmap, Limits, hash};
 use crate::line::{LinePlace, LinePlan, LinePoint, REACH, StrokeLine, bump, noise1, smoothstep};
-use crate::margin::smooth_min;
+use crate::margin::{circle_window, smooth_min};
 use crate::math::{V3, add, angle, cross, dot, normalize, scale};
 use crate::seamount::{
     CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PLAN_VOLCANOES, REEF, RIM,
@@ -420,6 +423,11 @@ impl HotspotLine {
         self.wrap(self.line.plan(from), PLAN_VOLCANOES)
     }
 
+    /// The plan of the whole line, with each volcano.
+    pub(crate) fn plan_all(&self) -> HotspotPlan {
+        self.wrap(self.line.plan_between(0.0..self.line.length()), usize::MAX)
+    }
+
     /// As `StrokeLine::margin`.
     #[doc(hidden)]
     pub fn margin(&self, p: V3) -> f64 {
@@ -499,6 +507,98 @@ impl HotspotPlan {
         let new = (base + top + 0.5).floor().clamp(0.0, 65535.0);
         self.hotspot.limits.apply(old, new) as u16
     }
+}
+
+/// The number of erode steps of a hotspot track, and their rate at an
+/// erosion of 1.
+pub const HOTSPOT_ERODE_STEPS: usize = 8;
+pub const HOTSPOT_ERODE_RATE: f64 = 3.0;
+
+/// The radius of the erode brush of an island, in base radii.
+const ISLAND_BRUSH: f64 = 1.2;
+
+/// An eroded cell keeps all of its drop from this height above the sea in
+/// meters, and from this age in millions of years. Below the sea, it keeps
+/// none.
+const KEEP_ABOVE_M: f64 = 20.0;
+const KEEP_MYR: f64 = 4.0;
+
+impl HotspotLine {
+    /// One erode brush over each volcano that is an island.
+    fn island_brushes(&self) -> Vec<ErodeBrush> {
+        let Some(chain) = &self.chain else {
+            return Vec::new();
+        };
+        let islands = (0..chain.volcanoes.len()).filter(|&i| chain.ages[i] < chain.drowned[i]);
+        islands
+            .map(|i| {
+                let v = &chain.volcanoes[i];
+                ErodeBrush {
+                    center: v.center(),
+                    radius: ISLAND_BRUSH * v.base_radius(),
+                    hardness: 0.6,
+                    flow: 1.0,
+                }
+            })
+            .collect()
+    }
+}
+
+/// The window of the cells of the erosion of a finished hotspot track: the
+/// islands of the chain and room around them for the flow, as
+/// `margin_window`. With no islands, it is the window around the end of the
+/// line.
+pub fn hotspot_window(line: &HotspotLine, face_size: usize) -> Window {
+    let mut circles: Vec<(V3, f64)> = (line.island_brushes().iter())
+        .map(|b| (b.center, b.radius))
+        .collect();
+    if circles.is_empty() && !line.is_empty() {
+        circles.push((line.line.at(line.length()), line.spec.radius));
+    }
+    if circles.is_empty() {
+        circles.push(([1.0, 0.0, 0.0], line.spec.radius));
+    }
+    circle_window(&circles, face_size)
+}
+
+/// Erodes the islands of a finished hotspot track with stream power, as the
+/// Erode brush erodes land. `erosion` holds the cells of the ground from
+/// before the stroke. The cells under the islands get the levels of the
+/// line, and then `HOTSPOT_ERODE_STEPS` steps erode them. A cell keeps a
+/// part of its drop that grows with its height above the sea and with its
+/// age, so the old islands have deep valleys and the young ones have few.
+/// `amount` from 0 to 1 sets the rate. Returns the drops: the levels of the
+/// line minus the eroded levels. Lay each plan of the line before the step.
+pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> ErodeStep {
+    let brushes = line.island_brushes();
+    if brushes.is_empty() {
+        return erosion.drops_since(erosion.levels(), &brushes);
+    }
+    erosion.set_limits(line.spec.limits);
+    let plan = line.plan_all();
+    let speed = plan.chain.as_ref().map_or(1.0, |chain| chain.speed);
+    let ages: Vec<Cell<f64>> = erosion.levels().iter().map(|_| Cell::new(0.0)).collect();
+    erosion.lift_cells(&brushes, |i, dir, now| match plan.line.place(dir) {
+        LinePlace::On(at) => {
+            ages[i].set((plan.line.length - at.u).max(0.0) / speed);
+            Some(plan.level_of(&plan.volcanoes, now, at, dir))
+        }
+        _ => None,
+    });
+    let lifted = erosion.levels().to_vec();
+    let radius = brushes.iter().map(|b| b.radius).fold(0.0, f64::max);
+    let rate = amount * HOTSPOT_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
+    erosion.steps(&brushes, rate, HOTSPOT_ERODE_STEPS);
+    let sea = level_of_m(0.0);
+    let kept: Vec<u16> = (lifted.iter().zip(erosion.levels()).zip(&ages))
+        .map(|((&before, &now), age)| {
+            let above = smoothstep(0.0, KEEP_ABOVE_M * LEVELS_PER_M, f64::from(before) - sea);
+            let part = above * (age.get() / KEEP_MYR).min(1.0);
+            let drop = f64::from(before.saturating_sub(now));
+            before - (drop * part).round() as u16
+        })
+        .collect();
+    erosion.drops_since_to(&lifted, &kept, &brushes)
 }
 
 /// The growth of a volcano at an age in millions of years.
@@ -607,6 +707,7 @@ impl Heightmap {
 mod tests {
     use super::*;
     use crate::cube::meters_to_level;
+    use crate::flow::WindowHeights;
     use crate::line::LINE_SPACING;
     use crate::math::lonlat_to_dir;
 
@@ -654,6 +755,26 @@ mod tests {
         }
         map.end_stroke();
         (map, before)
+    }
+
+    /// Lays a finished line on flat floor with its erosion at `amount`.
+    fn lay_eroded(line: &mut HotspotLine, n: usize, amount: f64) -> Heightmap {
+        let mut map = Heightmap::new(n, meters_to_level(FLOOR_M));
+        line.finish(&map);
+        let window = hotspot_window(line, n);
+        let mut erosion = Erosion::window_alone(&WindowHeights::new(&map, window));
+        erosion.set_branching(line.spec().seed, 0.5);
+        let step = erode_hotspot(&mut erosion, line, amount);
+        map.begin_stroke();
+        let mut from = 0;
+        while from < line.len() {
+            let plan = line.plan(from);
+            map.hotspot(&plan);
+            from = plan.end;
+        }
+        map.erode(&step);
+        map.end_stroke();
+        map
     }
 
     fn meters(level: f64) -> f64 {
@@ -840,6 +961,54 @@ mod tests {
     }
 
     #[test]
+    fn old_islands_have_deeper_valleys_than_young_ones() {
+        let n = 2 * N;
+        let mut line = line(spec(), n, -6.0, 6.0, 1.0);
+        let eroded = lay_eroded(&mut line, n, 0.5);
+        let (plain, _) = lay(&mut line, n, FLOOR_M);
+        let chain = line.chain.clone().unwrap();
+        // The depth of the valleys of an island: the 90th percentile of the
+        // drops of its land.
+        let valleys = |i: usize| {
+            let v = &chain.volcanoes[i];
+            let c = v.center();
+            let (east, north) = frame(c);
+            let r = 0.6 * v.base_radius();
+            let mut drops = Vec::new();
+            for j in -20..=20 {
+                for k in -20..=20 {
+                    let (x, y) = (r * f64::from(j) / 20.0, r * f64::from(k) / 20.0);
+                    let p = normalize(add(add(c, scale(east, x)), scale(north, y)));
+                    let (a, b) = (meters(plain.level_at(p)), meters(eroded.level_at(p)));
+                    if a > 0.0 {
+                        drops.push(a - b);
+                    }
+                }
+            }
+            drops.sort_by(f64::total_cmp);
+            drops.get(drops.len() * 9 / 10).copied().unwrap_or(0.0)
+        };
+        let islands = (0..chain.volcanoes.len()).filter(|&i| chain.ages[i] < chain.drowned[i]);
+        let (mut young, mut old) = (Vec::new(), Vec::new());
+        for i in islands {
+            let depth = valleys(i);
+            eprintln!("age {:.1}: valleys {depth:.0} m", chain.ages[i]);
+            if chain.ages[i] < 1.0 {
+                young.push(depth);
+            } else if chain.ages[i] > 4.0 {
+                old.push(depth);
+            }
+        }
+        let mean = |d: &[f64]| d.iter().sum::<f64>() / d.len() as f64;
+        assert!(!young.is_empty() && !old.is_empty());
+        assert!(mean(&old) > 150.0, "{old:?}");
+        assert!(mean(&old) > 3.0 * mean(&young), "{young:?} {old:?}");
+        // The sea floor does not erode.
+        let p = lonlat_to_dir(0.0, degrees(300.0));
+        assert_eq!(eroded.level_at(p), plain.level_at(p));
+    }
+
+    #[test]
     fn wave_cut_tops_make_deeper_guyots_on_older_volcanoes() {
         let (map, line) = slow(false, N);
         let chain = line.chain.clone().unwrap();
@@ -997,8 +1166,8 @@ mod tests {
         let spec = spec();
         let mut a = line(spec, N, -6.0, 6.0, 0.8);
         let mut b = line(spec, N, -6.0, 6.0, 0.8);
-        let (a, _) = lay(&mut a, N, FLOOR_M);
-        let (b, _) = lay(&mut b, N, FLOOR_M);
+        let a = lay_eroded(&mut a, N, 0.5);
+        let b = lay_eroded(&mut b, N, 0.5);
         for face in 0..FACES {
             for y in (0..N).step_by(2) {
                 for x in (0..N).step_by(2) {

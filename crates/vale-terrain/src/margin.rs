@@ -1199,14 +1199,22 @@ impl MarginPlan {
 /// `MARGIN_CELLS` cells along one side. The cells are as small as that
 /// gives.
 pub fn margin_window(plans: &[MarginPlan], face_size: usize) -> Window {
+    let circles: Vec<(V3, f64)> = plans
+        .iter()
+        .map(|plan| (plan.center, plan.radius))
+        .collect();
+    circle_window(&circles, face_size)
+}
+
+/// The window of the cells of an erosion under circles, each a center and a
+/// radius in radians, as `margin_window`. There is one circle at least.
+pub(crate) fn circle_window(circles: &[(V3, f64)], face_size: usize) -> Window {
     let n = face_size;
-    let sum = plans
-        .iter()
-        .fold([0.0; 3], |sum, plan| add(sum, plan.center));
+    let sum = circles.iter().fold([0.0; 3], |sum, c| add(sum, c.0));
     let center = normalize(sum);
-    let reach = plans
+    let reach = circles
         .iter()
-        .map(|plan| dot(plan.center, center).clamp(-1.0, 1.0).acos() + plan.radius)
+        .map(|&(c, r)| dot(c, center).clamp(-1.0, 1.0).acos() + r)
         .fold(0.0, f64::max);
     let texels = 2.0 * reach * n as f64 / FRAC_PI_2 * (1.0 + ERODE_ROOM);
     let mut cell = 1;
