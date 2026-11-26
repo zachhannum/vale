@@ -75,8 +75,8 @@ pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use realism::{
-    MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism, Reference, SLOPE_BINS_DEG,
-    WEDGE_HALF_WIDTH, realism,
+    ATLANTIC_RIDGE, EPR_RIDGE, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism, Reference,
+    SLOPE_BINS_DEG, WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};

@@ -20,6 +20,28 @@ pacific-flank)
 	# anisotropy of the patch, and the rise axis east of the patch has the same trend.
 	fabric_deg=-10
 	;;
+atlantic-ridge)
+	title="Mid-Atlantic Ridge, 26.5 N"
+	lon=-45.0
+	lat=26.5
+	size=1024
+	cell_m=920
+	band_max_m=225000
+	# The trend of the segments of the axis and of the abyssal hills, N15E.
+	# The stepped axis as a whole trends more to the east.
+	fabric_deg=15
+	;;
+epr-ridge)
+	title="East Pacific Rise, 11 N"
+	lon=-104.1
+	lat=11.0
+	size=1024
+	cell_m=920
+	band_max_m=225000
+	# The trend of the axis, N8W, square to the Clipperton and the Siqueiros
+	# transform faults.
+	fabric_deg=-8
+	;;
 *)
 	echo "unknown region: $region" >&2
 	exit 2
@@ -34,7 +56,7 @@ mkdir -p "$dir"
 # The bounds of the patch, with a margin of 0.05 degrees.
 read -r south north west east < <(awk -v lon="$lon" -v lat="$lat" -v n="$size" -v c="$cell_m" 'BEGIN {
 	half = n * c / 2 / 6371000 * 180 / 3.141592653589793 * 1.02 + 0.05
-	k = cos(lat * 3.141592653589793 / 180)
+	k = cos(((lat < 0 ? -lat : lat) + half) * 3.141592653589793 / 180)
 	printf "%.3f %.3f %.3f %.3f\n", lat - half, lat + half, lon - half / k, lon + half / k
 }')
 

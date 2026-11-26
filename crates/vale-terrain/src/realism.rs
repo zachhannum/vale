@@ -22,6 +22,14 @@ pub const WEDGE_HALF_WIDTH: f64 = FRAC_PI_8;
 /// from GEBCO.
 pub const PACIFIC_FLANK: &str = include_str!("../data/gebco/pacific-flank.txt");
 
+/// The reference text of the slow Mid-Atlantic Ridge and its flanks, from
+/// GEBCO.
+pub const ATLANTIC_RIDGE: &str = include_str!("../data/gebco/atlantic-ridge.txt");
+
+/// The reference text of the fast East Pacific Rise and its flanks, from
+/// GEBCO.
+pub const EPR_RIDGE: &str = include_str!("../data/gebco/epr-ridge.txt");
+
 /// A square grid of heights in meters on a plane. Row 0 is the south edge,
 /// and each row runs from west to east. `size` is a power of two.
 #[derive(Clone, Debug, PartialEq)]

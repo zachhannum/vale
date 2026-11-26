@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: 6.629 to 15.371 N, -108.633 to -99.567 E
+# Fetched: 2026-11-26
+# Made by: scripts/gebco-reference.sh epr-ridge
+
+region = East Pacific Rise, 11 N
+center = -104.1, 11
+size = 1024
+cell_m = 920
+band_m = 3680, 225000
+fabric_deg = -8
+spectral_slope = -2.2048
+anisotropy = 0.9324
+rms_m = 286.13
+slope_histogram = 0.32965, 0.30808, 0.23273, 0.09540, 0.02876, 0.00537, 0.00001
