@@ -1834,9 +1834,9 @@ const TURN_REACH: f64 = 1.8;
 /// The largest move of an offset with no transform fault from its place at
 /// the crest, as a part of the shorter crest segment at the offset, and the
 /// age of a cell of its noise in millions of years. The offset migrates
-/// along the crest at up to about half of the spreading rate, so its trace
-/// is oblique to the crest and makes a V or a zigzag on the flanks (Hey
-/// 1977; Macdonald and others 1988; Tucholke and others 1997).
+/// along the crest, so its trace is oblique to the crest and makes a V or a
+/// zigzag on the flanks (Hey 1977; Macdonald and others 1988; Tucholke and
+/// others 1997).
 const MIGRATE: f64 = 0.35;
 const MIGRATE_MYR: f64 = 3.0;
 

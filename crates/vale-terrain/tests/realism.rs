@@ -373,7 +373,7 @@ fn earth_ridge(spec: Ridge, base_m: f64) -> Painted {
 /// A slow ridge at the default settings of the brush, at the scale of the
 /// Atlantic reference.
 fn slow_ridge() -> Painted {
-    earth_ridge(ridge_spec(EARTH_KM, 25.0, -2600.0), 5050.0)
+    earth_ridge(ridge_spec(EARTH_KM, 25.0, -1500.0), 5050.0)
 }
 
 /// A fast ridge with the spreading rate and the crest depth of the East

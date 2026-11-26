@@ -3443,7 +3443,7 @@ fn the_brush_panel_has_the_five_sliders_of_the_ocean_ridge_mode() {
         (s.globe.tool, s.globe.brush.mode),
         (Tool::Brush, Mode::OceanRidge)
     );
-    assert_eq!(ridge_values(&h), [-2600.0, 25.0, 0.0, 400.0, 100.0]);
+    assert_eq!(ridge_values(&h), [-1500.0, 25.0, 0.0, 400.0, 100.0]);
     for row in RIDGE_ROWS {
         assert!(field(&h, row).is_some(), "{row}");
     }

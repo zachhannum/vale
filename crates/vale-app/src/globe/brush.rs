@@ -251,7 +251,7 @@ impl Default for BrushSettings {
             noise_inverted: false,
             noise_relief: 0.5,
             noise_grain: 0.0,
-            ridge_crest_m: -2600.0,
+            ridge_crest_m: -1500.0,
             ridge_segment_km: 400.0,
             ridge_offset_km: 100.0,
             ridge_spread_mm: 25.0,

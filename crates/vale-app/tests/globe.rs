@@ -5815,7 +5815,7 @@ fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
         brush.ridge_segment_km,
         brush.ridge_offset_km,
     ];
-    assert_eq!(values, [-700.0, 25.0, 0.0, 400.0, 100.0]);
+    assert_eq!(values, [-1500.0, 25.0, 0.0, 400.0, 100.0]);
     // The crest of the start is above the empty world, so the first stroke
     // makes a ridge.
     assert!(meters_to_level(brush.ridge_crest_m) > h.state().globe.map.base());
