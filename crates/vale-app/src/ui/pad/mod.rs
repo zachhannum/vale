@@ -18,10 +18,10 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -232,7 +232,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 14] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -250,6 +250,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
         Icon::AbyssalHills,
         Mode::AbyssalHills,
     ),
+    (panels::MARGIN, Icon::Margin, Mode::Margin),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3177,6 +3178,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::OceanRidge {
         ridge_hint_rows(ui, &state.globe);
     }
+    if mode == Mode::Margin {
+        hint_rows(ui, panels::margin_hint(&state.globe));
+    }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
@@ -3235,6 +3239,19 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             row(ui, controls, state, Slider::Scale);
             let fit = &mut state.globe.brush.abyssal_fit;
             widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", fit);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        Mode::Margin => {
+            let brush = &mut state.globe.brush;
+            let number = Number::new(MARGIN_SHELF, brush.margin_shelf_m, MARGIN_SHELF_M)
+                .label("Shelf depth")
+                .step(10.0)
+                .unit("m");
+            apply(number.stepper(ui, controls), &mut brush.margin_shelf_m);
+            let active = usize::from(!brush.margin_land_left);
+            if let Some(i) = side_row(ui, controls, active) {
+                brush.margin_land_left = i == 0;
+            }
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3716,6 +3733,34 @@ fn basin_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     let text = egui::RichText::new(panels::basin_hint(globe)).color(theme::MUTE);
     ui.add(egui::Label::new(text).selectable(false));
     ui.add_space(8.0);
+}
+
+/// A row with a hint.
+fn hint_rows(ui: &mut egui::Ui, hint: &str) {
+    ui.add_space(8.0);
+    let text = egui::RichText::new(hint).color(theme::MUTE);
+    ui.add(egui::Label::new(text).selectable(false));
+    ui.add_space(8.0);
+}
+
+/// The name of the shelf depth stepper of the margin mode.
+pub const MARGIN_SHELF: &str = "Brush shelf depth";
+/// The control names of the sides of the margin mode.
+pub const MARGIN_SIDE_NAMES: [&str; 2] = ["Brush side left", "Brush side right"];
+
+/// The row of the side of the land of the margin mode, with "Side" at the
+/// left and a small segmented control at the right. Returns the side that
+/// the user tapped.
+fn side_row(ui: &mut egui::Ui, controls: &mut Controls, active: usize) -> Option<usize> {
+    let (row, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
+    let at = pos2(row.left(), row.center().y);
+    let left = egui::Align2::LEFT_CENTER;
+    (ui.painter()).text(at, left, "Side", theme::body(), theme::TEXT);
+    let sides = &panels::MARGIN_SIDES;
+    let w = widgets::small_segments_width(ui, sides);
+    let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
+    widgets::small_segments_named(ui, controls, seg, (sides, &MARGIN_SIDE_NAMES), active)
 }
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a

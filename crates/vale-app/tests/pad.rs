@@ -2591,7 +2591,13 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
         assert_eq!(h.state().globe.tool, Tool::Pan, "{name}");
         let flyout = h.state().pad.flyouts.rect.unwrap();
         let cell = control(&h, name).unwrap();
-        assert_eq!(flyout.left_top(), pos2(tools.right() + 12.0, cell.top()));
+        // The list starts at the top of its cell. A list that would pass
+        // the bottom of the screen moves up, and it stays beside its cell.
+        assert_eq!(flyout.left(), tools.right() + 12.0);
+        assert!(flyout.top() <= cell.top() && flyout.bottom() >= cell.bottom());
+        if group == ModeGroup::Sculpt {
+            assert_eq!(flyout.top(), cell.top());
+        }
         for (mode, ..) in group.modes() {
             let row = control(&h, mode).unwrap();
             assert!(flyout.contains_rect(row), "{mode}");
@@ -2782,6 +2788,95 @@ fn the_seamounts_mode_fits_on_the_smallest_ipad() {
     assert!(screen.contains_rect(panel), "{panel:?}");
     check_controls(&h, "744 high with the Seamounts panel");
     screenshot::save(&mut h, "pad-seamounts-744");
+}
+
+#[test]
+fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush shelf depth value").is_none());
+    choose_mode(&mut h, "Margin");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Margin)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (brush.margin_shelf_m, brush.margin_land_left),
+        (-130.0, true)
+    );
+    // The strip has Size and Flow.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip flow").is_some());
+    // The panel has the size, the flow, the shelf depth, the side, and the
+    // seed, and no hardness and no strength.
+    assert!(
+        h.query_by_label(vale_app::ui::panels::MARGIN_HINT)
+            .is_some()
+    );
+    for row in [
+        "Brush size",
+        "Brush flow",
+        "Brush shelf depth value",
+        "Brush side left",
+        "Brush side right",
+        "Brush seed value",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in ["Brush hardness", "Brush strength"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // A typed value past an end gives the end.
+    for (text, value) in [("-9000", -1000.0), ("0", -20.0), ("-200", -200.0)] {
+        type_value(&mut h, "Brush shelf depth", text);
+        let got = h.state().globe.brush.margin_shelf_m;
+        assert!((got - value).abs() < 1e-6, "{text}: {got}");
+    }
+    step(&mut h, "Brush shelf depth", true);
+    assert_eq!(h.state().globe.brush.margin_shelf_m, -190.0);
+    // The side of the land.
+    tap(&mut h, "Brush side right");
+    assert!(!h.state().globe.brush.margin_land_left);
+    tap(&mut h, "Brush side left");
+    assert!(h.state().globe.brush.margin_land_left);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Margin mode");
+    screenshot::save(&mut h, "pad-margin");
+}
+
+#[test]
+fn the_margin_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Margin").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    tap(&mut h, "Margin");
+    assert_eq!(h.state().globe.brush.mode, Mode::Margin);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    for row in [
+        "Brush shelf depth value",
+        "Brush side left",
+        "Brush side right",
+    ] {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Margin panel");
+    screenshot::save(&mut h, "pad-margin-744");
 }
 
 #[test]

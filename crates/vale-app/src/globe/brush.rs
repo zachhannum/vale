@@ -7,8 +7,8 @@ use std::time::Instant;
 use vale_terrain::{
     AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
     ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits,
-    MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Mode, Rain, RangeSpec, Ridge, Seamounts, Stamp, StampPlan,
-    meters_to_level, talus_levels,
+    MAX_BRUSH_RADIUS, MAX_MARGIN_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge,
+    SHELF_DEPTH_RANGE, Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -73,6 +73,9 @@ pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
 pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
+/// The limits of the depth of the shelf break of the margin mode, in
+/// meters.
+pub const MARGIN_SHELF_M: std::ops::RangeInclusive<f64> = SHELF_DEPTH_RANGE.0..=SHELF_DEPTH_RANGE.1;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -206,6 +209,10 @@ pub struct BrushSettings {
     /// `ridge_scale` and `ridge_fit`.
     pub abyssal_scale: f64,
     pub abyssal_fit: bool,
+    /// The depth of the shelf break of the margin mode, in meters.
+    pub margin_shelf_m: f64,
+    /// The land of the margin mode is on the left side of the stroke.
+    pub margin_land_left: bool,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -269,6 +276,8 @@ impl Default for BrushSettings {
             abyssal_hills: 1.0,
             abyssal_scale: 1.0,
             abyssal_fit: true,
+            margin_shelf_m: -130.0,
+            margin_land_left: true,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -312,6 +321,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | Shape
             | Seamounts
             | AbyssalHills
+            | Margin
     )
 }
 
@@ -320,9 +330,9 @@ const MIN_LOCK_RADIUS: f64 = 1e-4;
 
 impl BrushSettings {
     /// The zoom does not change the size of the mode, because the size sets
-    /// the width of the ridge.
+    /// the width of the ridge or the margin.
     pub fn size_is_fixed(&self) -> bool {
-        self.mode == Mode::OceanRidge
+        matches!(self.mode, Mode::OceanRidge | Mode::Margin)
     }
 
     /// The locked radius, in radians, with the lock that a fixed size
@@ -406,6 +416,23 @@ impl BrushSettings {
             hills: self.ridge_hills.clamp(0.0, 2.0),
             fit: self.ridge_fit,
             scale: self.ridge_scale.clamp(1.0, 10.0),
+        }
+    }
+
+    /// The settings of a margin stroke with this brush radius, in radians.
+    /// `world_km` is the radius of the world. The line reads the depth of
+    /// the floor from the ground.
+    pub fn margin_spec(&self, radius: f64, world_km: f64, seed: u32) -> Margin {
+        Margin {
+            radius,
+            shelf_m: self
+                .margin_shelf_m
+                .clamp(SHELF_DEPTH_RANGE.0, SHELF_DEPTH_RANGE.1),
+            land_left: self.margin_land_left,
+            floor_m: -4000.0,
+            world_km,
+            seed,
+            limits: self.limits(),
         }
     }
 
@@ -493,6 +520,7 @@ impl BrushSettings {
     fn max_radius(&self) -> f64 {
         match self.mode {
             Mode::OceanRidge => MAX_RIDGE_RADIUS,
+            Mode::Margin => MAX_MARGIN_RADIUS,
             _ => MAX_BRUSH_RADIUS,
         }
     }
@@ -652,7 +680,7 @@ impl Tip<'_> {
                 | Mode::AbyssalHills => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
-                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint => {
+                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Margin | Mode::Paint => {
                     (input / FIXED_FLOW).min(1.0) * self.brush.flow
                 }
                 // These modes move toward a target, so each stamp does less.
@@ -726,11 +754,11 @@ pub fn set_world(
 pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode and the range mode are the points of
-/// the line of the stroke.
+/// The stamps of the ocean ridge mode, the range mode, and the margin mode
+/// are the points of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge | Mode::Range => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range | Mode::Margin => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -841,8 +869,12 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge, a range, or a basin ends at the last sample.
-            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin);
+            // The line of a ridge, a range, a basin, or a margin ends at the
+            // last sample.
+            let line = matches!(
+                brush.mode,
+                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Margin
+            );
             if line && self.end.is_some() {
                 self.put(&tip, last.0, last.1, out);
             }
@@ -877,6 +909,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Basin
         | Mode::Seamounts
         | Mode::AbyssalHills
+        | Mode::Margin
         | Mode::Noise => 1,
     }
 }
@@ -1407,6 +1440,34 @@ mod tests {
         brush.lock = None;
         brush.size_points = 160.0;
         assert_eq!(brush.radius(360.0), MAX_BRUSH_RADIUS);
+    }
+
+    #[test]
+    fn the_margin_radius_stops_at_its_limit() {
+        let mut brush = BrushSettings {
+            mode: Mode::Margin,
+            ..BrushSettings::default()
+        };
+        assert!(brush.size_is_fixed());
+        assert_eq!(brush.radius(360.0), MAX_MARGIN_RADIUS);
+        let range = brush.radius_km_range(360.0, 6371.0);
+        assert_eq!(*range.end(), MAX_MARGIN_RADIUS * 6371.0);
+        brush.set_radius_km(1e6, 360.0, 6371.0);
+        assert_eq!(brush.radius(360.0), MAX_MARGIN_RADIUS);
+    }
+
+    #[test]
+    fn the_margin_spec_carries_the_shelf_depth_and_the_side() {
+        let mut brush = BrushSettings {
+            mode: Mode::Margin,
+            ..BrushSettings::default()
+        };
+        let spec = brush.margin_spec(0.1, 6371.0, 7);
+        assert_eq!((spec.shelf_m, spec.land_left), (-130.0, true));
+        brush.margin_shelf_m = -5000.0;
+        brush.margin_land_left = false;
+        let spec = brush.margin_spec(0.1, 6371.0, 7);
+        assert_eq!((spec.shelf_m, spec.land_left), (SHELF_DEPTH_RANGE.0, false));
     }
 
     #[test]

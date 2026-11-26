@@ -80,6 +80,7 @@ fn has_strength(mode: Mode) -> bool {
             | Mode::Shape
             | Mode::OceanRidge
             | Mode::AbyssalHills
+            | Mode::Margin
     )
 }
 
@@ -92,7 +93,10 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     if mode != Mode::Basin {
         out.push(Size);
     }
-    if !matches!(mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
+    if !matches!(
+        mode,
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         out.push(Hardness);
     }
     if mode != Mode::Basin {
@@ -134,7 +138,7 @@ pub fn default_pins(mode: Mode) -> [Slider; 2] {
     use Slider::*;
     let second = match mode {
         Mode::Basin => return [Strength, Density],
-        Mode::Smooth | Mode::Push | Mode::Deposit | Mode::Weather => Flow,
+        Mode::Smooth | Mode::Push | Mode::Deposit | Mode::Weather | Mode::Margin => Flow,
         Mode::Flatten => Rate,
         Mode::Paint => Value,
         Mode::Warp | Mode::Noise => Scale,
@@ -261,6 +265,7 @@ mod tests {
             (Mode::Basin, [Strength, Density]),
             (Mode::Seamounts, [Size, Density]),
             (Mode::AbyssalHills, [Size, Hills]),
+            (Mode::Margin, [Size, Flow]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }

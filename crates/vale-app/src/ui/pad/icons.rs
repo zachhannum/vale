@@ -30,6 +30,9 @@ pub enum Icon {
     Basin,
     Seamounts,
     AbyssalHills,
+    /// The profile of a continental margin: the shelf, the slope, and the
+    /// rise, under the sea.
+    Margin,
     More,
     Move,
     /// An open hand, for the Pan tool.
@@ -176,6 +179,7 @@ impl Icon {
             Icon::AbyssalHills => {
                 "M3 5c3-2 6 2 9 0s6-2 9 0M2 19l3-6v6l3-5v5l3-7v7l3-5v5l3-6v6l3-4v4"
             }
+            Icon::Margin => "M3 5c3-2 6 2 9 0s6-2 9 0M3 9h7l3 8c2 1.5 5 2.5 8 2.5",
             Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
@@ -599,6 +603,7 @@ mod tests {
             Icon::Basin,
             Icon::Seamounts,
             Icon::AbyssalHills,
+            Icon::Margin,
             Icon::More,
             Icon::Move,
             Icon::Hand,

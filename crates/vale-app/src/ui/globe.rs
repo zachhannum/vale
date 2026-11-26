@@ -2427,8 +2427,12 @@ pub(super) fn paint_canvas(
         }
     }
     // A basin takes its size from its outline, and the pen draws the center
-    // line of an ocean ridge, so they have no brush circle.
-    let line = matches!(globe.brush.mode, Mode::Basin | Mode::OceanRidge);
+    // line of an ocean ridge and the shelf break of a margin, so they have
+    // no brush circle.
+    let line = matches!(
+        globe.brush.mode,
+        Mode::Basin | Mode::OceanRidge | Mode::Margin
+    );
     let circle = globe.brushing() && !line;
     if let Some(pos) = globe.input.pos.filter(|_| circle) {
         let globe_radius = globe.radius();

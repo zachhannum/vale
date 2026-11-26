@@ -22,8 +22,8 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M,
-    OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN,
+    NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
     RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
     SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
     shape_text,
@@ -45,6 +45,15 @@ pub const BASIN: &str = "Basin";
 pub const SEAMOUNTS: &str = "Seamounts";
 /// The name of the abyssal hills mode of the brush.
 pub const ABYSSAL_HILLS: &str = "Abyssal hills";
+/// The name of the margin mode of the brush.
+pub const MARGIN: &str = "Margin";
+/// The hint of the margin mode.
+pub const MARGIN_HINT: &str = "Draw the shelf break.";
+/// The hint of a held margin.
+pub const MARGIN_HELD_HINT: &str = "Change the settings or apply.";
+/// The choices of the side of the land of the margin mode, in the
+/// direction of the stroke.
+pub const MARGIN_SIDES: [&str; 2] = ["Left", "Right"];
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1474,6 +1483,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Basin, BASIN),
             (Mode::Seamounts, SEAMOUNTS),
             (Mode::AbyssalHills, ABYSSAL_HILLS),
+            (Mode::Margin, MARGIN),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1524,12 +1534,22 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
-/// The hint of the ocean ridge mode and of the basin mode.
+/// The hint of the margin mode.
+pub fn margin_hint(globe: &crate::globe::Globe) -> &'static str {
+    if globe.holding().is_some() {
+        MARGIN_HELD_HINT
+    } else {
+        MARGIN_HINT
+    }
+}
+
+/// The hint of the ocean ridge mode, the basin mode, and the margin mode.
 fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     match globe.brush.mode {
         Mode::Basin => ui.label(basin_hint(globe)),
         Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
         Mode::OceanRidge => ui.label(RIDGE_HINT),
+        Mode::Margin => ui.label(margin_hint(globe)),
         _ => return,
     };
 }
@@ -1555,12 +1575,13 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             globe.brush.set_radius_km(size, globe_radius, world_km);
         }
     }
-    // The ocean ridge mode has no falloff and no strength, the range mode
-    // has no falloff, and the basin mode has no falloff and no flow.
+    // The ocean ridge mode and the margin mode have no falloff and no
+    // strength, the range mode has no falloff, and the basin mode has no
+    // falloff and no flow.
     let ridge = globe.brush.mode == Mode::OceanRidge;
     if !matches!(
         globe.brush.mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Margin
     ) {
         number::slider("Hardness", &mut globe.brush.hardness, 0.0..=1.0).show(ui);
     }
@@ -1636,6 +1657,21 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .percent()
             .show(ui);
         ui.checkbox(&mut brush.abyssal_fit, "Fit to map");
+        seed(ui, state);
+    } else if globe.brush.mode == Mode::Margin {
+        let brush = &mut globe.brush;
+        number::stepper("Shelf depth", &mut brush.margin_shelf_m)
+            .range(MARGIN_SHELF_M)
+            .step(10.0)
+            .decimals(0)
+            .suffix(" m")
+            .show(ui);
+        ui.horizontal(|ui| {
+            ui.label("Side");
+            let side = &mut brush.margin_land_left;
+            ui.selectable_value(side, true, MARGIN_SIDES[0]);
+            ui.selectable_value(side, false, MARGIN_SIDES[1]);
+        });
         seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)

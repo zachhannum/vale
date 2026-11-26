@@ -14,9 +14,9 @@ use vale_store::{
 };
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
-    FACES, Heightmap, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine, RidgePlan, SEA_LEVEL,
-    SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level,
-    reduced_cap, reduced_face_size, smoothing_level,
+    FACES, Heightmap, LinePlan, Margin, MarginLine, Mode, Pyramid, Rain, RangeLine, Ridge,
+    RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level,
+    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -314,10 +314,11 @@ struct Uplifting {
     window: Option<Window>,
 }
 
-/// The line of an ocean ridge stroke or of a range stroke.
+/// The line of an ocean ridge stroke, a range stroke, or a margin stroke.
 enum BrushLine {
     Ridge(RidgeLine),
     Range(RangeLine),
+    Margin(MarginLine),
 }
 
 impl BrushLine {
@@ -325,6 +326,7 @@ impl BrushLine {
         match self {
             BrushLine::Ridge(line) => line.len(),
             BrushLine::Range(line) => line.len(),
+            BrushLine::Margin(line) => line.len(),
         }
     }
 
@@ -342,11 +344,16 @@ impl BrushLine {
                 let end = plan.end;
                 (LineOp::Range(Box::new(plan)), end)
             }
+            BrushLine::Margin(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Margin(Box::new(plan)), end)
+            }
         }
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke. The stamps of
+/// The line of an ocean ridge, range, or margin stroke. The stamps of
 /// the stroke are the points of the line, and they do not go to the GPU.
 struct Ridging {
     line: BrushLine,
@@ -379,6 +386,7 @@ impl Ridging {
             match &mut self.line {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
+                BrushLine::Margin(line) => line.push(stamp.center, stamp.flow),
             }
         }
     }
@@ -412,9 +420,9 @@ impl Ridging {
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke with a brush of
-/// this radius, in radians, on a world of `km` kilometers with a heightmap
-/// of face size `n`. Other modes have no line.
+/// The line of an ocean ridge stroke, a range stroke, or a margin stroke
+/// with a brush of this radius, in radians, on a world of `km` kilometers
+/// with a heightmap of face size `n`. Other modes have no line.
 fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
     let (line, range) = match brush.mode {
         Mode::OceanRidge => {
@@ -425,6 +433,10 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
             let spec = brush.range_spec(radius, km, seed);
             let range = (brush.erosion > 0.0).then(Ranging::default);
             (BrushLine::Range(RangeLine::new(spec, n)), range)
+        }
+        Mode::Margin => {
+            let spec = brush.margin_spec(radius, km, seed);
+            (BrushLine::Margin(MarginLine::new(spec, n)), None)
         }
         _ => return None,
     };
@@ -546,7 +558,7 @@ struct Active {
     erode: Option<Eroding>,
     /// `Some`: the stroke is an uplift stroke with erosion.
     uplift: Option<Uplifting>,
-    /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
+    /// `Some`: the stroke is an ocean ridge, range, or margin stroke.
     ridge: Option<Ridging>,
     /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
@@ -554,8 +566,8 @@ struct Active {
     sea: Option<SeaStroke>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
-    /// `Some`: the stroke is an ocean ridge stroke or the rivers of a
-    /// basin. Its texels wait for `apply_held`.
+    /// `Some`: the stroke is an ocean ridge stroke, a margin stroke, or the
+    /// rivers of a basin. Its texels wait for `apply_held`.
     held: Option<Held>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
@@ -564,13 +576,13 @@ struct Active {
     reading: Option<usize>,
 }
 
-/// An ocean ridge or a basin that shows on the GPU. After the pen goes up,
+/// An ocean ridge, a margin, or a basin that shows on the GPU. After the pen goes up,
 /// it follows the settings of the brush until it is applied or discarded.
 struct Held {
     mode: Mode,
     /// The size and the size lock of the brush that gave `radius`.
     size: (f32, Option<f64>),
-    /// The radius of an ocean ridge, in radians.
+    /// The radius of an ocean ridge or a margin, in radians.
     radius: f64,
     /// The flow of the brush while the pen drew the line, and the flow of
     /// the texels on the GPU. The flow scales the height of an ocean ridge.
@@ -591,11 +603,15 @@ struct Held {
 enum HeldSpec {
     Ridge(Ridge),
     Basin(BasinSpec),
+    Margin(Margin),
 }
 
 /// The strips of each rectangle of `plan`, with `RIDGE_PIECE_TEXELS` texels
-/// at most, each as a plan of its own.
-fn ridge_pieces(plan: &RidgePlan) -> impl Iterator<Item = Box<RidgePlan>> + '_ {
+/// at most, each as a plan of its own. `line` gives the line of a plan.
+fn line_pieces<P: Clone + std::ops::Deref<Target = LinePlan>>(
+    plan: &P,
+    line: fn(&mut P) -> &mut LinePlan,
+) -> impl Iterator<Item = Box<P>> + '_ {
     let rects = plan.rects.iter().enumerate();
     let rects = rects.filter_map(|(face, rect)| Some((face, (*rect)?)));
     rects.flat_map(move |(face, rect)| {
@@ -603,8 +619,9 @@ fn ridge_pieces(plan: &RidgePlan) -> impl Iterator<Item = Box<RidgePlan>> + '_ {
         let rows = (RIDGE_PIECE_TEXELS / width).max(1);
         (rect.y0..rect.y1).step_by(rows).map(move |y0| {
             let mut piece = plan.clone();
-            piece.line.rects = [None; FACES];
-            piece.line.rects[face] = Some(TexelRect {
+            let rects = &mut line(&mut piece).rects;
+            *rects = [None; FACES];
+            rects[face] = Some(TexelRect {
                 y0,
                 y1: (y0 + rows).min(rect.y1),
                 ..rect
@@ -2667,15 +2684,15 @@ impl Globe {
         Some((screen(outline), Vec::new()))
     }
 
-    /// The center line of an ocean ridge in screen points, while the pen
-    /// draws it and while it is held.
+    /// The center line of an ocean ridge or a margin in screen points, while
+    /// the pen draws it and while it is held.
     pub fn ridge_preview(&self) -> Option<Vec<Pos2>> {
         let active = self
             .stroke
             .as_ref()
             .filter(|a| !a.ended || a.held.is_some())?;
         let ridge = active.ridge.as_ref()?;
-        if !matches!(ridge.line, BrushLine::Ridge(_)) {
+        if !matches!(ridge.line, BrushLine::Ridge(_) | BrushLine::Margin(_)) {
             return None;
         }
         let mut points: Vec<Pos2> = Vec::new();
@@ -3698,16 +3715,27 @@ impl Globe {
                                     None => active.outline = Some(Vec::new()),
                                 }
                             }
-                            if self.brush.mode == Mode::OceanRidge {
-                                let spec = self.brush.ridge_spec(sample.radius, km, seed);
+                            let spec =
+                                match self.brush.mode {
+                                    Mode::OceanRidge => Some(HeldSpec::Ridge(
+                                        self.brush.ridge_spec(sample.radius, km, seed),
+                                    )),
+                                    Mode::Margin => Some(HeldSpec::Margin(self.brush.margin_spec(
+                                        sample.radius,
+                                        km,
+                                        seed,
+                                    ))),
+                                    _ => None,
+                                };
+                            if let Some(spec) = spec {
                                 active.held = Some(Held {
-                                    mode: Mode::OceanRidge,
+                                    mode: self.brush.mode,
                                     size: (self.brush.size_points, self.brush.lock),
                                     radius: sample.radius,
                                     drawn_flow: self.brush.flow,
                                     flow: self.brush.flow,
-                                    spec: HeldSpec::Ridge(spec),
-                                    wanted: (HeldSpec::Ridge(spec), self.brush.flow),
+                                    spec,
+                                    wanted: (spec, self.brush.flow),
                                     changed: time,
                                     apply: false,
                                 });
@@ -3780,6 +3808,11 @@ impl Globe {
                                 && line.add_guide(&guide)
                             {
                                 ridge.resend();
+                            }
+                            // The map holds the ground from before the
+                            // stroke until the margin is applied.
+                            if let BrushLine::Margin(line) = &mut ridge.line {
+                                line.read_floor(map);
                             }
                         }
                         if let Some(basin) = &mut active.basin {
@@ -4022,6 +4055,7 @@ impl Globe {
         let spec = match held.spec {
             HeldSpec::Ridge(_) => HeldSpec::Ridge(self.brush.ridge_spec(held.radius, km, seed)),
             HeldSpec::Basin(_) => HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain)),
+            HeldSpec::Margin(_) => HeldSpec::Margin(self.brush.margin_spec(held.radius, km, seed)),
         };
         let wanted = (spec, self.brush.flow);
         if wanted != held.wanted {
@@ -4044,7 +4078,7 @@ impl Globe {
                 }
                 let smaller = match held.spec {
                     HeldSpec::Ridge(old) => spec.radius < old.radius,
-                    HeldSpec::Basin(_) => false,
+                    HeldSpec::Basin(_) | HeldSpec::Margin(_) => false,
                 };
                 (held.spec, held.flow) = wanted;
                 let scale = held.flow / held.drawn_flow.max(1e-6);
@@ -4065,6 +4099,28 @@ impl Globe {
                 // are not smaller. Thus the old ridge shows until the new
                 // one covers it. A smaller ridge needs the ground back
                 // first.
+                if smaller {
+                    restore(&self.map, &self.link, tag, &mut active.touched);
+                }
+            }
+            (HeldSpec::Margin(spec), Some(ridge), _) => {
+                if in_flight {
+                    return;
+                }
+                let smaller = match held.spec {
+                    HeldSpec::Margin(old) => spec.radius < old.radius,
+                    _ => false,
+                };
+                (held.spec, held.flow) = wanted;
+                let scale = held.flow / held.drawn_flow.max(1e-6);
+                let mut line = MarginLine::new(spec, n);
+                for &(dir, flow) in &ridge.points {
+                    line.push(dir, (flow * scale).min(1.0));
+                }
+                line.read_floor(&self.map);
+                ridge.line = BrushLine::Margin(line);
+                ridge.resend();
+                // A smaller margin needs the ground back first.
                 if smaller {
                     restore(&self.map, &self.link, tag, &mut active.touched);
                 }
@@ -4105,8 +4161,8 @@ impl Globe {
         self.holding().is_some() && !self.held_idle()
     }
 
-    /// The mode of the held stroke. After the pen goes up, an ocean ridge
-    /// or a basin shows and follows the settings, and the heightmap waits
+    /// The mode of the held stroke. After the pen goes up, an ocean ridge,
+    /// a margin, or a basin shows and follows the settings, and the heightmap waits
     /// for `apply_held`.
     pub fn holding(&self) -> Option<Mode> {
         let active = self.stroke.as_ref().filter(|a| a.ended)?;
@@ -4159,13 +4215,13 @@ impl Globe {
         self.stroke = None;
     }
 
-    /// Sends the ocean ridge or the range of the new points of the line to
+    /// Sends the ocean ridge, the range, or the margin of the new points of the line to
     /// the GPU. Each plan goes with the ground from before the stroke, which
     /// the heightmap holds until the texels of the stroke come back.
     ///
     /// The plans of a frame go after the GPU did the plans before them, and
     /// they hold at most `LINE_TEXELS_PER_FRAME` texels after the first
-    /// one. An ocean ridge goes to the GPU after the pen goes up.
+    /// one. An ocean ridge or a margin goes to the GPU after the pen goes up.
     fn ridge(&mut self, now: Instant, in_flight: bool) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
@@ -4187,7 +4243,13 @@ impl Globe {
                     ridge.sent = end;
                     match plan {
                         LineOp::Ridge(plan) => {
-                            ridge.pieces.extend(ridge_pieces(&plan).map(LineOp::Ridge));
+                            let pieces = line_pieces(&*plan, |p| &mut p.line);
+                            ridge.pieces.extend(pieces.map(LineOp::Ridge));
+                            continue;
+                        }
+                        LineOp::Margin(plan) => {
+                            let pieces = line_pieces(&*plan, |p| &mut p.line);
+                            ridge.pieces.extend(pieces.map(LineOp::Margin));
                             continue;
                         }
                         plan => plan,
@@ -5790,7 +5852,7 @@ mod tests {
         let texels = |r: TexelRect| (r.x1 - r.x0) * (r.y1 - r.y0);
         let whole: usize = plan.rects.iter().flatten().map(|&r| texels(r)).sum();
         assert!(whole > 4 * RIDGE_PIECE_TEXELS, "{whole}");
-        let pieces: Vec<_> = ridge_pieces(&plan).collect();
+        let pieces: Vec<_> = line_pieces(&*plan, |p| &mut p.line).collect();
         let mut sum = 0;
         for piece in &pieces {
             let rects: Vec<_> = piece
