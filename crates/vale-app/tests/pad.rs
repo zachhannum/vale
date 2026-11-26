@@ -359,7 +359,19 @@ fn open_modes(h: &mut Pad) {
 /// Chooses a brush mode in the flyout of its group.
 fn choose_mode(h: &mut Pad, name: &str) {
     open_group(h, group_of(name));
+    scroll_flyout_to(h, name);
     tap(h, name);
+}
+
+/// Scrolls the open flyout to its last rows if the row `name` is not
+/// visible.
+fn scroll_flyout_to(h: &mut Pad, name: &str) {
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    if control(h, name).is_some_and(|row| menu.contains_rect(row)) {
+        return;
+    }
+    let from = menu.center();
+    drag(h, from, from - vec2(0.0, menu.height()), None);
 }
 
 /// The place of the draw cell: the third cell of the tool strip.
@@ -2598,7 +2610,9 @@ fn a_hold_or_a_second_tap_on_the_brush_cell_opens_the_flyout() {
         if group == ModeGroup::Sculpt {
             assert_eq!(flyout.top(), cell.top());
         }
+        // A list taller than the screen scrolls to its last rows.
         for (mode, ..) in group.modes() {
+            scroll_flyout_to(&mut h, mode);
             let row = control(&h, mode).unwrap();
             assert!(flyout.contains_rect(row), "{mode}");
         }
@@ -2889,12 +2903,7 @@ fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");
     assert!(control(&h, "Brush plate speed value").is_none());
-    // The last row of the list is below its end.
-    open_group(&mut h, ModeGroup::Terrain);
-    let menu = h.state().pad.flyouts.rect.unwrap();
-    let from = menu.center();
-    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
-    tap(&mut h, "Hotspot track");
+    choose_mode(&mut h, "Hotspot track");
     let s = h.state();
     assert_eq!(
         (s.globe.tool, s.globe.brush.mode),

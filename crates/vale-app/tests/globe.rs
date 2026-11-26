@@ -5402,6 +5402,39 @@ fn two_equal_hotspot_strokes_give_equal_results() {
     assert!(other != before && other != first);
 }
 
+/// Writes images of a held hotspot track in the iPad layout, with the
+/// brush settings open, for a person to look at.
+#[test]
+#[ignore]
+fn manual_screenshots_of_a_held_hotspot_track() {
+    use vale_app::ui::Layout;
+    use vale_app::ui::pad::Panel;
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    state.globe.set_face_size(BRUSH_FACE_SIZE);
+    state.add_height();
+    state.set_layout(Layout::Pad);
+    state.pad.dock_mut().open_new(Panel::Brush);
+    state.globe.tool = Tool::Brush;
+    state.globe.brush.mode = Mode::Hotspot;
+    state.globe.view = GlobeView::centered(55.0, -2.0);
+    state.globe.view.zoom = 1.6;
+    state.globe.preview.graticule = false;
+    let size = (1194.0, 834.0);
+    let mut h = headless::ui_harness_on(state, size, 1.0, render_state());
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    save(&h.render().unwrap(), "hotspot-pad");
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    save(&h.render().unwrap(), "hotspot-pad-held");
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(75.0, -5.0);
+    globe.view.zoom = 5.0;
+    h.run_steps(3);
+    save(&h.render().unwrap(), "hotspot-pad-held-near");
+}
+
 #[test]
 fn the_brush_panel_has_the_hotspot_track_mode_and_its_settings() {
     let mut h = harness();
