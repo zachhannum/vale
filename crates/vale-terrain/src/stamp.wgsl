@@ -114,6 +114,7 @@ const PAINT = 16u;
 const SEAMOUNTS = 17u;
 const ABYSSAL = 18u;
 const MARGIN = 19u;
+const HOTSPOT = 20u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -2759,6 +2760,8 @@ const V_CAP = 56u;
 const V_RIM = 57u;
 const V_LAGOON = 58u;
 const V_EXTENT = 59u;
+const V_SHORE = 60u;
+const V_REEF = 61u;
 
 // Number `i` of volcano `v`.
 fn volcano(v: u32, i: u32) -> f32 {
@@ -2931,6 +2934,76 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
     return limited(start, clamp(floor(start + sum + 0.5), 0.0, 65535.0));
 }
 
+// The constants of `hotspot.rs`, with a `HOTSPOT_` prefix.
+const HOTSPOT_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
+const HOTSPOT_JOIN_M = 100.0;
+const HOTSPOT_CAP_ROUND_M = 30.0;
+const HOTSPOT_REEF_TOP_M = -1.0;
+const HOTSPOT_REEF_WALL = 2.0;
+
+// The steps of `shaped` in `hotspot.rs`: the height of volcano `v` with the
+// edifice `e` over the level `base`, with its top and its reef, and the part
+// of the rounding of the join that it takes.
+fn hotspot_shaped(v: u32, base: f32, e: f32) -> vec2<f32> {
+    let z = base + e;
+    let cap = volcano(v, V_CAP);
+    var s = z;
+    if cap < 65535.0 {
+        s = smooth_min(z, cap, HOTSPOT_CAP_ROUND_M * HOTSPOT_LEVELS_PER_M);
+    }
+    let band = volcano(v, V_RIM);
+    if band > 0.0 {
+        let shore = volcano(v, V_SHORE);
+        let top = (HOTSPOT_REEF_TOP_M - ELEVATION_LOW) * HOTSPOT_LEVELS_PER_M;
+        let reef = min(top - HOTSPOT_REEF_WALL * (shore - band - z), top);
+        let outer = max(s, reef);
+        let lagoon = volcano(v, V_LAGOON);
+        var inner = 0.0;
+        if lagoon > 0.0 {
+            inner = smooth_between(0.2, 0.5, (z - shore) / band);
+        }
+        let reefed = outer + (lagoon - outer) * inner;
+        s += (reefed - s) * volcano(v, V_REEF);
+    }
+    let free = max(1.0 - abs(s - z) / (HOTSPOT_JOIN_M * HOTSPOT_LEVELS_PER_M), 0.0);
+    return vec2<f32>(max(s - base, 0.0), free);
+}
+
+// The steps of `join` in `hotspot.rs`.
+fn hotspot_join(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let free = min(a.y, b.y);
+    let k = min(min(HOTSPOT_JOIN_M * HOTSPOT_LEVELS_PER_M * free, a.x), b.x);
+    if k <= 0.0 {
+        return vec2<f32>(max(a.x, b.x), free);
+    }
+    let h = max(k - abs(a.x - b.x), 0.0) / k;
+    return vec2<f32>(max(a.x, b.x) + 0.25 * k * h * h, free);
+}
+
+// The level of a texel of a hotspot track, from its level from before the
+// stroke. The steps are those of `HotspotPlan::level_of`. The header has
+// the depth of the floor at the end of the line as `crest`, the reset age as
+// `offset`, and the plate speed as `spread`.
+fn hotspot_level(at: RidgePoint, p: vec3<f32>, start: f32) -> f32 {
+    let to_end = (ridge.length.x - at.cell) * ridge.segment + (ridge.length.y - at.rest);
+    let age = max(to_end, 0.0) / ridge.spread;
+    let d = sqrt(at.across * at.across + at.past2) / ridge.radius;
+    let swell = max(ridge.crest - ridge_depth(ridge.offset + age), 0.0);
+    var moat = 0.0;
+    for (var v = 0u; v < group.count; v++) {
+        moat += volcano(v, V_GROWTH) * volcano_moat(v, p);
+    }
+    let base = start + swell * HOTSPOT_LEVELS_PER_M * bump(d) - moat;
+    var top = vec2<f32>(0.0, 1.0);
+    for (var v = 0u; v < group.count; v++) {
+        let e = volcano(v, V_GROWTH) * volcano_edifice(v, p);
+        if e > 0.0 {
+            top = hotspot_join(top, hotspot_shaped(v, base, e));
+        }
+    }
+    return clamp(floor(base + top.x + 0.5), 0.0, 65535.0);
+}
+
 // The change of the level of a texel from one weather stamp. Each pair of
 // texels that are side by side moves a whole number of levels from the higher
 // texel to the lower one. The limits bound the move. The steps are those of
@@ -3020,6 +3093,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
         let p = normalize(texel_dir(group.face, at));
         value = limited(value, margin_level(p, start, value));
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == HOTSPOT {
+        let p = normalize(texel_dir(group.face, at));
+        let point = ridge_place(p);
+        if point.on {
+            value = limited(value, hotspot_level(point, p, value));
+        }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
     if group.mode == RANGE {

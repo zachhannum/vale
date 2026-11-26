@@ -21,6 +21,7 @@ use crate::flow::{ChannelMap, ChannelWindow, CoarseHeights, WINDOW_CELLS, Window
 use crate::heightmap::{
     Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
 };
+use crate::hotspot::HotspotPlan;
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
 use crate::range::RangePlan;
@@ -1607,7 +1608,7 @@ impl GpuHeightmap {
         for (to, &j) in header.excluded.iter_mut().zip(&plan.guides.excluded) {
             *to = j;
         }
-        self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header)
+        self.line_pass(queue, enc, &plan.line, cell, 10, spec.limits, header, None)
     }
 
     /// Adds the mountain range of a plan to `enc`, as `ridge` adds an ocean
@@ -1637,13 +1638,14 @@ impl GpuHeightmap {
             range_tilt: plan.tilt() as f32,
             ..bytemuck::Zeroable::zeroed()
         };
-        self.line_pass(queue, enc, &plan.line, cell, 11, spec.limits, header)
+        self.line_pass(queue, enc, &plan.line, cell, 11, spec.limits, header, None)
     }
 
     /// Adds the passes of a line brush plan to `enc`, as `ridge`. `header`
     /// holds the settings of the brush. The pass sets the segments and their
     /// count, with `cell` as the cell of `LineSegment::to_f32`. `mode` is the
-    /// mode of the shader.
+    /// mode of the shader. With `volcanoes`, the pass also takes one of the
+    /// `SEAMOUNT_SLOTS` of a batch for them, `VOLCANO_FLOATS` for each.
     #[allow(clippy::too_many_arguments)]
     fn line_pass(
         &self,
@@ -1654,6 +1656,7 @@ impl GpuHeightmap {
         mode: u32,
         limits: Limits,
         header: RidgeUniforms,
+        volcanoes: Option<&[f32]>,
     ) -> bool {
         assert_eq!(plan.face_size as u32, self.face_size, "the face size");
         assert!(plan.segments.len() <= LINE_SEGMENTS, "the segments");
@@ -1663,13 +1666,32 @@ impl GpuHeightmap {
         }
         let first_slot = self.used_slots.load(Ordering::Relaxed);
         let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
-        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
+        let volcano_slot = self.used_seamount_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot
+            || ridge_slot == RIDGE_SLOTS
+            || (volcanoes.is_some() && volcano_slot == SEAMOUNT_SLOTS)
+        {
             return false;
         }
         self.used_slots
             .store(first_slot + passes, Ordering::Relaxed);
         self.used_ridge_slots
             .store(ridge_slot + 1, Ordering::Relaxed);
+        let mut volcano_offset = 0;
+        let mut count = 0;
+        if let Some(floats) = volcanoes {
+            self.used_seamount_slots
+                .store(volcano_slot + 1, Ordering::Relaxed);
+            volcano_offset = volcano_slot * self.volcano_slot_size;
+            count = (floats.len() / VOLCANO_FLOATS) as u32;
+            if !floats.is_empty() {
+                queue.write_buffer(
+                    &self.volcanoes,
+                    u64::from(volcano_offset),
+                    bytemuck::cast_slice(floats),
+                );
+            }
+        }
         let mut line = RidgeUniforms {
             count: plan.segments.len() as u32,
             ..header
@@ -1699,6 +1721,7 @@ impl GpuHeightmap {
                 face: face as u32,
                 mode,
                 size: self.face_size as i32,
+                count,
                 origin: [rect.x0 as i32, rect.y0 as i32],
                 limits: packed(limits),
                 ..bytemuck::Zeroable::zeroed()
@@ -1709,9 +1732,48 @@ impl GpuHeightmap {
                 u64::from(offset),
                 &bytemuck::bytes_of(&uniforms)[..used],
             );
-            self.pass(queue, enc, state, face, rect, [offset, ridge_offset, 0]);
+            let offsets = [offset, ridge_offset, volcano_offset];
+            self.pass(queue, enc, state, face, rect, offsets);
         }
         true
+    }
+
+    /// Adds the hotspot track of a plan to `enc`, as `ridge` adds an ocean
+    /// ridge. The result is that of `Heightmap::hotspot`. A plan takes one of
+    /// the `RIDGE_SLOTS` and one of the `SEAMOUNT_SLOTS` of a batch. A plan
+    /// of a line with no chain adds nothing.
+    pub fn hotspot(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &HotspotPlan,
+    ) -> bool {
+        assert!(plan.volcanoes.len() <= PLAN_VOLCANOES, "the volcanoes");
+        if !plan.is_finished() {
+            return true;
+        }
+        let spec = &plan.hotspot;
+        // The cell of the distances along the line is the brush radius.
+        let cell = plan.radius;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let (depth, reset, speed) = plan.swell_numbers();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: plan.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * plan.radius).sin() as f32,
+            crest: depth as f32,
+            offset: reset as f32,
+            spread: speed as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        let floats = plan.floats();
+        let (line, limits) = (&plan.line, spec.limits);
+        self.line_pass(queue, enc, line, cell, 20, limits, header, Some(&floats))
     }
 
     /// Adds the volcanoes of a seamount plan to `enc`, with one pass for
@@ -1839,7 +1901,7 @@ impl GpuHeightmap {
                 }
             }
         }
-        self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header)
+        self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header, None)
     }
 
     /// Adds a margin stamp to `enc`, with one pass for each face. The

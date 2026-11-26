@@ -95,6 +95,10 @@ const LAGOON_M: f64 = -40.0;
 /// height of its volcano.
 const REEF_BAND: f64 = 0.04;
 
+/// The outer wall of a reef is this many times as steep as the flank under
+/// it.
+const REEF_WALL: f64 = 2.0;
+
 /// A reef grows for this many millions of years after its volcano goes
 /// under the sea. It fades over the last `REEF_FADE_MYR` of them.
 const REEF_MYR: f64 = 30.0;
@@ -483,6 +487,14 @@ impl HotspotPlan {
         self.chain.is_some()
     }
 
+    /// The depth of the floor at the end of the line in meters, the reset
+    /// age, and the plate speed in radians per million years.
+    pub(crate) fn swell_numbers(&self) -> (f64, f64, f64) {
+        self.chain.as_ref().map_or((0.0, 0.0, 1.0), |chain| {
+            (chain.floor_depth, chain.reset_age, chain.speed)
+        })
+    }
+
     /// The level of a texel at unit direction `p` with level `start` from
     /// before the stroke and place `at` on the line, with only the
     /// volcanoes in `near`.
@@ -625,15 +637,20 @@ fn shaped(v: &Volcano, base: f64, e: f64) -> (f64, f64) {
     };
     let band = v.get(RIM);
     if band > 0.0 {
-        let weight = v.get(REEF);
-        let q = (z - v.get(SHORE)) / band;
+        // The reef is flat at its top from `band` below the old shore up,
+        // and its outer wall goes down from there.
+        let shore = v.get(SHORE);
+        let top = level_of_m(REEF_TOP_M);
+        let reef = (top - REEF_WALL * (shore - band - z)).min(top);
+        let outer = s.max(reef);
         let lagoon = v.get(LAGOON);
-        if lagoon > 0.0 {
-            let inner = smoothstep(0.2, 0.5, q);
-            s += (lagoon - s) * inner * weight;
-        }
-        let ring = smoothstep(-1.8, -1.3, q) * (1.0 - smoothstep(0.2, 0.5, q));
-        s += (level_of_m(REEF_TOP_M) - s).max(0.0) * ring * weight;
+        let inner = if lagoon > 0.0 {
+            smoothstep(0.2, 0.5, (z - shore) / band)
+        } else {
+            0.0
+        };
+        let reefed = outer + (lagoon - outer) * inner;
+        s += (reefed - s) * v.get(REEF);
     }
     let free = (1.0 - (s - z).abs() / (JOIN_M * LEVELS_PER_M)).max(0.0);
     ((s - base).max(0.0), free)
