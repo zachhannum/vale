@@ -3316,10 +3316,13 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             .step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
-    if matches!(mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+    if matches!(
+        mode,
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         row(ui, controls, state, Slider::Erosion);
     }
-    if matches!(mode, Mode::Erode | Mode::Uplift) {
+    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
         row(ui, controls, state, Slider::Branching);
     }
     if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {

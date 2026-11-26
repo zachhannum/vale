@@ -2811,7 +2811,8 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
     assert!(control(&h, "Strip size").is_some());
     assert!(control(&h, "Strip flow").is_some());
     // The panel has the size, the hardness, the flow, the shelf depth, the
-    // shelf width, and the seed, and no strength, no side, and no Apply.
+    // shelf width, the seed, the erosion, and the branching, and no
+    // strength, no side, no wind, and no Apply.
     assert!(
         h.query_by_label(vale_app::ui::panels::MARGIN_HINT)
             .is_some()
@@ -2823,6 +2824,8 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Brush shelf depth value",
         "Brush shelf width value",
         "Brush seed value",
+        "Brush erosion",
+        "Brush branching",
     ] {
         assert!(control(&h, row).is_some(), "{row}");
     }
@@ -2830,6 +2833,8 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Brush strength",
         "Brush side left",
         "Brush side right",
+        "Brush wind",
+        "Brush rain shadow",
         "Apply",
         "Discard",
     ] {
@@ -2880,6 +2885,8 @@ fn the_margin_mode_fits_on_the_smallest_ipad() {
         "Brush shelf depth value",
         "Brush shelf width value",
         "Brush seed value",
+        "Brush erosion",
+        "Brush branching",
     ] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");

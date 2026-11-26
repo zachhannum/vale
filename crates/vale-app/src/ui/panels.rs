@@ -1804,10 +1804,13 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix(" km")
             .show(ui);
     }
-    if matches!(globe.brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+    if matches!(
+        globe.brush.mode,
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         number::slider("Erosion", &mut globe.brush.erosion, EROSION).show(ui);
     }
-    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift) {
+    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
         number::slider("Branching", &mut globe.brush.branching, BRANCHING)
             .percent()
             .show(ui);

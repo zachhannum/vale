@@ -118,10 +118,13 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::Seamounts => out.push(Density),
         _ => {}
     }
-    if matches!(mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+    if matches!(
+        mode,
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         out.push(Erosion);
     }
-    if matches!(mode, Mode::Erode | Mode::Uplift) {
+    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
         out.push(Branching);
     }
     if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {

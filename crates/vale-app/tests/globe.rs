@@ -3566,13 +3566,13 @@ fn set_slider(h: &mut Harness<'static, AppState>, label: &str, value: f64) {
 
 #[test]
 fn the_brush_panel_has_the_branching_of_the_erode_and_uplift_modes() {
-    for mode in ["Raise", "Erode", "Uplift", "Range", "Basin"] {
+    for mode in ["Raise", "Erode", "Uplift", "Range", "Basin", "Margin"] {
         let mut h = harness();
         h.state_mut().globe.tool = Tool::Brush;
         h.run_steps(2);
         h.get_by_label(mode).click();
         h.run_steps(2);
-        let shown = matches!(mode, "Erode" | "Uplift");
+        let shown = matches!(mode, "Erode" | "Uplift" | "Margin");
         let found = h.query_all_by_label("Branching").next().is_some();
         assert_eq!(found, shown, "{mode}");
         if shown {
@@ -4983,6 +4983,9 @@ fn a_margin_stroke_gives_the_levels_of_the_cpu_stroke() {
     use vale_terrain::{Heightmap, MarginStroke};
     let _gpu = one_gpu_test();
     let mut h = margin_harness(7);
+    // `a_margin_stroke_erodes_its_slope_after_the_last_stamp` tests the
+    // erosion.
+    h.state_mut().globe.brush.erosion = 0.0;
     let before = all_levels(&h);
     let app = margin_stroke(&mut h);
 
@@ -5017,6 +5020,131 @@ fn a_margin_stroke_gives_the_levels_of_the_cpu_stroke() {
     assert!(changed > 500, "{changed}");
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
+}
+
+/// The plans of the stroke of `margin_stroke` on the ground of
+/// `margin_harness`, and that ground.
+fn margin_plans(
+    h: &Harness<'static, AppState>,
+) -> (Vec<vale_terrain::MarginPlan>, vale_terrain::Heightmap) {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, MarginStroke};
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.margin_spec(globe.world_km, globe.world_seed);
+    let mut start = Heightmap::new(n, globe.map.base());
+    set_coast(&mut start);
+    let mut margin = MarginStroke::new(spec, n);
+    let plans = stamps
+        .iter()
+        .map(|s| margin.stamp(&start, s.center, s.radius, s.hardness, s.flow))
+        .filter(|plan| !plan.is_empty())
+        .collect();
+    (plans, start)
+}
+
+/// The levels of each texel of a heightmap, in the order of `all_levels`.
+fn levels_of_map(map: &vale_terrain::Heightmap) -> Vec<u16> {
+    let n = map.face_size();
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    texels
+        .map(|(face, x, y)| map.get(face, x as i64, y as i64))
+        .collect()
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_margin_stroke_erodes_its_slope_after_the_last_stamp() {
+    use vale_terrain::{Erosion, erode_margin, margin_window};
+    let _gpu = one_gpu_test();
+    let mut h = margin_harness(7);
+    assert_eq!(h.state().globe.brush.erosion, 0.5);
+    let before = all_levels(&h);
+    let app = margin_stroke(&mut h);
+    assert!(h.state().globe.can_undo());
+
+    // The same stroke on the CPU, with the settings of the erosion of the
+    // app.
+    let (plans, start) = margin_plans(&h);
+    let globe = &h.state().globe;
+    let brush = globe.brush;
+    let mut margin = start.snapshot();
+    margin.begin_stroke();
+    for plan in &plans {
+        margin.margin(plan);
+    }
+    margin.end_stroke();
+    let window = margin_window(&plans, start.face_size());
+    let mut erosion = Erosion::window_alone(&WindowHeights::new(&start, window));
+    erosion.set_limits(brush.limits());
+    erosion.set_rain(globe.world_rain);
+    erosion.set_channel(brush.channel_shape(globe.world_km));
+    erosion.set_branching(globe.world_seed, brush.branching);
+    let step = erode_margin(&mut erosion, &plans, 0.5);
+    assert!(!step.is_empty());
+    let mut cpu = margin.snapshot();
+    cpu.begin_stroke();
+    cpu.erode(&step);
+    cpu.end_stroke();
+    let (margin, cpu) = (levels_of_map(&margin), levels_of_map(&cpu));
+
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    assert!(changed > 500, "{changed}");
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    // The erosion lowers the slope of the margin and does not raise it.
+    let lowered = app.iter().zip(&margin).filter(|(a, m)| a < m).count();
+    let deep = app
+        .iter()
+        .zip(&margin)
+        .map(|(a, m)| m.saturating_sub(*a))
+        .max();
+    assert!(lowered > 500, "{lowered}");
+    assert!(deep.unwrap() > 10, "{deep:?}");
+    let raised = app
+        .iter()
+        .zip(&margin)
+        .filter(|(a, m)| **a > *m + 2)
+        .count();
+    assert_eq!(raised, 0);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn one_undo_puts_back_the_ground_from_before_an_eroded_margin_stroke() {
+    let _gpu = one_gpu_test();
+    let mut h = margin_harness(7);
+    let before = all_levels(&h);
+    let after = margin_stroke(&mut h);
+    assert!(after != before);
+    // The eroded stroke differs from the stroke without erosion.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+    h.state_mut().globe.brush.erosion = 0.0;
+    let plain = margin_stroke(&mut h);
+    assert!(plain != after);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+
+    // One undo step holds the whole eroded stroke.
+    h.state_mut().globe.brush.erosion = 0.5;
+    assert!(margin_stroke(&mut h) == after);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == after);
 }
 
 #[test]
@@ -6037,11 +6165,14 @@ fn the_brush_panel_has_the_margin_mode_and_its_settings() {
         "Shelf depth",
         "Shelf width",
         "Seed",
+        "Erosion",
+        "Branching",
         "Floor",
         "Ceiling",
     ] {
         assert!(h.query_all_by_label(name).next().is_some(), "{name}");
     }
+    // Only the sea floor gives the flow water, so the margin has no rain.
     for name in [
         "Strength",
         "Crest",
@@ -6050,6 +6181,8 @@ fn the_brush_panel_has_the_margin_mode_and_its_settings() {
         "Apply",
         "Discard",
         "Draw the shelf break.",
+        "Wind",
+        "Rain shadow",
     ] {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }

@@ -15,8 +15,8 @@ use vale_store::{
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
     FACES, Heightmap, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain, RangeLine, Ridge,
-    RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level,
-    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
+    RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, margin_window,
+    max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -488,12 +488,28 @@ struct SeaStroke {
     /// The plans that wait for the GPU, each with the time of its pen
     /// sample.
     plans: VecDeque<(SeaOp, Instant)>,
+    /// `Some`: the stroke is a margin stroke with erosion.
+    erosion: Option<MarginErosion>,
+}
+
+/// The erosion of a margin stroke. After the last plan of the stroke went
+/// to the GPU, the worker erodes the margin of all the plans one time, and
+/// the step goes to the GPU before the readback.
+#[derive(Default)]
+struct MarginErosion {
+    /// Each plan of the stroke that changes texels.
+    plans: Vec<MarginPlan>,
+    /// The plans went to the worker.
+    asked: bool,
+    /// The step went to the GPU, or the stroke has no step.
+    done: bool,
 }
 
 impl SeaStroke {
     /// The stroke of a sea floor mode of `brush`, or `None` for another
     /// mode. `km` is the radius of the world and `n` the face size.
     fn of(brush: &BrushSettings, km: f64, seed: u32, n: usize) -> Option<SeaStroke> {
+        let erosion = brush.erosion;
         let brush = match brush.mode {
             Mode::Seamounts => {
                 SeaBrush::Seamounts(SeamountStroke::new(brush.seamount_spec(km, seed), n))
@@ -504,9 +520,11 @@ impl SeaStroke {
             Mode::Margin => SeaBrush::Margin(MarginStroke::new(brush.margin_spec(km, seed), n)),
             _ => return None,
         };
+        let eroding = matches!(brush, SeaBrush::Margin(_)) && erosion > 0.0;
         Some(SeaStroke {
             brush,
             plans: VecDeque::new(),
+            erosion: eroding.then(MarginErosion::default),
         })
     }
 
@@ -546,8 +564,13 @@ impl SeaStroke {
 
     fn push_margin(&mut self, plans: Vec<MarginPlan>, time: Instant) {
         let plans = plans.into_iter().filter(|plan| !plan.is_empty());
-        self.plans
-            .extend(plans.map(|plan| (SeaOp::Margin(Box::new(plan)), time)));
+        let erosion = &mut self.erosion;
+        self.plans.extend(plans.map(|plan| {
+            if let Some(erosion) = erosion {
+                erosion.plans.push(plan.clone());
+            }
+            (SeaOp::Margin(Box::new(plan)), time)
+        }));
     }
 
     /// Whether a stamp waits for its plan.
@@ -3499,6 +3522,7 @@ impl Globe {
         self.hold(now, in_flight);
         self.ridge(now, in_flight);
         self.range();
+        self.margin();
         self.basin();
         self.send_stamps(now);
         // A held stroke with no work in progress needs no frames.
@@ -4331,6 +4355,61 @@ impl Globe {
         }
     }
 
+    /// After the last plan of a margin stroke went to the GPU, asks the
+    /// worker to erode the margin of all its plans. When the step arrives,
+    /// sends it to the GPU.
+    fn margin(&mut self) {
+        let tag = self.tag();
+        let Some(active) = &mut self.stroke else {
+            return;
+        };
+        let Some(sea) = active.sea.as_mut() else {
+            return;
+        };
+        let ready = active.ended && !sea.waiting() && sea.plans.is_empty();
+        let Some(erosion) = sea.erosion.as_mut().filter(|e| ready && !e.done) else {
+            return;
+        };
+        let amount = self.brush.erosion.clamp(0.0, 1.0);
+        if !erosion.asked {
+            if erosion.plans.is_empty() || amount <= 0.0 {
+                erosion.done = true;
+                return;
+            }
+            // The heightmap holds the ground from before the stroke.
+            let plans = std::mem::take(&mut erosion.plans);
+            let window = margin_window(&plans, self.map.face_size());
+            let heights = WindowHeights::new(&self.map, window);
+            self.eroder.begin(Ground::Alone(heights));
+            self.eroder.set_rain(self.world_rain);
+            self.eroder
+                .set_branching(self.world_seed, self.brush.branching);
+            self.eroder
+                .set_channel(self.brush.channel_shape(self.world_km));
+            let limits = self.brush.limits();
+            let lift = Lift::Margin(Arc::new(plans));
+            self.eroder.request(Vec::new(), amount, lift, limits);
+            erosion.asked = true;
+        }
+        let Some(step) = self.eroder.poll() else {
+            if !self.eroder.pending() {
+                // A reset of the heightmap canceled the request.
+                erosion.done = true;
+            }
+            return;
+        };
+        if !step.is_empty() {
+            for (touched, rect) in active.touched.iter_mut().zip(step.rects()) {
+                if let Some(rect) = rect {
+                    *touched = Some(union(*touched, rect));
+                }
+            }
+            let stroke = active.id;
+            self.link.push(tag, Op::Erode { stroke, step });
+        }
+        erosion.done = true;
+    }
+
     /// After the pen of a basin stroke goes up, sends the line to the
     /// worker. When the basin arrives, sends its texels to the GPU.
     fn basin(&mut self) {
@@ -4443,11 +4522,11 @@ impl Globe {
         {
             return;
         }
-        if active
-            .sea
-            .as_ref()
-            .is_some_and(|s| !s.plans.is_empty() || s.waiting())
-        {
+        // The readback of a margin stroke follows its erosion step, so one
+        // undo step has the whole stroke.
+        if active.sea.as_ref().is_some_and(|s| {
+            !s.plans.is_empty() || s.waiting() || s.erosion.as_ref().is_some_and(|e| !e.done)
+        }) {
             return;
         }
         // The readback of a basin stroke follows its texels.
