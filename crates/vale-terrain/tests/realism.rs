@@ -5,8 +5,9 @@ use std::path::Path;
 
 use vale_terrain::math::{V3, lonlat_to_dir};
 use vale_terrain::{
-    AbyssalHills, AbyssalStroke, Heightmap, Limits, PACIFIC_FLANK, Patch, Realism, Reference,
-    Ridge, RidgeLine, SeamountStroke, Seamounts, meters_to_level, realism,
+    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, PACIFIC_FLANK,
+    Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts, meters_to_level,
+    realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -15,9 +16,8 @@ const WORLD_KM: f64 = 1000.0;
 const FACE_SIZE: usize = 3328;
 
 /// The distance of the ridge axis east of the middle of the patch, in
-/// kilometers, and its longitude in degrees.
+/// kilometers.
 const AXIS_KM: f64 = 160.0;
-const AXIS_LON: f64 = AXIS_KM / WORLD_KM * 180.0 / std::f64::consts::PI;
 
 /// The seed of the ridge.
 const RIDGE_SEED: u32 = 7;
@@ -25,11 +25,42 @@ const RIDGE_SEED: u32 = 7;
 /// The depth of the ground past the ridge, in meters.
 const BASE_M: f64 = 3550.0;
 
+/// The settings of an ocean ridge on a world with a radius of `world_km`
+/// at the largest brush radius, with a full spreading rate in mm/yr. The
+/// other settings are the defaults of the brush.
+fn ridge_spec(world_km: f64, spreading_mm: f64, crest_m: f64) -> Ridge {
+    Ridge {
+        radius: vale_terrain::MAX_RIDGE_RADIUS,
+        crest: meters_to_level(crest_m),
+        segment: 400.0 / world_km,
+        offset: 100.0 / world_km,
+        spread: 0.5 * spreading_mm / world_km,
+        magma: 0.0,
+        world_km,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+        hills: 1.0,
+        fit: true,
+        scale: 1.0,
+    }
+}
+
+/// The crest depth and the spreading rate of the East Pacific Rise near
+/// 11.6 N, with no offsets.
+fn pacific_ridge() -> Ridge {
+    Ridge {
+        offset: 0.0,
+        ..ridge_spec(WORLD_KM, 110.0, -2600.0)
+    }
+}
+
 /// A heightmap at the scale of a reference region and the place of its
 /// patch: the middle of face 0.
 struct Painted {
     map: Heightmap,
     center: V3,
+    /// The radius of the world, in kilometers.
+    world_km: f64,
 }
 
 impl Painted {
@@ -38,6 +69,17 @@ impl Painted {
         Painted {
             map: Heightmap::new(FACE_SIZE, meters_to_level(-depth_m)),
             center: lonlat_to_dir(0.0, 0.0),
+            world_km: WORLD_KM,
+        }
+    }
+
+    /// Flat ground at a depth in meters on a world of the size of the
+    /// Earth, with texels near 920 m.
+    fn earth(depth_m: f64) -> Painted {
+        Painted {
+            map: Heightmap::new(EARTH_FACE_SIZE, meters_to_level(-depth_m)),
+            center: lonlat_to_dir(0.0, 0.0),
+            world_km: EARTH_KM,
         }
     }
 
@@ -46,37 +88,22 @@ impl Painted {
         Patch::from_heightmap(
             &self.map,
             self.center,
-            WORLD_KM,
+            self.world_km,
             reference.size,
             reference.cell_m,
         )
     }
 
-    /// An ocean ridge along a meridian east of the patch, so the patch is
-    /// on its west flank and the fabric runs north. The line is long, so the
-    /// patch is far from the taper at its ends. The crest depth and the
-    /// spreading rate are those of the East Pacific Rise near 11.6 N. The
-    /// axis is `AXIS_KM` east of the east edge of the patch, so the patch
-    /// has the depths of the reference patch.
-    fn ridge_flank(&mut self) {
-        let spec = Ridge {
-            radius: 0.24,
-            crest: meters_to_level(-2600.0),
-            segment: 400.0 / WORLD_KM,
-            offset: 0.0,
-            spread: 55.0 / WORLD_KM,
-            magma: 0.0,
-            world_km: WORLD_KM,
-            seed: RIDGE_SEED,
-            limits: Limits::default(),
-            hills: 1.0,
-            fit: true,
-            scale: 1.0,
-        };
-        let mut line = RidgeLine::new(spec, FACE_SIZE);
+    /// An ocean ridge along a meridian `east_km` east of the middle of the
+    /// patch, from latitude `-lat` to `lat` in degrees, so the fabric runs
+    /// north. The line is long, so the patch is far from the taper at its
+    /// ends.
+    fn ridge(&mut self, spec: Ridge, east_km: f64, lat: f64) {
+        let lon = east_km / self.world_km * 180.0 / std::f64::consts::PI;
+        let mut line = RidgeLine::new(spec, self.map.face_size());
         for i in 0..=16 {
-            let lat = -30.0 + 60.0 * f64::from(i) / 16.0;
-            line.push(lonlat_to_dir(AXIS_LON, lat), 1.0);
+            let lat = -lat + 2.0 * lat * f64::from(i) / 16.0;
+            line.push(lonlat_to_dir(lon, lat), 1.0);
         }
         self.map.begin_stroke();
         let mut from = 0;
@@ -86,6 +113,12 @@ impl Painted {
             from = plan.end;
         }
         self.map.end_stroke();
+    }
+
+    /// The ridge of `pacific_ridge`, so the patch has the depths of the
+    /// Pacific reference patch.
+    fn ridge_flank(&mut self) {
+        self.ridge(pacific_ridge(), AXIS_KM, 30.0);
     }
 
     /// A seamounts stroke in rows over the patch.
@@ -193,7 +226,6 @@ fn compare(painted: &Painted, reference: &Reference, direction: f64) -> (Realism
     );
     let local = relief(&patch.heights, n);
     print_relief("painted", &local);
-    print_relief("reference", &REFERENCE_RELIEF);
     (report, local)
 }
 
@@ -253,6 +285,7 @@ fn paint_abyssal(map: &mut Heightmap, spec: AbyssalHills, points: &[V3], radius:
 /// reference.
 fn assert_near(report: &Realism, local: &[f64; 6], reference: &Reference) {
     let r = &reference.realism;
+    print_relief("reference", &REFERENCE_RELIEF);
     // The body of the local relief is near the reference, and the
     // seamounts stand above the faults.
     let (p99, p999) = (local[3], local[4]);
@@ -313,6 +346,204 @@ fn seamounts_on_a_ridge_flank_are_near_the_pacific_flank() {
     let reference = Reference::parse(PACIFIC_FLANK).unwrap();
     let (report, local) = compare(&pacific_flank(), &reference, 0.0);
     assert_near(&report, &local, &reference);
+}
+
+/// The faces of an Earth with texels near 920 m.
+const EARTH_FACE_SIZE: usize = 10752;
+
+/// The brush radius of the ridges on an Earth: 637 km. The hills start to
+/// fade at 0.8 brush radii from the line, past the edge of the patch, and
+/// the taper at an end of the line is 1.2 brush radii long.
+const EARTH_RIDGE_RADIUS: f64 = 0.1;
+
+/// A ridge on an Earth with its line through the middle of the patch, from
+/// 12 S to 12 N, so the patch is past the taper at each end. The ground past
+/// the ridge is at `base_m`, the depth of floor of the age at the brush
+/// radius.
+fn earth_ridge(spec: Ridge, base_m: f64) -> Painted {
+    let mut painted = Painted::earth(base_m);
+    let spec = Ridge {
+        radius: EARTH_RIDGE_RADIUS,
+        ..spec
+    };
+    painted.ridge(spec, 0.0, 12.0);
+    painted
+}
+
+/// A slow ridge at the default settings of the brush, at the scale of the
+/// Atlantic reference.
+fn slow_ridge() -> Painted {
+    earth_ridge(ridge_spec(EARTH_KM, 25.0, -1500.0), 5050.0)
+}
+
+/// A fast ridge with the spreading rate and the crest depth of the East
+/// Pacific Rise near 11 N, at the scale of its reference.
+fn fast_ridge() -> Painted {
+    earth_ridge(ridge_spec(EARTH_KM, 110.0, -2600.0), 3840.0)
+}
+
+/// The limits of a realism report around the values of a reference: the
+/// largest difference of the spectral slope, the smallest and the largest
+/// ratio of the anisotropy and of the RMS height, and the largest sum of
+/// the differences of the slope histogram.
+struct Within {
+    slope: f64,
+    anisotropy: (f64, f64),
+    rms: (f64, f64),
+    histogram: f64,
+}
+
+/// Asserts that a realism report is within limits around a reference.
+fn assert_within(report: &Realism, reference: &Reference, within: &Within) {
+    let r = &reference.realism;
+    let name = &reference.region;
+    assert!(
+        (report.spectral_slope - r.spectral_slope).abs() < within.slope,
+        "{name}: a spectral slope of {}",
+        report.spectral_slope
+    );
+    let ratio = report.anisotropy / r.anisotropy;
+    assert!(
+        ratio > within.anisotropy.0 && ratio < within.anisotropy.1,
+        "{name}: an anisotropy of {}",
+        report.anisotropy
+    );
+    let ratio = report.rms_m / r.rms_m;
+    assert!(
+        ratio > within.rms.0 && ratio < within.rms.1,
+        "{name}: an RMS of {} m",
+        report.rms_m
+    );
+    let apart: f64 = (report.slope_histogram.iter())
+        .zip(&r.slope_histogram)
+        .map(|(a, b)| (a - b).abs())
+        .sum();
+    assert!(
+        apart < within.histogram,
+        "{name}: a slope histogram {apart} from the reference"
+    );
+}
+
+const RIDGE_LIMITS: Within = Within {
+    slope: 0.4,
+    anisotropy: (0.5, 2.0),
+    rms: (0.7, 1.4),
+    histogram: 0.4,
+};
+
+/// The RMS of the relief shorter than about 20 km of a patch of `n` by `n`
+/// heights with cells of `cell_m`, in the columns from `km.0` to `km.1`
+/// kilometers east or west of the middle.
+fn short_relief(heights: &[f32], n: usize, cell_m: f64, km: (f64, f64)) -> f64 {
+    let box_cells = (20_000.0 / cell_m) as usize | 1;
+    let half = box_cells / 2;
+    let mut sums = vec![0.0; (n + 1) * (n + 1)];
+    for y in 0..n {
+        for x in 0..n {
+            sums[(y + 1) * (n + 1) + x + 1] = f64::from(heights[y * n + x])
+                + sums[y * (n + 1) + x + 1]
+                + sums[(y + 1) * (n + 1) + x]
+                - sums[y * (n + 1) + x];
+        }
+    }
+    let (mut sum, mut count) = (0.0, 0);
+    for y in half..n - half {
+        for x in half..n - half {
+            let from_middle = (x as f64 - 0.5 * n as f64).abs() * cell_m / 1000.0;
+            if from_middle < km.0 || from_middle >= km.1 {
+                continue;
+            }
+            let (x0, y0, x1, y1) = (x - half, y - half, x + half + 1, y + half + 1);
+            let mean =
+                (sums[y1 * (n + 1) + x1] - sums[y0 * (n + 1) + x1] - sums[y1 * (n + 1) + x0]
+                    + sums[y0 * (n + 1) + x0])
+                    / (box_cells * box_cells) as f64;
+            let d = f64::from(heights[y * n + x]) - mean;
+            sum += d * d;
+            count += 1;
+        }
+    }
+    (sum / f64::from(count)).sqrt()
+}
+
+#[test]
+fn a_slow_ridge_is_near_the_mid_atlantic_ridge() {
+    let reference = Reference::parse(ATLANTIC_RIDGE).unwrap();
+    let painted = slow_ridge();
+    let (report, _) = compare(&painted, &reference, 0.0);
+    assert_within(&report, &reference, &RIDGE_LIMITS);
+    // As on the real flank, the hills get lower away from the axis, so no
+    // area far out stands out.
+    let patch = painted.patch(&reference);
+    let relief = |km| short_relief(&patch.heights, patch.size, patch.cell_m, km);
+    let (near, far) = (relief((0.0, 150.0)), relief((350.0, 450.0)));
+    eprintln!("  short relief: {near:.0} m near the axis, {far:.0} m far from it");
+    assert!(
+        far < 0.85 * near,
+        "{near} m near the axis, {far} m far from it"
+    );
+}
+
+#[test]
+fn a_fast_ridge_is_near_the_east_pacific_rise() {
+    let reference = Reference::parse(EPR_RIDGE).unwrap();
+    let (report, _) = compare(&fast_ridge(), &reference, 0.0);
+    assert_within(&report, &reference, &RIDGE_LIMITS);
+}
+
+/// The patch of a reference region from `scripts/gebco-reference.sh`.
+fn gebco_patch(name: &str) -> Vec<f32> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let raw = root.join(format!("target/gebco/{name}.f32"));
+    let bytes =
+        std::fs::read(&raw).unwrap_or_else(|_| panic!("run scripts/gebco-reference.sh {name}"));
+    bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&b| f32::from_le_bytes(b))
+        .collect()
+}
+
+/// Saves a painted patch and the reference patch side by side, with the
+/// same tints and hillshade, to `target/realism/NAME.png`.
+fn save_side_by_side(name: &str, painted: &Painted, reference: &Reference, gebco: &[f32]) {
+    let ours = painted.patch(reference).heights;
+    let n = reference.size;
+    let mut image = image::RgbImage::new(2 * n as u32, n as u32);
+    for (i, heights) in [&ours[..], gebco].into_iter().enumerate() {
+        draw(&mut image, heights, n, reference.cell_m, [i * n, 0]);
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join(format!("target/realism/{name}.png"));
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
+    // The painted heights, as the reference patch is saved.
+    let bytes: Vec<u8> = ours.iter().flat_map(|h| h.to_le_bytes()).collect();
+    std::fs::write(out.with_extension("f32"), bytes).unwrap();
+}
+
+/// The test strokes of a slow ridge and a fast ridge beside their reference
+/// patches. The reference patches come from `scripts/gebco-reference.sh
+/// atlantic-ridge` and `scripts/gebco-reference.sh epr-ridge`.
+#[test]
+#[ignore = "manual"]
+fn manual_ridges_next_to_their_references() {
+    for (name, text, paint) in [
+        (
+            "atlantic-ridge",
+            ATLANTIC_RIDGE,
+            slow_ridge as fn() -> Painted,
+        ),
+        ("epr-ridge", EPR_RIDGE, fast_ridge),
+    ] {
+        let reference = Reference::parse(text).unwrap();
+        let gebco = gebco_patch(name);
+        let painted = paint();
+        compare(&painted, &reference, 0.0);
+        save_side_by_side(name, &painted, &reference, &gebco);
+    }
 }
 
 /// The painted patch and the reference patch side by side, with the same

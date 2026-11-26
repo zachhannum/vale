@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: 22.129 to 30.871 N, -50.092 to -39.908 E
+# Fetched: 2026-11-26
+# Made by: scripts/gebco-reference.sh atlantic-ridge
+
+region = Mid-Atlantic Ridge, 26.5 N
+center = -45, 26.5
+size = 1024
+cell_m = 920
+band_m = 3680, 225000
+fabric_deg = 15
+spectral_slope = -2.3210
+anisotropy = 2.1293
+rms_m = 633.13
+slope_histogram = 0.08744, 0.15276, 0.29415, 0.29726, 0.14890, 0.01946, 0.00003

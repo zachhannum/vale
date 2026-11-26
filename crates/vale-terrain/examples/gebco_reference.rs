@@ -20,6 +20,9 @@ use vale_terrain::{MIN_WAVELENGTH_CELLS, Patch, Realism, Reference, meters_to_le
 
 const EARTH_KM: f64 = 6371.0;
 
+/// The meters of one degree of latitude.
+const M_PER_DEG: f64 = EARTH_KM * 1000.0 * std::f64::consts::PI / 180.0;
+
 struct Grid {
     columns: usize,
     rows: usize,
@@ -112,6 +115,7 @@ fn main() {
     let fabric_deg = number(fabric_deg);
 
     let grid = Grid::read(&std::fs::read_to_string(grid).expect("read the grid"));
+    let k = ((cell_m / (grid.cell_deg * M_PER_DEG)).round() as usize).max(1);
     let patch = Patch::from_fn(
         lonlat_to_dir(center.0, center.1),
         EARTH_KM,
@@ -119,7 +123,19 @@ fn main() {
         cell_m,
         |d| {
             let (lon, lat) = dir_to_lonlat(d);
-            grid.at(lon, lat)
+            // The mean of `k` by `k` points over the cell, so a cell wider
+            // than a grid cell does not alias.
+            let step_lat = cell_m / k as f64 / M_PER_DEG;
+            let step_lon = step_lat / lat.to_radians().cos();
+            let half = (k as f64 - 1.0) * 0.5;
+            let mut sum = 0.0;
+            for j in 0..k {
+                for i in 0..k {
+                    let (x, y) = (i as f64 - half, j as f64 - half);
+                    sum += grid.at(lon + x * step_lon, lat + y * step_lat);
+                }
+            }
+            sum / (k * k) as f64
         },
     );
 

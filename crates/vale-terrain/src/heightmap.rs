@@ -4441,6 +4441,17 @@ mod tests {
     /// even face at a right angle, `m` texels along the edge. The jump at
     /// the edge is not much larger than the jumps on each side.
     fn assert_no_seam(map: &Heightmap, face: usize, m: usize) {
+        let (at_edge, inside) = seam_jumps(map, face, m);
+        assert!(
+            2 * at_edge <= 3 * inside + 4,
+            "face {face}, line {m}: the jump at the edge is {at_edge}, and the largest jump \
+             inside is {inside}"
+        );
+    }
+
+    /// The jump at the +u edge of an even face on the line of
+    /// `assert_no_seam`, and the largest jump on each side of it.
+    fn seam_jumps(map: &Heightmap, face: usize, m: usize) -> (i32, i32) {
         let (n, k) = (map.face_size(), 12);
         let next = 2 * ((face / 2 + 1) % 3);
         let near = (n - k..n).map(|x| (face, x, m));
@@ -4453,11 +4464,7 @@ mod tests {
         let at_edge = jumps[k - 1];
         let inside = jumps.iter().enumerate().filter(|(i, _)| *i != k - 1);
         let inside = inside.map(|(_, jump)| *jump).max().unwrap();
-        assert!(
-            2 * at_edge <= 3 * inside + 4,
-            "face {face}, line {m}: the jump at the edge is {at_edge}, and the largest jump \
-             inside is {inside}: {levels:?}"
-        );
+        (at_edge, inside)
     }
 
     #[test]
@@ -5294,12 +5301,18 @@ mod tests {
     fn a_ridge_leaves_no_seam_at_a_cube_corner() {
         let n = 256;
         let mut map = smooth_ground(n);
-        // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264.
+        // Faces 0, 2, and 4 meet at longitude 45 and latitude 35.264. A
+        // texel is wider than a trough, so a trace that crosses the edge
+        // can make a large jump at one line. The mean of the jumps over
+        // many lines shows a seam.
         lay_ridge(&mut map, (38.0, 29.0), (52.0, 41.0));
         for face in [0, 2, 4] {
-            for m in [236, 243, 249] {
-                assert_no_seam(&map, face, m);
+            let (mut edge, mut inside) = (0, 0);
+            for m in 232..252 {
+                let (e, i) = seam_jumps(&map, face, m);
+                (edge, inside) = (edge + e, inside + i);
             }
+            assert!(2 * edge <= 3 * inside, "face {face}: {edge} {inside}");
         }
     }
 

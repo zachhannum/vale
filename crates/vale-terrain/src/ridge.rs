@@ -435,10 +435,14 @@ impl RidgePlan {
         let (r, seed) = (self.ridge.radius, self.ridge.seed);
         let at = |size: f64, salt: u32| noise3(p.map(|c| c / (size * r)), seed ^ salt);
         let (wide, fine) = (at(BEND_SIZE, SALT_BEND), at(BEND_FINE_SIZE, SALT_BEND_FINE));
+        // The ragged seams grow with the hills.
+        let km = self.ridge.world_km / self.fit();
+        let seam = |size: f64| noise3(p.map(|c| c * km / size), seed ^ SALT_SEAM)[1];
         RidgeNoise {
             bend: add(wide, scale(fine, 0.5)),
             slow: at(SLOW_SIZE, SALT_SLOW),
             patch: patch_noise(p, self.ridge.world_km / self.fit().sqrt(), seed),
+            seam: seam(SEAM_SIZE_KM) + 0.5 * seam(0.5 * SEAM_SIZE_KM),
         }
     }
 
@@ -596,10 +600,13 @@ impl RidgePlan {
     fn migration(&self, sg: &Segmenting, j: i32, tau: f64) -> (f64, f64) {
         let seed = self.ridge.seed ^ SALT_MIGRATE;
         let wander = WANDER_KM / self.ridge.world_km;
+        // The move is a part of the shorter of the two segments at the
+        // boundary, so two traces do not cross.
+        let gap = |a: i32| self.boundary(sg, a) - self.boundary(sg, a - 1);
         let migrate = if self.transform(sg, j) {
             0.0
         } else {
-            MIGRATE * sg.length
+            MIGRATE * gap(j).min(gap(j + 1))
         };
         let mut sum = (0.0, 0.0);
         for (size, cell, channel) in [(migrate, MIGRATE_MYR, 0), (wander, WANDER_MYR, 1)] {
@@ -668,11 +675,11 @@ impl RidgePlan {
     }
 
     /// The depth of the ends of a crest segment below its middle, in
-    /// kilometers. `len` is its length in kilometers.
-    fn segment_depth(&self, len: f64) -> f64 {
+    /// kilometers. `part` is its length over the mean length of a crest
+    /// segment, so a longer segment has deeper ends.
+    fn segment_depth(&self, part: f64) -> f64 {
         let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
-        let part = (len / SECOND_ORDER_KM).clamp(0.5, 1.5);
-        0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part
+        0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part.clamp(0.5, 1.5)
     }
 
     /// The depth of the axial valley and the height of the axial high, in
@@ -704,7 +711,10 @@ impl RidgePlan {
         let r = self.ridge.radius;
         let hold = 1.0 - smoothstep(r, REACH * r, at.across.hypot(at.past));
         let across = at.across + BEND_ACROSS * r * hold * noise.bend[1];
-        (self.bent(at, noise), across)
+        // The seams between crest segments are ragged, so the hills of two
+        // segments interfinger there.
+        let seam = SEAM_KM * self.fit() / self.ridge.world_km * noise.seam;
+        (self.bent(at, noise) + seam, across)
     }
 
     /// The faults of the settings.
@@ -1062,7 +1072,12 @@ impl RidgePlan {
         let draw = |channel: u32| unit(hash(j as u32, channel, 0, seed));
         let size = step / TROUGH_OFFSET_KM;
         let strength = mix(STRENGTH[0], STRENGTH[1], draw(0));
-        let kind = if transform { 1.0 } else { OFFSET_TROUGH };
+        let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
+        let kind = if transform {
+            1.0
+        } else {
+            OFFSET_TROUGH * offset_trough_part(full_rate)
+        };
         // The trace leaves the transform fault at this age.
         let out = 0.5 * step / (self.ridge.spread * self.ridge.world_km);
         let active = 1.0 + ACTIVE * (1.0 - smoothstep(out, out + ACTIVE_MYR, age));
@@ -1132,7 +1147,7 @@ impl RidgePlan {
         let mean = f.hill_mean * f.level;
         // The patch of the floor sets the throw of the hills and the part of
         // the faults that show.
-        let patch = patch_of(noise.patch);
+        let patch = patch_of(RIDGE_PATCH * noise.patch);
         let local = patch[0] * patch[1];
         // Ground at the crest level gets no hills.
         // The test uses the throws at the real size, so the fit does not lower
@@ -1150,6 +1165,29 @@ impl RidgePlan {
             0.0
         };
         let flat_floor = valley_part * FLOOR_KM / km;
+        // The fractal relief of volcanic hummocks and small faults between
+        // the large faults. A slow ridge builds its crust of hummocky mounds
+        // of pillow lava, and a fast ridge of smooth sheet flows (Smith and
+        // Cann 1993), so the relief fades with the spreading rate, as the
+        // trough of an offset does. Its power falls with the wavenumber as a power
+        // law, as the relief of real sea floor does (Goff and Jordan 1988),
+        // and the lumps are longer along the fabric. Octaves of less than
+        // two texels fade out.
+        let bumps = {
+            let texel = 2.0 * f.half_texel;
+            let (mut sum, mut total, mut weight) = (0.0, 0.0, 1.0);
+            for o in 0..BUMP_OCTAVES {
+                let size = BUMP_KM * f.fit * 0.5f64.powi(o as i32);
+                let at = [u * km / (BUMP_ASPECT * size), across * km / size, 0.5];
+                let value = noise3(at, spec.seed ^ SALT_BUMP.wrapping_add(o as u32))[0];
+                sum += weight * smoothstep(2.0 * texel, 4.0 * texel, size) * value;
+                total += weight;
+                weight *= BUMP_GAIN;
+            }
+            let full_rate = 2.0 * v * km;
+            let fast = smoothstep(OFFSET_RATE[0], OFFSET_RATE[1], full_rate);
+            BUMPS * mix(1.0, BUMP_FAST, fast) * f.hill_height * sum / total
+        };
         // The rise and the blocks of crest segment `k`, from the trace
         // `lower` at its start to the trace `upper` at its end. The age is
         // the distance from the crest of that segment.
@@ -1168,7 +1206,6 @@ impl RidgePlan {
             // to boundary. The noise is of the age with a sign from the
             // middle of the two crests at the boundary, so it has no step at
             // the crest, and the two segments at a boundary share it.
-            let side = u32::from(off < 0.0);
             let tau = from_crest / v;
             let end = if place < 0.5 { k } else { k.wrapping_add(1) };
             let middle = 0.5 * (self.shift(&sg, end.wrapping_sub(1)) + self.shift(&sg, end));
@@ -1179,7 +1216,9 @@ impl RidgePlan {
                 magma_seed,
             );
             let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper);
-            let sunk = self.segment_depth(len * km) * f.level * ends * deeper;
+            // The crust thins toward the ends, so they are deep over the
+            // last part of the segment, and the middle is a broad high.
+            let sunk = self.segment_depth(len / sg.length) * f.level * ends * ends * deeper;
             // The ends of the segment, and the segment past the nearer end.
             let (near, next) = if place < 0.5 {
                 (place, k.wrapping_sub(1))
@@ -1261,11 +1300,12 @@ impl RidgePlan {
             // The hills follow the distance from the crest. Both segments at
             // a boundary have the same distance there, so the hills go on
             // past a boundary with no offset.
+            let hill_side = u32::from(off < 0.0);
             let hill_across = from_crest * km;
             // The hills read the distance along the whole line, so they go
             // on past the boundary of a group.
             let at = [u * km, hill_across];
-            let hills = grow * grown * Self::hills(spec.seed, &f, 0, side, at, patch);
+            let hills = grow * grown * Self::hills(spec.seed, &f, 0, hill_side, at, patch);
             // Sediment ponds in the lows between the hills, up to twice its
             // thickness above the low of the hills: `HILL_LOW` of their mean
             // height. It fills `POND` of the depth of a low below that
@@ -1276,9 +1316,12 @@ impl RidgePlan {
             let fill = (2.0 * SEDIMENT_RATE * tau - HILL_LOW * held).max(0.0);
             let blocks = pond(hills, fill) - (pond(held, fill) - held);
             // The fine texture, which sediment buries.
-            let texture = Self::texture(spec.seed, &f, 0, side, at, patch[0]);
+            let texture = Self::texture(spec.seed, &f, 0, hill_side, at, patch[0]);
             let buried = f.hill_height / (f.hill_height + fill).max(1e-9);
-            let blocks = blocks + grow * grown * texture * buried;
+            // Sediment and mass wasting smooth the lumps of old floor (Goff
+            // and Arbic 2010).
+            let old = mix(1.0, BUMP_OLD, smoothstep(0.0, BUMP_MYR, tau));
+            let blocks = blocks + grow * grown * (texture + bumps * patch[0] * old) * buried;
             // More magma gives a thicker crust, so the bands of the magma
             // are also small, smooth bands of the depth.
             let blocks = blocks + grow * MAGMA_RELIEF * 0.5 * (1.0 + band);
@@ -1424,7 +1467,7 @@ pub(crate) struct RidgeShape {
     pub valley_part: f64,
     pub flat_floor: f64,
     pub band_km: f64,
-    /// The depth of the ends of a crest segment of `SECOND_ORDER_KM`, in
+    /// The depth of the ends of a crest segment of the mean length, in
     /// kilometers.
     pub segment_depth: f64,
     pub fit: f64,
@@ -1470,7 +1513,7 @@ impl RidgePlan {
             valley_part,
             flat_floor: valley_part * FLOOR_KM / km,
             band_km: BAND_KM.min(BAND_RADIUS * r * km),
-            segment_depth: self.segment_depth(SECOND_ORDER_KM),
+            segment_depth: self.segment_depth(1.0),
             fit: f.fit,
             lift: f.lift,
             texture_height: f.texture_height,
@@ -1706,6 +1749,9 @@ pub(crate) struct RidgeNoise {
     pub slow: V3,
     /// A number from -1.5 to 1.5 that changes over about `PATCH_KM`.
     pub patch: f64,
+    /// A number from -1.5 to 1.5: noise in cells of `SEAM_SIZE_KM` times
+    /// the fit factor, plus half of noise in cells of half of that.
+    pub seam: f64,
 }
 
 /// The samples of each side of a guide, from the crest to the reach.
@@ -1753,6 +1799,8 @@ const SALT_GABOR: u32 = 0x6a09_e667;
 const SALT_LINK: u32 = 0x3c6e_f372;
 const SALT_GRAIN: u32 = 0xa54f_f53a;
 const SALT_TRACE_WARP: u32 = 0x8e2b_4d61;
+const SALT_BUMP: u32 = 0x1b87_3593;
+const SALT_SEAM: u32 = 0x4cf5_ad43;
 
 /// The largest move of a boundary, as a part of the mean length of a crest
 /// segment.
@@ -1763,10 +1811,6 @@ const JITTER: f64 = 0.3;
 /// per year (Macdonald and others 1991; Sempere and others 1993). The
 /// Segment setting is the mean distance between two transform faults.
 const SECOND_ORDER_LENGTH: [(f64, f64); 3] = [(20.0, 50.0), (50.0, 80.0), (90.0, 140.0)];
-
-/// The length of a crest segment that has the depth of `SEGMENT_DEPTH` at
-/// its ends, in kilometers.
-const SECOND_ORDER_KM: f64 = 130.0;
 
 /// A crest segment is at least this number of blend widths long.
 const SEGMENT_BLENDS: f64 = 5.0;
@@ -1791,11 +1835,13 @@ const TURN_CELLS: f64 = 16.0;
 const TURN_REACH: f64 = 1.8;
 
 /// The largest move of an offset with no transform fault from its place at
-/// the crest, as a part of the mean length of a crest segment, and the age
-/// of a cell of its noise in millions of years. The offset migrates along
-/// the crest, so its trace is oblique to the crest (Hey 1977).
-const MIGRATE: f64 = 0.1;
-const MIGRATE_MYR: f64 = 4.0;
+/// the crest, as a part of the shorter crest segment at the offset, and the
+/// age of a cell of its noise in millions of years. The offset migrates
+/// along the crest, so its trace is oblique to the crest and makes a V or a
+/// zigzag on the flanks (Hey 1977; Macdonald and others 1988; Tucholke and
+/// others 1997).
+const MIGRATE: f64 = 0.35;
+const MIGRATE_MYR: f64 = 3.0;
 
 /// The largest small move of each trace, in kilometers, and the age of a
 /// cell of its noise in millions of years.
@@ -1816,10 +1862,10 @@ const TRACE_WARP_STEP_MYR: f64 = 0.05;
 /// the crest.
 const MIGRATE_ROUND: f64 = 0.5;
 
-/// The depth of the ends of a crest segment below its middle at a full
-/// spreading rate in millimeters per year, in meters (Lin and others 1990;
-/// Shaw and Lin 1993).
-const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 600.0), (50.0, 300.0), (100.0, 100.0)];
+/// The depth of the ends of a crest segment of the mean length below its
+/// middle at a full spreading rate in millimeters per year, in meters (Lin
+/// and others 1990; Shaw and Lin 1993).
+const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 900.0), (50.0, 400.0), (100.0, 100.0)];
 
 /// The shortest crest segment for its depth and its magma, as a part of the
 /// mean length.
@@ -1914,7 +1960,26 @@ const KINK_OLD_MYR: f64 = 6.0;
 /// side.
 const TROUGH_LEAST: f64 = 0.3;
 const TROUGH_LEAST_KM: f64 = 10.0;
-const OFFSET_HALF_KM: f64 = 3.0;
+const OFFSET_HALF_KM: f64 = 6.0;
+
+/// The depth of the trough along an offset with no transform fault goes
+/// from its full depth at a full spreading rate of `OFFSET_RATE[0]` mm/yr to
+/// `OFFSET_FAST` of it at `OFFSET_RATE[1]` mm/yr. On a slow ridge the trace
+/// of such an offset is a broad trough (Tucholke and others 1997). On a fast
+/// ridge the offset is an overlapping spreading center, and its trace has
+/// little relief (Carbotte and Macdonald 1992).
+const OFFSET_RATE: [f64; 2] = [40.0, 90.0];
+const OFFSET_FAST: f64 = 0.15;
+
+/// The part of the depth of the trough of an offset with no transform fault
+/// at a full spreading rate in mm/yr.
+fn offset_trough_part(full_rate: f64) -> f64 {
+    mix(
+        1.0,
+        OFFSET_FAST,
+        smoothstep(OFFSET_RATE[0], OFFSET_RATE[1], full_rate),
+    )
+}
 
 /// The part of the depth of a trough that sediment fills, over this number
 /// of millions of years.
@@ -2045,7 +2110,7 @@ const AVR_GAPS: f64 = 0.3;
 /// blocks up to twice its thickness, and fills `POND` of the depth of a
 /// low below that level, with a round edge of `SEDIMENT_SOFT` of the
 /// level. All are in kilometers of throw.
-const SEDIMENT_RATE: f64 = 0.005;
+const SEDIMENT_RATE: f64 = 0.012;
 const SEDIMENT_SOFT: f64 = 0.3;
 const POND: f64 = 0.3;
 const HILL_LOW: f64 = 1.0;
@@ -2223,6 +2288,37 @@ const PATCH_EDGE: f64 = 0.6;
 const PATCH_THROW: [f64; 2] = [0.5, 1.3];
 const PATCH_DENSITY: [f64; 2] = [0.4, 0.85];
 const SHOW_SOFT: f64 = 0.15;
+
+/// The fractal relief has `BUMP_OCTAVES` octaves of noise from cells of
+/// `BUMP_KM` across the fabric and `BUMP_ASPECT` times that along it, times
+/// the fit factor. Each octave has `BUMP_GAIN` of the height of the octave
+/// before it, and the sum is `BUMPS` of the height of a hill.
+const BUMP_OCTAVES: usize = 4;
+const BUMP_KM: f64 = 6.0;
+const BUMP_ASPECT: f64 = 1.5;
+const BUMP_GAIN: f64 = 0.9;
+const BUMPS: f64 = 3.0;
+
+/// The part of the fractal relief that a fast ridge keeps.
+const BUMP_FAST: f64 = 0.25;
+
+/// The fractal relief fades to `BUMP_OLD` of its height over `BUMP_MYR`
+/// million years of age.
+const BUMP_OLD: f64 = 0.4;
+const BUMP_MYR: f64 = 25.0;
+
+/// The cells of the noise of the ragged seams, in kilometers, times the fit
+/// factor.
+const SEAM_SIZE_KM: f64 = 24.0;
+
+/// The largest move of a texel along the line by the ragged seams, in
+/// kilometers, times the fit factor.
+const SEAM_KM: f64 = 4.0;
+
+/// On a ridge, the age and the segments give the floor its order, so the
+/// patches have `RIDGE_PATCH` of the contrast that they have under the
+/// Abyssal hills mode, and no area far from the axis stands out.
+const RIDGE_PATCH: f64 = 0.35;
 
 /// The warp of the faults: its feature size along and across the fabric,
 /// and its largest move across the fabric, in kilometers.
@@ -2490,6 +2586,7 @@ mod tests {
             bend: [0.0; 3],
             slow: [-1.0; 3],
             patch: 0.0,
+            seam: 0.0,
         }
     }
 
@@ -2629,6 +2726,7 @@ mod tests {
             bend: [1.5, -1.5, 1.5],
             slow: [1.0, -1.0, 0.3],
             patch: 1.5,
+            seam: 1.5,
         }
     }
 
@@ -2928,12 +3026,11 @@ mod tests {
         }
         assert!(gaps > 100 && pieces > 100, "{gaps} {pieces}");
         assert!(kinks > 10, "{kinks}");
-        // Each move is no more than its part of the segment length, so two
-        // traces do not cross.
+        // Two traces next to each other do not cross.
         for tau in [0.0, 5.0, 20.0, 80.0] {
             for j in 0..40 {
-                let (moved, _) = plan.migration(&sg, j, tau);
-                assert!(moved.abs() <= (0.5 * MIGRATE + KINK) * sg.length + WANDER_KM / 6371.0);
+                let at = |j: i32| plan.boundary(&sg, j) + plan.migration(&sg, j, tau).0;
+                assert!(at(j + 1) > at(j), "{j} at {tau} Myr");
             }
         }
     }
