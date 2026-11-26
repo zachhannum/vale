@@ -1086,6 +1086,7 @@ const BUMP_KM = 8.0;
 const BUMP_ASPECT = 1.5;
 const BUMP_GAIN = 0.9;
 const BUMPS = 3.0;
+const BUMP_FAST = 0.25;
 const SEAM_SIZE_KM = 24.0;
 const SEAM_KM = 4.0;
 const SALT_MIGRATE = 0x3d4fa1c7u;
@@ -1101,7 +1102,6 @@ const SALT_GABOR = 0x6a09e667u;
 const SALT_LINK = 0x3c6ef372u;
 const SALT_GRAIN = 0xa54ff53au;
 const JITTER = 0.3;
-const SECOND_ORDER_KM = 130.0;
 const GROUP_SHIFT = 0.8;
 const TAN_TURN = 0.14;
 const MIGRATE = 0.35;
@@ -2215,8 +2215,8 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
         magma_seed,
     ).x;
     let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper_noise);
-    let sunk = ridge.segment_depth * clamp(len * km / SECOND_ORDER_KM, 0.5, 1.5)
-        * level * ends * deeper;
+    let sunk = ridge.segment_depth * clamp(len / ridge.segment, 0.5, 1.5)
+        * level * ends * ends * deeper;
     var near = 1.0 - place;
     var next = k + 1;
     if place < 0.5 {
@@ -2343,7 +2343,8 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
         total += weight;
         weight *= BUMP_GAIN;
     }
-    bumps = BUMPS * ridge.hill_height * bumps / total;
+    let fast = smooth_between(OFFSET_RATE.x, OFFSET_RATE.y, 2.0 * v * km);
+    bumps = BUMPS * ridge_mix(1.0, BUMP_FAST, fast) * ridge.hill_height * bumps / total;
     let texel = RidgeTexel(
         u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area, bumps,
     );

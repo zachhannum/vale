@@ -675,11 +675,11 @@ impl RidgePlan {
     }
 
     /// The depth of the ends of a crest segment below its middle, in
-    /// kilometers. `len` is its length in kilometers.
-    fn segment_depth(&self, len: f64) -> f64 {
+    /// kilometers. `part` is its length over the mean length of a crest
+    /// segment, so a longer segment has deeper ends.
+    fn segment_depth(&self, part: f64) -> f64 {
         let full_rate = 2.0 * self.ridge.spread * self.ridge.world_km;
-        let part = (len / SECOND_ORDER_KM).clamp(0.5, 1.5);
-        0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part
+        0.001 * lerp_table(&SEGMENT_DEPTH, full_rate) * part.clamp(0.5, 1.5)
     }
 
     /// The depth of the axial valley and the height of the axial high, in
@@ -1166,7 +1166,10 @@ impl RidgePlan {
         };
         let flat_floor = valley_part * FLOOR_KM / km;
         // The fractal relief of volcanic hummocks and small faults between
-        // the large faults. Its power falls with the wavenumber as a power
+        // the large faults. A slow ridge builds its crust of hummocky mounds
+        // of pillow lava, and a fast ridge of smooth sheet flows (Smith and
+        // Cann 1993), so the relief fades with the spreading rate, as the
+        // trough of an offset does. Its power falls with the wavenumber as a power
         // law, as the relief of real sea floor does (Goff and Jordan 1988),
         // and the lumps are longer along the fabric. Octaves of less than
         // two texels fade out.
@@ -1181,7 +1184,9 @@ impl RidgePlan {
                 total += weight;
                 weight *= BUMP_GAIN;
             }
-            BUMPS * f.hill_height * sum / total
+            let full_rate = 2.0 * v * km;
+            let fast = smoothstep(OFFSET_RATE[0], OFFSET_RATE[1], full_rate);
+            BUMPS * mix(1.0, BUMP_FAST, fast) * f.hill_height * sum / total
         };
         // The rise and the blocks of crest segment `k`, from the trace
         // `lower` at its start to the trace `upper` at its end. The age is
@@ -1211,7 +1216,9 @@ impl RidgePlan {
                 magma_seed,
             );
             let deeper = 1.0 - SEGMENT_CHANGE * (1.0 - deeper);
-            let sunk = self.segment_depth(len * km) * f.level * ends * deeper;
+            // The crust thins toward the ends, so they are deep over the
+            // last part of the segment, and the middle is a broad high.
+            let sunk = self.segment_depth(len / sg.length) * f.level * ends * ends * deeper;
             // The ends of the segment, and the segment past the nearer end.
             let (near, next) = if place < 0.5 {
                 (place, k.wrapping_sub(1))
@@ -1457,7 +1464,7 @@ pub(crate) struct RidgeShape {
     pub valley_part: f64,
     pub flat_floor: f64,
     pub band_km: f64,
-    /// The depth of the ends of a crest segment of `SECOND_ORDER_KM`, in
+    /// The depth of the ends of a crest segment of the mean length, in
     /// kilometers.
     pub segment_depth: f64,
     pub fit: f64,
@@ -1503,7 +1510,7 @@ impl RidgePlan {
             valley_part,
             flat_floor: valley_part * FLOOR_KM / km,
             band_km: BAND_KM.min(BAND_RADIUS * r * km),
-            segment_depth: self.segment_depth(SECOND_ORDER_KM),
+            segment_depth: self.segment_depth(1.0),
             fit: f.fit,
             lift: f.lift,
             texture_height: f.texture_height,
@@ -1802,10 +1809,6 @@ const JITTER: f64 = 0.3;
 /// Segment setting is the mean distance between two transform faults.
 const SECOND_ORDER_LENGTH: [(f64, f64); 3] = [(20.0, 50.0), (50.0, 80.0), (90.0, 140.0)];
 
-/// The length of a crest segment that has the depth of `SEGMENT_DEPTH` at
-/// its ends, in kilometers.
-const SECOND_ORDER_KM: f64 = 130.0;
-
 /// A crest segment is at least this number of blend widths long.
 const SEGMENT_BLENDS: f64 = 5.0;
 
@@ -1856,10 +1859,10 @@ const TRACE_WARP_STEP_MYR: f64 = 0.05;
 /// the crest.
 const MIGRATE_ROUND: f64 = 0.5;
 
-/// The depth of the ends of a crest segment below its middle at a full
-/// spreading rate in millimeters per year, in meters (Lin and others 1990;
-/// Shaw and Lin 1993).
-const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 600.0), (50.0, 300.0), (100.0, 100.0)];
+/// The depth of the ends of a crest segment of the mean length below its
+/// middle at a full spreading rate in millimeters per year, in meters (Lin
+/// and others 1990; Shaw and Lin 1993).
+const SEGMENT_DEPTH: [(f64, f64); 3] = [(20.0, 900.0), (50.0, 400.0), (100.0, 100.0)];
 
 /// The shortest crest segment for its depth and its magma, as a part of the
 /// mean length.
@@ -2287,6 +2290,9 @@ const BUMP_KM: f64 = 8.0;
 const BUMP_ASPECT: f64 = 1.5;
 const BUMP_GAIN: f64 = 0.9;
 const BUMPS: f64 = 3.0;
+
+/// The part of the fractal relief that a fast ridge keeps.
+const BUMP_FAST: f64 = 0.25;
 
 /// The cells of the noise of the ragged seams, in kilometers, times the fit
 /// factor.
