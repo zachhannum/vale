@@ -7,9 +7,9 @@ use std::sync::{Arc, mpsc};
 use std::f64::consts::FRAC_PI_2;
 
 use vale_terrain::{
-    ChannelShape, CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits,
-    MarginPlan, OuterFlow, Rain, RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights,
-    erode_margin, erode_range,
+    ChannelShape, CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, HotspotLine,
+    Limits, MarginPlan, OuterFlow, Rain, RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights,
+    erode_hotspot, erode_margin, erode_range,
 };
 
 use super::math::V3;
@@ -207,6 +207,11 @@ pub enum Lift {
     /// erosion setting, and the request has no brushes. The ground of the
     /// stroke is the ground from before the margin.
     Margin(Arc<Vec<MarginPlan>>),
+    /// The cells under the islands of the finished line take the chain, and
+    /// the steps erode it, as `erode_hotspot`. The rate of the request is
+    /// the erosion setting, and the request has no brushes. The ground of
+    /// the stroke is the ground from before the stroke.
+    Hotspot(Arc<HotspotLine>),
 }
 
 struct Done(u64, ErodeStep);
@@ -240,7 +245,8 @@ const UPLIFT_STEPS: usize = 4;
 /// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
 /// The cells and the step keep `limits`, and the step has `rain`, `channel`,
 /// and the flow noise of `branching`. A range keeps the limits of its line,
-/// and it has no flow noise. A margin sets its own limits.
+/// and it has no flow noise. A margin and a hotspot track set their own
+/// limits.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
@@ -265,6 +271,7 @@ fn step(
         }
         Lift::Range(line, u) => erode_range(erosion, &line, u, rate),
         Lift::Margin(plans) => erode_margin(erosion, &plans, rate),
+        Lift::Hotspot(line) => erode_hotspot(erosion, &line, rate),
         _ => erosion.step(brushes, rate),
     }
 }

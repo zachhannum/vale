@@ -93,7 +93,10 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     if mode != Mode::Basin {
         out.push(Size);
     }
-    if !matches!(mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
+    if !matches!(
+        mode,
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot
+    ) {
         out.push(Hardness);
     }
     if mode != Mode::Basin {
@@ -120,11 +123,14 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     }
     if matches!(
         mode,
-        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin | Mode::Hotspot
     ) {
         out.push(Erosion);
     }
-    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
+    if matches!(
+        mode,
+        Mode::Erode | Mode::Uplift | Mode::Margin | Mode::Hotspot
+    ) {
         out.push(Branching);
     }
     if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {
@@ -266,6 +272,7 @@ mod tests {
             (Mode::Seamounts, [Size, Density]),
             (Mode::AbyssalHills, [Size, Hills]),
             (Mode::Margin, [Size, Flow]),
+            (Mode::Hotspot, [Size, Strength]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }

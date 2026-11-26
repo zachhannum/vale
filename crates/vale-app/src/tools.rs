@@ -20,7 +20,7 @@ use crate::strip::{self, Pins};
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 22] = [
+const MODES: [(Mode, &str); 23] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -43,6 +43,7 @@ const MODES: [(Mode, &str); 22] = [
     (Mode::Seamounts, "seamounts"),
     (Mode::AbyssalHills, "abyssal_hills"),
     (Mode::Margin, "margin"),
+    (Mode::Hotspot, "hotspot_track"),
 ];
 
 /// The tools, with their names in the file.
@@ -69,7 +70,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 34] = [
+const FLOATS: [Field<f64>; 36] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -96,6 +97,8 @@ const FLOATS: [Field<f64>; 34] = [
     ("abyssal_hills", |b| &mut b.abyssal_hills),
     ("abyssal_scale", |b| &mut b.abyssal_scale),
     ("margin_shelf_m", |b| &mut b.margin_shelf_m),
+    ("hotspot_speed_mm", |b| &mut b.hotspot_speed_mm),
+    ("hotspot_height_m", |b| &mut b.hotspot_height_m),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -106,13 +109,14 @@ const FLOATS: [Field<f64>; 34] = [
     ("paint_opacity", |b| &mut b.opacity),
 ];
 
-const BOOLS: [Field<bool>; 6] = [
+const BOOLS: [Field<bool>; 7] = [
     ("noise_ridged", |b| &mut b.noise_ridged),
     ("noise_inverted", |b| &mut b.noise_inverted),
     ("floor_on", |b| &mut b.floor_on),
     ("ceiling_on", |b| &mut b.ceiling_on),
     ("ridge_fit", |b| &mut b.ridge_fit),
     ("abyssal_fit", |b| &mut b.abyssal_fit),
+    ("hotspot_reefs", |b| &mut b.hotspot_reefs),
 ];
 
 /// A tool of the tool strip. Each brush mode is a tool.

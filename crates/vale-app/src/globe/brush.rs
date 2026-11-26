@@ -6,9 +6,10 @@ use std::time::Instant;
 
 use vale_terrain::{
     AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
-    ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits,
-    MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge, SHELF_DEPTH_RANGE,
-    Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
+    ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, HOTSPOT_HEIGHT_M,
+    HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot,
+    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge,
+    SHELF_DEPTH_RANGE, Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -76,6 +77,14 @@ pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
 /// The limits of the depth of the shelf break of the margin mode, in
 /// meters.
 pub const MARGIN_SHELF_M: std::ops::RangeInclusive<f64> = SHELF_DEPTH_RANGE.0..=SHELF_DEPTH_RANGE.1;
+/// The limits of the plate speed of the hotspot track mode, in millimeters
+/// per year.
+pub const HOTSPOT_SPEED: std::ops::RangeInclusive<f64> =
+    HOTSPOT_SPEED_RANGE.0..=HOTSPOT_SPEED_RANGE.1;
+/// The limits of the height of the largest volcano of the hotspot track
+/// mode, in meters.
+pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
+    HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -211,6 +220,14 @@ pub struct BrushSettings {
     pub abyssal_fit: bool,
     /// The depth of the shelf break of the margin mode, in meters.
     pub margin_shelf_m: f64,
+    /// The plate speed of the hotspot track mode, in millimeters per year.
+    pub hotspot_speed_mm: f64,
+    /// The height of the largest volcano of the hotspot track mode, in
+    /// meters.
+    pub hotspot_height_m: f64,
+    /// Whether reefs grow on the sinking volcanoes of the hotspot track
+    /// mode.
+    pub hotspot_reefs: bool,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -275,6 +292,9 @@ impl Default for BrushSettings {
             abyssal_scale: 1.0,
             abyssal_fit: true,
             margin_shelf_m: -130.0,
+            hotspot_speed_mm: HOTSPOT_SPEED_MM,
+            hotspot_height_m: HOTSPOT_HEIGHT_M,
+            hotspot_reefs: false,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -319,6 +339,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | Seamounts
             | AbyssalHills
             | Margin
+            | Hotspot
     )
 }
 
@@ -327,16 +348,26 @@ const MIN_LOCK_RADIUS: f64 = 1e-4;
 
 impl BrushSettings {
     /// The zoom does not change the size of the mode, because the size sets
-    /// the width of the ridge.
+    /// the width of the ridge or of the swell.
     pub fn size_is_fixed(&self) -> bool {
-        self.mode == Mode::OceanRidge
+        matches!(self.mode, Mode::OceanRidge | Mode::Hotspot)
+    }
+
+    /// The radius of a fixed size before you change it, in radians. The
+    /// swell of a hotspot track is as wide as that of Hawaii on a world of
+    /// the size of the Earth.
+    pub fn fixed_radius(&self) -> f64 {
+        match self.mode {
+            Mode::Hotspot => (HOTSPOT_RADIUS_KM / 6371.0).min(self.max_radius()),
+            _ => self.max_radius(),
+        }
     }
 
     /// The locked radius, in radians, with the lock that a fixed size
     /// always has.
     fn locked(&self) -> Option<f64> {
         match self.lock {
-            None if self.size_is_fixed() => Some(self.max_radius()),
+            None if self.size_is_fixed() => Some(self.fixed_radius()),
             lock => lock,
         }
     }
@@ -429,6 +460,34 @@ impl BrushSettings {
         }
     }
 
+    /// The settings of a hotspot track stroke with this brush radius, in
+    /// radians. `world_km` is the radius of the world.
+    pub fn hotspot_spec(&self, radius: f64, world_km: f64, seed: u32) -> Hotspot {
+        Hotspot {
+            radius,
+            height_m: self
+                .hotspot_height_m
+                .clamp(HOTSPOT_HEIGHT_RANGE.0, HOTSPOT_HEIGHT_RANGE.1),
+            speed_mm: self
+                .hotspot_speed_mm
+                .clamp(HOTSPOT_SPEED_RANGE.0, HOTSPOT_SPEED_RANGE.1),
+            reefs: self.hotspot_reefs,
+            world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
+    /// The age of the track for each 1,000 km along it, in millions of
+    /// years.
+    pub fn hotspot_age_per_1000_km(&self) -> f64 {
+        // A speed in mm/yr is a speed in km/Myr.
+        1000.0
+            / self
+                .hotspot_speed_mm
+                .clamp(HOTSPOT_SPEED_RANGE.0, HOTSPOT_SPEED_RANGE.1)
+    }
+
     /// The channels of the carve mode and of the erode mode on a world with
     /// a radius of `world_km`.
     pub fn channel_shape(&self, world_km: f64) -> ChannelShape {
@@ -512,7 +571,7 @@ impl BrushSettings {
     /// The largest brush radius of the mode, in radians.
     fn max_radius(&self) -> f64 {
         match self.mode {
-            Mode::OceanRidge => MAX_RIDGE_RADIUS,
+            Mode::OceanRidge | Mode::Hotspot => MAX_RIDGE_RADIUS,
             _ => MAX_BRUSH_RADIUS,
         }
     }
@@ -747,11 +806,11 @@ pub fn set_world(
 pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge mode and the range mode are the points of
-/// the line of the stroke.
+/// The stamps of the ocean ridge, range, and hotspot track modes are the
+/// points of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge | Mode::Range => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range | Mode::Hotspot => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -862,8 +921,12 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge, a range, or a basin ends at the last sample.
-            let line = matches!(brush.mode, Mode::OceanRidge | Mode::Range | Mode::Basin);
+            // The line of a ridge, a range, a hotspot track, or a basin ends
+            // at the last sample.
+            let line = matches!(
+                brush.mode,
+                Mode::OceanRidge | Mode::Range | Mode::Hotspot | Mode::Basin
+            );
             if line && self.end.is_some() {
                 self.put(&tip, last.0, last.1, out);
             }
@@ -1444,6 +1507,33 @@ mod tests {
         brush.margin_shelf_m = -5000.0;
         let spec = brush.margin_spec(6371.0, 7);
         assert_eq!(spec.shelf_m, SHELF_DEPTH_RANGE.0);
+    }
+
+    #[test]
+    fn the_hotspot_spec_carries_the_settings_and_the_size_starts_at_500_km() {
+        let mut brush = BrushSettings {
+            mode: Mode::Hotspot,
+            ..BrushSettings::default()
+        };
+        assert!(brush.size_is_fixed());
+        let radius = brush.radius(360.0);
+        assert!(
+            (radius * 6371.0 - HOTSPOT_RADIUS_KM).abs() < 1e-9,
+            "{radius}"
+        );
+        assert_eq!(brush.radius(36.0), radius);
+        let spec = brush.hotspot_spec(radius, 6371.0, 7);
+        assert_eq!((spec.speed_mm, spec.height_m), (90.0, 9000.0));
+        assert!(!spec.reefs);
+        assert!((brush.hotspot_age_per_1000_km() - 1000.0 / 90.0).abs() < 1e-9);
+        brush.hotspot_speed_mm = 1.0;
+        brush.hotspot_height_m = 1e6;
+        brush.hotspot_reefs = true;
+        let spec = brush.hotspot_spec(radius, 6371.0, 7);
+        assert_eq!((spec.speed_mm, spec.height_m), (10.0, 12000.0));
+        assert!(spec.reefs);
+        brush.lock = Some(1.0);
+        assert_eq!(brush.radius(360.0), MAX_RIDGE_RADIUS);
     }
 
     #[test]
