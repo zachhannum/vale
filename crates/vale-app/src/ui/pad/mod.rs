@@ -18,11 +18,10 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_KM, MARGIN_SHELF_M,
-    NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
-    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
-    shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3249,11 +3248,6 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .step(10.0)
                 .unit("m");
             apply(number.stepper(ui, controls), &mut brush.margin_shelf_m);
-            let number = Number::new(MARGIN_WIDTH, brush.margin_shelf_km, MARGIN_SHELF_KM)
-                .label("Shelf width")
-                .step(5.0)
-                .unit("km");
-            apply(number.stepper(ui, controls), &mut brush.margin_shelf_km);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3750,8 +3744,6 @@ fn hint_rows(ui: &mut egui::Ui, hint: &str) {
 
 /// The name of the shelf depth stepper of the margin mode.
 pub const MARGIN_SHELF: &str = "Brush shelf depth";
-/// The name of the shelf width stepper of the margin mode.
-pub const MARGIN_WIDTH: &str = "Brush shelf width";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.

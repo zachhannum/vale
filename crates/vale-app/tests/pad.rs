@@ -2803,15 +2803,12 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
     );
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     let brush = s.globe.brush;
-    assert_eq!(
-        (brush.margin_shelf_m, brush.margin_shelf_km),
-        (-130.0, 100.0)
-    );
+    assert_eq!(brush.margin_shelf_m, -130.0);
     // The strip has Size and Flow.
     assert!(control(&h, "Strip size").is_some());
     assert!(control(&h, "Strip flow").is_some());
     // The panel has the size, the hardness, the flow, the shelf depth, the
-    // shelf width, the seed, the erosion, and the branching, and no
+    // seed, the erosion, and the branching, and no shelf width, no
     // strength, no side, no wind, and no Apply.
     assert!(
         h.query_by_label(vale_app::ui::panels::MARGIN_HINT)
@@ -2822,7 +2819,6 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Brush hardness",
         "Brush flow",
         "Brush shelf depth value",
-        "Brush shelf width value",
         "Brush seed value",
         "Brush erosion",
         "Brush branching",
@@ -2830,6 +2826,7 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
         assert!(control(&h, row).is_some(), "{row}");
     }
     for row in [
+        "Brush shelf width value",
         "Brush strength",
         "Brush side left",
         "Brush side right",
@@ -2848,13 +2845,6 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
     }
     step(&mut h, "Brush shelf depth", true);
     assert_eq!(h.state().globe.brush.margin_shelf_m, -190.0);
-    for (text, value) in [("1", 5.0), ("900", 400.0), ("150", 150.0)] {
-        type_value(&mut h, "Brush shelf width", text);
-        let got = h.state().globe.brush.margin_shelf_km;
-        assert!((got - value).abs() < 1e-6, "{text}: {got}");
-    }
-    step(&mut h, "Brush shelf width", true);
-    assert_eq!(h.state().globe.brush.margin_shelf_km, 155.0);
     // The seed stepper sets the seed of the world.
     let seed = h.state().doc.project.world.seed;
     step(&mut h, "Brush seed", true);
@@ -2883,7 +2873,6 @@ fn the_margin_mode_fits_on_the_smallest_ipad() {
     for row in [
         "Brush hardness",
         "Brush shelf depth value",
-        "Brush shelf width value",
         "Brush seed value",
         "Brush erosion",
         "Brush branching",
