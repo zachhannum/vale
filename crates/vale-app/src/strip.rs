@@ -93,10 +93,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     if mode != Mode::Basin {
         out.push(Size);
     }
-    if !matches!(
-        mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Margin
-    ) {
+    if !matches!(mode, Mode::OceanRidge | Mode::Range | Mode::Basin) {
         out.push(Hardness);
     }
     if mode != Mode::Basin {

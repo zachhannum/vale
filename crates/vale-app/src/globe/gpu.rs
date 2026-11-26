@@ -2945,12 +2945,10 @@ impl Resources {
 /// The most meshes of projections on the GPU.
 const MESHES: usize = 8;
 
-/// The plan of a line of an ocean ridge stroke, a range stroke, or a
-/// margin stroke.
+/// The plan of a line of an ocean ridge stroke or of a range stroke.
 pub enum LineOp {
     Ridge(Box<RidgePlan>),
     Range(Box<RangePlan>),
-    Margin(Box<MarginPlan>),
 }
 
 impl LineOp {
@@ -2959,16 +2957,16 @@ impl LineOp {
         match self {
             LineOp::Ridge(plan) => &plan.rects,
             LineOp::Range(plan) => &plan.rects,
-            LineOp::Margin(plan) => &plan.rects,
         }
     }
 }
 
-/// The plan of one stamp of a seamounts stroke or of an abyssal hills
-/// stroke.
+/// The plan of one stamp of a seamounts stroke, an abyssal hills stroke,
+/// or a margin stroke.
 pub enum SeaOp {
     Seamounts(Box<SeamountPlan>),
     Abyssal(Box<AbyssalPlan>),
+    Margin(Box<MarginPlan>),
 }
 
 impl SeaOp {
@@ -2977,6 +2975,7 @@ impl SeaOp {
         match self {
             SeaOp::Seamounts(plan) => &plan.rects,
             SeaOp::Abyssal(plan) => &plan.rects,
+            SeaOp::Margin(plan) => &plan.rects,
         }
     }
 }
@@ -2997,8 +2996,8 @@ pub enum Op {
         stroke: u64,
         time: Instant,
     },
-    /// One stamp of a seamounts stroke or of an abyssal hills stroke.
-    /// `time` is the frame that read its pen sample.
+    /// One stamp of a seamounts stroke, an abyssal hills stroke, or a
+    /// margin stroke. `time` is the frame that read its pen sample.
     Sea {
         plan: SeaOp,
         stroke: u64,
@@ -3650,7 +3649,6 @@ impl Batch<'_> {
                 let added = match &plan {
                     LineOp::Ridge(plan) => heights.ridge(queue, self.encoder(), plan),
                     LineOp::Range(plan) => heights.range(queue, self.encoder(), plan),
-                    LineOp::Margin(plan) => heights.margin(queue, self.encoder(), plan),
                 };
                 debug_assert!(added, "an empty batch takes one plan");
                 let rects = plan.rects();
@@ -3664,6 +3662,7 @@ impl Batch<'_> {
                 let add = |enc: &mut wgpu::CommandEncoder| match &plan {
                     SeaOp::Seamounts(plan) => heights.seamounts(queue, enc, plan),
                     SeaOp::Abyssal(plan) => heights.abyssal(queue, enc, plan),
+                    SeaOp::Margin(plan) => heights.margin(queue, enc, plan),
                 };
                 if !add(self.encoder()) {
                     self.submit();

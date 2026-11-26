@@ -2804,29 +2804,35 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     let brush = s.globe.brush;
     assert_eq!(
-        (brush.margin_shelf_m, brush.margin_land_left),
-        (-130.0, true)
+        (brush.margin_shelf_m, brush.margin_shelf_km),
+        (-130.0, 100.0)
     );
     // The strip has Size and Flow.
     assert!(control(&h, "Strip size").is_some());
     assert!(control(&h, "Strip flow").is_some());
-    // The panel has the size, the flow, the shelf depth, the side, and the
-    // seed, and no hardness and no strength.
+    // The panel has the size, the hardness, the flow, the shelf depth, the
+    // shelf width, and the seed, and no strength, no side, and no Apply.
     assert!(
         h.query_by_label(vale_app::ui::panels::MARGIN_HINT)
             .is_some()
     );
     for row in [
         "Brush size",
+        "Brush hardness",
         "Brush flow",
         "Brush shelf depth value",
-        "Brush side left",
-        "Brush side right",
+        "Brush shelf width value",
         "Brush seed value",
     ] {
         assert!(control(&h, row).is_some(), "{row}");
     }
-    for row in ["Brush hardness", "Brush strength"] {
+    for row in [
+        "Brush strength",
+        "Brush side left",
+        "Brush side right",
+        "Apply",
+        "Discard",
+    ] {
         assert!(control(&h, row).is_none(), "{row}");
     }
     // A typed value past an end gives the end.
@@ -2837,11 +2843,13 @@ fn the_margin_mode_is_in_the_terrain_cell_and_has_its_settings() {
     }
     step(&mut h, "Brush shelf depth", true);
     assert_eq!(h.state().globe.brush.margin_shelf_m, -190.0);
-    // The side of the land.
-    tap(&mut h, "Brush side right");
-    assert!(!h.state().globe.brush.margin_land_left);
-    tap(&mut h, "Brush side left");
-    assert!(h.state().globe.brush.margin_land_left);
+    for (text, value) in [("1", 5.0), ("900", 400.0), ("150", 150.0)] {
+        type_value(&mut h, "Brush shelf width", text);
+        let got = h.state().globe.brush.margin_shelf_km;
+        assert!((got - value).abs() < 1e-6, "{text}: {got}");
+    }
+    step(&mut h, "Brush shelf width", true);
+    assert_eq!(h.state().globe.brush.margin_shelf_km, 155.0);
     // The seed stepper sets the seed of the world.
     let seed = h.state().doc.project.world.seed;
     step(&mut h, "Brush seed", true);
@@ -2868,9 +2876,10 @@ fn the_margin_mode_fits_on_the_smallest_ipad() {
     let (_, panel) = h.state().pad.panels[0];
     assert!(screen.contains_rect(panel), "{panel:?}");
     for row in [
+        "Brush hardness",
         "Brush shelf depth value",
-        "Brush side left",
-        "Brush side right",
+        "Brush shelf width value",
+        "Brush seed value",
     ] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
         assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");

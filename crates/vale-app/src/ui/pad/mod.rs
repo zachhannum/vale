@@ -18,10 +18,11 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_KM, MARGIN_SHELF_M,
+    NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3179,7 +3180,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         ridge_hint_rows(ui, &state.globe);
     }
     if mode == Mode::Margin {
-        hint_rows(ui, panels::margin_hint(&state.globe));
+        hint_rows(ui, panels::MARGIN_HINT);
     }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
@@ -3248,10 +3249,11 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .step(10.0)
                 .unit("m");
             apply(number.stepper(ui, controls), &mut brush.margin_shelf_m);
-            let active = usize::from(!brush.margin_land_left);
-            if let Some(i) = side_row(ui, controls, active) {
-                brush.margin_land_left = i == 0;
-            }
+            let number = Number::new(MARGIN_WIDTH, brush.margin_shelf_km, MARGIN_SHELF_KM)
+                .label("Shelf width")
+                .step(5.0)
+                .unit("km");
+            apply(number.stepper(ui, controls), &mut brush.margin_shelf_km);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3745,23 +3747,8 @@ fn hint_rows(ui: &mut egui::Ui, hint: &str) {
 
 /// The name of the shelf depth stepper of the margin mode.
 pub const MARGIN_SHELF: &str = "Brush shelf depth";
-/// The control names of the sides of the margin mode.
-pub const MARGIN_SIDE_NAMES: [&str; 2] = ["Brush side left", "Brush side right"];
-
-/// The row of the side of the land of the margin mode, with "Side" at the
-/// left and a small segmented control at the right. Returns the side that
-/// the user tapped.
-fn side_row(ui: &mut egui::Ui, controls: &mut Controls, active: usize) -> Option<usize> {
-    let (row, _) =
-        ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), egui::Sense::hover());
-    let at = pos2(row.left(), row.center().y);
-    let left = egui::Align2::LEFT_CENTER;
-    (ui.painter()).text(at, left, "Side", theme::body(), theme::TEXT);
-    let sides = &panels::MARGIN_SIDES;
-    let w = widgets::small_segments_width(ui, sides);
-    let seg = Rect::from_min_size(pos2(row.right() - w, row.center().y - 18.0), vec2(w, 36.0));
-    widgets::small_segments_named(ui, controls, seg, (sides, &MARGIN_SIDE_NAMES), active)
-}
+/// The name of the shelf width stepper of the margin mode.
+pub const MARGIN_WIDTH: &str = "Brush shelf width";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.

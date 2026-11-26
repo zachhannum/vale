@@ -69,7 +69,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 34] = [
+const FLOATS: [Field<f64>; 35] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -96,6 +96,7 @@ const FLOATS: [Field<f64>; 34] = [
     ("abyssal_hills", |b| &mut b.abyssal_hills),
     ("abyssal_scale", |b| &mut b.abyssal_scale),
     ("margin_shelf_m", |b| &mut b.margin_shelf_m),
+    ("margin_shelf_km", |b| &mut b.margin_shelf_km),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -106,14 +107,13 @@ const FLOATS: [Field<f64>; 34] = [
     ("paint_opacity", |b| &mut b.opacity),
 ];
 
-const BOOLS: [Field<bool>; 7] = [
+const BOOLS: [Field<bool>; 6] = [
     ("noise_ridged", |b| &mut b.noise_ridged),
     ("noise_inverted", |b| &mut b.noise_inverted),
     ("floor_on", |b| &mut b.floor_on),
     ("ceiling_on", |b| &mut b.ceiling_on),
     ("ridge_fit", |b| &mut b.ridge_fit),
     ("abyssal_fit", |b| &mut b.abyssal_fit),
-    ("margin_land_left", |b| &mut b.margin_land_left),
 ];
 
 /// A tool of the tool strip. Each brush mode is a tool.

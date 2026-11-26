@@ -4890,17 +4890,39 @@ fn pen_line_of(
     h.step();
 }
 
-/// A harness in the margin mode on the empty world, which is deep sea.
+/// Puts land north of 8° of latitude, 500 m high, on the sea floor of the
+/// heightmap.
+fn set_coast(map: &mut vale_terrain::Heightmap) {
+    let north = lonlat_to_dir(0.0, 90.0);
+    let n = map.face_size();
+    let land = meters_to_level(500.0);
+    for face in 0..6 {
+        for y in 0..n {
+            for x in 0..n {
+                if angle(map.texel_dir(face, x, y), north) < 82f64.to_radians() {
+                    map.set(face, x, y, land);
+                }
+            }
+        }
+    }
+}
+
+/// A harness in the margin mode on the empty world, which is deep sea, with
+/// the land of `set_coast`.
 fn margin_harness(seed: u32) -> Harness<'static, AppState> {
     let mut h = uplift_harness();
     let state = h.state_mut();
     state.doc.project.world.seed = seed;
-    state.globe.brush.mode = Mode::Margin;
+    let globe = &mut state.globe;
+    globe.brush.mode = Mode::Margin;
+    let mut map = vale_terrain::Heightmap::new(globe.map.face_size(), globe.map.base());
+    set_coast(&mut map);
+    globe.set_map(map);
     h.run_steps(2);
     h
 }
 
-/// The levels after the margin of `pen_line` is applied.
+/// The levels after the stroke of `pen_line`.
 fn margin_stroke(h: &mut Harness<'static, AppState>) -> Vec<u16> {
     pen_line(h, |_| {});
     settle(h);
@@ -4909,41 +4931,62 @@ fn margin_stroke(h: &mut Harness<'static, AppState>) -> Vec<u16> {
 
 #[test]
 #[ignore = "gpu"]
-fn a_margin_shows_on_the_globe_after_the_pen_goes_up() {
+fn a_margin_stroke_shows_while_you_paint_and_one_undo_puts_back_the_ground() {
     let _gpu = one_gpu_test();
     let mut h = margin_harness(7);
-    let before = (all_levels(&h), canvas_image(&mut h));
-    let mut drawn = false;
-    pen_line(&mut h, |h| {
-        // While the pen is down, only the shelf break shows.
-        let globe = &h.state().globe;
-        drawn |= globe.ridge_preview().is_some_and(|line| line.len() > 2);
-    });
-    assert!(drawn);
-    wait_held(&mut h);
-    let globe = &h.state().globe;
-    assert_eq!(globe.holding(), Some(Mode::Margin));
-    assert!(globe.ridge_preview().is_some_and(|line| line.len() > 10));
-    // The margin shows, and the heightmap of the document waits for Apply.
-    assert!(all_levels(&h) == before.0);
-    assert!(canvas_image(&mut h).as_raw() != before.1.as_raw());
-    h.state_mut().globe.apply_held();
-    run_until_idle(&mut h);
+    let before = all_levels(&h);
+    // The same part of a stroke with a ceiling below the ground, which
+    // changes nothing.
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.ceiling_on, brush.ceiling_m) = (true, vale_terrain::ELEV_MIN);
+    uplift_part(&mut h, 12);
+    let flat = canvas_with_pointer(&mut h);
+    assert!(uplift_stroke_end(&mut h) == before);
+    assert!(!h.state().globe.can_undo());
+    let before_image = canvas_image(&mut h);
+
+    // While the button is down, the margin shows.
+    h.state_mut().globe.brush.ceiling_on = false;
+    uplift_part(&mut h, 12);
+    assert!(h.state().globe.busy());
     assert!(h.state().globe.holding().is_none());
-    assert!(all_levels(&h) != before.0);
+    let part = canvas_with_pointer(&mut h);
+    let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
+    let changed = changed.count();
+    assert!(changed > 100, "{changed}");
+    let after = uplift_stroke_end(&mut h);
+    let raised = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(raised > 100, "{raised}");
+    let after_image = canvas_image(&mut h);
+    assert!(after_image.as_raw() != before_image.as_raw());
+
+    // One undo step puts back the ground from before the stroke.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before_image.as_raw(), "the render");
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == after);
+    assert!(
+        canvas_image(&mut h).as_raw() == after_image.as_raw(),
+        "the render"
+    );
 }
 
 #[test]
 #[ignore = "gpu"]
-fn a_margin_stroke_gives_the_levels_of_the_cpu_margin() {
+fn a_margin_stroke_gives_the_levels_of_the_cpu_stroke() {
     use vale_app::globe::brush::Stroke;
-    use vale_terrain::{Heightmap, MarginLine};
+    use vale_terrain::{Heightmap, MarginStroke};
     let _gpu = one_gpu_test();
     let mut h = margin_harness(7);
     let before = all_levels(&h);
     let app = margin_stroke(&mut h);
 
-    // The same line on the CPU.
+    // The same stroke on the CPU.
     let globe = &h.state().globe;
     let (brush, n) = (globe.brush, globe.map.face_size());
     let mut stamps = Vec::new();
@@ -4952,23 +4995,17 @@ fn a_margin_stroke_gives_the_levels_of_the_cpu_margin() {
         stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
     }
     stroke.finish(&brush, n, &mut stamps);
-    let spec = brush.margin_spec(0.1, globe.world_km, globe.world_seed);
+    let spec = brush.margin_spec(globe.world_km, globe.world_seed);
     assert_eq!(spec.seed, 7);
-    let mut line = MarginLine::new(spec, n);
-    for stamp in &stamps {
-        // The flow of a mouse gives the full height.
-        assert_eq!(stamp.flow, 1.0);
-        line.push(stamp.center, stamp.flow);
-    }
-    assert!(line.len() > 20, "{}", line.len());
     let mut cpu = Heightmap::new(n, globe.map.base());
-    line.read_floor(&cpu);
+    set_coast(&mut cpu);
+    let mut start = Heightmap::new(n, globe.map.base());
+    set_coast(&mut start);
+    let mut margin = MarginStroke::new(spec, n);
     cpu.begin_stroke();
-    let mut from = 0;
-    while from < line.len() {
-        let plan = line.plan(from);
+    for s in &stamps {
+        let plan = margin.stamp(&start, s.center, s.radius, s.hardness, s.flow);
         cpu.margin(&plan);
-        from = plan.end;
     }
     cpu.end_stroke();
 
@@ -4977,9 +5014,28 @@ fn a_margin_stroke_gives_the_levels_of_the_cpu_margin() {
         .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
         .collect();
     let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
-    assert!(changed > 2000, "{changed}");
+    assert!(changed > 500, "{changed}");
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_margin_stroke_does_not_change_the_land() {
+    let _gpu = one_gpu_test();
+    let mut h = margin_harness(7);
+    let before = all_levels(&h);
+    let after = margin_stroke(&mut h);
+    let sea = meters_to_level(0.0);
+    let land = before.iter().filter(|&&level| level > sea).count();
+    assert!(land > 1000, "{land}");
+    let pairs = before.iter().zip(&after);
+    let moved = pairs.clone().filter(|(a, b)| **a > sea && a != b).count();
+    assert_eq!(moved, 0);
+    // The stroke changes the sea floor, and the sea stays sea.
+    let changed = pairs.clone().filter(|(a, b)| **a <= sea && a != b).count();
+    assert!(changed > 500, "{changed}");
+    assert!(pairs.filter(|(a, _)| **a <= sea).all(|(_, b)| *b <= sea));
 }
 
 #[test]
@@ -5005,78 +5061,6 @@ fn two_equal_margin_strokes_with_the_same_seed_give_equal_results() {
     let mut h = margin_harness(8);
     let other = margin_stroke(&mut h);
     assert!(other != before && other != first);
-}
-
-#[test]
-#[ignore = "gpu"]
-fn applying_a_held_margin_is_one_undo_step_and_discarding_puts_back_the_ground() {
-    let _gpu = one_gpu_test();
-    let mut h = margin_harness(7);
-    let before = (all_levels(&h), canvas_image(&mut h));
-    let applied = margin_stroke(&mut h);
-    assert!(applied != before.0);
-    assert!(h.state_mut().globe.undo());
-    h.run_steps(2);
-    assert!(all_levels(&h) == before.0);
-    assert!(!h.state().globe.can_undo());
-    drop(h);
-
-    // Discard and an undo while the margin is held put back the ground,
-    // with no undo step.
-    for undo in [false, true] {
-        let mut h = margin_harness(7);
-        pen_line(&mut h, |_| {});
-        wait_held(&mut h);
-        let globe = &mut h.state_mut().globe;
-        assert!(globe.can_undo());
-        if undo {
-            assert!(globe.undo());
-        } else {
-            globe.discard_held();
-        }
-        run_until_idle(&mut h);
-        h.run_steps(2);
-        let globe = &h.state().globe;
-        assert!(globe.holding().is_none() && !globe.can_undo(), "{undo}");
-        assert!(all_levels(&h) == before.0, "{undo}");
-        let image = canvas_image(&mut h);
-        assert!(image.as_raw() == before.1.as_raw(), "{undo}");
-    }
-}
-
-#[test]
-#[ignore = "gpu"]
-fn a_held_margin_follows_the_settings_until_it_is_applied() {
-    let _gpu = one_gpu_test();
-    let second = |h: &mut Harness<'static, AppState>| {
-        let brush = &mut h.state_mut().globe.brush;
-        brush.margin_shelf_m = -400.0;
-        brush.margin_land_left = false;
-    };
-    // The margin of a stroke with the second settings.
-    let mut h = margin_harness(7);
-    second(&mut h);
-    let direct = margin_stroke(&mut h);
-    drop(h);
-
-    let mut h = margin_harness(7);
-    let before = all_levels(&h);
-    pen_line(&mut h, |_| {});
-    wait_held(&mut h);
-    let first = canvas_image(&mut h);
-    second(&mut h);
-    wait_held(&mut h);
-    assert!(canvas_image(&mut h).as_raw() != first.as_raw());
-    assert!(all_levels(&h) == before);
-    settle(&mut h);
-    let applied = all_levels(&h);
-    assert!(applied != before);
-    let worst = applied
-        .iter()
-        .zip(&direct)
-        .map(|(a, b)| a.abs_diff(*b))
-        .max();
-    assert!(worst.unwrap() <= 2, "{worst:?}");
 }
 
 #[test]
@@ -6040,30 +6024,35 @@ fn the_brush_panel_has_the_margin_mode_and_its_settings() {
     h.run_steps(2);
     let brush = &h.state().globe.brush;
     assert_eq!(brush.mode, Mode::Margin);
+    assert!(!brush.size_is_fixed());
     assert_eq!(
-        (brush.margin_shelf_m, brush.margin_land_left),
-        (-130.0, true)
+        (brush.margin_shelf_m, brush.margin_shelf_km),
+        (-130.0, 100.0)
     );
     for name in [
-        "Draw the shelf break.",
+        "Paint along a coast.",
         "Radius",
+        "Hardness",
         "Flow",
         "Shelf depth",
-        "Side",
-        "Left",
-        "Right",
+        "Shelf width",
         "Seed",
         "Floor",
         "Ceiling",
     ] {
         assert!(h.query_all_by_label(name).next().is_some(), "{name}");
     }
-    for name in ["Hardness", "Strength", "Crest", "Magma"] {
+    for name in [
+        "Strength",
+        "Crest",
+        "Magma",
+        "Side",
+        "Apply",
+        "Discard",
+        "Draw the shelf break.",
+    ] {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }
-    h.get_by_label("Right").click();
-    h.run_steps(2);
-    assert!(!h.state().globe.brush.margin_land_left);
 }
 
 /// Writes an image of a ridge after warp strokes, for a person to look at.
