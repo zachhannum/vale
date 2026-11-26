@@ -477,38 +477,66 @@ fn area_spacing_places_round_stops_and_keeps_sea_level() {
         .unwrap();
     let count = 12;
 
-    // Series: each stop is 0, or a value of 1, 2, 5, 10, and so on that is
-    // at least the interval, or the same value below 0.
-    let how = RampApply::Area {
-        count,
-        round: Round::Series,
-        interval: 50.0,
-    };
-    state.apply_ramp(height, at, how, Part::All, None).unwrap();
-    let values = inner_stops(&mut state, height);
-    assert!(values.contains(&0.0), "{values:?}");
-    for v in values.iter().map(|v| v.abs()).filter(|v| *v != 0.0) {
-        let scale = 10f64.powf(v.log10().floor());
-        let m = v / scale;
-        let series = [1.0, 2.0, 5.0].iter().any(|s| (m - s).abs() < 1e-9);
-        assert!(series && v >= 50.0, "{v} in {values:?}");
+    // Series: each stop is 0, or a round value that is a multiple of the
+    // interval, or the same value below 0.
+    for balance in [0.5, 1.0] {
+        let how = RampApply::Area {
+            count,
+            round: Round::Series,
+            interval: 50.0,
+            balance,
+        };
+        state.apply_ramp(height, at, how, Part::All, None).unwrap();
+        let values = inner_stops(&mut state, height);
+        assert!(values.contains(&0.0), "{balance}: {values:?}");
+        for v in values.iter().map(|v| v.abs()).filter(|v| *v != 0.0) {
+            let scale = 10f64.powf(v.log10().floor());
+            let m = v / scale;
+            let series = vale_terrain::SERIES.iter().any(|s| (m - s).abs() < 1e-9);
+            assert!(series && v % 50.0 == 0.0, "{balance}: {v} in {values:?}");
+        }
+        assert!(values.windows(2).all(|w| w[0] < w[1]), "{values:?}");
+        // Each stop is a different round value, so there are `count` bands.
+        let bands = state.globe.bands_mut(height).unwrap();
+        assert_eq!(bands.colors().len(), count, "{balance}");
+        assert_eq!(bands.colors().len(), values.len() + 1);
     }
-    assert!(values.windows(2).all(|w| w[0] < w[1]), "{values:?}");
-    // Stops that round to the same value become one stop.
-    let bands = state.globe.bands_mut(height).unwrap();
-    assert!(bands.colors().len() <= count);
-    assert_eq!(bands.colors().len(), values.len() + 1);
 
     // Interval: each stop is a multiple of the interval.
     let how = RampApply::Area {
         count,
         round: Round::Interval,
         interval: 250.0,
+        balance: 0.5,
     };
     state.apply_ramp(height, at, how, Part::All, None).unwrap();
     let values = inner_stops(&mut state, height);
     assert!(values.contains(&0.0), "{values:?}");
     assert!(values.iter().all(|v| v % 250.0 == 0.0), "{values:?}");
+
+    // The height grows with the latitude, so most of the area is low, and
+    // a lower balance moves the stops up toward the even spacing.
+    let bands = state.globe.bands_mut(height).unwrap().clone();
+    let map = &mut state.globe.map;
+    let n = map.face_size();
+    for face in 0..FACES {
+        for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
+            let lat = map.texel_dir(face, x, y)[2].asin().to_degrees();
+            map.set(face, x, y, bands.level(lat * 60.0));
+        }
+    }
+    let mut top = |balance: f64| {
+        let how = RampApply::Area {
+            count,
+            round: Round::Interval,
+            interval: 50.0,
+            balance,
+        };
+        state.apply_ramp(height, at, how, Part::All, None).unwrap();
+        inner_stops(&mut state, height)
+    };
+    let (low, high) = (top(0.2), top(1.0));
+    assert!(low.last() > high.last(), "{low:?} {high:?}");
 }
 
 #[test]

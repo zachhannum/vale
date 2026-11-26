@@ -251,10 +251,12 @@ pub enum RampApply {
     Make(usize),
     /// The bands of the part are at most `count` new bands, with stops
     /// placed by the area of each value and rounded as `round` says.
+    /// `balance` is the weight of the areas, from 0 to 1.
     Area {
         count: usize,
         round: vale_terrain::Round,
         interval: f64,
+        balance: f64,
     },
 }
 
@@ -4506,6 +4508,7 @@ impl AppState {
                 count: made,
                 round,
                 interval,
+                balance,
             } => {
                 if count - replaced + made > vale_terrain::MAX_BANDS {
                     return Err(TOO_MANY_BANDS.to_owned());
@@ -4515,6 +4518,7 @@ impl AppState {
                     bins: &bins,
                     round,
                     interval,
+                    balance,
                 };
                 bands
                     .painted_by_area(&colors, part, range, (lo, hi), made, &area)

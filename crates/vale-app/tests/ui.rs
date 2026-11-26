@@ -3508,7 +3508,7 @@ fn the_desktop_ramp_menus_open_the_editor_window() {
 
 #[test]
 fn the_desktop_ramp_menu_has_the_spacing_controls() {
-    use vale_app::ui::pad::raster::{COLOR_RAMPS, INTERVAL, ROUND_TO, SPACING};
+    use vale_app::ui::pad::raster::{BALANCE, COLOR_RAMPS, INTERVAL, ROUND_TO, SPACING};
     let mut state = state_with(Document::sample());
     state.workspace = Workspace::Globe;
     let mut h = Harness::builder()
@@ -3546,6 +3546,7 @@ fn the_desktop_ramp_menu_has_the_spacing_controls() {
     assert!(h.query_by_label("Series").is_some());
     // The choice "Interval" and the label of the field.
     assert_eq!(h.query_all_by_label(INTERVAL).count(), 2);
+    assert!(h.query_by_label(BALANCE).is_some());
 }
 
 #[test]

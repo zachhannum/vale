@@ -177,6 +177,9 @@ pub struct StyleState {
     /// Series, and the default interval of the layer.
     ramp_round: Option<Round>,
     ramp_interval: Option<f64>,
+    /// The weight of the areas that the user chose for Area. `None`:
+    /// `START_BALANCE`.
+    ramp_balance: Option<f64>,
     /// The layer whose color picker of the shade color is open.
     shade_color: Option<RasterId>,
     /// The color picker of the shade color showed in this frame.
@@ -621,6 +624,7 @@ pub fn ramps_body(
                 style.ramp_area = None;
                 style.ramp_round = None;
                 style.ramp_interval = None;
+                style.ramp_balance = None;
             }
             list::Event::Rename(index, name) => {
                 if let Err(e) = state.ramps.rename(index, &name) {
@@ -880,6 +884,12 @@ pub const ROUND_NAMES: [&str; 2] = ["Series", "Interval"];
 pub const ROUNDS: [Round; 2] = [Round::Series, Round::Interval];
 /// The stepper of the interval of the rounding of Area.
 pub const INTERVAL: &str = "Interval";
+/// The slider of the weight of the areas for Area, and the names of its
+/// ends.
+pub const BALANCE: &str = "Balance";
+const BALANCE_ENDS: [(f64, &str); 2] = [(0.0, "Even"), (1.0, "Area")];
+/// The weight of the areas that the slider starts on.
+pub const START_BALANCE: f64 = 0.5;
 /// The button of the card of a custom ramp that opens the editor.
 pub const EDIT_RAMP: &str = "Edit ramp…";
 
@@ -1385,12 +1395,14 @@ pub fn ramp_card(
                     let round = style.ramp_round.unwrap_or(Round::Series);
                     let interval = (style.ramp_interval)
                         .unwrap_or_else(|| vale_terrain::default_interval(min, max));
+                    let balance = style.ramp_balance.unwrap_or(START_BALANCE);
                     let span = max - min;
-                    spacing = Some((round, interval, span / 100_000.0..=span));
+                    spacing = Some((round, interval, span / 100_000.0..=span, balance));
                     RampApply::Area {
                         count: made,
                         round,
                         interval,
+                        balance,
                     }
                 } else {
                     RampApply::Make(made)
@@ -1431,7 +1443,12 @@ pub fn ramp_card(
         + usize::from(other.is_some())
         + usize::from(count.is_some())
         + usize::from(spacing.is_some());
-    let size = text.size().y + 12.0 + choice + rows as f32 * PANEL_ROW + 2.0 * CARD_PAD;
+    // The slider of the balance has the names of its ends below it.
+    let balance = match spacing {
+        Some(_) => PANEL_ROW + widgets::TICK_NAMES,
+        None => 0.0,
+    };
+    let size = text.size().y + 12.0 + choice + rows as f32 * PANEL_ROW + balance + 2.0 * CARD_PAD;
     let at = pos2(row.left() + 40.0, row.center().y);
     let (rect, origin) = place(rects, panel, at, row, size);
     let touched = ctx
@@ -1453,6 +1470,7 @@ pub fn ramp_card(
     let mut new_area = None;
     let mut new_round = None;
     let mut new_interval = None;
+    let mut new_balance = None;
     let radius = theme::CARD_RADIUS.into();
     let key = "pad-ramp";
     let backdrop = state.globe.backdrop();
@@ -1500,7 +1518,7 @@ pub fn ramp_card(
             new_area = picked.map(|i| i == 1);
             ui.add_space(8.0);
         }
-        if let Some((round, interval, range)) = &spacing {
+        if let Some((round, interval, range, balance)) = &spacing {
             let active = ROUNDS.iter().position(|r| r == round);
             let picked = widgets::choice_row(ui, controls, ROUND_TO, &ROUND_NAMES, active);
             new_round = picked.map(|i| ROUNDS[i]);
@@ -1511,6 +1529,12 @@ pub fn ramp_card(
                 .enabled(!none)
                 .stepper(ui, controls)
                 .filter(|v| *v > 0.0);
+            new_balance = Number::new(BALANCE, *balance, 0.0..=1.0)
+                .step(0.05)
+                .ticks(&BALANCE_ENDS)
+                .no_field()
+                .enabled(!none)
+                .slider(ui, controls);
         }
         let (name, choice) = &button;
         let on = !(none && matches!(choice, RampChoice::Apply(_)));
@@ -1543,6 +1567,9 @@ pub fn ramp_card(
     }
     if new_interval.is_some() {
         state.pad.style.ramp_interval = new_interval;
+    }
+    if new_balance.is_some() {
+        state.pad.style.ramp_balance = new_balance;
     }
     let Some(chosen) = chosen else {
         return;

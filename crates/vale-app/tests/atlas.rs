@@ -13728,6 +13728,7 @@ fn in_frame_area_spacing_uses_the_areas_of_the_frame() {
             bins,
             round: Round::Interval,
             interval,
+            balance: 1.0,
         };
         let range = (w.lo, w.hi);
         let bands = before.painted_by_area(&ramp, Part::All, w.bands.clone(), range, count, &area);
@@ -13741,6 +13742,7 @@ fn in_frame_area_spacing_uses_the_areas_of_the_frame() {
         count,
         round: Round::Interval,
         interval,
+        balance: 1.0,
     };
     h.state_mut()
         .apply_ramp(height, at, how, Part::All, Some(&w))

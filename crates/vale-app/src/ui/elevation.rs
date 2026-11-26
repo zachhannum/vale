@@ -378,6 +378,9 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         let round_key = egui::Id::new(("ramp-round", id, index));
         let round: usize = ui.data(|d| d.get_temp(round_key)).unwrap_or(0);
         let interval_key = egui::Id::new(("ramp-interval", id, index));
+        let balance_key = egui::Id::new(("ramp-balance", id, index));
+        let mut balance: f64 =
+            (ui.data(|d| d.get_temp(balance_key))).unwrap_or(pad::raster::START_BALANCE);
         let mut interval: f64 = (ui.data(|d| d.get_temp(interval_key)))
             .unwrap_or_else(|| vale_terrain::default_interval(layer.min(), layer.max()));
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
@@ -448,10 +451,20 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                             ui.data_mut(|d| d.insert_temp(interval_key, interval));
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.label(pad::raster::BALANCE);
+                        ui.label(pad::raster::SPACING_NAMES[0]);
+                        let slider = egui::Slider::new(&mut balance, 0.0..=1.0).show_value(false);
+                        if ui.add(slider).changed() {
+                            ui.data_mut(|d| d.insert_temp(balance_key, balance));
+                        }
+                        ui.label(pad::raster::SPACING_NAMES[1]);
+                    });
                     RampApply::Area {
                         count: made,
                         round: pad::raster::ROUNDS[round.min(1)],
                         interval,
+                        balance,
                     }
                 } else {
                     RampApply::Make(made)
