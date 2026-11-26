@@ -70,7 +70,10 @@ pub use heightmap::{
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
-pub use margin::{MAX_MARGIN_RADIUS, Margin, MarginLine, MarginPlan, SHELF_DEPTH_RANGE};
+pub use margin::{
+    FIELD_CELLS, FIELD_FLOATS, Margin, MarginField, MarginPlan, MarginStroke, SHELF_DEPTH_RANGE,
+    SHELF_WIDTH_RANGE,
+};
 pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};

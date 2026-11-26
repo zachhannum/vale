@@ -5,9 +5,9 @@ use std::path::Path;
 
 use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, Margin, MarginLine,
-    PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts,
-    US_EAST_MARGIN, meters_to_level, realism,
+    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, Margin,
+    MarginStroke, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke,
+    Seamounts, US_EAST_MARGIN, meters_to_level, realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -115,20 +115,17 @@ impl Painted {
         self.map.end_stroke();
     }
 
-    /// A margin along an arc around `center` with a radius in kilometers,
-    /// clockwise from the azimuth `from` to the azimuth `to` in degrees, so
-    /// the land is outside the arc. The ground outside the arc is land at
-    /// `land_m` up to `land_km` from the middle of the patch.
-    #[allow(clippy::too_many_arguments)]
+    /// Land at `land_m` outside a circle around `center` with a radius in
+    /// kilometers, up to `land_km` from the middle of the patch, and margin
+    /// strokes in rows over the patch, with a brush radius in kilometers.
     fn margin(
         &mut self,
         spec: Margin,
         center: V3,
         radius_km: f64,
-        from: f64,
-        to: f64,
         land_m: f64,
         land_km: f64,
+        brush_km: f64,
     ) {
         let n = self.map.face_size();
         let half = (land_km / self.world_km / (std::f64::consts::FRAC_PI_2 / n as f64)) as usize;
@@ -136,25 +133,24 @@ impl Painted {
         let arc = radius_km / self.world_km;
         for y in n / 2 - half..n / 2 + half {
             for x in n / 2 - half..n / 2 + half {
-                let d = self.map.texel_dir(0, x, y);
-                if angle(d, center) > arc {
+                if angle(self.map.texel_dir(0, x, y), center) > arc {
                     self.map.set(0, x, y, land);
                 }
             }
         }
-        let mut line = MarginLine::new(spec, n);
-        let count = 64;
-        for i in 0..=count {
-            let azimuth = (from + (to - from) * f64::from(i) / f64::from(count)).to_radians();
-            line.push(offset(center, azimuth, arc), 1.0);
-        }
-        line.read_floor(&self.map);
+        let brush = brush_km / self.world_km;
+        let mut stroke = MarginStroke::new(spec, n);
         self.map.begin_stroke();
-        let mut from = 0;
-        while from < line.len() {
-            let plan = line.plan(from);
-            self.map.margin(&plan);
-            from = plan.end;
+        let reach = 320.0 / self.world_km;
+        let rows = (2.0 * reach / (0.6 * brush)).ceil() as usize;
+        for row in 0..=rows {
+            let y = -reach + 2.0 * reach * row as f64 / rows as f64;
+            for column in 0..=rows {
+                let x = -reach + 2.0 * reach * column as f64 / rows as f64;
+                let p = offset(offset(self.center, std::f64::consts::FRAC_PI_2, x), 0.0, y);
+                let plan = stroke.stamp(&self.map, p, brush, 0.7, 1.0);
+                self.map.margin(&plan);
+            }
         }
         self.map.end_stroke();
     }
@@ -536,7 +532,7 @@ fn a_fast_ridge_is_near_the_east_pacific_rise() {
 }
 
 /// The brush radius of the margin test, in kilometers.
-const MARGIN_RADIUS_KM: f64 = 400.0;
+const MARGIN_BRUSH_KM: f64 = 150.0;
 
 /// The direction at a distance in radians from `center` at an azimuth in
 /// radians from north.
@@ -558,17 +554,15 @@ fn offset(center: V3, azimuth: f64, distance: f64) -> V3 {
 fn earth_margin() -> Painted {
     let mut painted = Painted::earth(4600.0);
     let spec = Margin {
-        radius: MARGIN_RADIUS_KM / EARTH_KM,
         shelf_m: -130.0,
-        land_left: true,
-        floor_m: -5000.0,
+        shelf_km: 100.0,
         world_km: EARTH_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),
     };
     let to_center = 530.0 / EARTH_KM;
     let center = offset(painted.center, 137f64.to_radians(), to_center);
-    painted.margin(spec, center, 600.0, 200.0, 420.0, 20.0, 900.0);
+    painted.margin(spec, center, 700.0, 20.0, 900.0, MARGIN_BRUSH_KM);
     painted
 }
 

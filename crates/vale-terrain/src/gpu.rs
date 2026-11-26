@@ -10,7 +10,7 @@
 use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
 use std::num::NonZeroU64;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::abyssal::AbyssalPlan;
 use crate::bands::SEA_LEVEL;
@@ -22,7 +22,7 @@ use crate::heightmap::{
     Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
 };
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
-use crate::margin::MarginPlan;
+use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MarginPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -40,6 +40,9 @@ pub const RIDGE_SLOTS: u32 = 8;
 
 /// The number of seamount plans in one batch.
 pub const SEAMOUNT_SLOTS: u32 = 8;
+
+/// The bytes of the distance field of a margin pass.
+const MARGIN_FIELD_BYTES: u32 = (FIELD_CELLS * FIELD_CELLS * FIELD_FLOATS * 4) as u32;
 
 /// The bytes of the volcanoes of one seamount plan.
 const SEAMOUNT_BYTES: u32 = (PLAN_VOLCANOES * VOLCANO_FLOATS * 4) as u32;
@@ -229,6 +232,7 @@ struct BindParts {
     uniforms: wgpu::Buffer,
     ridge_uniforms: wgpu::Buffer,
     volcanoes: wgpu::Buffer,
+    margin_field: wgpu::Buffer,
     /// The views of bindings 1 to 6.
     views: [wgpu::TextureView; 6],
 }
@@ -249,6 +253,7 @@ impl BindParts {
             buffer(0, &self.uniforms, size_of::<Uniforms>()),
             buffer(7, &self.ridge_uniforms, size_of::<RidgeUniforms>()),
             buffer(14, &self.volcanoes, SEAMOUNT_BYTES as usize),
+            buffer(15, &self.margin_field, MARGIN_FIELD_BYTES as usize),
         ];
         for (i, view) in self.views.iter().enumerate() {
             entries.push(wgpu::BindGroupEntry {
@@ -313,10 +318,10 @@ struct RidgeUniforms {
     segment_depth: f32,
     /// The numbers of a range pass: the height, the ridge spacing, the
     /// piece length, and the tilt of a crest. An abyssal hills pass has its
-    /// hardness as the height. A margin pass has the side of the land as
-    /// the height, the depth of the floor as the spacing, the depth of the
-    /// shelf break as `crest`, and the texel width in kilometers as
-    /// `spacing`.
+    /// hardness as the height. A margin pass has the depth of the floor as
+    /// the spacing, the depth and the width of the shelf as `crest` and
+    /// `segment`, the texel width in kilometers as `spacing`, and the field
+    /// and the stamp in the first two segments.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
@@ -464,6 +469,11 @@ pub struct GpuHeightmap {
     volcanoes: wgpu::Buffer,
     volcano_slot_size: u32,
     used_seamount_slots: AtomicU32,
+    /// The distance field of the margin passes, the id of the field that it
+    /// holds, and the number of margin passes of the batch.
+    margin_field: wgpu::Buffer,
+    margin_field_id: AtomicU64,
+    used_margin_passes: AtomicU32,
 }
 
 fn extent(rect: TexelRect) -> wgpu::Extent3d {
@@ -562,6 +572,16 @@ impl StampPipeline {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: true,
                         min_binding_size: NonZeroU64::new(u64::from(SEAMOUNT_BYTES)),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 15,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: NonZeroU64::new(u64::from(MARGIN_FIELD_BYTES)),
                     },
                     count: None,
                 },
@@ -749,12 +769,19 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let margin_field = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("margin field"),
+            size: u64::from(MARGIN_FIELD_BYTES),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let bind_parts = BindParts {
             layout: pipeline.layout.clone(),
             uniforms,
             ridge_uniforms,
             volcanoes,
+            margin_field,
             views: [
                 channels_view.clone(),
                 window_view.clone(),
@@ -796,6 +823,9 @@ impl GpuHeightmap {
             uniforms: bind_parts.uniforms.clone(),
             ridge_uniforms: bind_parts.ridge_uniforms.clone(),
             volcanoes: bind_parts.volcanoes.clone(),
+            margin_field: bind_parts.margin_field.clone(),
+            margin_field_id: AtomicU64::new(0),
+            used_margin_passes: AtomicU32::new(0),
             bind_parts,
             bind: Mutex::new(bind),
             slot_size,
@@ -997,6 +1027,7 @@ impl GpuHeightmap {
         self.used_slots.store(0, Ordering::Relaxed);
         self.used_ridge_slots.store(0, Ordering::Relaxed);
         self.used_seamount_slots.store(0, Ordering::Relaxed);
+        self.used_margin_passes.store(0, Ordering::Relaxed);
     }
 
     /// Adds one stamp to `enc`. The plan comes from a `Heightmap` with the
@@ -1801,39 +1832,117 @@ impl GpuHeightmap {
         self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header)
     }
 
-    /// Adds the margin of a plan to `enc`, with one pass for each face, as
-    /// `ridge` adds an ocean ridge. Write the ground from before the stroke
-    /// into the rectangles of the plan first. Returns `false` and adds
-    /// nothing if the batch is full.
+    /// Adds a margin stamp to `enc`, with one pass for each face. The
+    /// result is that of `Heightmap::margin`. A pass reads the ground from
+    /// before the stroke in the start set of the pool, as a seamounts pass
+    /// does, so call `begin_stroke` at the start of each stroke. A plan takes
+    /// one of the `RIDGE_SLOTS` of a batch. The passes of one batch read one
+    /// distance field.
+    ///
+    /// Returns `false` and adds nothing if the batch is full, or if it has
+    /// passes of another distance field.
     pub fn margin(
         &self,
         queue: &wgpu::Queue,
         enc: &mut wgpu::CommandEncoder,
         plan: &MarginPlan,
     ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let ridge_slot = self.used_ridge_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || ridge_slot == RIDGE_SLOTS {
+            return false;
+        }
+        let field = &plan.field;
+        if self.margin_field_id.load(Ordering::Relaxed) != field.id {
+            if self.used_margin_passes.load(Ordering::Relaxed) > 0 {
+                return false;
+            }
+            queue.write_buffer(&self.margin_field, 0, bytemuck::cast_slice(&field.cells));
+            self.margin_field_id.store(field.id, Ordering::Relaxed);
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_ridge_slots
+            .store(ridge_slot + 1, Ordering::Relaxed);
+        self.used_margin_passes.fetch_add(1, Ordering::Relaxed);
         let spec = &plan.spec;
-        // The cell of the distances along the line is the brush radius.
-        let cell = spec.radius;
-        let length_cell = (plan.length / cell + 0.5).floor();
-        let header = RidgeUniforms {
-            length: [
-                length_cell as f32,
-                (plan.length - length_cell * cell) as f32,
-            ],
-            radius: spec.radius as f32,
-            segment: cell as f32,
-            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
-            sin_reach: (REACH * spec.radius).sin() as f32,
+        let half = 0.5 * field.size as f64 * field.cell;
+        let (c, e, n, s) = (field.center, field.east, field.north, plan.center);
+        // The order is that of `MarginPass` in `stamp.wgsl`.
+        let geometry = [
+            c[0],
+            c[1],
+            c[2],
+            e[0],
+            e[1],
+            e[2],
+            n[0],
+            n[1],
+            n[2],
+            half,
+            field.cell,
+            field.size as f64,
+            s[0],
+            s[1],
+            s[2],
+            plan.radius,
+        ];
+        let mut stamp = [0.0f32; 16];
+        stamp[0] = plan.hardness as f32;
+        stamp[1] = plan.flow as f32;
+        let mut header = RidgeUniforms {
+            radius: plan.radius as f32,
+            segment: spec.shelf_km as f32,
             crest: spec.shelf_m as f32,
             world_km: spec.world_km as f32,
             seed: spec.seed,
-            spacing: plan.texel_km as f32,
-            segment_km: (cell * spec.world_km) as f32,
-            range_height: if spec.land_left { 1.0 } else { -1.0 },
-            range_spacing: spec.floor_m as f32,
+            spacing: plan.texel_km() as f32,
+            range_spacing: field.floor_m as f32,
             ..bytemuck::Zeroable::zeroed()
         };
-        self.line_pass(queue, enc, &plan.line, cell, 19, spec.limits, header)
+        header.segments[0] = geometry.map(|v| v as f32);
+        header.segments[1] = stamp;
+        let used = std::mem::offset_of!(RidgeUniforms, segments) + 2 * size_of::<[f32; 16]>();
+        let ridge_offset = ridge_slot * self.ridge_slot_size;
+        queue.write_buffer(
+            &self.ridge_uniforms,
+            u64::from(ridge_offset),
+            &bytemuck::bytes_of(&header)[..used],
+        );
+        let state = &mut *self.state();
+        let touched: Vec<_> = plan
+            .rects
+            .iter()
+            .enumerate()
+            .filter_map(|(face, rect)| Some((face, (*rect)?)))
+            .collect();
+        for &(face, rect) in &touched {
+            self.keep_start(queue, enc, state, face, rect);
+        }
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 19,
+                size: self.face_size as i32,
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(spec.limits),
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, [offset, ridge_offset, 0]);
+        }
+        true
     }
 
     /// Writes the drops of a rectangle of cells to one layer of a drop

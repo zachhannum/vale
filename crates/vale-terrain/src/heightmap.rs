@@ -1653,11 +1653,27 @@ impl Heightmap {
         self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
     }
 
-    /// Lays the margin of a plan on the ground from before the stroke, as
-    /// `ridge` lays an ocean ridge. Returns the number of texels that
-    /// changed.
+    /// Adds a margin stamp: each sea texel under the brush moves toward the
+    /// margin profile, by the weight of the brush. The land does not change.
+    /// Call this in a stroke. Returns the number of texels that changed.
     pub fn margin(&mut self, plan: &MarginPlan) -> usize {
-        self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        let mut changed = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let p = self.texel_dir(face, x, y);
+                    let now = self.texel(face, x, y);
+                    let new = plan.level(self.level_before(face, x, y), now, p);
+                    if new != now {
+                        self.set(face, x, y, new);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        changed
     }
 
     /// The level at a direction, from the 4 texels around it.
