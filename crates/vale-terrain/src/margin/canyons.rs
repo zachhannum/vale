@@ -26,7 +26,7 @@ const LONG_KM2: f32 = 250.0;
 /// The drainage area of the head of a canyon, in square kilometers. A cell
 /// with less area does not cut, and a cell with twice the area cuts at the
 /// full rate. The walls between the canyons only fail.
-const CHANNEL_KM2: f32 = 10.0;
+const CHANNEL_KM2: f32 = 60.0;
 
 /// The flow of a cell goes to the neighbor with the largest drop times a
 /// seeded factor from 1 - w to 1 + w, where w is `WANDER` times the
@@ -41,18 +41,18 @@ const STEPS: usize = 40;
 
 /// The erosion of one step at an amount of 1, for an area of 1 square
 /// kilometer and a cell of 1 kilometer.
-const RATE: f32 = 1.0;
+const RATE: f32 = 0.6;
 
 /// The angle above which a wall fails, in degrees, and the part of it that
 /// a seeded noise changes.
-const FAIL_DEG: f32 = 28.0;
+const FAIL_DEG: f32 = 22.0;
 const FAIL_NOISE: f32 = 0.25;
 
 /// The size of the features of the roughness that the flow starts on, in
 /// kilometers, at least 3 cells wide, and their heights as a part of the
 /// drop of the slope over their size. The flow gathers in the troughs, so
 /// the size sets the spacing of the canyons.
-const ROUGH: [(f64, f32); 2] = [(12.0, 0.1), (4.5, 0.144)];
+const ROUGH: [(f64, f32); 2] = [(25.0, 0.3), (4.5, 0.144)];
 
 /// The depths over which the shelf starts to cut, as parts of the depth of
 /// the shelf break. A seeded head cuts back into the shelf near the break
