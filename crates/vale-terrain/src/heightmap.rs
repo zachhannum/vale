@@ -112,6 +112,9 @@ pub enum Mode {
     /// The mode of the abyssal hills brush. A stamp of this mode changes
     /// nothing. `Heightmap::abyssal` makes the change.
     AbyssalHills,
+    /// The mode of the margin brush. A stamp of this mode changes nothing.
+    /// `Heightmap::margin` makes the change.
+    Margin,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1170,6 +1173,7 @@ impl Heightmap {
                 | Mode::Basin
                 | Mode::Seamounts
                 | Mode::AbyssalHills
+                | Mode::Margin
         ) {
             return 0;
         }
@@ -1323,7 +1327,8 @@ impl Heightmap {
                             | Mode::Range
                             | Mode::Basin
                             | Mode::Seamounts
-                            | Mode::AbyssalHills => continue,
+                            | Mode::AbyssalHills
+                            | Mode::Margin => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);

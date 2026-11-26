@@ -7,10 +7,10 @@ use vale_terrain::{
     AbyssalHills, AbyssalStroke, CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow,
     CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS,
     GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan,
-    Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge,
-    RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan,
-    TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
-    pyramid_layout, tiles_layout, window_channels,
+    Margin, MarginLine, MarginPlan, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan,
+    RangeSpec, Readback, Ridge, RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke,
+    Seamounts, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
+    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -3622,6 +3622,40 @@ impl LineSpec for RangeSpec {
     }
 }
 
+impl LineSpec for Margin {
+    type Line = MarginLine;
+    type Plan = MarginPlan;
+    fn line(self, n: usize) -> MarginLine {
+        MarginLine::new(self, n)
+    }
+    fn radius(line: &MarginLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut MarginLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &MarginLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &MarginLine, from: usize) -> MarginPlan {
+        line.plan(from)
+    }
+    fn margin(line: &MarginLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &MarginPlan) {
+        map.margin(plan);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &MarginPlan,
+    ) -> bool {
+        map.margin(queue, enc, plan)
+    }
+}
+
 /// The points of a stroke through places, each in degrees of longitude and
 /// latitude, with a flow for each one. The points are as far apart as the
 /// points of the app.
@@ -4013,6 +4047,94 @@ fn gpu_ridge_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, true, false);
     assert_ridge("S-bend in steps", &run, &[0, 2]);
+}
+
+const MARGIN_TOLERANCE: u16 = 2;
+
+fn margin_spec(radius: f64, land_left: bool) -> Margin {
+    Margin {
+        radius,
+        shelf_m: -130.0,
+        land_left,
+        floor_m: -4500.0,
+        world_km: 6371.0,
+        seed: 7,
+        limits: Limits::default(),
+    }
+}
+
+/// Land in the west and a deep floor in the east, with a smooth coast
+/// along the meridian at longitude `lon`, and hills on both.
+fn coast_ground(n: usize, lon: f64) -> Heightmap {
+    let (sin, cos) = lon.to_radians().sin_cos();
+    ground(n, |d| {
+        let east = d[1] * cos - d[0] * sin;
+        let land = 0.5 - 0.5 * (east * 40.0).tanh();
+        let hills = 150.0 * (9.0 * d[0] + 1.0).sin() * (7.0 * d[2]).cos();
+        vale_terrain::meters_to_level(-4500.0 + 4600.0 * land + hills)
+    })
+}
+
+fn assert_margin(name: &str, run: &RidgeRun, faces: &[usize]) {
+    eprintln!(
+        "margin, {name}: largest difference {}, changed {:?}",
+        run.difference, run.changed
+    );
+    for &face in faces {
+        assert!(run.changed[face] > 200, "{name}: {:?}", run.changed);
+    }
+    assert!(
+        run.difference <= MARGIN_TOLERANCE,
+        "{name}: the difference is {}",
+        run.difference
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_for_a_straight_stroke() {
+    let start = coast_ground(256, -12.0);
+    for radius in [0.03, 0.1, 0.2] {
+        for land_left in [true, false] {
+            let run = ridge_run(
+                &start,
+                margin_spec(radius, land_left),
+                &[(-12.0, -20.0), (-12.0, 20.0)],
+                false,
+                false,
+            );
+            let name = format!("straight, radius {radius}, land left {land_left}");
+            assert_margin(&name, &run, &[0]);
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_across_a_face_edge() {
+    let start = coast_ground(256, 40.0);
+    let run = ridge_run(&start, margin_spec(0.1, true), &RIDGE_BEND, false, false);
+    assert_margin("S-bend across a face edge", &run, &[0, 2]);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_in_steps_matches_one_plan_on_the_cpu() {
+    let start = coast_ground(256, 40.0);
+    let run = ridge_run(&start, margin_spec(0.1, true), &RIDGE_BEND, true, false);
+    assert_margin("S-bend in steps", &run, &[0, 2]);
+}
+
+/// On a large face, the gullies and the canyons are a few texels wide, and
+/// the line goes in more than one plan.
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_on_a_large_face() {
+    let start = coast_ground(2048, 0.0);
+    let places = [(0.0, -30.0), (2.0, -10.0), (-3.0, 10.0), (0.0, 30.0)];
+    let run = ridge_run(&start, margin_spec(0.04, true), &places, false, false);
+    assert_margin("large face", &run, &[0]);
+    assert!(run.plans > 3, "{}", run.plans);
 }
 
 fn range_spec(radius: f64) -> RangeSpec {

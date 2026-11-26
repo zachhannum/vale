@@ -22,6 +22,7 @@ use crate::heightmap::{
     Limits, Mode, NOISE_RELIEF_M, StampPlan, TILE_SIZE, TexelRect, grain_axis, noise_octaves,
 };
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
+use crate::margin::MarginPlan;
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -312,7 +313,10 @@ struct RidgeUniforms {
     segment_depth: f32,
     /// The numbers of a range pass: the height, the ridge spacing, the
     /// piece length, and the tilt of a crest. An abyssal hills pass has its
-    /// hardness as the height.
+    /// hardness as the height. A margin pass has the side of the land as
+    /// the height, the depth of the floor as the spacing, the depth of the
+    /// shelf break as `crest`, and the texel width in kilometers as
+    /// `spacing`.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
@@ -1039,6 +1043,7 @@ impl GpuHeightmap {
                 | Mode::Basin
                 | Mode::Seamounts
                 | Mode::AbyssalHills
+                | Mode::Margin
         ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
@@ -1113,7 +1118,8 @@ impl GpuHeightmap {
                     | Mode::Range
                     | Mode::Basin
                     | Mode::Seamounts
-                    | Mode::AbyssalHills => 5,
+                    | Mode::AbyssalHills
+                    | Mode::Margin => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
@@ -1793,6 +1799,41 @@ impl GpuHeightmap {
             }
         }
         self.line_pass(queue, enc, &plan.line, cell, 18, spec.limits, header)
+    }
+
+    /// Adds the margin of a plan to `enc`, with one pass for each face, as
+    /// `ridge` adds an ocean ridge. Write the ground from before the stroke
+    /// into the rectangles of the plan first. Returns `false` and adds
+    /// nothing if the batch is full.
+    pub fn margin(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &MarginPlan,
+    ) -> bool {
+        let spec = &plan.spec;
+        // The cell of the distances along the line is the brush radius.
+        let cell = spec.radius;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: spec.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * spec.radius).sin() as f32,
+            crest: spec.shelf_m as f32,
+            world_km: spec.world_km as f32,
+            seed: spec.seed,
+            spacing: plan.texel_km as f32,
+            segment_km: (cell * spec.world_km) as f32,
+            range_height: if spec.land_left { 1.0 } else { -1.0 },
+            range_spacing: spec.floor_m as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        self.line_pass(queue, enc, &plan.line, cell, 19, spec.limits, header)
     }
 
     /// Writes the drops of a rectangle of cells to one layer of a drop
