@@ -15,7 +15,7 @@ use crate::line::{smoothstep, unit};
 use crate::math::{V3, angle, cross, dot, normalize};
 
 /// The number of 32-bit numbers of one volcano in `SeamountPlan::floats`.
-pub const VOLCANO_FLOATS: usize = 56;
+pub const VOLCANO_FLOATS: usize = 64;
 
 /// The largest number of volcanoes in one plan.
 pub const PLAN_VOLCANOES: usize = 256;
@@ -108,6 +108,11 @@ const FLEX_LENGTH: usize = 45;
 const REACH: usize = 46;
 const CONE_SIDE: usize = 48;
 const CONE_TURN: usize = 52;
+pub(crate) const CAP: usize = 56;
+const EXTENT: usize = 59;
+
+/// The cap of a volcano with no cap.
+pub(crate) const NO_CAP: f32 = 65535.0;
 
 /// The 16-bit steps of one meter.
 const LEVELS_PER_M: f64 = 65535.0 / (ELEV_MAX - ELEV_MIN);
@@ -235,10 +240,14 @@ impl Volcano {
     /// The change of the level at a unit direction at full growth, in 16-bit
     /// steps. The moat of the plate is negative.
     pub fn full_levels(&self, p: V3) -> f64 {
+        self.edifice(p) - self.moat(p)
+    }
+
+    /// The edifice at a unit direction at full growth, in 16-bit steps.
+    pub fn edifice(&self, p: V3) -> f64 {
         let c = self.center();
         let reach = self.reach();
-        let cos = dot(p, c);
-        if cos <= reach.cos() {
+        if dot(p, c) <= self.get(EXTENT).cos() {
             return 0.0;
         }
         let a = self.v3(AXIS);
@@ -247,7 +256,6 @@ impl Volcano {
         let d = (x * x + y * y).sqrt();
         let radius = self.get(RADIUS);
         let (u, v) = (x / radius, y / radius);
-        let height = self.get(HEIGHT);
         let mut edifice: f64 = 0.0;
         for i in 0..self.cones() {
             let du = (u - self.get(CONE_OFFSET + i)) / self.get(STRETCH);
@@ -256,11 +264,24 @@ impl Volcano {
             let theta = dv.atan2(du) + self.get(CONE_TURN + i);
             edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta, i as u32));
         }
-        let edifice = edifice * height * (1.0 - smoothstep(0.85 * reach, reach, d));
+        edifice * self.get(HEIGHT) * (1.0 - smoothstep(0.85 * reach, reach, d))
+    }
+
+    /// The moat of the plate at a unit direction at full growth, in 16-bit
+    /// steps. It is positive down.
+    pub fn moat(&self, p: V3) -> f64 {
+        let c = self.center();
+        let reach = self.reach();
+        if dot(p, c) <= reach.cos() {
+            return 0.0;
+        }
+        let a = self.v3(AXIS);
+        let b = cross(c, a);
+        let (x, y) = (dot(p, a), dot(p, b));
+        let d = (x * x + y * y).sqrt();
         let xi = d / self.get(FLEX_LENGTH);
         let moat = self.get(FLEX) * (-xi).exp() * (xi.cos() + xi.sin());
-        let moat = moat * (1.0 - smoothstep(0.6 * reach, reach, d));
-        edifice - moat
+        moat * (1.0 - smoothstep(0.6 * reach, reach, d))
     }
 
     /// The level at full growth over the ground, as a part of the height,
@@ -543,6 +564,16 @@ pub fn gdh1_age(depth_m: f64) -> f64 {
         200.0
     };
     age.min(200.0)
+}
+
+/// The depth of the sea floor at an age in millions of years, in meters, by
+/// the GDH1 curve (Stein and Stein 1992).
+pub(crate) fn gdh1_depth(age: f64) -> f64 {
+    if age < 20.0 {
+        2600.0 + 365.0 * age.sqrt()
+    } else {
+        5651.0 - 2473.0 * (-0.0278 * age).exp()
+    }
 }
 
 /// The elastic thickness of the plate in kilometers at an age in millions
@@ -849,6 +880,8 @@ fn volcano(
     put(&mut v, FLEX, moat_m * LEVELS_PER_M);
     put(&mut v, FLEX_LENGTH, 1.6 * flex_m / (km * 1000.0));
     put(&mut v, REACH, reach);
+    put(&mut v, EXTENT, reach);
+    v[CAP] = NO_CAP;
     Some(Volcano(v))
 }
 

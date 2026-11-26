@@ -1289,7 +1289,7 @@ fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
     return t[4].y;
 }
 
-// `depth` in `ridge.rs`.
+// `gdh1_depth` in `seamount.rs`.
 fn ridge_depth(age: f32) -> f32 {
     if age < 20.0 {
         return 2600.0 + 365.0 * sqrt(age);
@@ -2724,7 +2724,7 @@ fn limited(old: f32, next: f32) -> f32 {
 // The constants of `seamount.rs`, with the same names but for `CONE_FOOT`
 // for `FOOT` and `SLIDE_APRON` for `APRON`, and the places in
 // `Volcano`.
-const VOLCANO_FLOATS = 56u;
+const VOLCANO_FLOATS = 64u;
 const RIFT_WIDTH = 0.3;
 const CONE_FOOT = 0.35;
 const SLIDE_APRON = 1.9;
@@ -2755,6 +2755,10 @@ const V_SEED = 43u;
 const V_FLEX = 44u;
 const V_FLEX_LENGTH = 45u;
 const V_REACH = 46u;
+const V_CAP = 56u;
+const V_RIM = 57u;
+const V_LAGOON = 58u;
+const V_EXTENT = 59u;
 
 // Number `i` of volcano `v`.
 fn volcano(v: u32, i: u32) -> f32 {
@@ -2869,12 +2873,12 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     return max(f, 0.0) + apron;
 }
 
-// The steps of `Volcano::full_levels`: the change of the level at a unit
-// direction at full growth.
-fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
+// The steps of `Volcano::edifice`: the edifice at a unit direction at full
+// growth.
+fn volcano_edifice(v: u32, p: vec3<f32>) -> f32 {
     let c = volcano_v3(v, V_CENTER);
     let reach = volcano(v, V_REACH);
-    if dot(p, c) <= cos_series(vec2<f32>(reach)).x {
+    if dot(p, c) <= cos_series(vec2<f32>(volcano(v, V_EXTENT))).x {
         return 0.0;
     }
     let a = volcano_v3(v, V_AXIS);
@@ -2894,11 +2898,25 @@ fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
         let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
         edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
     }
-    edifice *= volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
+    return edifice * volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
+}
+
+// The steps of `Volcano::moat`: the moat at a unit direction at full growth,
+// positive down.
+fn volcano_moat(v: u32, p: vec3<f32>) -> f32 {
+    let c = volcano_v3(v, V_CENTER);
+    let reach = volcano(v, V_REACH);
+    if dot(p, c) <= cos_series(vec2<f32>(reach)).x {
+        return 0.0;
+    }
+    let a = volcano_v3(v, V_AXIS);
+    let b = cross(c, a);
+    let x = dot(p, a);
+    let y = dot(p, b);
+    let d = sqrt(x * x + y * y);
     let xi = d / volcano(v, V_FLEX_LENGTH);
-    var moat = volcano(v, V_FLEX) * exp_precise(-xi) * (cos_any(xi) + sin_any(xi));
-    moat *= 1.0 - smooth_between(0.6 * reach, reach, d);
-    return edifice - moat;
+    let moat = volcano(v, V_FLEX) * exp_precise(-xi) * (cos_any(xi) + sin_any(xi));
+    return moat * (1.0 - smooth_between(0.6 * reach, reach, d));
 }
 
 // The level of a texel after a seamount pass, from its level from before
@@ -2908,7 +2926,7 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
     let p = normalize(texel_dir(group.face, at));
     var sum = 0.0;
     for (var v = 0u; v < group.count; v++) {
-        sum += volcano(v, V_GROWTH) * volcano_levels(v, p);
+        sum += volcano(v, V_GROWTH) * (volcano_edifice(v, p) - volcano_moat(v, p));
     }
     return limited(start, clamp(floor(start + sum + 0.5), 0.0, 65535.0));
 }

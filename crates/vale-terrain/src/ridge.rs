@@ -16,6 +16,7 @@ use crate::line::{
     LinePlace, LinePlan, LinePoint, REACH, StrokeLine, TAPER, bump, noise1, smoothstep, unit,
 };
 use crate::math::{V3, add, scale};
+use crate::seamount::gdh1_depth;
 
 /// The largest radius of an ocean ridge stroke, in radians. On a world of
 /// the size of the Earth, the ridge is up to 3,060 km wide.
@@ -1141,7 +1142,7 @@ impl RidgePlan {
         let age = |d: f64| (d / v).hypot(round) - round;
         // The depth follows the age, and is zero at the crest and at the
         // brush radius.
-        let (top, foot) = (depth(0.0), depth(age(r)));
+        let (top, foot) = (gdh1_depth(0.0), gdh1_depth(age(r)));
         let lift = (f64::from(spec.crest) - old).max(0.0);
         let f = self.faulting();
         let mean = f.hill_mean * f.level;
@@ -1262,7 +1263,7 @@ impl RidgePlan {
                 1.0 - valley_part * (1.0 - smoothstep(0.0, RISE_BEND_KM, from_crest * km));
             let from_rise = mix(from_axis / km, from_crest, near_axis);
             let from_rise = from_rise.max(flat_floor) / lens;
-            let w = ((foot - depth(age(from_rise))) / (foot - top)).clamp(0.0, 1.0);
+            let w = ((foot - gdh1_depth(age(from_rise))) / (foot - top)).clamp(0.0, 1.0);
             // The foot of the rise has no slope.
             let w = w * w * (1.0 + FOOT) / (w + FOOT);
             // The depth also changes from place to place, so the lines of
@@ -1498,8 +1499,8 @@ impl RidgePlan {
             turn_cell: sg.turn_cell,
             blend: sg.blend,
             round,
-            top: depth(0.0),
-            foot: depth(age(r)),
+            top: gdh1_depth(0.0),
+            foot: gdh1_depth(age(r)),
             mean: f.hill_mean * f.level,
             magma: f.magma,
             spacing: f.spacing,
@@ -2136,16 +2137,6 @@ const CREST_ROUND: f64 = 2.0;
 /// The foot of the rise is round below about this part of the height.
 const FOOT: f64 = 0.25;
 
-/// The depth of the sea floor below the crest at an age in millions of
-/// years, in meters (Stein and Stein 1992).
-fn depth(age: f64) -> f64 {
-    if age < 20.0 {
-        2600.0 + 365.0 * age.sqrt()
-    } else {
-        5651.0 - 2473.0 * (-0.0278 * age).exp()
-    }
-}
-
 /// The fit factor of the abyssal hills at half of the texel step in
 /// kilometers: how much larger the hills are than on real sea floor. It is
 /// the Scale setting, from 1 to 10. With `fit`, a map with texels larger
@@ -2651,8 +2642,8 @@ mod tests {
                     let d = r * f64::from(i) / 200.0;
                     let new = level(&plan, u, side * d);
                     let height = (new - f64::from(START)) / LIFT;
-                    let foot = depth(age(r));
-                    let w = (foot - depth(age(d))) / (foot - depth(0.0));
+                    let foot = gdh1_depth(age(r));
+                    let w = (foot - gdh1_depth(age(d))) / (foot - gdh1_depth(0.0));
                     let want = w * w * (1.0 + FOOT) / (w + FOOT);
                     assert!((height - want).abs() < 1e-4, "{k} {i}: {height} {want}");
                     assert!(new <= last, "{k} {i}");
@@ -2664,10 +2655,10 @@ mod tests {
             }
         }
         // The depth of Stein and Stein, in meters.
-        assert_eq!(depth(0.0), 2600.0);
-        assert!((depth(4.0) - 3330.0).abs() < 1e-9);
-        assert!((depth(19.999) - depth(20.0)).abs() < 10.0);
-        assert!((depth(100.0) - 5497.6).abs() < 0.1);
+        assert_eq!(gdh1_depth(0.0), 2600.0);
+        assert!((gdh1_depth(4.0) - 3330.0).abs() < 1e-9);
+        assert!((gdh1_depth(19.999) - gdh1_depth(20.0)).abs() < 10.0);
+        assert!((gdh1_depth(100.0) - 5497.6).abs() < 0.1);
     }
 
     #[test]
@@ -3398,10 +3389,10 @@ mod tests {
         let (r, v) = (plan.ridge.radius, plan.ridge.spread);
         let round = CREST_ROUND * plan.step() / v;
         let age = |d: f64| (d / v).hypot(round) - round;
-        let foot = depth(age(r));
+        let foot = gdh1_depth(age(r));
         // The height of the rise at `d` from the crest.
         let rise = |d: f64| {
-            let w = ((foot - depth(age(d))) / (foot - depth(0.0))).clamp(0.0, 1.0);
+            let w = ((foot - gdh1_depth(age(d))) / (foot - gdh1_depth(0.0))).clamp(0.0, 1.0);
             LIFT * w * w * (1.0 + FOOT) / (w + FOOT)
         };
         let mut count = 0;
