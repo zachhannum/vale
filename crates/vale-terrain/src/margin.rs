@@ -27,6 +27,8 @@ use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, falloff, noise3
 use crate::line::smoothstep;
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
 
+mod canyons;
+
 /// The limits of the depth of the shelf break, in meters.
 pub const SHELF_DEPTH_RANGE: (f64, f64) = (-1000.0, -20.0);
 
@@ -87,23 +89,10 @@ const SHELF_REACH_KM: f64 = 200.0;
 /// window, in kilometers.
 const FAR_KM: f64 = 1.0e6;
 
-/// The steps of the erosion of a margin stroke, and its rate for a brush
-/// radius of 16 cells, at an amount of 1.
-pub const MARGIN_ERODE_STEPS: usize = 8;
-pub const MARGIN_ERODE_RATE: f64 = 3.0;
-
-/// The part of the erosion that the shelf keeps. The part grows to 1 from
-/// half the depth of the shelf break to 1.5 times that depth.
-const SHELF_EROSION: f64 = 0.1;
-
 /// The largest number of cells along one side of the erosion window of a
 /// margin stroke. A gully is a few cells wide, so the cells must be small
 /// for narrow gullies.
 pub const MARGIN_CELLS: usize = 1024;
-
-/// The depth that each drop of the erosion loses on the rise, in meters,
-/// so the small channels go and the large ones stay.
-const RISE_LOSS_M: f64 = 150.0;
 
 /// The room around the stamps of a margin stroke in its erosion window, as
 /// a part of the width of the stamps.
@@ -1147,13 +1136,6 @@ impl MarginPlan {
         }
     }
 
-    /// The place of a unit direction on the rise, from 0 at its top to 1 at
-    /// its foot, or `None` outside the field. Above the rise it is 0.
-    pub(crate) fn rise_part(&self, p: V3) -> Option<f64> {
-        let at = self.place(p)?;
-        Some(self.shape(at.d, at.s, self.slope(at.edge)).t)
-    }
-
     /// The level of the margin at a place, in meters, with the level `old`
     /// from before the stroke, in meters, with the fine relief if `relief`.
     pub(crate) fn profile(&self, at: Place, old: f64, relief: bool) -> f64 {
@@ -1244,16 +1226,13 @@ pub fn margin_window(plans: &[MarginPlan], face_size: usize) -> Window {
     window
 }
 
-/// Erodes the margin of a stroke with stream power, as the Erode brush
-/// erodes land. `erosion` holds the cells of the ground from before the
-/// stroke. The cells under the stamps of the plans get the margin with no
-/// fine relief, stamp by stamp, and then `MARGIN_ERODE_STEPS` steps erode
-/// it. Thus the drops hold the channels, and the fine relief of the stamps
-/// stays. The flow runs down
-/// the slope to the deep floor, so the gullies and the canyons join as the
-/// valleys of a river do. The land does not change, and it gives the flow
-/// no water. `amount` from 0 to 1 sets the rate. Returns the drops: the
-/// margin of the cells minus the eroded margin.
+/// Cuts the canyons of the margin of a stroke, as `canyons::carve` gives
+/// them. `erosion` holds the cells of the ground from before the stroke.
+/// The cells under the stamps of the plans get the margin with no fine
+/// relief, stamp by stamp, and then the canyons cut it. Thus the drops hold
+/// the canyons, and the fine relief of the stamps stays. The land does not
+/// change. `amount` from 0 to 1 sets the rate. Returns the drops: the
+/// margin of the cells minus the cut margin.
 pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) -> ErodeStep {
     let brushes: Vec<ErodeBrush> = plans
         .iter()
@@ -1267,47 +1246,58 @@ pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) ->
     let Some(first) = plans.first() else {
         return erosion.drops_since(erosion.levels(), &brushes);
     };
-    let limits = first.spec.limits;
-    let top = to_level(TOP_M).floor() as u16;
-    erosion.set_limits(Limits {
-        ceiling: limits.ceiling.min(top),
-        ..limits
-    });
-    // Only the sea floor feeds the flow. The water of the land would cut
-    // too deep a canyon at the mouth of each of its basins.
-    erosion.set_dry_above(Some(to_level(0.0).ceil() as u16));
     let start = erosion.levels().to_vec();
-    // The place of each cell on the rise, from 0 at its top to 1 at its
-    // foot.
-    let on_rise: Vec<Cell<f64>> = start.iter().map(|_| Cell::new(0.0)).collect();
+    let dirs: Vec<Cell<Option<V3>>> = start.iter().map(|_| Cell::new(None)).collect();
     for (plan, brush) in plans.iter().zip(&brushes) {
         erosion.lift_cells(std::slice::from_ref(brush), |i, dir, now| {
-            if let Some(t) = plan.rise_part(dir) {
-                on_rise[i].set(t);
-            }
+            dirs[i].set(Some(dir));
             Some(plan.level_with(start[i], now, dir, false))
         });
     }
+    let dirs: Vec<Option<V3>> = dirs.into_iter().map(Cell::into_inner).collect();
+    let weights: Vec<f32> = dirs
+        .iter()
+        .map(|dir| {
+            let Some(dir) = *dir else {
+                return 0.0;
+            };
+            brushes
+                .iter()
+                .map(|b| {
+                    let chord = length(add(dir, scale(b.center, -1.0)));
+                    let k = 2.0 * (0.5 * chord).min(1.0).asin() / b.radius;
+                    if k >= 1.0 {
+                        0.0
+                    } else {
+                        falloff(k, b.hardness) * b.flow
+                    }
+                })
+                .fold(0.0, f64::max) as f32
+        })
+        .collect();
     let margin = erosion.levels().to_vec();
-    let radius = plans.iter().map(|plan| plan.radius).fold(0.0, f64::max);
-    let rate = amount * MARGIN_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
-    erosion.steps(&brushes, rate, MARGIN_ERODE_STEPS);
-    // The shelf keeps a part of its drops, so the valleys of the rivers of
-    // the land across it are faint. On the rise, each drop loses a depth,
-    // so only the large channels stay.
-    let shelf = -first.spec.shelf_m;
-    let per_m = 65535.0 / (ELEV_MAX - ELEV_MIN);
+    let mut heights: Vec<f32> = margin
+        .iter()
+        .map(|&l| to_meters(f64::from(l)) as f32)
+        .collect();
+    let spec = first.spec;
+    let grid = canyons::Grid {
+        side: erosion.side(),
+        cell_km: erosion.cell_angle() * spec.world_km,
+        dirs: &dirs,
+        weights: &weights,
+        world_km: spec.world_km,
+        seed: spec.seed,
+        shelf_m: spec.shelf_m,
+        branching: erosion.branching(),
+    };
+    canyons::carve(&grid, &mut heights, amount);
     let kept: Vec<u16> = margin
         .iter()
-        .zip(erosion.levels())
-        .zip(&on_rise)
-        .map(|((&before, &now), rise)| {
-            let part = SHELF_EROSION
-                + (1.0 - SHELF_EROSION)
-                    * smoothstep(0.5 * shelf, 1.5 * shelf, -to_meters(f64::from(before)));
-            let lose = RISE_LOSS_M * per_m * smoothstep(0.0, 0.3, rise.get());
-            let drop = (f64::from(before.saturating_sub(now)) - lose).max(0.0);
-            before - (drop * part).round() as u16
+        .zip(&heights)
+        .map(|(&before, &h)| {
+            let new = to_level(f64::from(h)).round().clamp(0.0, f64::from(before));
+            spec.limits.apply(f64::from(before), new) as u16
         })
         .collect();
     erosion.drops_since_to(&margin, &kept, &brushes)

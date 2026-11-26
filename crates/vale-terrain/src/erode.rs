@@ -1084,6 +1084,16 @@ impl Erosion {
         }
     }
 
+    /// The branching of `set_branching`, from 0 to 1.
+    pub(crate) fn branching(&self) -> f64 {
+        self.route_amount / (2.0 * ROUTE_NOISE)
+    }
+
+    /// The number of cells along one side of a face or of the window.
+    pub(crate) fn side(&self) -> usize {
+        self.side
+    }
+
     /// The levels of the cells.
     pub(crate) fn levels(&self) -> &[u16] {
         &self.levels

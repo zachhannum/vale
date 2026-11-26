@@ -1083,5 +1083,8 @@ fn manual_margin_close_up() {
     let out = root.join("target/realism/margin-close.f32");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     let bytes: Vec<u8> = patch.heights.iter().flat_map(|h| h.to_le_bytes()).collect();
-    std::fs::write(out, bytes).unwrap();
+    std::fs::write(&out, bytes).unwrap();
+    let mut image = image::RgbImage::new(512, 512);
+    draw(&mut image, &patch.heights, 512, 600.0, [0, 0]);
+    image.save(out.with_extension("png")).unwrap();
 }

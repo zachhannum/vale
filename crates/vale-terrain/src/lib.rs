@@ -71,8 +71,8 @@ pub use heightmap::{
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 pub use margin::{
-    FIELD_CELLS, FIELD_FLOATS, MARGIN_ERODE_RATE, MARGIN_ERODE_STEPS, Margin, MarginField,
-    MarginInputs, MarginPlan, MarginStroke, SHELF_DEPTH_RANGE, erode_margin, margin_window,
+    FIELD_CELLS, FIELD_FLOATS, Margin, MarginField, MarginInputs, MarginPlan, MarginStroke,
+    SHELF_DEPTH_RANGE, erode_margin, margin_window,
 };
 pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]
