@@ -1080,6 +1080,14 @@ const BEND_ALONG = 0.08;
 const BEND_ACROSS = 0.08;
 const CURVE = 0.3;
 const SALT_TURN = 0x6c8e9cf5u;
+const SALT_BUMP = 0x1b873593u;
+const SALT_SEAM = 0x4cf5ad43u;
+const BUMP_KM = 8.0;
+const BUMP_ASPECT = 1.5;
+const BUMP_GAIN = 0.9;
+const BUMPS = 3.0;
+const SEAM_SIZE_KM = 24.0;
+const SEAM_KM = 4.0;
 const SALT_MIGRATE = 0x3d4fa1c7u;
 const SALT_TRACE_WARP = 0x8e2b4d61u;
 const SALT_MAGMA = 0x9b05688cu;
@@ -1096,8 +1104,8 @@ const JITTER = 0.3;
 const SECOND_ORDER_KM = 130.0;
 const GROUP_SHIFT = 0.8;
 const TAN_TURN = 0.14;
-const MIGRATE = 0.1;
-const MIGRATE_MYR = 4.0;
+const MIGRATE = 0.35;
+const MIGRATE_MYR = 3.0;
 const WANDER_KM = 3.0;
 const WANDER_MYR = 0.8;
 const TRACE_WARP_KM = 16.0;
@@ -1140,7 +1148,9 @@ const SWELL = 1.4;
 const SAG = 0.4;
 const TROUGH_LEAST = 0.3;
 const TROUGH_LEAST_KM = 10.0;
-const OFFSET_HALF_KM = 3.0;
+const OFFSET_HALF_KM = 6.0;
+const OFFSET_RATE = vec2<f32>(40.0, 90.0);
+const OFFSET_FAST = 0.15;
 const TROUGH_FILL = 0.15;
 const TROUGH_MYR = 20.0;
 const TRANSVERSE_SHARE = 0.5;
@@ -1507,6 +1517,7 @@ struct RidgeNoise {
     bend: vec3<f32>,
     slow: vec3<f32>,
     area: f32,
+    seam: f32,
 }
 
 // The steps are those of `RidgePlan::noise`.
@@ -1514,7 +1525,15 @@ fn ridge_noise(p: vec3<f32>) -> RidgeNoise {
     let r = ridge.radius;
     let wide = noise3(p / (0.9 * r), ridge.seed ^ 0x51ed270bu);
     let fine = noise3(p / (0.37 * r), ridge.seed ^ 0x2f6b8a35u);
-    return RidgeNoise(wide + fine * 0.5, noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u), patch_noise(p));
+    let km = ridge.world_km / ridge.fit;
+    let seam = noise3(p * (km / SEAM_SIZE_KM), ridge.seed ^ SALT_SEAM).y
+        + 0.5 * noise3(p * (km / (0.5 * SEAM_SIZE_KM)), ridge.seed ^ SALT_SEAM).y;
+    return RidgeNoise(
+        wide + fine * 0.5,
+        noise3(p / (1.7 * r), ridge.seed ^ 0x7a3c91d7u),
+        patch_noise(p),
+        seam,
+    );
 }
 
 // `patch_noise` in `ridge.rs`.
@@ -1781,7 +1800,11 @@ fn ridge_turn(tau: f32) -> vec2<f32> {
 fn ridge_migration(j: i32, tau: f32) -> vec2<f32> {
     let seed = ridge.seed ^ SALT_MIGRATE;
     let wander = WANDER_KM / ridge.world_km;
-    var migrate = MIGRATE * ridge.segment;
+    let room = min(
+        ridge_boundary(j, 0) - ridge_boundary(j - 1, 0),
+        ridge_boundary(j + 1, 0) - ridge_boundary(j, 0),
+    );
+    var migrate = MIGRATE * room;
     if ridge_transform(j) {
         migrate = 0.0;
     }
@@ -1855,7 +1878,9 @@ fn ridge_fracture(j: i32, offset_km: f32, is_transform: bool, age: f32) -> vec4<
     let seed = ridge.seed ^ SALT_FRACTURE;
     let size = offset_km / TROUGH_OFFSET_KM;
     let strength = ridge_mix(STRENGTH.x, STRENGTH.y, unit(ridge_hash(j, 0u, 0u, seed)));
-    var kind = OFFSET_TROUGH;
+    let full_rate = 2.0 * ridge.spread * ridge.world_km;
+    var kind = OFFSET_TROUGH
+        * ridge_mix(1.0, OFFSET_FAST, smooth_between(OFFSET_RATE.x, OFFSET_RATE.y, full_rate));
     if is_transform {
         kind = 1.0;
     }
@@ -2153,6 +2178,8 @@ struct RidgeTexel {
     sag: f32,
     // The patch noise of `RidgeNoise`.
     area: f32,
+    // The fractal relief of `RidgePlan::level_in`.
+    bumps: f32,
 }
 
 // The age of the sea floor at a distance from the crest, as `age` in
@@ -2178,7 +2205,6 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let len = max(upper - lower, SHORTEST_PART * ridge.segment);
     let place = clamp((u - lower) / len, 0.0, 1.0);
     let ends = 0.5 * (1.0 + cos_turn(place));
-    let side = select(0u, 1u, off < 0.0);
     let tau = from_crest / v;
     let end = select(k + 1, k, place < 0.5);
     let middle = 0.5 * (ridge_shift(end - 1) + ridge_shift(end));
@@ -2240,15 +2266,16 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let rate = 1.0 + MAGMA_BAND * band.y;
     let grown = pow_precise(rate, -THROW_SPACING);
     let toward = select(1.0, -1.0, (next_shift - crest) * off > 0.0);
+    let hill_side = select(0u, 1u, off < 0.0);
     let hill_across = from_crest * km;
     let line_along = f32(at.cell) * ridge.segment_km + u * km;
-    let hills = grow * grown * ridge_hills(0, side, line_along, hill_across, area);
+    let hills = grow * grown * ridge_hills(0, hill_side, line_along, hill_across, area);
     let held = ridge.hill_mean * local * grow * grown;
     let fill = max(2.0 * SEDIMENT_RATE * tau - HILL_LOW * held, 0.0);
-    let texture = ridge_texture(0, side, line_along, hill_across, area.x);
+    let texture = ridge_texture(0, hill_side, line_along, hill_across, area.x);
     let buried = ridge.hill_height / max(ridge.hill_height + fill, 1e-9);
     let blocks = pond(hills, fill) - (pond(held, fill) - held)
-        + grow * grown * texture * buried
+        + grow * grown * (texture + at.bumps * area.x) * buried
         + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x);
     let valley = ridge.valley * (1.0 + VALLEY_ALONG * (2.0 * ends - 1.0));
     let down = DOWN * valley * (1.0 - VALLEY_END * fade_out) * bump(from_axis / DOWN_KM);
@@ -2293,7 +2320,8 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     // `RidgePlan::bent`.
     let far_line = from_line / (RIDGE_REACH * r);
     let curve = 0.5 * (noise.slow.y - noise.slow.z);
-    let bent = at.rest + r * (BEND_ALONG * noise.bend.x + CURVE * curve * far_line * far_line);
+    let bent = at.rest + r * (BEND_ALONG * noise.bend.x + CURVE * curve * far_line * far_line)
+        + SEAM_KM * ridge.fit / km * noise.seam;
     let cells = floor(bent / cell_len + 0.5);
     let cell = i32(at.cell + cells);
     let u = bent - cells * cell_len;
@@ -2302,7 +2330,23 @@ fn ridge_level(at: RidgePoint, noise: RidgeNoise, old: f32) -> f32 {
     let low = min(lift / (HILL_TOP * ridge.hill_height / ridge.lift * ridge.level + 1.0), 1.0);
     let fade = 1.0 - smooth_between(HILL_FADE, RIDGE_REACH, far);
     let sag = SAG * clamp(noise.slow.x, 0.0, 1.0);
-    let texel = RidgeTexel(u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area);
+    let texel_km = 2.0 * ridge.half_texel;
+    let line_km = f32(cell) * ridge.segment_km + u * km;
+    var bumps = 0.0;
+    var total = 0.0;
+    var weight = 1.0;
+    for (var o = 0u; o < 4u; o++) {
+        let size = BUMP_KM * ridge.fit * exp2(-f32(o));
+        let place = vec3<f32>(line_km / (BUMP_ASPECT * size), across * km / size, 0.5);
+        let value = noise3(place, ridge.seed ^ (SALT_BUMP + o)).x;
+        bumps += weight * smooth_between(2.0 * texel_km, 4.0 * texel_km, size) * value;
+        total += weight;
+        weight *= BUMP_GAIN;
+    }
+    bumps = BUMPS * ridge.hill_height * bumps / total;
+    let texel = RidgeTexel(
+        u, cell, across, at.past2, lift, low, lens, taper, fade, noise.bend.z, sag, noise.area, bumps,
+    );
     let blend_width = ridge.blend;
     // With guides, the turn is that of the guides at each boundary, and the
     // search has one more boundary on each side.
