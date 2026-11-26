@@ -2885,6 +2885,134 @@ fn the_margin_mode_fits_on_the_smallest_ipad() {
 }
 
 #[test]
+fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush plate speed value").is_none());
+    // The last row of the list is below its end.
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    tap(&mut h, "Hotspot track");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Hotspot)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (
+            brush.hotspot_speed_mm,
+            brush.hotspot_height_m,
+            brush.hotspot_reefs
+        ),
+        (90.0, 9000.0, false)
+    );
+    // The strip has Size and Height.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip height").is_some());
+    let label = vale_app::ui::pad::slider_label(Mode::Hotspot, vale_app::strip::Slider::Strength);
+    assert_eq!(label, "Height");
+    // The panel has the size, the flow, the height, the plate speed, the
+    // age, the reefs, the seed, the erosion, and the branching, and no
+    // hardness, no lock, no wind, and no Apply before the stroke.
+    let hint = vale_app::ui::panels::HOTSPOT_HINT;
+    assert!(h.query_by_label(hint).is_some());
+    assert!(h.query_by_label("11 Myr for each 1,000 km").is_some());
+    for row in [
+        "Brush size",
+        "Brush flow",
+        "Brush strength",
+        "Brush plate speed value",
+        "Brush reefs",
+        "Brush seed value",
+        "Brush erosion",
+        "Brush branching",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in [
+        "Brush hardness",
+        "Lock size",
+        "Brush wind",
+        "Brush rain shadow",
+        "Apply",
+        "Discard",
+    ] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush plate speed", "1", 10.0),
+        ("Brush plate speed", "900", 200.0),
+        ("Brush plate speed", "50", 50.0),
+        ("Brush strength", "10", 500.0),
+        ("Brush strength", "90000", 12000.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush plate speed" => brush.hotspot_speed_mm,
+            _ => brush.hotspot_height_m,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    step(&mut h, "Brush plate speed", true);
+    assert_eq!(h.state().globe.brush.hotspot_speed_mm, 51.0);
+    // The height does not change the strength of the other modes.
+    let strength = vale_app::globe::brush::BrushSettings::default().strength_m;
+    assert_eq!(h.state().globe.brush.strength_m, strength);
+    // The age follows the plate speed.
+    h.run_steps(2);
+    assert!(h.query_by_label("20 Myr for each 1,000 km").is_some());
+    tap(&mut h, "Brush reefs");
+    assert!(h.state().globe.brush.hotspot_reefs);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Hotspot track mode");
+    screenshot::save(&mut h, "pad-hotspot");
+}
+
+#[test]
+fn the_hotspot_track_mode_fits_on_the_smallest_ipad() {
+    for board in [(1133.0, 744.0), (1194.0, 834.0)] {
+        let mut h = pad(board);
+        open_group(&mut h, ModeGroup::Terrain);
+        let menu = h.state().pad.flyouts.rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(screen.contains_rect(menu), "{menu:?}");
+        // The flyout scrolls to its last row.
+        let from = menu.center();
+        drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+        let row = control(&h, "Hotspot track").unwrap();
+        assert!(menu.contains_rect(row), "{row:?}");
+        tap(&mut h, "Hotspot track");
+        assert_eq!(h.state().globe.brush.mode, Mode::Hotspot);
+        tap(&mut h, "Brush settings");
+        let (_, panel) = h.state().pad.panels[0];
+        assert!(screen.contains_rect(panel), "{panel:?}");
+        for row in [
+            "Brush strength",
+            "Brush plate speed value",
+            "Brush reefs",
+            "Brush seed value",
+            "Brush erosion",
+            "Brush branching",
+        ] {
+            let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+            assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+        }
+        let name = format!("{} high with the Hotspot track panel", board.1);
+        check_controls(&h, &name);
+        screenshot::save(&mut h, &format!("pad-hotspot-{}", board.1));
+    }
+}
+
+#[test]
 fn the_abyssal_hills_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

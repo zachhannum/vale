@@ -18,10 +18,11 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M,
-    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
+    MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -232,7 +233,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 14] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 15] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -251,6 +252,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 14] = [
         Mode::AbyssalHills,
     ),
     (panels::MARGIN, Icon::Margin, Mode::Margin),
+    (panels::HOTSPOT, Icon::Hotspot, Mode::Hotspot),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3181,6 +3183,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::Margin {
         hint_rows(ui, panels::MARGIN_HINT);
     }
+    if mode == Mode::Hotspot {
+        hint_rows(ui, panels::hotspot_hint(&state.globe));
+    }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
@@ -3239,6 +3244,20 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             row(ui, controls, state, Slider::Scale);
             let fit = &mut state.globe.brush.abyssal_fit;
             widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", fit);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        Mode::Hotspot => {
+            row(ui, controls, state, Slider::Strength);
+            let brush = &mut state.globe.brush;
+            let number = Number::new(HOTSPOT_SPEED_NAME, brush.hotspot_speed_mm, HOTSPOT_SPEED)
+                .label("Plate speed")
+                .step(1.0)
+                .default(BrushSettings::default().hotspot_speed_mm)
+                .unit("mm/yr");
+            apply(number.stepper(ui, controls), &mut brush.hotspot_speed_mm);
+            raster::note(ui, &panels::hotspot_age_text(brush));
+            let reefs = &mut brush.hotspot_reefs;
+            widgets::switch_row(ui, controls, HOTSPOT_REEFS, "Reefs", reefs);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Margin => {
@@ -3312,11 +3331,14 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     }
     if matches!(
         mode,
-        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin | Mode::Hotspot
     ) {
         row(ui, controls, state, Slider::Erosion);
     }
-    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
+    if matches!(
+        mode,
+        Mode::Erode | Mode::Uplift | Mode::Margin | Mode::Hotspot
+    ) {
         row(ui, controls, state, Slider::Branching);
     }
     if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {
@@ -3498,6 +3520,12 @@ pub(super) fn brush_slider(
             Slider::Strength if mode == Mode::Warp => {
                 let number = km(brush.warp_km, WARP_KM).log().default(defaults.warp_km);
                 set(number, &mut brush.warp_km);
+            }
+            Slider::Strength if mode == Mode::Hotspot => {
+                let number = meters(brush.hotspot_height_m, HOTSPOT_HEIGHT)
+                    .log()
+                    .default(defaults.hotspot_height_m);
+                set(number, &mut brush.hotspot_height_m);
             }
             Slider::Strength if mode == Mode::Seamounts => {
                 let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
@@ -3744,6 +3772,10 @@ fn hint_rows(ui: &mut egui::Ui, hint: &str) {
 
 /// The name of the shelf depth stepper of the margin mode.
 pub const MARGIN_SHELF: &str = "Brush shelf depth";
+/// The name of the plate speed stepper of the hotspot track mode.
+pub const HOTSPOT_SPEED_NAME: &str = "Brush plate speed";
+/// The name of the reefs switch of the hotspot track mode.
+pub const HOTSPOT_REEFS: &str = "Brush reefs";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.
