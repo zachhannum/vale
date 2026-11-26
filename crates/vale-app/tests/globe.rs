@@ -5105,7 +5105,7 @@ fn a_margin_stroke_erodes_its_slope_after_the_last_stamp() {
         .zip(&margin)
         .map(|(a, m)| m.saturating_sub(*a))
         .max();
-    assert!(lowered > 500, "{lowered}");
+    assert!(lowered > 100, "{lowered}");
     assert!(deep.unwrap() > 10, "{deep:?}");
     let raised = app
         .iter()
