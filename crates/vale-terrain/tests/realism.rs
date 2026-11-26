@@ -431,11 +431,57 @@ const RIDGE_LIMITS: Within = Within {
     histogram: 0.4,
 };
 
+/// The RMS of the relief shorter than about 20 km of a patch of `n` by `n`
+/// heights with cells of `cell_m`, in the columns from `km.0` to `km.1`
+/// kilometers east or west of the middle.
+fn short_relief(heights: &[f32], n: usize, cell_m: f64, km: (f64, f64)) -> f64 {
+    let box_cells = (20_000.0 / cell_m) as usize | 1;
+    let half = box_cells / 2;
+    let mut sums = vec![0.0; (n + 1) * (n + 1)];
+    for y in 0..n {
+        for x in 0..n {
+            sums[(y + 1) * (n + 1) + x + 1] = f64::from(heights[y * n + x])
+                + sums[y * (n + 1) + x + 1]
+                + sums[(y + 1) * (n + 1) + x]
+                - sums[y * (n + 1) + x];
+        }
+    }
+    let (mut sum, mut count) = (0.0, 0);
+    for y in half..n - half {
+        for x in half..n - half {
+            let from_middle = (x as f64 - 0.5 * n as f64).abs() * cell_m / 1000.0;
+            if from_middle < km.0 || from_middle >= km.1 {
+                continue;
+            }
+            let (x0, y0, x1, y1) = (x - half, y - half, x + half + 1, y + half + 1);
+            let mean =
+                (sums[y1 * (n + 1) + x1] - sums[y0 * (n + 1) + x1] - sums[y1 * (n + 1) + x0]
+                    + sums[y0 * (n + 1) + x0])
+                    / (box_cells * box_cells) as f64;
+            let d = f64::from(heights[y * n + x]) - mean;
+            sum += d * d;
+            count += 1;
+        }
+    }
+    (sum / f64::from(count)).sqrt()
+}
+
 #[test]
 fn a_slow_ridge_is_near_the_mid_atlantic_ridge() {
     let reference = Reference::parse(ATLANTIC_RIDGE).unwrap();
-    let (report, _) = compare(&slow_ridge(), &reference, 0.0);
+    let painted = slow_ridge();
+    let (report, _) = compare(&painted, &reference, 0.0);
     assert_within(&report, &reference, &RIDGE_LIMITS);
+    // As on the real flank, the hills get lower away from the axis, so no
+    // area far out stands out.
+    let patch = painted.patch(&reference);
+    let relief = |km| short_relief(&patch.heights, patch.size, patch.cell_m, km);
+    let (near, far) = (relief((0.0, 150.0)), relief((350.0, 450.0)));
+    eprintln!("  short relief: {near:.0} m near the axis, {far:.0} m far from it");
+    assert!(
+        far < 0.85 * near,
+        "{near} m near the axis, {far} m far from it"
+    );
 }
 
 #[test]
@@ -473,6 +519,9 @@ fn save_side_by_side(name: &str, painted: &Painted, reference: &Reference, gebco
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
+    // The painted heights, as the reference patch is saved.
+    let bytes: Vec<u8> = ours.iter().flat_map(|h| h.to_le_bytes()).collect();
+    std::fs::write(out.with_extension("f32"), bytes).unwrap();
 }
 
 /// The test strokes of a slow ridge and a fast ridge beside their reference

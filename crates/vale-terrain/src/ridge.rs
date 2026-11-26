@@ -1147,7 +1147,7 @@ impl RidgePlan {
         let mean = f.hill_mean * f.level;
         // The patch of the floor sets the throw of the hills and the part of
         // the faults that show.
-        let patch = patch_of(noise.patch);
+        let patch = patch_of(RIDGE_PATCH * noise.patch);
         let local = patch[0] * patch[1];
         // Ground at the crest level gets no hills.
         // The test uses the throws at the real size, so the fit does not lower
@@ -1318,7 +1318,10 @@ impl RidgePlan {
             // The fine texture, which sediment buries.
             let texture = Self::texture(spec.seed, &f, 0, hill_side, at, patch[0]);
             let buried = f.hill_height / (f.hill_height + fill).max(1e-9);
-            let blocks = blocks + grow * grown * (texture + bumps * patch[0]) * buried;
+            // Sediment and mass wasting smooth the lumps of old floor (Goff
+            // and Arbic 2010).
+            let old = mix(1.0, BUMP_OLD, smoothstep(0.0, BUMP_MYR, tau));
+            let blocks = blocks + grow * grown * (texture + bumps * patch[0] * old) * buried;
             // More magma gives a thicker crust, so the bands of the magma
             // are also small, smooth bands of the depth.
             let blocks = blocks + grow * MAGMA_RELIEF * 0.5 * (1.0 + band);
@@ -2107,7 +2110,7 @@ const AVR_GAPS: f64 = 0.3;
 /// blocks up to twice its thickness, and fills `POND` of the depth of a
 /// low below that level, with a round edge of `SEDIMENT_SOFT` of the
 /// level. All are in kilometers of throw.
-const SEDIMENT_RATE: f64 = 0.005;
+const SEDIMENT_RATE: f64 = 0.012;
 const SEDIMENT_SOFT: f64 = 0.3;
 const POND: f64 = 0.3;
 const HILL_LOW: f64 = 1.0;
@@ -2280,19 +2283,29 @@ const THROW_CAP: f64 = 1.1;
 /// throw scale goes over `PATCH_THROW` and the part of the faults that show
 /// over `PATCH_DENSITY`. A fault fades out over `SHOW_SOFT` of that part.
 const PATCH_KM: f64 = 80.0;
+const PATCH_FINE: f64 = 0.43;
+const PATCH_EDGE: f64 = 0.6;
+const PATCH_THROW: [f64; 2] = [0.5, 1.3];
+const PATCH_DENSITY: [f64; 2] = [0.4, 0.85];
+const SHOW_SOFT: f64 = 0.15;
 
 /// The fractal relief has `BUMP_OCTAVES` octaves of noise from cells of
 /// `BUMP_KM` across the fabric and `BUMP_ASPECT` times that along it, times
 /// the fit factor. Each octave has `BUMP_GAIN` of the height of the octave
 /// before it, and the sum is `BUMPS` of the height of a hill.
 const BUMP_OCTAVES: usize = 4;
-const BUMP_KM: f64 = 8.0;
+const BUMP_KM: f64 = 6.0;
 const BUMP_ASPECT: f64 = 1.5;
 const BUMP_GAIN: f64 = 0.9;
 const BUMPS: f64 = 3.0;
 
 /// The part of the fractal relief that a fast ridge keeps.
 const BUMP_FAST: f64 = 0.25;
+
+/// The fractal relief fades to `BUMP_OLD` of its height over `BUMP_MYR`
+/// million years of age.
+const BUMP_OLD: f64 = 0.4;
+const BUMP_MYR: f64 = 25.0;
 
 /// The cells of the noise of the ragged seams, in kilometers, times the fit
 /// factor.
@@ -2301,11 +2314,11 @@ const SEAM_SIZE_KM: f64 = 24.0;
 /// The largest move of a texel along the line by the ragged seams, in
 /// kilometers, times the fit factor.
 const SEAM_KM: f64 = 4.0;
-const PATCH_FINE: f64 = 0.43;
-const PATCH_EDGE: f64 = 0.6;
-const PATCH_THROW: [f64; 2] = [0.5, 1.3];
-const PATCH_DENSITY: [f64; 2] = [0.4, 0.85];
-const SHOW_SOFT: f64 = 0.15;
+
+/// On a ridge, the age and the segments give the floor its order, so the
+/// patches have `RIDGE_PATCH` of the contrast that they have under the
+/// Abyssal hills mode, and no area far from the axis stands out.
+const RIDGE_PATCH: f64 = 0.35;
 
 /// The warp of the faults: its feature size along and across the fabric,
 /// and its largest move across the fabric, in kilometers.

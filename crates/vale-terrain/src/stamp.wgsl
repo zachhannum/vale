@@ -1082,11 +1082,13 @@ const CURVE = 0.3;
 const SALT_TURN = 0x6c8e9cf5u;
 const SALT_BUMP = 0x1b873593u;
 const SALT_SEAM = 0x4cf5ad43u;
-const BUMP_KM = 8.0;
+const BUMP_KM = 6.0;
 const BUMP_ASPECT = 1.5;
 const BUMP_GAIN = 0.9;
 const BUMPS = 3.0;
 const BUMP_FAST = 0.25;
+const BUMP_OLD = 0.4;
+const BUMP_MYR = 25.0;
 const SEAM_SIZE_KM = 24.0;
 const SEAM_KM = 4.0;
 const SALT_MIGRATE = 0x3d4fa1c7u;
@@ -1188,7 +1190,8 @@ const AVR_KM = 2.0;
 const AVR_END = 0.12;
 const AVR_PIECE_KM = 18.0;
 const AVR_GAPS = 0.3;
-const SEDIMENT_RATE = 0.005;
+const SEDIMENT_RATE = 0.012;
+const RIDGE_PATCH = 0.35;
 const SEDIMENT_SOFT = 0.3;
 const POND = 0.3;
 const HILL_LOW = 1.0;
@@ -2239,7 +2242,7 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let wall = ridge_mix(WALL_WIDTH.x, WALL_WIDTH.y, ends);
     let grow_end = floor_half + GROW * ridge.spacing + ridge.texel * km;
     let grow = smooth_between(0.5 * floor_half, grow_end, min(from_axis, from_crest * km));
-    let area = patch_of(at.area);
+    let area = patch_of(RIDGE_PATCH * at.area);
     let local = area.x * area.y;
     let flat_part = grow * (ridge.mean * local + MAGMA_MEAN * MAGMA_RELIEF * level);
     let near_axis = 1.0
@@ -2275,7 +2278,7 @@ fn ridge_crest_segment(at: RidgeTexel, k: i32, lower: f32, upper: f32) -> vec3<f
     let texture = ridge_texture(0, hill_side, line_along, hill_across, area.x);
     let buried = ridge.hill_height / max(ridge.hill_height + fill, 1e-9);
     let blocks = pond(hills, fill) - (pond(held, fill) - held)
-        + grow * grown * (texture + at.bumps * area.x) * buried
+        + grow * grown * (texture + at.bumps * area.x * ridge_mix(1.0, BUMP_OLD, smooth_between(0.0, BUMP_MYR, tau))) * buried
         + grow * MAGMA_RELIEF * 0.5 * (1.0 + band.x);
     let valley = ridge.valley * (1.0 + VALLEY_ALONG * (2.0 * ends - 1.0));
     let down = DOWN * valley * (1.0 - VALLEY_END * fade_out) * bump(from_axis / DOWN_KM);
