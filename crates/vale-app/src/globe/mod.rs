@@ -14,9 +14,9 @@ use vale_store::{
 };
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
-    FACES, Heightmap, LinePlan, MarginStroke, Mode, Pyramid, Rain, RangeLine, Ridge, RidgeLine,
-    SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level, meters_to_level,
-    reduced_cap, reduced_face_size, smoothing_level,
+    FACES, Heightmap, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain, RangeLine, Ridge,
+    RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, max_level,
+    meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -525,12 +525,34 @@ impl SeaStroke {
                     (!plan.is_empty()).then(|| SeaOp::Abyssal(Box::new(plan)))
                 }
                 SeaBrush::Margin(stroke) => {
-                    let plan = stroke.stamp(map, center, radius, hardness, flow);
-                    (!plan.is_empty()).then(|| SeaOp::Margin(Box::new(plan)))
+                    // The field of a margin builds on a worker thread, so
+                    // the stamp can come back later from `poll`.
+                    let plans = stroke.stamp_later(map, center, radius, hardness, flow);
+                    self.push_margin(plans, time);
+                    None
                 }
             };
             self.plans.extend(plan.map(|plan| (plan, time)));
         }
+    }
+
+    /// Adds the plans of the margin stamps whose fields are ready.
+    fn poll(&mut self, time: Instant) {
+        if let SeaBrush::Margin(stroke) = &mut self.brush {
+            let plans = stroke.poll();
+            self.push_margin(plans, time);
+        }
+    }
+
+    fn push_margin(&mut self, plans: Vec<MarginPlan>, time: Instant) {
+        let plans = plans.into_iter().filter(|plan| !plan.is_empty());
+        self.plans
+            .extend(plans.map(|plan| (SeaOp::Margin(Box::new(plan)), time)));
+    }
+
+    /// Whether a stamp waits for its plan.
+    fn waiting(&self) -> bool {
+        matches!(&self.brush, SeaBrush::Margin(stroke) if stroke.is_waiting())
     }
 }
 
@@ -4374,6 +4396,7 @@ impl Globe {
             self.link.push(tag, Op::Stamp { plan, stroke, time });
         }
         if let Some(sea) = &mut active.sea {
+            sea.poll(now);
             let (mut passes, mut texels, mut count) = (0, 0, 0);
             while let Some((plan, _)) = sea.plans.front() {
                 let more = plan.rects().iter().flatten().count();
@@ -4420,7 +4443,11 @@ impl Globe {
         {
             return;
         }
-        if active.sea.as_ref().is_some_and(|s| !s.plans.is_empty()) {
+        if active
+            .sea
+            .as_ref()
+            .is_some_and(|s| !s.plans.is_empty() || s.waiting())
+        {
             return;
         }
         // The readback of a basin stroke follows its texels.
