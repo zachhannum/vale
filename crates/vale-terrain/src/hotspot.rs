@@ -67,8 +67,27 @@ const SINGLE_ACROSS: f64 = 0.08;
 
 /// The supply of the hotspot changes along the line with this size in mean
 /// distances, from this part of the most.
-const FLUX_SIZE: f64 = 20.0;
-const FLUX_LOW: f64 = 0.7;
+const FLUX_SIZE: f64 = 6.0;
+const FLUX_LOW: f64 = 0.35;
+
+/// The supply of the hotspot pulses, so the volcanoes form in groups of
+/// 1 to `GROUP_MOST`. Between two groups is a gap of 1 to 2 mean distances
+/// with no volcano. The volcanoes of a group have a common size, from
+/// `GROUP_LOW` of the most. The group over the hotspot has the most.
+const GROUP_MOST: f64 = 4.0;
+const GROUP_GAP: (f64, f64) = (1.0, 2.0);
+const GROUP_LOW: f64 = 0.7;
+
+/// The supply grows toward the end of the line: it is lower by this part at
+/// `OLDER_SIZE` mean distances from the end and past it.
+const OLDER: f64 = 0.35;
+const OLDER_SIZE: f64 = 8.0;
+
+/// The part of the volcanoes off the line, their distance from it in base
+/// radii of the largest volcano, and their height.
+const OFF_LINE: f64 = 0.1;
+const OFF_ACROSS: (f64, f64) = (0.6, 0.9);
+const OFF_HEIGHT: f64 = 0.5;
 
 /// A volcano over the hotspot has this part of its height. It grows to its
 /// full height at this age in millions of years.
@@ -84,7 +103,7 @@ const JOIN_M: f64 = 100.0;
 
 /// The summit of an island goes down by this many meters in each million
 /// years.
-const ISLAND_EROSION_M: f64 = 300.0;
+const ISLAND_EROSION_M: f64 = 150.0;
 
 /// The waves cut the top of a volcano flat at this depth in meters when it
 /// goes under the sea, with a rounding of `CAP_ROUND_M`.
@@ -112,6 +131,7 @@ const SALT_PLACE: u32 = 0x68_6f74;
 const SALT_DOUBLE: u32 = 0x64_626c;
 const SALT_FLUX: u32 = 0x66_6c78;
 const SALT_SHAPE: u32 = 0x73_6870;
+const SALT_GROUP: u32 = 0x67_7270;
 
 /// The settings of a hotspot track stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,36 +319,72 @@ impl HotspotLine {
         let mut sites: Vec<Site> = Vec::new();
         let mut s = 0.0;
         let mut k = 0u32;
+        // The group of the volcano, its size, and the volcanoes left in it.
+        let mut group = 0u32;
+        let mut group_size = 1.0;
+        let mut left = 0u32;
         while s <= length && k < 4096 {
+            if left == 0 {
+                let g = |i: u32| draw(hash(group, spec.seed, SALT_GROUP, 0), i);
+                left = 1 + (g(0) * GROUP_MOST) as u32;
+                // The group over the hotspot is the largest.
+                group_size = if group == 0 {
+                    1.0
+                } else {
+                    GROUP_LOW + (1.0 - GROUP_LOW) * g(1)
+                };
+                if group > 0 {
+                    s += spacing * (GROUP_GAP.0 + (GROUP_GAP.1 - GROUP_GAP.0) * g(2));
+                    if s > length {
+                        break;
+                    }
+                }
+                group += 1;
+            }
             let h = hash(k, spec.seed, SALT_PLACE, 0);
             let d = |i: u32| draw(h, i);
             let double = noise1(s / (DOUBLE_SIZE * spacing), SALT_DOUBLE, 0, spec.seed).0;
             let double = double > DOUBLE_ABOVE;
-            let across = if double {
-                let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
+            let off = d(3) < OFF_LINE;
+            let side = if k.is_multiple_of(2) { 1.0 } else { -1.0 };
+            let across = if off {
+                side * (OFF_ACROSS.0 + (OFF_ACROSS.1 - OFF_ACROSS.0) * d(4)) * largest
+            } else if double {
                 side * DOUBLE_ACROSS * largest
             } else {
                 (2.0 * d(0) - 1.0) * SINGLE_ACROSS * largest
             };
             let flux = noise1(s / (FLUX_SIZE * spacing), SALT_FLUX, 0, spec.seed).0;
             let flux = FLUX_LOW + (1.0 - FLUX_LOW) * (0.5 + 0.5 * flux);
+            let older = 1.0 - OLDER * (s / (OLDER_SIZE * spacing)).min(1.0);
             let flow = line.frame(length - s).2;
             let size = 0.45 + 0.55 * d(1).powf(0.6);
-            let part = if double { DOUBLE_HEIGHT } else { 1.0 };
+            let part = if off {
+                OFF_HEIGHT
+            } else if double {
+                DOUBLE_HEIGHT
+            } else {
+                1.0
+            };
             sites.push(Site {
                 s,
                 across,
-                raw: flow * size * flux * part,
+                raw: flow * size * flux * group_size * older * part,
                 flow,
             });
-            let part = if double { 0.5 } else { 1.0 };
-            s += spacing * (STEP.0 + (STEP.1 - STEP.0) * d(2)) * part;
+            left -= 1;
+            if !off {
+                let part = if double { 0.5 } else { 1.0 };
+                s += spacing * (STEP.0 + (STEP.1 - STEP.0) * d(2)) * part;
+            }
             k += 1;
         }
-        // The tallest volcano has the height of the setting times its flow.
-        let tallest = sites.iter().max_by(|a, b| a.raw.total_cmp(&b.raw));
+        // The tallest grown volcano has the height of the setting times its
+        // flow.
+        let grown = |t: &Site| t.raw * growth(t.s / speed);
+        let tallest = sites.iter().max_by(|a, b| grown(a).total_cmp(&grown(b)));
         let factor = match tallest {
-            Some(t) if t.raw > 0.0 => spec.height_m * t.flow / t.raw,
+            Some(t) if t.raw > 0.0 => spec.height_m * t.flow / grown(t),
             _ => 0.0,
         };
         for (k, site) in sites.iter().enumerate() {
@@ -866,14 +922,29 @@ mod tests {
             along.push((length - u) * KM);
             across.push(d * KM * side);
         }
-        // In a single line, the volcanoes are about half a base radius apart.
+        // In a group of a single line, the volcanoes are about half a base
+        // radius apart. Between two groups is a longer gap.
+        let spacing = SPACING * largest;
         let singles: Vec<f64> = (1..along.len())
             .filter(|&i| across[i].abs() < 0.1 * largest && across[i - 1].abs() < 0.1 * largest)
             .map(|i| along[i] - along[i - 1])
             .collect();
-        let mean = singles.iter().sum::<f64>() / singles.len() as f64;
-        eprintln!("{} volcanoes, mean step {mean:.1} km", along.len());
-        assert!((mean - SPACING * largest).abs() < 0.2 * SPACING * largest);
+        let steps: Vec<f64> = singles
+            .iter()
+            .copied()
+            .filter(|&d| d <= STEP.1 * spacing)
+            .collect();
+        let mean = steps.iter().sum::<f64>() / steps.len() as f64;
+        let gaps = singles
+            .iter()
+            .filter(|&&d| d > (STEP.0 + GROUP_GAP.0) * spacing)
+            .count();
+        eprintln!(
+            "{} volcanoes, mean step {mean:.1} km, {gaps} gaps",
+            along.len()
+        );
+        assert!((mean - spacing).abs() < 0.2 * spacing);
+        assert!(gaps > 3);
         // Some parts have two lines, one on each side.
         let left = across.iter().filter(|&&a| a > 0.25 * largest).count();
         let right = across.iter().filter(|&&a| a < -0.25 * largest).count();
@@ -897,7 +968,8 @@ mod tests {
         let mut line = line(spec, N, -10.0, 10.0, 1.0);
         lay(&mut line, N, FLOOR_M);
         let chain = line.chain.clone().unwrap();
-        let tallest = chain.heights_m.iter().copied().fold(0.0, f64::max);
+        let grown = chain.heights_m.iter().zip(&chain.ages);
+        let tallest = grown.map(|(h, &age)| h * growth(age)).fold(0.0, f64::max);
         assert!((tallest - 6000.0).abs() < 1.0, "{tallest}");
         for (v, &h) in chain.volcanoes.iter().zip(&chain.heights_m) {
             assert!(v.shield() && v.cones() == 1 && v.rifts() >= 2);
@@ -1017,12 +1089,13 @@ mod tests {
                 }
             }
             drops.sort_by(f64::total_cmp);
-            drops.get(drops.len() * 9 / 10).copied().unwrap_or(0.0)
+            drops.get(drops.len() * 9 / 10).copied()
         };
         let islands = (0..chain.volcanoes.len()).filter(|&i| chain.ages[i] < chain.drowned[i]);
         let (mut young, mut old) = (Vec::new(), Vec::new());
         for i in islands {
-            let depth = valleys(i);
+            // An old island can be under the sea now.
+            let Some(depth) = valleys(i) else { continue };
             eprintln!("age {:.1}: valleys {depth:.0} m", chain.ages[i]);
             if chain.ages[i] < 1.0 {
                 young.push(depth);
@@ -1049,7 +1122,7 @@ mod tests {
             let (age, drowned) = (chain.ages[i], chain.drowned[i]);
             // A volcano that went under the sea soon after it grew has a
             // small top.
-            if age <= drowned || drowned < 8.0 {
+            if age <= drowned || drowned < 5.0 {
                 continue;
             }
             // The levels near the center, and the part of them within 40 m
@@ -1097,7 +1170,7 @@ mod tests {
                     let apart = angle(chain.volcanoes[i].center(), chain.volcanoes[j].center());
                     chain.ages[j] > chain.drowned[j] || apart > chain.volcanoes[i].base_radius()
                 });
-                since > 2.0 && since < REEF_MYR - REEF_FADE_MYR && chain.drowned[i] > 8.0 && alone
+                since > 2.0 && since < REEF_MYR - REEF_FADE_MYR && chain.drowned[i] > 5.0 && alone
             })
             .expect("an atoll");
         let v = &chain.volcanoes[i];
@@ -1132,10 +1205,12 @@ mod tests {
         }
         eprintln!("lagoon {lagoon:.0} m, rims {rims:.0?}");
         assert!((lagoon - LAGOON_M).abs() < 10.0, "{lagoon}");
-        assert!(
-            rims.iter().all(|&m| (m - REEF_TOP_M).abs() < 3.0),
-            "{rims:?}"
-        );
+        // A ray along the chain can end on the lagoon of a joined neighbor.
+        let at_rim = rims
+            .iter()
+            .filter(|&&m| (m - REEF_TOP_M).abs() < 3.0)
+            .count();
+        assert!(at_rim >= 14, "{rims:?}");
         // Without reefs, it is a guyot.
         let (bare, _) = slow(false, N);
         assert!(meters(bare.level_at(c)) < -WAVE_BASE_M + 1.0);

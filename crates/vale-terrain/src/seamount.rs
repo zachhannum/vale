@@ -939,7 +939,7 @@ pub(crate) fn shield_volcano(
     let mut height_m = height_m;
     // The volcano and two of its rift zones run along the axis, as the
     // Hawaiian volcanoes run along their chain.
-    let stretch = 1.15 + 0.25 * r(3);
+    let stretch = 1.0 + 0.15 * r(3);
     let rifts = 2 + (r(5) * 2.0) as usize;
     let rift_size = 0.25 + 0.25 * r(6);
     let rift_start = r(7) * TAU;
