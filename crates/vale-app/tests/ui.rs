@@ -3507,6 +3507,49 @@ fn the_desktop_ramp_menus_open_the_editor_window() {
 }
 
 #[test]
+fn the_desktop_ramp_menu_has_the_spacing_controls() {
+    use vale_app::ui::pad::raster::{BALANCE, COLOR_RAMPS, INTERVAL, ROUND_TO, SPACING};
+    let mut state = state_with(Document::sample());
+    state.workspace = Workspace::Globe;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, 1600.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    let height = h.state_mut().add_raster(RasterSpec::height("Height", 64));
+    h.state_mut()
+        .select(Some(LayerRef::Raster(height.unwrap())));
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(3);
+    let click = |h: &mut Harness<'static, AppState>, name: &str| {
+        h.get_by_label(name).click();
+        h.run_steps(4);
+    };
+    let ramp = h.state().ramps.list()[0].clone();
+    let menu = format!("{} ({}) ⏵", ramp.name, ramp.colors.len());
+    // A click in a menu closes it, and the menu keeps the choice.
+    let open = |h: &mut Harness<'static, AppState>| {
+        if h.query_by_label(&menu).is_none() {
+            click(h, COLOR_RAMPS);
+        }
+        click(h, &menu);
+    };
+    open(&mut h);
+    assert!(h.query_by_label(SPACING).is_none());
+    click(&mut h, "New");
+    open(&mut h);
+    assert!(h.query_by_label(SPACING).is_some());
+    assert!(h.query_by_label("Even").is_some());
+    assert!(h.query_by_label(ROUND_TO).is_none());
+    click(&mut h, "Area");
+    open(&mut h);
+    assert!(h.query_by_label(ROUND_TO).is_some());
+    assert!(h.query_by_label("Series").is_some());
+    // The choice "Interval" and the label of the field.
+    assert_eq!(h.query_all_by_label(INTERVAL).count(), 2);
+    assert!(h.query_by_label(BALANCE).is_some());
+}
+
+#[test]
 fn the_desktop_style_editor_shows_the_height_layer_of_flow_with_one_height_layer() {
     use vale_app::ui::pad::rules::{FLOW, HEIGHT_LAYER, LINE, height_layers};
     let mut h = globe_harness();

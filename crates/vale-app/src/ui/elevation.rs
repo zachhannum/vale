@@ -350,6 +350,10 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         return;
     };
     let split = layer.sea().is_some();
+    let unit = match state.doc.project.raster(id).map(|r| r.unit.as_str()) {
+        Some("") | None => String::new(),
+        Some(unit) => format!(" {unit}"),
+    };
     let mut chosen = None;
     let mut labeled = None;
     let mut renamed = None;
@@ -368,6 +372,17 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
         // So does the choice of new stops.
         let new_key = egui::Id::new(("ramp-new", id, index));
         let new_stops: bool = ui.data(|d| d.get_temp(new_key)).unwrap_or(false);
+        // So do the spacing, the rounding, and the interval.
+        let area_key = egui::Id::new(("ramp-area", id, index));
+        let area: bool = ui.data(|d| d.get_temp(area_key)).unwrap_or(false);
+        let round_key = egui::Id::new(("ramp-round", id, index));
+        let round: usize = ui.data(|d| d.get_temp(round_key)).unwrap_or(0);
+        let interval_key = egui::Id::new(("ramp-interval", id, index));
+        let balance_key = egui::Id::new(("ramp-balance", id, index));
+        let mut balance: f64 =
+            (ui.data(|d| d.get_temp(balance_key))).unwrap_or(pad::raster::START_BALANCE);
+        let mut interval: f64 = (ui.data(|d| d.get_temp(interval_key)))
+            .unwrap_or_else(|| vale_terrain::default_interval(layer.min(), layer.max()));
         ui.menu_button(format!("{} ({colors})", ramp.name), |ui| {
             if split {
                 ui.horizontal(|ui| {
@@ -409,8 +424,53 @@ fn ramp_menus(ui: &mut egui::Ui, state: &mut AppState, id: RasterId) {
                         ui.data_mut(|d| d.insert_temp(count_key, made));
                     }
                 });
+                ui.horizontal(|ui| {
+                    ui.label(pad::raster::SPACING);
+                    for (i, name) in pad::raster::SPACING_NAMES.iter().enumerate() {
+                        if ui.selectable_label(area == (i == 1), *name).clicked() {
+                            ui.data_mut(|d| d.insert_temp(area_key, i == 1));
+                        }
+                    }
+                });
+                let how = if area {
+                    ui.horizontal(|ui| {
+                        ui.label(pad::raster::ROUND_TO);
+                        for (i, name) in pad::raster::ROUND_NAMES.iter().enumerate() {
+                            if ui.selectable_label(round == i, *name).clicked() {
+                                ui.data_mut(|d| d.insert_temp(round_key, i));
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(pad::raster::INTERVAL);
+                        let span = layer.max() - layer.min();
+                        let drag = egui::DragValue::new(&mut interval)
+                            .range(span / 100_000.0..=span)
+                            .suffix(&unit);
+                        if ui.add(drag).changed() && interval > 0.0 {
+                            ui.data_mut(|d| d.insert_temp(interval_key, interval));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(pad::raster::BALANCE);
+                        ui.label(pad::raster::SPACING_NAMES[0]);
+                        let slider = egui::Slider::new(&mut balance, 0.0..=1.0).show_value(false);
+                        if ui.add(slider).changed() {
+                            ui.data_mut(|d| d.insert_temp(balance_key, balance));
+                        }
+                        ui.label(pad::raster::SPACING_NAMES[1]);
+                    });
+                    RampApply::Area {
+                        count: made,
+                        round: pad::raster::ROUNDS[round.min(1)],
+                        interval,
+                        balance,
+                    }
+                } else {
+                    RampApply::Make(made)
+                };
                 let fresh = format!("Make {made} {kind}bands");
-                choose(ui, &fresh, RampChoice::Apply(RampApply::Make(made)));
+                choose(ui, &fresh, RampChoice::Apply(how));
             } else if colors == bands {
                 choose(
                     ui,

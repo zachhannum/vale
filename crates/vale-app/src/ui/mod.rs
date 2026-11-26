@@ -242,13 +242,22 @@ pub enum Screen {
 }
 
 /// The way that a ramp colors the bands of a raster layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum RampApply {
     /// The bands keep their stops.
     Fit,
     /// The bands of the part are this number of new bands with even
     /// spacing.
     Make(usize),
+    /// The bands of the part are at most `count` new bands, with stops
+    /// placed by the area of each value and rounded as `round` says.
+    /// `balance` is the weight of the areas, from 0 to 1.
+    Area {
+        count: usize,
+        round: vale_terrain::Round,
+        interval: f64,
+        balance: f64,
+    },
 }
 
 /// The text of the last import or export of a heightmap.
@@ -4449,9 +4458,10 @@ impl AppState {
 
     /// Gives the bands of a part of a raster layer the colors of a ramp.
     /// With `RampApply::Fit`, the layer keeps its stops. Otherwise, the part
-    /// gets the number of bands of `RampApply::Make`. With `window`, only
-    /// the bands of the window in the part change, and new bands spread from its lowest value to its
-    /// highest value.
+    /// gets the number of bands of `RampApply::Make`, or the bands of
+    /// `RampApply::Area`. With `window`, only the bands of the window in the
+    /// part change, new bands spread from its lowest value to its highest
+    /// value, and `RampApply::Area` uses the areas inside the frame.
     pub fn apply_ramp(
         &mut self,
         id: RasterId,
@@ -4464,6 +4474,10 @@ impl AppState {
             return Err("Ramp not found.".to_owned());
         };
         let colors = ramp.colors();
+        let bins = match how {
+            RampApply::Area { .. } => self.area_bins(id, window),
+            _ => None,
+        };
         let Some(bands) = self.globe.bands_mut(id) else {
             return Err("The layer has no color stops.".to_owned());
         };
@@ -4490,11 +4504,56 @@ impl AppState {
                     .painted_count(&colors, part, range, (lo, hi), made)
                     .ok_or_else(|| format!("Range is too small for {made} bands."))?
             }
+            RampApply::Area {
+                count: made,
+                round,
+                interval,
+                balance,
+            } => {
+                if count - replaced + made > vale_terrain::MAX_BANDS {
+                    return Err(TOO_MANY_BANDS.to_owned());
+                }
+                let bins = bins.ok_or_else(|| "The layer has no areas.".to_owned())?;
+                let area = vale_terrain::Area {
+                    bins: &bins,
+                    round,
+                    interval,
+                    balance,
+                };
+                bands
+                    .painted_by_area(&colors, part, range, (lo, hi), made, &area)
+                    .ok_or_else(|| format!("Range is too small for {made} bands."))?
+            }
         };
         *bands = applied;
         self.globe.preview.selected = None;
         self.pad.style.forget_color();
         Ok(())
+    }
+
+    /// The area of each level bin of layer `id`, inside the shape of the
+    /// frame of `window` if it shows the layer. Waits for the areas. The
+    /// bins of a frame and of the world both divide the levels from 0 to
+    /// `u16::MAX`, so they divide the same values.
+    fn area_bins(
+        &mut self,
+        id: RasterId,
+        window: Option<&pad::stops::FrameWindow>,
+    ) -> Option<Vec<f64>> {
+        let radius = self.doc.project.world.radius_km * 1000.0;
+        let key = window.and_then(|w| {
+            let record = self.doc.project.atlas.frame(w.frame)?;
+            let spec = self.doc.projection(record.map);
+            Some((w.frame, crate::areas::FrameKey::new(record, spec, radius)))
+        });
+        let map = self.globe.value_map(id)?;
+        if let Some((frame, key)) = key
+            && let Some(b) = self.areas.frame_bins_now(frame, id, key, map)
+            && !b.is_empty()
+        {
+            return Some(b.bins.clone());
+        }
+        self.areas.bins_now(id, map).map(|b| b.to_vec())
     }
 
     /// Shows the result of an import of a heightmap.

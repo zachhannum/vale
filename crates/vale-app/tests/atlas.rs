@@ -13690,6 +13690,75 @@ fn in_frame_make_spreads_the_bands_over_the_frame_and_keeps_sea_level() {
     assert_eq!(inset_bands(&h, layer), 32);
 }
 
+#[test]
+fn in_frame_area_spacing_uses_the_areas_of_the_frame() {
+    use vale_app::areas::FrameKey;
+    use vale_app::ui::RampApply;
+    use vale_terrain::{Area, Part, Round};
+    let (mut h, height, _) = frame_stops_pad(0.0);
+    let w = stops_window(&h);
+    let before = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    // Far outside the frame, the world is at one height inside the values
+    // of the frame, so the areas of the world differ from the areas of the
+    // frame.
+    let map = h.state_mut().globe.raster_map_mut(height).unwrap();
+    let n = map.face_size();
+    for face in 0..6 {
+        for (x, y) in (0..n).flat_map(|y| (0..n).map(move |x| (x, y))) {
+            if map.texel_dir(face, x, y)[2].asin().to_degrees() > 40.0 {
+                map.set(face, x, y, before.level(w.hi / 2.0));
+            }
+        }
+    }
+    let colors = vec![[20, 60, 160], [120, 180, 90], [200, 160, 90]];
+    h.state_mut().ramps.add("Frame area", colors).unwrap();
+    let at = h.state().ramps.list().len() - 1;
+    let ramp = h.state().ramps.list()[at].clone();
+    let ramp = ramp.colors();
+    let record = frame(&h, 1);
+    let state = h.state_mut();
+    let spec = state.doc.projection(record.map);
+    let key = FrameKey::new(&record, spec, state.doc.project.world.radius_km * 1000.0);
+    let map = state.globe.value_map(height).unwrap();
+    let inside = (state.areas.frame_bins_now(record.id, height, key, map)).unwrap();
+    let world = state.areas.bins_now(height, map).unwrap();
+    let (count, interval) = (6, 100.0);
+    let want = |bins: &[f64]| {
+        let area = Area {
+            bins,
+            round: Round::Interval,
+            interval,
+            balance: 1.0,
+        };
+        let range = (w.lo, w.hi);
+        let bands = before.painted_by_area(&ramp, Part::All, w.bands.clone(), range, count, &area);
+        let bands = bands.unwrap();
+        bands.stops().iter().map(|s| s.value).collect::<Vec<f64>>()
+    };
+    let (frame_want, world_want) = (want(&inside.bins), want(&world));
+    assert_ne!(frame_want, world_want);
+
+    let how = RampApply::Area {
+        count,
+        round: Round::Interval,
+        interval,
+        balance: 1.0,
+    };
+    h.state_mut()
+        .apply_ramp(height, at, how, Part::All, Some(&w))
+        .unwrap();
+    let after = h.state_mut().globe.bands_mut(height).unwrap().clone();
+    let values: Vec<f64> = after.stops().iter().map(|s| s.value).collect();
+    assert_eq!(values, frame_want);
+    let (a, b) = (w.bands.start, w.bands.end);
+    let new = &values[a + 1..values.len() - (before.stops().len() - b)];
+    assert!(new.contains(&0.0), "{new:?}");
+    for v in new.iter().filter(|v| **v != 0.0) {
+        assert!(w.lo <= *v && *v <= w.hi, "{v} {w:?}");
+        assert_eq!(v % interval, 0.0, "{v}");
+    }
+}
+
 /// Three land colors for a ramp.
 const LAND_RAMP: [[u8; 3]; 3] = [[200, 40, 40], [220, 180, 40], [250, 250, 200]];
 
