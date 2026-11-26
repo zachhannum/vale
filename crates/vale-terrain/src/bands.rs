@@ -995,16 +995,18 @@ impl Bands {
     }
 }
 
-/// Whether a color is mostly blue.
 /// How the stops of new bands round.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Round {
-    /// Each stop is 0 or a value of the series 1, 2, 5, 10, 20, 50, and so
-    /// on that is at least the interval, or the same value below 0.
+    /// Each stop is 0, or a value of `SERIES` times a power of ten that is
+    /// a multiple of the interval, or the same value below 0.
     Series,
     /// Each stop is a multiple of the interval.
     Interval,
 }
+
+/// The round values of each power of ten for `Round::Series`.
+pub const SERIES: [f64; 8] = [1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0];
 
 /// The spacing of new bands by the area of each value.
 #[derive(Clone, Copy, Debug)]
@@ -1014,74 +1016,123 @@ pub struct Area<'a> {
     pub bins: &'a [f64],
     pub round: Round,
     pub interval: f64,
+    /// The weight of the areas, from 0 to 1. At 0, the stops have even
+    /// spacing, and at 1, each band covers about the same area.
+    pub balance: f64,
 }
 
 impl Area<'_> {
     /// The area below `value`, with the bins from `min` to `max`.
     fn below(&self, min: f64, max: f64, value: f64) -> f64 {
-        let n = self.bins.len();
-        let t = ((value - min) / (max - min) * n as f64).clamp(0.0, n as f64);
-        let i = t.floor() as usize;
-        let whole: f64 = self.bins[..i].iter().sum();
-        whole + self.bins.get(i).map_or(0.0, |b| b * (t - i as f64))
+        below_in(&self.sums(), min, max, value)
     }
 
-    /// The value with `area` below it.
-    fn at(&self, min: f64, max: f64, area: f64) -> f64 {
-        let n = self.bins.len() as f64;
+    /// The sums of the bins: the area below the start of each bin, and the
+    /// whole area last.
+    fn sums(&self) -> Vec<f64> {
+        let mut sums = Vec::with_capacity(self.bins.len() + 1);
         let mut sum = 0.0;
-        for (i, &b) in self.bins.iter().enumerate() {
-            if b > 0.0 && sum + b >= area {
-                let t = i as f64 + (area - sum) / b;
-                return min + (max - min) * t / n;
-            }
+        sums.push(sum);
+        for b in self.bins {
             sum += b;
+            sums.push(sum);
         }
-        max
+        sums
     }
 
-    /// The rounded stops between `from` and `to` for `count` bands of about
-    /// the same area, in ascending order. There are fewer than
-    /// `count - 1` stops when two stops round to the same value.
+    /// The rounded stops between `from` and `to` for `count` bands, in
+    /// ascending order. The place of each value is its share of the area,
+    /// weighted by `balance`, plus its share of the range, weighted by the
+    /// rest. The bands come nearest to the same width in these places.
+    /// Each stop is a different round value. There are fewer than
+    /// `count - 1` stops only if there are fewer round values.
     fn inner(&self, min: f64, max: f64, from: f64, to: f64, count: usize) -> Vec<f64> {
-        let (a, b) = (self.below(min, max, from), self.below(min, max, to));
-        if b <= a {
+        if count < 2 || from >= to {
             return Vec::new();
         }
-        let targets = (1..count).map(|j| a + (b - a) * j as f64 / count as f64);
-        let mut values: Vec<f64> = match self.round {
-            Round::Interval => targets
-                .map(|t| (self.at(min, max, t) / self.interval).round() * self.interval)
-                .collect(),
-            Round::Series => {
-                let ladder = series(self.interval, from, to);
-                let areas: Vec<f64> = ladder.iter().map(|&v| self.below(min, max, v)).collect();
-                targets
-                    .filter_map(|t| {
-                        let off = |i: &usize| (areas[*i] - t).abs();
-                        (0..ladder.len()).min_by(|i, j| off(i).total_cmp(&off(j)))
-                    })
-                    .map(|i| ladder[i])
-                    .collect()
-            }
+        let sums = self.sums();
+        let below = |v: f64| below_in(&sums, min, max, v);
+        let (a, b) = (below(from), below(to));
+        let w = match b > a {
+            true => self.balance.clamp(0.0, 1.0),
+            false => 0.0,
+        };
+        let place = |v: f64| {
+            let area = if w > 0.0 {
+                (below(v) - a) / (b - a)
+            } else {
+                0.0
+            };
+            w * area + (1.0 - w) * (v - from) / (to - from)
+        };
+        let mut values = match self.round {
+            Round::Series => series(self.interval, from, to),
+            Round::Interval => multiples(self.interval, from, to),
         };
         values.retain(|v| from + MIN_BAND <= *v && *v <= to - MIN_BAND);
-        values.sort_by(f64::total_cmp);
         values.dedup_by(|b, a| *b - *a < MIN_BAND);
-        values
+        let targets: Vec<f64> = (1..count).map(|j| j as f64 / count as f64).collect();
+        if values.len() <= targets.len() {
+            return values;
+        }
+        let places: Vec<f64> = values.iter().map(|&v| place(v)).collect();
+        nearest(&places, &targets)
+            .into_iter()
+            .map(|i| values[i])
+            .collect()
     }
 }
 
-/// 0 and the values of the series 1, 2, 5, 10, 20, 50, and so on that are
-/// at least `interval`, and the same values below 0, strictly between
-/// `from` and `to`, in ascending order.
+/// The area below `value`, from the sums of bins from `min` to `max`.
+fn below_in(sums: &[f64], min: f64, max: f64, value: f64) -> f64 {
+    let n = sums.len() - 1;
+    let t = ((value - min) / (max - min) * n as f64).clamp(0.0, n as f64);
+    let i = (t.floor() as usize).min(n.saturating_sub(1));
+    sums[i] + (sums[i + 1] - sums[i]) * (t - i as f64)
+}
+
+/// The indices of one ascending place for each of the ascending `targets`,
+/// each index once, with the least sum of the distances from the places to
+/// the targets. There must be at least as many places as targets.
+fn nearest(places: &[f64], targets: &[f64]) -> Vec<usize> {
+    let (n, m) = (places.len(), targets.len());
+    // `cost[i]` is the least cost of the targets so far with the last
+    // target at place `i`, and `from[j][i]` is the place of the target
+    // before it.
+    let mut cost: Vec<f64> = places.iter().map(|p| (p - targets[0]).abs()).collect();
+    let mut from = vec![vec![0; n]; m];
+    for j in 1..m {
+        let mut next = vec![f64::INFINITY; n];
+        let (mut best, mut at) = (f64::INFINITY, 0);
+        for i in j..n {
+            if cost[i - 1] < best {
+                (best, at) = (cost[i - 1], i - 1);
+            }
+            next[i] = best + (places[i] - targets[j]).abs();
+            from[j][i] = at;
+        }
+        cost = next;
+    }
+    let last = (m - 1..n).min_by(|a, b| cost[*a].total_cmp(&cost[*b]));
+    let mut picks = vec![last.unwrap_or(m - 1)];
+    for j in (1..m).rev() {
+        picks.push(from[j][picks[picks.len() - 1]]);
+    }
+    picks.reverse();
+    picks
+}
+
+/// 0 and the values of `SERIES` times a power of ten that are multiples of
+/// `interval`, and the same values below 0, strictly between `from` and
+/// `to`, in ascending order.
 fn series(interval: f64, from: f64, to: f64) -> Vec<f64> {
     let reach = from.abs().max(to.abs());
     let mut out = vec![0.0];
     let mut scale = 10f64.powf(interval.log10().floor());
     while scale <= reach {
-        for v in [scale, 2.0 * scale, 5.0 * scale] {
-            if v >= interval * (1.0 - 1e-9) {
+        for v in SERIES.map(|m| m * scale) {
+            let k = v / interval;
+            if k >= 1.0 - 1e-9 && (k - k.round()).abs() < 1e-6 {
                 out.extend([v, -v]);
             }
         }
@@ -1090,6 +1141,14 @@ fn series(interval: f64, from: f64, to: f64) -> Vec<f64> {
     out.retain(|v| from < *v && *v < to);
     out.sort_by(f64::total_cmp);
     out
+}
+
+/// The multiples of `interval` strictly between `from` and `to`, in
+/// ascending order.
+fn multiples(interval: f64, from: f64, to: f64) -> Vec<f64> {
+    let first = (from / interval).floor() as i64 + 1;
+    let last = (to / interval).ceil() as i64 - 1;
+    (first..=last).map(|k| k as f64 * interval).collect()
 }
 
 /// The value of the series 1, 2, 5, 10, 20, 50, and so on that is nearest
@@ -1108,6 +1167,7 @@ pub fn default_interval(min: f64, max: f64) -> f64 {
         .unwrap_or(1.0)
 }
 
+/// Whether a color is mostly blue.
 fn is_blue(c: Rgb) -> bool {
     c[2] > c[0] && c[2] >= c[1]
 }
@@ -2428,12 +2488,17 @@ mod tests {
     }
 
     fn by_area(round: Round, interval: f64, count: usize) -> Bands {
+        by_area_balanced(round, interval, count, 1.0)
+    }
+
+    fn by_area_balanced(round: Round, interval: f64, count: usize, balance: f64) -> Bands {
         let bands = Bands::with_range(0.0, 10_000.0, false).unwrap();
         let bins = falling_bins();
         let area = Area {
             bins: &bins,
             round,
             interval,
+            balance,
         };
         let all = 0..bands.colors().len();
         bands
@@ -2448,14 +2513,31 @@ mod tests {
             .unwrap()
     }
 
+    /// Whether `v` is a value of `SERIES` times a power of ten and a
+    /// multiple of `interval`.
+    fn is_round(v: f64, interval: f64) -> bool {
+        let m = v / 10f64.powf(v.log10().floor());
+        let k = v / interval;
+        SERIES.iter().any(|s| (m - s).abs() < 1e-9) && (k - k.round()).abs() < 1e-9
+    }
+
     #[test]
     fn by_area_with_series_takes_round_values_where_the_area_is() {
         let painted = by_area(Round::Series, 50.0, 5);
         assert_eq!(
             values(&painted),
-            [0.0, 100.0, 200.0, 500.0, 1000.0, 10_000.0]
+            [0.0, 100.0, 300.0, 500.0, 800.0, 10_000.0]
         );
         assert_eq!(painted.colors().len(), 5);
+    }
+
+    #[test]
+    fn by_area_with_series_makes_each_band_of_the_count() {
+        let painted = by_area(Round::Series, 50.0, 15);
+        assert_eq!(painted.colors().len(), 15);
+        let inner = &values(&painted)[1..15];
+        assert!(inner.iter().all(|v| is_round(*v, 50.0)), "{inner:?}");
+        assert!(sorted(&painted));
     }
 
     #[test]
@@ -2468,11 +2550,60 @@ mod tests {
     }
 
     #[test]
-    fn by_area_makes_one_stop_of_stops_that_round_to_the_same_value() {
-        let painted = by_area(Round::Series, 1000.0, 5);
-        assert_eq!(values(&painted), [0.0, 1000.0, 10_000.0]);
-        let g = greys(8);
-        assert_eq!(painted.colors(), [g[0], g[7]]);
+    fn by_area_with_no_balance_has_even_spacing() {
+        let painted = by_area_balanced(Round::Interval, 50.0, 5, 0.0);
+        let even = [0.0, 2000.0, 4000.0, 6000.0, 8000.0, 10_000.0];
+        assert_eq!(values(&painted), even);
+    }
+
+    #[test]
+    fn by_area_with_half_balance_reaches_higher_than_equal_areas() {
+        let top = |balance: f64| {
+            let painted = by_area_balanced(Round::Series, 50.0, 15, balance);
+            let stops = values(&painted);
+            stops[stops.len() - 2]
+        };
+        assert!(top(0.5) > top(1.0), "{} {}", top(0.5), top(1.0));
+        assert!(top(0.5) >= 6000.0, "{}", top(0.5));
+    }
+
+    #[test]
+    fn by_area_on_a_side_with_no_area_has_even_spacing() {
+        let bands = Bands::with_range(0.0, 10_000.0, false).unwrap();
+        let bins = vec![0.0; 1000];
+        let area = Area {
+            bins: &bins,
+            round: Round::Interval,
+            interval: 50.0,
+            balance: 1.0,
+        };
+        let all = 0..bands.colors().len();
+        let range = (0.0, 10_000.0);
+        let grey = greys(8);
+        let ramp = ramp_of(&grey, &[]);
+        let painted = bands.painted_by_area(&ramp, Part::All, all, range, 5, &area);
+        // With no area at all, there is nothing to place by.
+        assert!(painted.is_none());
+        let mut bins = vec![0.0; 1000];
+        bins[0] = 1.0;
+        let area = Area {
+            bins: &bins,
+            ..area
+        };
+        let all = 0..bands.colors().len();
+        let painted = bands
+            .painted_by_area(&ramp, Part::All, all, (5000.0, 10_000.0), 5, &area)
+            .unwrap();
+        let even = [0.0, 6000.0, 7000.0, 8000.0, 9000.0, 10_000.0];
+        assert_eq!(values(&painted), even);
+    }
+
+    #[test]
+    fn by_area_makes_fewer_bands_if_there_are_too_few_round_values() {
+        let painted = by_area(Round::Series, 1000.0, 15);
+        let round = [1000.0, 2000.0, 3000.0, 4000.0, 5000.0, 6000.0, 8000.0];
+        assert_eq!(values(&painted), [&[0.0][..], &round, &[10_000.0]].concat());
+        assert_eq!(painted.colors().len(), 8);
     }
 
     #[test]
@@ -2483,6 +2614,7 @@ mod tests {
             bins: &bins,
             round: Round::Series,
             interval: 50.0,
+            balance: 1.0,
         };
         let colors = sea_and_land(4, 4);
         let all = 0..bands.colors().len();
@@ -2494,9 +2626,9 @@ mod tests {
         assert_eq!(painted.stops()[sea].value, 0.0);
         assert!(painted.colors()[..sea].iter().all(|c| is_blue(*c)));
         assert!(painted.colors()[sea..].iter().all(|c| !is_blue(*c)));
-        let round = [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0];
+        assert_eq!(painted.colors().len(), 10);
         let inner = &values(&painted)[1..painted.stops().len() - 1];
-        assert!(inner.iter().all(|v| *v == 0.0 || round.contains(&v.abs())));
+        assert!(inner.iter().all(|v| *v == 0.0 || is_round(v.abs(), 50.0)));
     }
 
     #[test]

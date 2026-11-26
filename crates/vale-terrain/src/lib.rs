@@ -39,7 +39,7 @@ mod zonal;
 
 pub use abyssal::{AbyssalHills, AbyssalPlan, AbyssalStroke};
 pub use bands::{
-    Area, Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, Round, SEA_LEVEL, Stop,
+    Area, Band, Bands, MAX_BANDS, MIN_BAND, Part, RampColors, Rgb, Round, SEA_LEVEL, SERIES, Stop,
     StopLine, default_interval, sample_ramp, sea_colors,
 };
 pub use basin::{BASIN_DENSITY_KM, BasinCut, BasinLine, BasinSpec, basin};
