@@ -4020,7 +4020,6 @@ const MARGIN_TOLERANCE: u16 = 2;
 fn margin_spec() -> Margin {
     Margin {
         shelf_m: -130.0,
-        shelf_km: 100.0,
         world_km: 6371.0,
         seed: 7,
         limits: Limits::default(),

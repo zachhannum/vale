@@ -1587,7 +1587,11 @@ const ELEVATION_HIGH = 6000.0;
 const MARGIN_SLOPE_DEG = 4.0;
 const MARGIN_SLOPE_LOW = 1.0;
 const MARGIN_SLOPE_HIGH = 10.0;
-const MARGIN_ANGLE_SIZE = 2.0;
+const MARGIN_ANGLE_KM = 200.0;
+const MARGIN_ANGLE_SMALL_KM = 50.0;
+const MARGIN_ANGLE_SMALL = 0.8;
+const MARGIN_EDGE_PART = 0.3;
+const MARGIN_RELIEF_FADE_KM = 30.0;
 const MARGIN_RISE_PART = 0.4;
 const MARGIN_RISE_KM_PER_M = 0.25;
 const MARGIN_RISE_FADE = 0.7;
@@ -1597,13 +1601,9 @@ const MARGIN_SCAR_KM = 70.0;
 const MARGIN_SCAR_TEXELS = 48.0;
 const MARGIN_SCAR_DEPTH = 260.0;
 const MARGIN_DEBRIS_PART = 0.45;
-const SALT_MARGIN_WANDER = 0x6d617267u;
 const SALT_MARGIN_ANGLE = 0x736c6f70u;
 const SALT_MARGIN_SCAR = 0x73636172u;
 const SALT_MARGIN_RELIEF = 0x72656c66u;
-const SALT_MARGIN_WIDTH = 0x77696474u;
-const MARGIN_WIDTH_VARY = 0.7;
-const MARGIN_WIDTH_SIZE = 4.0;
 
 // The distance field of a margin pass: for each cell, the distance to the
 // land and the signed distance to the smoothed coast in kilometers, and the
@@ -1651,13 +1651,13 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
 }
 
 // The place of a texel for the profile: the distance to the land, the
-// signed distance to the smoothed coast, and the nearest point of the
-// smoothed coast. `ok` is false outside the field.
+// signed distance to the shelf edge, and the nearest point of the shelf
+// edge. `ok` is false outside the field.
 struct MarginPlace {
     ok: bool,
     d: f32,
     s: f32,
-    coast: vec3<f32>,
+    edge: vec3<f32>,
 }
 
 // `MarginField::sample` and `MarginPlan::place`.
@@ -1692,12 +1692,12 @@ fn margin_place(m: MarginPass, p: vec3<f32>) -> MarginPlace {
     let away = m.east * sum.z + m.north * sum.w;
     let tangent = away - p * dot(away, p);
     let size = length(tangent);
-    var coast = p;
+    var edge = p;
     if size >= 1e-6 {
         let a = sum.y / ridge.world_km;
-        coast = normalize(p * cos(a) - tangent * (sin(a) / size));
+        edge = normalize(p * cos(a) - tangent * (sin(a) / size));
     }
-    return MarginPlace(true, sum.x, sum.y, coast);
+    return MarginPlace(true, sum.x, sum.y, edge);
 }
 
 // `MarginPlan::noise`.
@@ -1707,30 +1707,24 @@ fn margin_noise(q: vec3<f32>, size_km: f32, salt: u32) -> vec3<f32> {
 
 // The level of the margin at a place, in meters, from the level `old` in
 // meters. The steps are those of `MarginPlan::profile`. The shelf depth is
-// in `crest`, the shelf width in `segment`, the floor in `range_spacing`,
-// and the texel width in kilometers in `spacing`.
+// in `crest`, the floor in `range_spacing`, and the texel width in
+// kilometers in `spacing`.
 fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
-    let w = ridge.segment;
     let b = ridge.crest;
     let floor_m = ridge.range_spacing;
     let texel = ridge.spacing;
-    let wander = margin_noise(p, 1.5 * w, SALT_MARGIN_WANDER).x * 0.15 * w
-        + margin_noise(p, 0.45 * w, SALT_MARGIN_WANDER).y * 0.06 * w;
-    let x = at.s - wander * smooth_between(0.0, 0.5 * w, at.d);
-    // `MarginPlan::width`.
-    let n_width = clamp(1.4 * margin_noise(at.coast, MARGIN_WIDTH_SIZE * w, SALT_MARGIN_WIDTH).x, -1.0, 1.0);
-    let width = w * exp2(MARGIN_WIDTH_VARY * n_width);
-    let n_angle = clamp(1.4 * margin_noise(at.coast, MARGIN_ANGLE_SIZE * w, SALT_MARGIN_ANGLE).x, -1.0, 1.0);
+    let n_angle = clamp(1.4 * margin_noise(at.edge, MARGIN_ANGLE_KM, SALT_MARGIN_ANGLE).x, -1.0, 1.0)
+        + MARGIN_ANGLE_SMALL * margin_noise(at.edge, MARGIN_ANGLE_SMALL_KM, SALT_MARGIN_ANGLE).y;
     let deg = clamp(MARGIN_SLOPE_DEG * exp2(2.0 * n_angle), MARGIN_SLOPE_LOW, MARGIN_SLOPE_HIGH);
     let tan_slope = tan(radians(deg));
     // `MarginPlan::shape`.
-    let down = x - width;
+    let drop = b - floor_m;
+    let down = at.s + MARGIN_EDGE_PART * drop / (1000.0 * tan_slope);
     var part = 1.0;
     if down < 0.0 {
         part = at.d / (at.d - down);
     }
     let upper = smooth_min(b * part, b - 1000.0 * tan_slope * down, MARGIN_BREAK_ROUND);
-    let drop = b - floor_m;
     let height = MARGIN_RISE_PART * drop;
     let slope = (drop - height) / (1000.0 * tan_slope);
     let rise = MARGIN_RISE_KM_PER_M * height;
@@ -1740,12 +1734,12 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
     var level = base;
     // The slide scars and their debris.
     let scar_size = max(MARGIN_SCAR_KM, MARGIN_SCAR_TEXELS * texel);
-    let ns = margin_noise(at.coast, scar_size, SALT_MARGIN_SCAR);
+    let ns = margin_noise(at.edge, scar_size, SALT_MARGIN_SCAR);
     let here = smooth_between(0.25, 0.6, ns.x);
     let scar_depth = MARGIN_SCAR_DEPTH * (0.3 + 0.35 * (ns.y + 1.0));
-    let head = slope * (0.05 + 0.175 * (ns.z + 1.0));
+    let head = slope * (0.55 + 0.1 * (ns.z + 1.0));
     let cut = smooth_between(head, head + 0.08 * slope + 0.5 * texel, down)
-        * (1.0 - smooth_between(0.75 * slope, slope + 0.05 * rise + texel, down));
+        * (1.0 - smooth_between(0.85 * slope, slope + 0.05 * rise + texel, down));
     let lobe_length = 0.15 * rise + 0.3 * scar_size;
     let q = (down - slope - 0.5 * lobe_length) / (0.5 * lobe_length + texel);
     let lobe = max(1.0 - q * q, 0.0);
@@ -1759,7 +1753,8 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
         let fade = smooth_between(least, 2.0 * least, sizes[k]);
         relief += margin_noise(p, sizes[k], SALT_MARGIN_RELIEF + k).x * heights[k] * fade;
     }
-    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down)) * smooth_between(0.0, 0.3 * w, at.d);
+    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down)) * smooth_between(0.0, MARGIN_RELIEF_FADE_KM, at.d);
+
     level += rough * relief;
     let fade = smooth_between(MARGIN_RISE_FADE, 1.0, t);
     return min(level + (old - level) * fade, max(MARGIN_TOP, old));

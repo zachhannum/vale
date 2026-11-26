@@ -1575,7 +1575,7 @@ impl Heightmap {
 
     /// The level of a texel from before the stroke. With no stroke, it is the
     /// level of the texel.
-    fn level_before(&self, face: usize, x: usize, y: usize) -> u16 {
+    pub(crate) fn level_before(&self, face: usize, x: usize, y: usize) -> u16 {
         let saved = self.stroke.as_ref();
         match saved.and_then(|saved| Some((saved, saved.tiles.get(&self.tile_index(face, x, y))?)))
         {
