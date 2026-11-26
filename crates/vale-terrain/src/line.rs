@@ -283,6 +283,20 @@ impl StrokeLine {
         }
     }
 
+    /// The direction, the unit direction of the line, and the flow of the
+    /// place at a distance along the line, in radians. The line needs two
+    /// points.
+    pub(crate) fn frame(&self, u: f64) -> (V3, V3, f64) {
+        let last = self.points.len() - 2;
+        let j = self.points.partition_point(|point| point.u < u);
+        let j = j.saturating_sub(1).min(last);
+        let (a, b) = (self.points[j], self.points[j + 1]);
+        let t = ((u - a.u) / (b.u - a.u).max(f64::MIN_POSITIVE)).clamp(0.0, 1.0);
+        let dir = normalize(add(scale(a.dir, 1.0 - t), scale(b.dir, t)));
+        let tangent = normalize(cross(self.normal(j), dir));
+        (dir, tangent, a.flow + (b.flow - a.flow) * t)
+    }
+
     /// The distance from a direction to the line, and the distance along the
     /// line of the nearest place, in radians. The line has a round end at
     /// each end.
@@ -405,30 +419,7 @@ impl StrokeLine {
             let rects = rects.filter_map(|&s| brush_rect(n, face, s, 1.02 * reach));
             rects.reduce(TexelRect::union)
         });
-        // A circle around each rectangle: its center and its radius. The
-        // sides of a rectangle are great circles, so the corner that is
-        // farthest from the center gives the radius.
-        let circles: Vec<(V3, f64)> = rects
-            .iter()
-            .enumerate()
-            .filter_map(|(face, rect): (usize, &Option<TexelRect>)| {
-                let rect = (*rect)?;
-                let flat = |x: usize| unwarp(x as f64 / n as f64 * 2.0 - 1.0);
-                let corners = [
-                    (rect.x0, rect.y0),
-                    (rect.x1, rect.y0),
-                    (rect.x0, rect.y1),
-                    (rect.x1, rect.y1),
-                ]
-                .map(|(x, y)| face_dir(face, flat(x), flat(y)));
-                let center = normalize(corners.into_iter().fold([0.0; 3], add));
-                let radius = corners
-                    .map(|c| angle(center, c))
-                    .into_iter()
-                    .fold(0.0, f64::max);
-                Some((center, radius))
-            })
-            .collect();
+        let circles = rect_circles(n, &rects);
         // The other segments that can reach a texel of a rectangle, the
         // nearest to the new part first.
         let mut others: Vec<(f64, usize)> = (0..start)
@@ -462,7 +453,40 @@ impl StrokeLine {
     }
 }
 
+/// A circle around each rectangle: its center and its radius. The sides of a
+/// rectangle are great circles, so the corner that is farthest from the
+/// center gives the radius.
+fn rect_circles(n: usize, rects: &[Option<TexelRect>; FACES]) -> Vec<(V3, f64)> {
+    rects
+        .iter()
+        .enumerate()
+        .filter_map(|(face, rect): (usize, &Option<TexelRect>)| {
+            let rect = (*rect)?;
+            let flat = |x: usize| unwarp(x as f64 / n as f64 * 2.0 - 1.0);
+            let corners = [
+                (rect.x0, rect.y0),
+                (rect.x1, rect.y0),
+                (rect.x0, rect.y1),
+                (rect.x1, rect.y1),
+            ]
+            .map(|(x, y)| face_dir(face, flat(x), flat(y)));
+            let center = normalize(corners.into_iter().fold([0.0; 3], add));
+            let radius = corners
+                .map(|c| angle(center, c))
+                .into_iter()
+                .fold(0.0, f64::max);
+            Some((center, radius))
+        })
+        .collect()
+}
+
 impl LinePlan {
+    /// A circle around each rectangle: its center and its radius, in
+    /// radians.
+    pub(crate) fn circles(&self) -> Vec<(V3, f64)> {
+        rect_circles(self.face_size, &self.rects)
+    }
+
     /// The texel step at the center of a face, in radians.
     pub(crate) fn step(&self) -> f64 {
         FRAC_PI_2 / self.face_size as f64

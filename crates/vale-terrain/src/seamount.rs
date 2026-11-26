@@ -83,8 +83,8 @@ pub struct SeamountStroke {
 // The places in `Volcano`.
 const CENTER: usize = 0;
 const AXIS: usize = 3;
-const GROWTH: usize = 6;
-const HEIGHT: usize = 7;
+pub(crate) const GROWTH: usize = 6;
+pub(crate) const HEIGHT: usize = 7;
 const RADIUS: usize = 8;
 const SHIELD: usize = 9;
 const TOP: usize = 10;
@@ -103,19 +103,23 @@ const SLIDE: usize = 35;
 const GULLIES: usize = 41;
 const GULLY_SIZE: usize = 42;
 const SEED: usize = 43;
-const FLEX: usize = 44;
+pub(crate) const FLEX: usize = 44;
 const FLEX_LENGTH: usize = 45;
 const REACH: usize = 46;
 const CONE_SIDE: usize = 48;
 const CONE_TURN: usize = 52;
 pub(crate) const CAP: usize = 56;
+pub(crate) const RIM: usize = 57;
+pub(crate) const LAGOON: usize = 58;
 const EXTENT: usize = 59;
+pub(crate) const SHORE: usize = 60;
+pub(crate) const REEF: usize = 61;
 
 /// The cap of a volcano with no cap.
 pub(crate) const NO_CAP: f32 = 65535.0;
 
 /// The 16-bit steps of one meter.
-const LEVELS_PER_M: f64 = 65535.0 / (ELEV_MAX - ELEV_MIN);
+pub(crate) const LEVELS_PER_M: f64 = 65535.0 / (ELEV_MAX - ELEV_MIN);
 
 /// The number of height bands of the field. A band is one characteristic
 /// height. The last band holds e^-24 of the seamounts.
@@ -127,7 +131,7 @@ const CONE_RATIO: f64 = 0.2;
 const CONE_RATIO_SPREAD: f64 = 0.05;
 
 /// The height over the base radius of a large shield.
-const SHIELD_RATIO: f64 = 0.09;
+pub(crate) const SHIELD_RATIO: f64 = 0.09;
 
 /// The heights in meters where a cone becomes a shield.
 const SHIELD_FROM_M: f64 = 1500.0;
@@ -171,6 +175,13 @@ const ELASTIC_MAX_KM: f64 = 40.0;
 /// part of the height.
 const FLEX_MAX: f64 = 0.6;
 
+/// The moats of a line of volcanoes add up to a moat that is narrower than
+/// the moat of one volcano. The flexural length of a shield volcano of a
+/// line is longer by this factor, so the moat and the arch of the line are
+/// as far from the line as those of the Hawaiian chain (Watts and ten Brink
+/// 1989).
+const LINE_FLEX: f64 = 1.3;
+
 /// Below this coherence, the slopes have no main direction.
 pub const FABRIC_COHERENCE: f64 = 0.25;
 
@@ -178,7 +189,7 @@ const SALT_FIELD: u32 = 0x3c6e_f372;
 const SALT_SHAPE: u32 = 0xa54f_f53a;
 
 impl Volcano {
-    fn get(&self, i: usize) -> f64 {
+    pub(crate) fn get(&self, i: usize) -> f64 {
         f64::from(self.0[i])
     }
 
@@ -612,7 +623,7 @@ fn wrap(a: f64) -> f64 {
 }
 
 /// A number from 0 to 1 from a seed and an index.
-fn draw(seed: u32, i: u32) -> f64 {
+pub(crate) fn draw(seed: u32, i: u32) -> f64 {
     unit(hash(seed, i, 0x5eed, SALT_SHAPE))
 }
 
@@ -813,17 +824,11 @@ fn volcano(
     }
     let flat = shield < 0.5 && r(8) < FLAT_TOPS;
     let crater = shield < 0.5 && !flat && r(8) < FLAT_TOPS + CRATERS;
-    // The moat: a thin elastic plate under the load of the edifice.
-    let te = elastic_km(floor.age_myr) * 1000.0;
-    let rigidity = YOUNG * te.powi(3) / (12.0 * (1.0 - POISSON * POISSON));
-    let flex_m = (rigidity / ((MANTLE - WATER) * GRAVITY)).powf(0.25);
     let radius_m = radius * km * 1000.0;
     let fill = 1.0 / 3.0 + (0.229 - 1.0 / 3.0) * shield;
     let volume: f64 =
         heights[..cones].iter().sum::<f64>() * PI * radius_m * radius_m * stretch * height_m * fill;
-    let load = (ROCK - WATER) * GRAVITY * volume;
-    let spread = 1.0 + 0.25 * (radius_m / flex_m).powi(2);
-    let moat_m = (load * flex_m * flex_m / (8.0 * rigidity) / spread).min(FLEX_MAX * height_m);
+    let (moat_m, flex_m) = flexure(floor.age_myr, MANTLE - WATER, volume, radius_m, height_m);
     let put = |v: &mut [f32; VOLCANO_FLOATS], i: usize, x: f64| v[i] = x as f32;
     for k in 0..3 {
         put(&mut v, CENTER + k, center[k]);
@@ -881,6 +886,115 @@ fn volcano(
     put(&mut v, FLEX_LENGTH, 1.6 * flex_m / (km * 1000.0));
     put(&mut v, REACH, reach);
     put(&mut v, EXTENT, reach);
+    v[CAP] = NO_CAP;
+    Some(Volcano(v))
+}
+
+/// The moat of a thin elastic plate under the load of an edifice, at its
+/// center, and the flexural length, each in meters. The plate has an age in
+/// millions of years. Under the plate is mantle, and over it is matter that
+/// is lighter than the mantle by `contrast` in kg/m³. The edifice has a
+/// volume in m³, a base radius, and a height.
+fn flexure(age_myr: f64, contrast: f64, volume: f64, radius_m: f64, height_m: f64) -> (f64, f64) {
+    let te = elastic_km(age_myr) * 1000.0;
+    let rigidity = YOUNG * te.powi(3) / (12.0 * (1.0 - POISSON * POISSON));
+    let flex_m = (rigidity / (contrast * GRAVITY)).powf(0.25);
+    let load = (ROCK - WATER) * GRAVITY * volume;
+    let spread = 1.0 + 0.25 * (radius_m / flex_m).powi(2);
+    let moat_m = (load * flex_m * flex_m / (8.0 * rigidity) / spread).min(FLEX_MAX * height_m);
+    (moat_m, flex_m)
+}
+
+/// A shield volcano of one cone with rift zones and slides, or `None` if it
+/// does not show on a heightmap with `n` texels along a face side. `axis`
+/// is a unit vector square to `center`, `height_m` is the height, and
+/// `load_age` is the age of the plate under it in millions of years, in
+/// a world with a radius of `km` kilometers. Volcanic rock fills its moat.
+/// It reaches `reach` radians from its center. A volcano that does not fit
+/// in that reach is smaller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn shield_volcano(
+    seed: u32,
+    center: V3,
+    axis: V3,
+    height_m: f64,
+    reach: f64,
+    load_age: f64,
+    km: f64,
+    n: usize,
+) -> Option<Volcano> {
+    let r = |i: u32| draw(seed, i);
+    let mut v = [0f32; VOLCANO_FLOATS];
+    let mut radius = height_m / SHIELD_RATIO / (km * 1000.0);
+    let mut height_m = height_m;
+    let stretch = 1.0 + 0.15 * r(3);
+    let rifts = 2 + (r(5) * 3.0) as usize;
+    let rift_size = 0.6 + 0.4 * r(6);
+    let rift_start = r(7) * TAU;
+    let outline = [
+        0.06 + 0.06 * r(20),
+        0.05 + 0.05 * r(21),
+        0.03 + 0.04 * r(22),
+    ];
+    let outline_max = 1.0 + outline.iter().sum::<f64>() + 0.05;
+    let mut extent = stretch * APRON * outline_max * (1.0 + rift_size) * radius;
+    if extent > 0.85 * reach {
+        let fit = 0.85 * reach / extent;
+        radius *= fit;
+        height_m *= fit;
+        extent *= fit;
+    }
+    let step = FRAC_PI_2 / n as f64;
+    if !(radius >= step && height_m * LEVELS_PER_M >= 1.0) {
+        return None;
+    }
+    let radius_m = radius * km * 1000.0;
+    let volume = PI * radius_m * radius_m * stretch * height_m * 0.229;
+    let (moat_m, flex_m) = flexure(load_age, MANTLE - ROCK, volume, radius_m, height_m);
+    let put = |v: &mut [f32; VOLCANO_FLOATS], i: usize, x: f64| v[i] = x as f32;
+    for k in 0..3 {
+        put(&mut v, CENTER + k, center[k]);
+        put(&mut v, AXIS + k, axis[k]);
+    }
+    put(&mut v, GROWTH, 1.0);
+    put(&mut v, HEIGHT, height_m * LEVELS_PER_M);
+    put(&mut v, RADIUS, radius);
+    put(&mut v, SHIELD, 1.0);
+    put(&mut v, TOP, 1.0);
+    put(&mut v, CONES, 1.0);
+    put(&mut v, CONE_HEIGHT, 1.0);
+    put(&mut v, STRETCH, stretch);
+    put(&mut v, RIFTS, rifts as f64);
+    for i in 0..rifts {
+        let even = rift_start + TAU * i as f64 / rifts as f64;
+        put(
+            &mut v,
+            RIFT_ANGLE + i,
+            wrap(even + 0.6 * (r(30 + i as u32) - 0.5)),
+        );
+    }
+    put(&mut v, RIFT_SIZE, rift_size);
+    for (k, &size) in outline.iter().enumerate() {
+        put(&mut v, OUTLINE + k, size);
+        put(&mut v, OUTLINE_PHASE + k, r(24 + k as u32) * TAU);
+    }
+    let count = 1 + (r(35) * 2.0) as usize;
+    for s in 0..count {
+        put(&mut v, SLIDE + 3 * s, wrap(r(36 + s as u32) * TAU));
+        put(&mut v, SLIDE + 3 * s + 1, 0.25 + 0.2 * r(38 + s as u32));
+        put(&mut v, SLIDE + 3 * s + 2, 0.25 + 0.25 * r(40 + s as u32));
+    }
+    put(&mut v, GULLIES, 40.0 + 16.0 * r(42));
+    put(&mut v, GULLY_SIZE, 0.07 + 0.06 * r(43));
+    put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));
+    put(&mut v, FLEX, moat_m * LEVELS_PER_M);
+    put(
+        &mut v,
+        FLEX_LENGTH,
+        LINE_FLEX * 1.6 * flex_m / (km * 1000.0),
+    );
+    put(&mut v, REACH, reach);
+    put(&mut v, EXTENT, extent);
     v[CAP] = NO_CAP;
     Some(Volcano(v))
 }

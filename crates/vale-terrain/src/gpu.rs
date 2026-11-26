@@ -1083,6 +1083,7 @@ impl GpuHeightmap {
                 | Mode::Seamounts
                 | Mode::AbyssalHills
                 | Mode::Margin
+                | Mode::Hotspot
         ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
@@ -1158,7 +1159,8 @@ impl GpuHeightmap {
                     | Mode::Basin
                     | Mode::Seamounts
                     | Mode::AbyssalHills
-                    | Mode::Margin => 5,
+                    | Mode::Margin
+                    | Mode::Hotspot => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,

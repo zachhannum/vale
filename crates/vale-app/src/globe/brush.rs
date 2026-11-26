@@ -673,7 +673,7 @@ impl Tip<'_> {
                 | Mode::Margin => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
-                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint => {
+                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint | Mode::Hotspot => {
                     (input / FIXED_FLOW).min(1.0) * self.brush.flow
                 }
                 // These modes move toward a target, so each stamp does less.
@@ -899,6 +899,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Seamounts
         | Mode::AbyssalHills
         | Mode::Margin
+        | Mode::Hotspot
         | Mode::Noise => 1,
     }
 }

@@ -115,6 +115,9 @@ pub enum Mode {
     /// The mode of the margin brush. A stamp of this mode changes nothing.
     /// `Heightmap::margin` makes the change.
     Margin,
+    /// The mode of the hotspot track brush. A stamp of this mode changes
+    /// nothing. `Heightmap::hotspot` makes the change.
+    Hotspot,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1174,6 +1177,7 @@ impl Heightmap {
                 | Mode::Seamounts
                 | Mode::AbyssalHills
                 | Mode::Margin
+                | Mode::Hotspot
         ) {
             return 0;
         }
@@ -1328,7 +1332,8 @@ impl Heightmap {
                             | Mode::Basin
                             | Mode::Seamounts
                             | Mode::AbyssalHills
-                            | Mode::Margin => continue,
+                            | Mode::Margin
+                            | Mode::Hotspot => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);

@@ -18,6 +18,7 @@ mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
+mod hotspot;
 mod lake;
 mod line;
 mod margin;
@@ -67,6 +68,10 @@ pub use gpu::{
 pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
+};
+pub use hotspot::{
+    HOTSPOT_HEIGHT_M, HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM,
+    HOTSPOT_SPEED_RANGE, Hotspot, HotspotLine, HotspotPlan,
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
