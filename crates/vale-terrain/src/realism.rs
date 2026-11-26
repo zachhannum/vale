@@ -30,6 +30,10 @@ pub const ATLANTIC_RIDGE: &str = include_str!("../data/gebco/atlantic-ridge.txt"
 /// GEBCO.
 pub const EPR_RIDGE: &str = include_str!("../data/gebco/epr-ridge.txt");
 
+/// The reference text of the passive margin of the eastern United States,
+/// with its shelf, slope, and rise, from GEBCO.
+pub const US_EAST_MARGIN: &str = include_str!("../data/gebco/us-east-margin.txt");
+
 /// A square grid of heights in meters on a plane. Row 0 is the south edge,
 /// and each row runs from west to east. `size` is a power of two.
 #[derive(Clone, Debug, PartialEq)]

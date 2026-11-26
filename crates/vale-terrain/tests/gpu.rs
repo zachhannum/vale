@@ -7,10 +7,10 @@ use vale_terrain::{
     AbyssalHills, AbyssalStroke, CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow,
     CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS,
     GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan,
-    Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge,
-    RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan,
-    TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
-    pyramid_layout, tiles_layout, window_channels,
+    Margin, MarginStroke, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec,
+    Readback, Ridge, RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts,
+    Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights,
+    channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -4013,6 +4013,123 @@ fn gpu_ridge_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, ridge_spec(0.1), &RIDGE_BEND, true, false);
     assert_ridge("S-bend in steps", &run, &[0, 2]);
+}
+
+const MARGIN_TOLERANCE: u16 = 2;
+
+fn margin_spec() -> Margin {
+    Margin {
+        shelf_m: -130.0,
+        shelf_km: 100.0,
+        world_km: 6371.0,
+        seed: 7,
+        limits: Limits::default(),
+    }
+}
+
+/// Land in the west and a deep floor in the east, with a coast along the
+/// meridian at longitude `lon` that bends, and hills on both.
+fn coast_ground(n: usize, lon: f64) -> Heightmap {
+    ground(n, |d| {
+        let (east, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
+        let bend = 3.0 * (lat / 9.0).sin();
+        let hills = 150.0 * (9.0 * d[0] + 1.0).sin() * (7.0 * d[2]).cos();
+        let land = if east < lon + bend { 200.0 } else { -4500.0 };
+        vale_terrain::meters_to_level(land + hills)
+    })
+}
+
+/// The largest difference between the GPU and the CPU after a margin stroke
+/// with stamps at `centers`, the number of changed texels on each face, and
+/// the number of batches.
+fn margin_run(start: &Heightmap, spec: Margin, centers: &[V3], radius: f64) -> SeamountRun {
+    let gpu = gpu();
+    let n = start.face_size();
+    let mut cpu = Heightmap::new(n, start.base());
+    for (face, rect) in start.allocated_rects() {
+        let mut data = Vec::new();
+        start.read_rect(face, rect, &mut data);
+        cpu.store_rect(face, rect, &data);
+    }
+    let map = gpu.copy_of(start);
+    let mut stroke = MarginStroke::new(spec, n);
+    map.begin_stroke(&gpu.queue);
+    cpu.begin_stroke();
+    let mut enc = gpu.encoder();
+    let mut batches = 1;
+    for &center in centers {
+        let plan = stroke.stamp(&cpu, center, radius, 0.5, 0.8);
+        cpu.margin(&plan);
+        if !map.margin(&gpu.queue, &mut enc, &plan) {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            map.begin_batch();
+            batches += 1;
+            assert!(map.margin(&gpu.queue, &mut enc, &plan));
+        }
+    }
+    gpu.submit(enc);
+    map.begin_batch();
+    cpu.end_stroke();
+    let faces = gpu.read_all(&map);
+    let mut changed = [0; FACES];
+    for (face, count) in changed.iter_mut().enumerate() {
+        let (mut after, mut before) = (Vec::new(), Vec::new());
+        cpu.read_rect(face, full(n), &mut after);
+        start.read_rect(face, full(n), &mut before);
+        *count = after.iter().zip(&before).filter(|(a, b)| a != b).count();
+    }
+    SeamountRun {
+        difference: max_difference(&cpu, &faces),
+        changed,
+        batches,
+    }
+}
+
+fn assert_margin(name: &str, run: &SeamountRun, faces: &[usize]) {
+    eprintln!(
+        "margin, {name}: largest difference {}, changed {:?}, batches {}",
+        run.difference, run.changed, run.batches
+    );
+    for &face in faces {
+        assert!(run.changed[face] > 200, "{name}: {:?}", run.changed);
+    }
+    assert!(
+        run.difference <= MARGIN_TOLERANCE,
+        "{name}: the difference is {}",
+        run.difference
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_for_a_stroke() {
+    for n in [256, 2048] {
+        let start = coast_ground(n, -10.0);
+        let centers = seamount_line((-7.0, -20.0), (-7.0, 20.0), 40);
+        let run = margin_run(&start, margin_spec(), &centers, 0.05);
+        assert_margin(&format!("stroke on faces of {n}"), &run, &[0]);
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_across_a_face_edge() {
+    let start = coast_ground(512, 40.0);
+    let centers = seamount_line((43.0, -10.0), (49.0, 10.0), 30);
+    let run = margin_run(&start, margin_spec(), &centers, 0.05);
+    assert_margin("across a face edge", &run, &[0, 2]);
+}
+
+/// A long stroke reads more than one distance field, and a batch holds the
+/// passes of one field.
+#[test]
+#[ignore = "gpu"]
+fn gpu_margin_matches_cpu_with_more_than_one_field() {
+    let start = coast_ground(512, -10.0);
+    let centers = seamount_line((-7.0, -40.0), (-7.0, 40.0), 60);
+    let run = margin_run(&start, margin_spec(), &centers, 0.03);
+    assert_margin("more than one field", &run, &[0]);
+    assert!(run.batches > 1, "{}", run.batches);
 }
 
 fn range_spec(radius: f64) -> RangeSpec {

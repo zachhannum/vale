@@ -22,9 +22,9 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M,
-    OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_KM, MARGIN_SHELF_M,
+    NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
     SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
     shape_text,
 };
@@ -45,6 +45,10 @@ pub const BASIN: &str = "Basin";
 pub const SEAMOUNTS: &str = "Seamounts";
 /// The name of the abyssal hills mode of the brush.
 pub const ABYSSAL_HILLS: &str = "Abyssal hills";
+/// The name of the margin mode of the brush.
+pub const MARGIN: &str = "Margin";
+/// The hint of the margin mode.
+pub const MARGIN_HINT: &str = "Paint along a coast.";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1474,6 +1478,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Basin, BASIN),
             (Mode::Seamounts, SEAMOUNTS),
             (Mode::AbyssalHills, ABYSSAL_HILLS),
+            (Mode::Margin, MARGIN),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1524,12 +1529,13 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     }
 }
 
-/// The hint of the ocean ridge mode and of the basin mode.
+/// The hint of the ocean ridge mode, the basin mode, and the margin mode.
 fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     match globe.brush.mode {
         Mode::Basin => ui.label(basin_hint(globe)),
         Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
         Mode::OceanRidge => ui.label(RIDGE_HINT),
+        Mode::Margin => ui.label(MARGIN_HINT),
         _ => return,
     };
 }
@@ -1636,6 +1642,21 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .percent()
             .show(ui);
         ui.checkbox(&mut brush.abyssal_fit, "Fit to map");
+        seed(ui, state);
+    } else if globe.brush.mode == Mode::Margin {
+        let brush = &mut globe.brush;
+        number::stepper("Shelf depth", &mut brush.margin_shelf_m)
+            .range(MARGIN_SHELF_M)
+            .step(10.0)
+            .decimals(0)
+            .suffix(" m")
+            .show(ui);
+        number::stepper("Shelf width", &mut brush.margin_shelf_km)
+            .range(MARGIN_SHELF_KM)
+            .step(5.0)
+            .decimals(0)
+            .suffix(" km")
+            .show(ui);
         seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)
@@ -1783,10 +1804,13 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix(" km")
             .show(ui);
     }
-    if matches!(globe.brush.mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+    if matches!(
+        globe.brush.mode,
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         number::slider("Erosion", &mut globe.brush.erosion, EROSION).show(ui);
     }
-    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift) {
+    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
         number::slider("Branching", &mut globe.brush.branching, BRANCHING)
             .percent()
             .show(ui);

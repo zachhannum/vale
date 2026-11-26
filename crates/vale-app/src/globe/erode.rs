@@ -8,7 +8,8 @@ use std::f64::consts::FRAC_PI_2;
 
 use vale_terrain::{
     ChannelShape, CoarseHeights, ErodeBrush, ErodeGrid, ErodeStep, Erosion, FlowMap, Limits,
-    OuterFlow, Rain, RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights, erode_range,
+    MarginPlan, OuterFlow, Rain, RangeLine, RangeSpec, WINDOW_CELLS, Window, WindowHeights,
+    erode_margin, erode_range,
 };
 
 use super::math::V3;
@@ -201,6 +202,11 @@ pub enum Lift {
     /// range, as `erode_range`. The rate of the request is the erosion
     /// setting, and the request has no brushes.
     Range(Arc<RangeLine>, Range<f64>),
+    /// The cells under the stamps of the plans take the margin, and the
+    /// steps erode it, as `erode_margin`. The rate of the request is the
+    /// erosion setting, and the request has no brushes. The ground of the
+    /// stroke is the ground from before the margin.
+    Margin(Arc<Vec<MarginPlan>>),
 }
 
 struct Done(u64, ErodeStep);
@@ -234,7 +240,7 @@ const UPLIFT_STEPS: usize = 4;
 /// uplift, raises those cells and then lowers them `UPLIFT_STEPS` times.
 /// The cells and the step keep `limits`, and the step has `rain`, `channel`,
 /// and the flow noise of `branching`. A range keeps the limits of its line,
-/// and it has no flow noise.
+/// and it has no flow noise. A margin sets its own limits.
 fn step(
     erosion: &mut Erosion,
     brushes: &[ErodeBrush],
@@ -258,6 +264,7 @@ fn step(
             erosion.steps(brushes, rate, UPLIFT_STEPS)
         }
         Lift::Range(line, u) => erode_range(erosion, &line, u, rate),
+        Lift::Margin(plans) => erode_margin(erosion, &plans, rate),
         _ => erosion.step(brushes, rate),
     }
 }

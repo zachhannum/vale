@@ -3,10 +3,11 @@
 
 use std::path::Path;
 
-use vale_terrain::math::{V3, lonlat_to_dir};
+use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, PACIFIC_FLANK,
-    Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts, meters_to_level,
+    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, Heightmap, Limits, Margin,
+    MarginStroke, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke,
+    Seamounts, US_EAST_MARGIN, WindowHeights, erode_margin, margin_window, meters_to_level,
     realism,
 };
 
@@ -112,6 +113,57 @@ impl Painted {
             self.map.ridge(&plan);
             from = plan.end;
         }
+        self.map.end_stroke();
+    }
+
+    /// Land at `land_m` outside a circle around `center` with a radius in
+    /// kilometers, up to `land_km` from the middle of the patch, and a
+    /// margin stroke in rows over the patch, with a brush radius in
+    /// kilometers, and its erosion.
+    fn margin(
+        &mut self,
+        spec: Margin,
+        center: V3,
+        radius_km: f64,
+        land_m: f64,
+        land_km: f64,
+        brush_km: f64,
+    ) {
+        let n = self.map.face_size();
+        let half = (land_km / self.world_km / (std::f64::consts::FRAC_PI_2 / n as f64)) as usize;
+        let land = meters_to_level(land_m);
+        let arc = radius_km / self.world_km;
+        for y in n / 2 - half..n / 2 + half {
+            for x in n / 2 - half..n / 2 + half {
+                if angle(self.map.texel_dir(0, x, y), center) > arc {
+                    self.map.set(0, x, y, land);
+                }
+            }
+        }
+        let brush = brush_km / self.world_km;
+        let mut stroke = MarginStroke::new(spec, n);
+        let reach = 320.0 / self.world_km;
+        let rows = (2.0 * reach / (0.6 * brush)).ceil() as usize;
+        let mut plans = Vec::new();
+        for row in 0..=rows {
+            let y = -reach + 2.0 * reach * row as f64 / rows as f64;
+            for column in 0..=rows {
+                let x = -reach + 2.0 * reach * column as f64 / rows as f64;
+                let p = offset(offset(self.center, std::f64::consts::FRAC_PI_2, x), 0.0, y);
+                plans.push(stroke.stamp(&self.map, p, brush, 0.7, 1.0));
+            }
+        }
+        // The erosion of the stroke, at the default Erosion and Branching
+        // settings of the brush.
+        let window = margin_window(&plans, n);
+        let mut erosion = Erosion::window_alone(&WindowHeights::new(&self.map, window));
+        erosion.set_branching(spec.seed, 0.5);
+        let step = erode_margin(&mut erosion, &plans, 0.5);
+        self.map.begin_stroke();
+        for plan in &plans {
+            self.map.margin(plan);
+        }
+        self.map.erode(&step);
         self.map.end_stroke();
     }
 
@@ -491,6 +543,65 @@ fn a_fast_ridge_is_near_the_east_pacific_rise() {
     assert_within(&report, &reference, &RIDGE_LIMITS);
 }
 
+/// The brush radius of the margin test, in kilometers.
+const MARGIN_BRUSH_KM: f64 = 150.0;
+
+/// The direction at a distance in radians from `center` at an azimuth in
+/// radians from north.
+fn offset(center: V3, azimuth: f64, distance: f64) -> V3 {
+    let east = normalize(cross([0.0, 0.0, 1.0], center));
+    let north = cross(center, east);
+    let toward = add(scale(north, azimuth.cos()), scale(east, azimuth.sin()));
+    normalize(add(
+        scale(center, distance.cos()),
+        scale(toward, distance.sin()),
+    ))
+}
+
+/// A margin at the default settings between land at 20 m and a floor at
+/// 4,600 m, on a world of the size of the Earth, at the scale of the
+/// margin of the eastern United States. As there, the shelf break is an
+/// arc around a place to the southeast, 70 km northwest of the middle of
+/// the patch.
+fn earth_margin() -> Painted {
+    let mut painted = Painted::earth(4600.0);
+    let spec = Margin {
+        shelf_m: -130.0,
+        shelf_km: 100.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let to_center = 530.0 / EARTH_KM;
+    let center = offset(painted.center, 137f64.to_radians(), to_center);
+    painted.margin(spec, center, 700.0, 20.0, 900.0, MARGIN_BRUSH_KM);
+    painted
+}
+
+const MARGIN_LIMITS: Within = Within {
+    slope: 0.5,
+    anisotropy: (0.5, 2.0),
+    rms: (0.7, 1.4),
+    histogram: 0.4,
+};
+
+#[test]
+fn a_margin_is_near_the_margin_of_the_eastern_united_states() {
+    let reference = Reference::parse(US_EAST_MARGIN).unwrap();
+    let (report, _) = compare(&earth_margin(), &reference, reference.direction());
+    assert_within(&report, &reference, &MARGIN_LIMITS);
+}
+
+/// The test stroke of a margin beside its reference patch, from
+/// `scripts/gebco-reference.sh us-east-margin`.
+#[test]
+#[ignore = "manual"]
+fn manual_margin_next_to_its_reference() {
+    let reference = Reference::parse(US_EAST_MARGIN).unwrap();
+    let gebco = gebco_patch("us-east-margin");
+    save_side_by_side("us-east-margin", &earth_margin(), &reference, &gebco);
+}
+
 /// The patch of a reference region from `scripts/gebco-reference.sh`.
 fn gebco_patch(name: &str) -> Vec<f32> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -594,9 +705,17 @@ fn manual_seamounts_next_to_the_pacific_flank() {
 }
 
 /// Draws a patch with row 0 at the south into `image` from column `x0` and
-/// row `y0`, with tints by depth and a hillshade from the northwest.
+/// row `y0`, with tints by depth and a hillshade from the northwest. The
+/// tints go from 4,500 m to 1,500 m, and from 5,200 m to 0 m on a patch
+/// with a shelf.
 fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, [x0, y0]: [usize; 2]) {
     let at = |x: usize, y: usize| f64::from(heights[y.min(n - 1) * n + x.min(n - 1)]);
+    let shelf = heights.iter().any(|&h| h > -500.0);
+    let (deep, span) = if shelf {
+        (5200.0, 5200.0)
+    } else {
+        (4500.0, 3000.0)
+    };
     for y in 0..n {
         for x in 0..n {
             let z = at(x, y);
@@ -604,7 +723,7 @@ fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, [x0
             let dy = (at(x, y + 1) - at(x, y.saturating_sub(1))) / (2.0 * cell_m);
             // A light from the northwest, 45 degrees up.
             let shade = ((dx - dy) * 0.707 + 1.0) / (1.0 + dx * dx + dy * dy).sqrt() * 0.707;
-            let t = ((z + 4500.0) / 3000.0).clamp(0.0, 1.0);
+            let t = ((z + deep) / span).clamp(0.0, 1.0);
             let tint = [30.0 + 140.0 * t, 60.0 + 140.0 * t, 130.0 + 100.0 * t];
             let k = (0.35 + 0.9 * shade).clamp(0.0, 1.3);
             let pixel = tint.map(|c| (c * k).clamp(0.0, 255.0) as u8);
@@ -843,4 +962,111 @@ fn manual_abyssal_hills_on_curved_strokes() {
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
+}
+
+/// A margin along a ragged coast with bays and headlands, painted with a
+/// stroke along the coast, in `target/realism/ragged-coast.png`.
+#[test]
+#[ignore = "manual"]
+fn manual_margin_on_a_ragged_coast() {
+    let n = 2048;
+    let mut map = Heightmap::new(n, meters_to_level(-4600.0));
+    let center = lonlat_to_dir(0.0, 0.0);
+    let half = 800;
+    for y in n / 2 - half..n / 2 + half {
+        for x in n / 2 - half..n / 2 + half {
+            let d = map.texel_dir(0, x, y);
+            let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
+            // A coast along a meridian with bays and headlands of several
+            // sizes.
+            let edge =
+                1.2 * (lat * 0.9).sin() + 0.6 * (lat * 2.3 + 1.0).sin() + 0.3 * (lat * 5.1).sin();
+            if lon < edge - 2.0 {
+                map.set(0, x, y, meters_to_level(200.0));
+            }
+        }
+    }
+    let spec = Margin {
+        shelf_m: -130.0,
+        shelf_km: 100.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let mut stroke = MarginStroke::new(spec, n);
+    map.begin_stroke();
+    for row in 0..=14 {
+        for i in 0..=60 {
+            let p = lonlat_to_dir(-3.5 + 0.5 * f64::from(row), -6.0 + 0.2 * f64::from(i));
+            let plan = stroke.stamp(&map, p, 0.012, 0.6, 1.0);
+            map.margin(&plan);
+        }
+    }
+    map.end_stroke();
+    let size = 512;
+    let patch = Patch::from_heightmap(&map, center, EARTH_KM, size, 2000.0);
+    let mut image = image::RgbImage::new(size as u32, size as u32);
+    draw(&mut image, &patch.heights, size, 2000.0, [0, 0]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/ragged-coast.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+}
+
+/// A close view of the slope of a margin on a face of 16,384 texels, with
+/// texels near 610 m, in `target/realism/margin-close.f32`: 512 by 512
+/// heights in cells of 600 m, row 0 at the south.
+#[test]
+#[ignore = "manual"]
+fn manual_margin_close_up() {
+    let n = 16384;
+    let mut map = Heightmap::new(n, meters_to_level(-4600.0));
+    let half = 600;
+    for y in n / 2 - half..n / 2 + half {
+        for x in n / 2 - half..n / 2 + half {
+            let d = map.texel_dir(0, x, y);
+            let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
+            if lon < -1.0 + 0.3 * (lat * 1.7).sin() {
+                map.set(0, x, y, meters_to_level(50.0));
+            }
+        }
+    }
+    let spec = Margin {
+        shelf_m: -130.0,
+        shelf_km: 100.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let mut stroke = MarginStroke::new(spec, n);
+    let mut plans = Vec::new();
+    for row in 0..=16 {
+        for i in 0..=40 {
+            let p = lonlat_to_dir(-1.4 + 0.2 * f64::from(row), -2.0 + 0.1 * f64::from(i));
+            plans.push(stroke.stamp(&map, p, 0.006, 0.7, 1.0));
+        }
+    }
+    let window = margin_window(&plans, n);
+    let mut erosion = Erosion::window_alone(&WindowHeights::new(&map, window));
+    erosion.set_branching(RIDGE_SEED, 0.7);
+    let started = std::time::Instant::now();
+    let step = erode_margin(&mut erosion, &plans, 0.5);
+    eprintln!(
+        "erosion of {} cells of {} texels: {:?}",
+        window.cells,
+        window.cell,
+        started.elapsed()
+    );
+    map.begin_stroke();
+    for plan in &plans {
+        map.margin(plan);
+    }
+    map.erode(&step);
+    map.end_stroke();
+    let patch = Patch::from_heightmap(&map, lonlat_to_dir(0.6, 0.0), EARTH_KM, 512, 600.0);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/margin-close.f32");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    let bytes: Vec<u8> = patch.heights.iter().flat_map(|h| h.to_le_bytes()).collect();
+    std::fs::write(out, bytes).unwrap();
 }

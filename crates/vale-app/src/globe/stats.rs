@@ -90,6 +90,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Paint => "paint",
         Mode::Seamounts => "seamounts",
         Mode::AbyssalHills => "abyssal hills",
+        Mode::Margin => "margin",
     }
 }
 

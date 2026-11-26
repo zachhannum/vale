@@ -304,7 +304,8 @@ impl ProtoApp {
                 | Mode::Range
                 | Mode::Basin
                 | Mode::Seamounts
-                | Mode::AbyssalHills => flow,
+                | Mode::AbyssalHills
+                | Mode::Margin => flow,
                 // These modes move toward a target, so each stamp does less.
                 Mode::Smooth
                 | Mode::Flatten

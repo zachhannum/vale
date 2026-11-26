@@ -15,6 +15,7 @@ use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level,
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
+use crate::margin::MarginPlan;
 use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
@@ -111,6 +112,9 @@ pub enum Mode {
     /// The mode of the abyssal hills brush. A stamp of this mode changes
     /// nothing. `Heightmap::abyssal` makes the change.
     AbyssalHills,
+    /// The mode of the margin brush. A stamp of this mode changes nothing.
+    /// `Heightmap::margin` makes the change.
+    Margin,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1169,6 +1173,7 @@ impl Heightmap {
                 | Mode::Basin
                 | Mode::Seamounts
                 | Mode::AbyssalHills
+                | Mode::Margin
         ) {
             return 0;
         }
@@ -1322,7 +1327,8 @@ impl Heightmap {
                             | Mode::Range
                             | Mode::Basin
                             | Mode::Seamounts
-                            | Mode::AbyssalHills => continue,
+                            | Mode::AbyssalHills
+                            | Mode::Margin => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1645,6 +1651,29 @@ impl Heightmap {
     /// Returns the number of texels that changed.
     pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
         self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
+    }
+
+    /// Adds a margin stamp: each sea texel under the brush moves toward the
+    /// margin profile, by the weight of the brush. The land does not change.
+    /// Call this in a stroke. Returns the number of texels that changed.
+    pub fn margin(&mut self, plan: &MarginPlan) -> usize {
+        assert_eq!(plan.face_size, self.n, "the face size of the plan");
+        let mut changed = 0;
+        for (face, rect) in plan.rects.into_iter().enumerate() {
+            let Some(rect) = rect else { continue };
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let p = self.texel_dir(face, x, y);
+                    let now = self.texel(face, x, y);
+                    let new = plan.level(self.level_before(face, x, y), now, p);
+                    if new != now {
+                        self.set(face, x, y, new);
+                        changed += 1;
+                    }
+                }
+            }
+        }
+        changed
     }
 
     /// The level at a direction, from the 4 texels around it.

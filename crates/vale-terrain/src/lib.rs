@@ -20,6 +20,7 @@ mod gpu;
 mod heightmap;
 mod lake;
 mod line;
+mod margin;
 pub mod math;
 mod polygonize;
 #[cfg(feature = "gpu")]
@@ -69,6 +70,11 @@ pub use heightmap::{
 };
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
+pub use margin::{
+    FIELD_CELLS, FIELD_FLOATS, MARGIN_ERODE_RATE, MARGIN_ERODE_STEPS, Margin, MarginField,
+    MarginInputs, MarginPlan, MarginStroke, SHELF_DEPTH_RANGE, SHELF_WIDTH_RANGE, erode_margin,
+    margin_window,
+};
 pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
@@ -76,7 +82,7 @@ pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use realism::{
     ATLANTIC_RIDGE, EPR_RIDGE, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism, Reference,
-    SLOPE_BINS_DEG, WEDGE_HALF_WIDTH, realism,
+    SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};

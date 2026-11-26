@@ -18,10 +18,11 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_KM, MARGIN_SHELF_M,
+    NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -232,7 +233,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 14] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -250,6 +251,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 13] = [
         Icon::AbyssalHills,
         Mode::AbyssalHills,
     ),
+    (panels::MARGIN, Icon::Margin, Mode::Margin),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3177,6 +3179,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::OceanRidge {
         ridge_hint_rows(ui, &state.globe);
     }
+    if mode == Mode::Margin {
+        hint_rows(ui, panels::MARGIN_HINT);
+    }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
@@ -3235,6 +3240,20 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             row(ui, controls, state, Slider::Scale);
             let fit = &mut state.globe.brush.abyssal_fit;
             widgets::switch_row(ui, controls, FIT_TO_MAP, "Fit to map", fit);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        Mode::Margin => {
+            let brush = &mut state.globe.brush;
+            let number = Number::new(MARGIN_SHELF, brush.margin_shelf_m, MARGIN_SHELF_M)
+                .label("Shelf depth")
+                .step(10.0)
+                .unit("m");
+            apply(number.stepper(ui, controls), &mut brush.margin_shelf_m);
+            let number = Number::new(MARGIN_WIDTH, brush.margin_shelf_km, MARGIN_SHELF_KM)
+                .label("Shelf width")
+                .step(5.0)
+                .unit("km");
+            apply(number.stepper(ui, controls), &mut brush.margin_shelf_km);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3297,10 +3316,13 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             .step(1.0);
         apply(number.stepper(ui, controls), &mut brush.floodplain_km);
     }
-    if matches!(mode, Mode::Uplift | Mode::Range | Mode::Basin) {
+    if matches!(
+        mode,
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+    ) {
         row(ui, controls, state, Slider::Erosion);
     }
-    if matches!(mode, Mode::Erode | Mode::Uplift) {
+    if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
         row(ui, controls, state, Slider::Branching);
     }
     if matches!(mode, Mode::Erode | Mode::Uplift | Mode::Range | Mode::Basin) {
@@ -3717,6 +3739,19 @@ fn basin_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     ui.add(egui::Label::new(text).selectable(false));
     ui.add_space(8.0);
 }
+
+/// A row with a hint.
+fn hint_rows(ui: &mut egui::Ui, hint: &str) {
+    ui.add_space(8.0);
+    let text = egui::RichText::new(hint).color(theme::MUTE);
+    ui.add(egui::Label::new(text).selectable(false));
+    ui.add_space(8.0);
+}
+
+/// The name of the shelf depth stepper of the margin mode.
+pub const MARGIN_SHELF: &str = "Brush shelf depth";
+/// The name of the shelf width stepper of the margin mode.
+pub const MARGIN_WIDTH: &str = "Brush shelf width";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.
