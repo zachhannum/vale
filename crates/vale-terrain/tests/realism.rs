@@ -951,3 +951,52 @@ fn manual_abyssal_hills_on_curved_strokes() {
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
 }
+
+/// A margin along a ragged coast with bays and headlands, painted with a
+/// stroke along the coast, in `target/realism/ragged-coast.png`.
+#[test]
+#[ignore = "manual"]
+fn manual_margin_on_a_ragged_coast() {
+    let n = 2048;
+    let mut map = Heightmap::new(n, meters_to_level(-4600.0));
+    let center = lonlat_to_dir(0.0, 0.0);
+    let half = 800;
+    for y in n / 2 - half..n / 2 + half {
+        for x in n / 2 - half..n / 2 + half {
+            let d = map.texel_dir(0, x, y);
+            let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
+            // A coast along a meridian with bays and headlands of several
+            // sizes.
+            let edge =
+                1.2 * (lat * 0.9).sin() + 0.6 * (lat * 2.3 + 1.0).sin() + 0.3 * (lat * 5.1).sin();
+            if lon < edge - 2.0 {
+                map.set(0, x, y, meters_to_level(200.0));
+            }
+        }
+    }
+    let spec = Margin {
+        shelf_m: -130.0,
+        shelf_km: 100.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let mut stroke = MarginStroke::new(spec, n);
+    map.begin_stroke();
+    for row in 0..=14 {
+        for i in 0..=60 {
+            let p = lonlat_to_dir(-3.5 + 0.5 * f64::from(row), -6.0 + 0.2 * f64::from(i));
+            let plan = stroke.stamp(&map, p, 0.012, 0.6, 1.0);
+            map.margin(&plan);
+        }
+    }
+    map.end_stroke();
+    let size = 512;
+    let patch = Patch::from_heightmap(&map, center, EARTH_KM, size, 2000.0);
+    let mut image = image::RgbImage::new(size as u32, size as u32);
+    draw(&mut image, &patch.heights, size, 2000.0, [0, 0]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/ragged-coast.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+}

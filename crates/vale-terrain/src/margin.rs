@@ -11,9 +11,10 @@
 //! brush. The patterns along the coast come from the nearest point of the
 //! coast, so a second stroke over the same place gives the same margin.
 
+use std::collections::VecDeque;
 use std::f64::consts::FRAC_PI_2;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, mpsc};
 
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_of, warp};
 use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, falloff, noise3};
@@ -63,7 +64,27 @@ const TOP_M: f64 = -0.5;
 
 /// The size of the features of the wander of the shelf break and its
 /// largest distance, in shelf widths, for each of two octaves.
-const WANDER: [(f64, f64); 2] = [(1.5, 0.22), (0.45, 0.08)];
+const WANDER: [(f64, f64); 2] = [(1.5, 0.15), (0.45, 0.06)];
+
+/// The smoothed coast fills the bays narrower than 2 times `CLOSE` shelf
+/// widths and removes the headlands thinner than 2 times `OPEN` shelf
+/// widths, and a blur of `SOFT` shelf widths makes its corners round. The
+/// shelf break, the slope, and the rise follow the smoothed coast.
+const CLOSE: f64 = 2.0;
+const OPEN: f64 = 0.5;
+const SOFT: f64 = 0.5;
+
+/// The shelf width changes along the coast by a factor of 2 to the power
+/// of up to this number, with features of `WIDTH_SIZE` shelf widths.
+const WIDTH_VARY: f64 = 0.7;
+const WIDTH_SIZE: f64 = 4.0;
+
+/// The largest factor of the shelf width.
+const WIDTH_MAX: f64 = 1.625;
+
+/// The distance to the smoothed coast of a cell inside it with no sea in
+/// the window, in kilometers.
+const FAR_KM: f64 = 1.0e6;
 
 /// The spacing of the gullies on the slope, in kilometers, and the least
 /// spacing, in texels.
@@ -98,14 +119,14 @@ const DEBRIS_PART: f64 = 0.45;
 const RELIEF: [(f64, f64); 4] = [(40.0, 40.0), (16.0, 50.0), (7.0, 55.0), (3.5, 45.0)];
 
 /// The number of cells along one side of a distance field, at most.
-pub const FIELD_CELLS: usize = 1024;
+pub const FIELD_CELLS: usize = 384;
 
 /// The number of numbers of a cell of a distance field.
-pub const FIELD_FLOATS: usize = 3;
+pub const FIELD_FLOATS: usize = 4;
 
 /// The distance in cells from the nearest land cell where the field looks
 /// for the coast.
-const SEARCH: usize = 3;
+const SEARCH: usize = 1;
 
 /// The half width of the blur of the directions of a field, in cells.
 const BLUR: usize = 3;
@@ -124,6 +145,7 @@ const SALT_PIECE: u32 = 0x7069_6563;
 const SALT_CANYON: u32 = 0x6361_6e79;
 const SALT_SCAR: u32 = 0x7363_6172;
 const SALT_RELIEF: u32 = 0x7265_6c66;
+const SALT_WIDTH: u32 = 0x7769_6474;
 
 /// The settings of a margin stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -171,9 +193,11 @@ pub struct MarginField {
     pub cell: f64,
     /// The depth of the deep floor at the foot of the rise, in meters.
     pub floor_m: f64,
-    /// For each cell, row by row from the south, the distance in kilometers
-    /// and the east and north parts of the direction away from the land. A
-    /// cell with no land in the window has the distance `f32::MAX`.
+    /// For each cell, row by row from the south: the distance to the land,
+    /// the signed distance to the smoothed coast in kilometers, positive in
+    /// the sea, and the east and north parts of the direction toward the
+    /// sea from the smoothed coast. A cell with no land in the window has
+    /// the distances `f32::MAX`.
     pub cells: Vec<f32>,
     /// The distance from `center` where the stamps can be, in radians.
     paint: f64,
@@ -195,18 +219,28 @@ fn reach_km(spec: &Margin, floor_m: f64) -> f64 {
     let drop = spec.shelf_m - floor_m;
     let height = RISE_PART * drop;
     let tan = SLOPE_RANGE_DEG.0.to_radians().tan();
-    spec.shelf_km * (1.0 + WANDER[0].1 + WANDER[1].1)
+    spec.shelf_km * (WIDTH_MAX + WANDER[0].1 + WANDER[1].1 + 2.0 * CLOSE)
         + (drop - height) / (1000.0 * tan)
         + RISE_KM_PER_M * height
 }
 
+/// What a distance field needs from the heightmap: the land at the cell
+/// centers and the pieces of the coast. `MarginInputs::build` makes the
+/// field from it, on any thread.
+#[derive(Clone, Debug)]
+pub struct MarginInputs {
+    spec: Margin,
+    plane: Plane,
+    paint: f64,
+    floor_m: Option<f64>,
+    levels: Vec<f64>,
+    pieces: Pieces,
+}
+
 impl MarginField {
     /// Reads the field around `center` from the ground of `map`, for stamps
-    /// up to `paint` radians from `center`. The land is the ground above the
-    /// sea level. With no `floor_m`, the field also reads the depth of the
-    /// floor: the depth that `FLOOR_PART` of the sea farther from the land
-    /// than the shelf and a slope of `SLOPE_DEG` is below. A margin from an
-    /// earlier stroke is shallower, so it does not change that depth.
+    /// up to `paint` radians from `center`. See `MarginInputs::read` and
+    /// `MarginInputs::build`.
     pub fn read(
         map: &Heightmap,
         spec: &Margin,
@@ -214,6 +248,21 @@ impl MarginField {
         paint: f64,
         floor_m: Option<f64>,
     ) -> MarginField {
+        MarginInputs::read(map, spec, center, paint, floor_m).build()
+    }
+}
+
+impl MarginInputs {
+    /// Reads what the field around `center` needs from the ground of
+    /// `map`, for stamps up to `paint` radians from `center`, with a depth
+    /// of the floor or none.
+    pub fn read(
+        map: &Heightmap,
+        spec: &Margin,
+        center: V3,
+        paint: f64,
+        floor_m: Option<f64>,
+    ) -> MarginInputs {
         let spec = spec.clamped();
         let center = normalize(center);
         let east = cross([0.0, 0.0, 1.0], center);
@@ -231,17 +280,6 @@ impl MarginField {
         let texel = FRAC_PI_2 / map.face_size() as f64;
         let size = ((2.0 * half / texel).ceil() as usize).clamp(16, FIELD_CELLS);
         let cell = 2.0 * half / size as f64;
-        let mut levels = Vec::with_capacity(size * size);
-        for j in 0..size {
-            let y = (j as f64 + 0.5) * cell - half;
-            for i in 0..size {
-                let x = (i as f64 + 0.5) * cell - half;
-                let at = normalize(add(center, add(scale(east, x), scale(north, y))));
-                levels.push(to_meters(f64::from(nearest_level(map, at))));
-            }
-        }
-        let land: Vec<bool> = levels.iter().map(|&m| m > 0.0).collect();
-        let (_, nearest) = distance_transform(&land, size);
         let plane = Plane {
             center,
             east,
@@ -250,54 +288,99 @@ impl MarginField {
             cell,
             size,
         };
-        let segments = coast_segments(map, &plane);
-        let mut cells = Vec::with_capacity(size * size * FIELD_FLOATS);
-        let mut distances = Vec::with_capacity(size * size);
-        for k in 0..size * size {
-            if land[k] {
-                distances.push(0.0);
-                cells.extend([0.0, 0.0, 0.0]);
-                continue;
-            }
-            if nearest[k] == usize::MAX {
-                distances.push(f64::MAX);
-                cells.extend([f32::MAX, 0.0, 0.0]);
-                continue;
-            }
-            let (i, j) = ((k % size) as f64, (k / size) as f64);
-            let (si, sj) = (nearest[k] % size, nearest[k] / size);
-            // The nearest point of the coast segments near the nearest land
-            // cell. With no segment there, the coast is half a cell from the
-            // center of that cell.
-            let mut best = (f64::MAX, (si as f64, sj as f64));
-            for qj in sj.saturating_sub(SEARCH)..(sj + SEARCH + 1).min(size) {
-                for qi in si.saturating_sub(SEARCH)..(si + SEARCH + 1).min(size) {
-                    for &[a, b] in &segments[qj * size + qi] {
-                        let q = nearest_on_segment((i, j), a, b);
-                        let d = (i - q.0).hypot(j - q.1);
-                        if d < best.0 {
-                            best = (d, q);
-                        }
-                    }
-                }
-            }
-            if best.0 == f64::MAX {
-                let away = (i - si as f64).hypot(j - sj as f64);
-                best = ((away - 0.5).max(0.0), (si as f64, sj as f64));
-            }
-            // The distance on the sphere, so two windows give the same
-            // distance.
-            let (here, there) = (plane.dir(i, j), plane.dir(best.1.0, best.1.1));
-            let d = dot(here, there).clamp(-1.0, 1.0).acos() * km;
-            let (dx, dy) = (i - best.1.0, j - best.1.1);
-            let away = dx.hypot(dy).max(1e-9);
-            distances.push(d);
-            cells.extend([d as f32, (dx / away) as f32, (dy / away) as f32]);
+        let levels = par_map(size * size, |k| {
+            let at = plane.dir((k % size) as f64, (k / size) as f64);
+            to_meters(f64::from(nearest_level(map, at)))
+        });
+        let land: Vec<bool> = levels.iter().map(|&m| m > 0.0).collect();
+        let pieces = coast_segments(map, &plane, &land);
+        MarginInputs {
+            spec,
+            plane,
+            paint,
+            floor_m,
+            levels,
+            pieces,
         }
+    }
+
+    /// The distance field. The land is the ground above the sea level.
+    /// With no depth of the floor, the field also reads it: the depth that
+    /// `FLOOR_PART` of the sea farther from the land than the widest shelf
+    /// and a slope of `SLOPE_DEG` is below. A margin from an earlier stroke
+    /// is shallower, so it does not change that depth.
+    pub fn build(self) -> MarginField {
+        let MarginInputs {
+            spec,
+            plane,
+            paint,
+            floor_m,
+            levels,
+            pieces,
+        } = self;
+        let Plane {
+            center,
+            east,
+            north,
+            cell,
+            size,
+            ..
+        } = plane;
+        let km = spec.world_km;
+        let land: Vec<bool> = levels.iter().map(|&m| m > 0.0).collect();
+        // The coast, and the smoothed coast: the edge of the land with its
+        // narrow bays filled and its thin headlands removed, and a light
+        // blur.
+        let exact = reach_km(&spec, floor_m.unwrap_or(ELEV_MIN)) / (cell * km);
+        let coast = nearest_points(&land, &pieces, size, exact);
+        let cells_of = |part: f64| part * spec.shelf_km / (cell * km);
+        let closed = open(&close(&land, size, cells_of(CLOSE)), size, cells_of(OPEN));
+        let radius = (cells_of(SOFT).round() as usize).max(1);
+        let soft = blur(&closed, size, radius);
+        let soft_land: Vec<bool> = soft.iter().map(|&v| v >= 0.5).collect();
+        let soft_sea: Vec<bool> = soft_land.iter().map(|&l| !l).collect();
+        let soft_segments = level_segments(&soft, size, 0.5);
+        let outside = nearest_points(&soft_land, &soft_segments, size, exact);
+        let inside = nearest_points(&soft_sea, &soft_segments, size, exact);
+        let distance = |k: usize, q: (f64, f64)| {
+            let here = plane.dir((k % size) as f64, (k / size) as f64);
+            dot(here, plane.dir(q.0, q.1)).clamp(-1.0, 1.0).acos() * km
+        };
+        let both = par_map(size * size, |k| {
+            let d = match coast[k] {
+                _ if land[k] => 0.0,
+                Some(q) => distance(k, q),
+                None => f64::MAX,
+            };
+            let (i, j) = ((k % size) as f64, (k / size) as f64);
+            // The signed distance to the smoothed coast, and the direction
+            // toward the sea from it.
+            let (s, away) = match (soft_land[k], outside[k], inside[k]) {
+                (false, Some(q), _) => (distance(k, q), (i - q.0, j - q.1)),
+                (true, _, Some(q)) => (-distance(k, q), (q.0 - i, q.1 - j)),
+                (true, _, None) => (-FAR_KM, (0.0, 0.0)),
+                (false, None, _) => (f64::MAX, (0.0, 0.0)),
+            };
+            let size = away.0.hypot(away.1).max(1e-9);
+            let missing = d == f64::MAX || s == f64::MAX;
+            let cell = if missing {
+                [f32::MAX, f32::MAX, 0.0, 0.0]
+            } else {
+                [
+                    d as f32,
+                    s as f32,
+                    (away.0 / size) as f32,
+                    (away.1 / size) as f32,
+                ]
+            };
+            (d, cell)
+        });
+        let distances: Vec<f64> = both.iter().map(|b| b.0).collect();
+        let mut cells: Vec<f32> = both.iter().flat_map(|b| b.1).collect();
         smooth_directions(&mut cells, size);
         let deep = spec.shelf_m - LEAST_DROP;
         let floor_m = floor_m.unwrap_or_else(|| {
-            let far = spec.shelf_km + 1500.0 / (1000.0 * SLOPE_DEG.to_radians().tan());
+            let far = spec.shelf_km * WIDTH_MAX + 1500.0 / (1000.0 * SLOPE_DEG.to_radians().tan());
             let mut out: Vec<f64> = (0..size * size)
                 .filter(|&k| distances[k] > far && levels[k] < deep)
                 .map(|k| levels[k])
@@ -324,6 +407,13 @@ impl MarginField {
         }
     }
 
+    /// The same inputs with another depth of the floor.
+    fn with_floor(self, floor_m: Option<f64>) -> MarginInputs {
+        MarginInputs { floor_m, ..self }
+    }
+}
+
+impl MarginField {
     /// Whether a stamp at `center` with a radius in radians is inside the
     /// part of the window for stamps.
     pub fn covers(&self, center: V3, radius: f64) -> bool {
@@ -331,10 +421,12 @@ impl MarginField {
         a + radius <= self.paint
     }
 
-    /// The distance to the land in kilometers and the direction away from it
-    /// at a unit direction, from the 4 cells around it. A direction outside
-    /// the window, or near a cell with no land in the window, gives `None`.
-    pub(crate) fn sample(&self, p: V3) -> Option<(f64, V3)> {
+    /// The distance to the land and the signed distance to the smoothed
+    /// coast in kilometers, and the direction toward the sea from the
+    /// smoothed coast, at a unit direction, from the 4 cells around it. A
+    /// direction outside the window, or near a cell with no land in the
+    /// window, gives `None`.
+    pub(crate) fn sample(&self, p: V3) -> Option<(f64, f64, V3)> {
         let z = dot(p, self.center);
         if z <= 0.0 {
             return None;
@@ -348,7 +440,7 @@ impl MarginField {
         }
         let (i, j) = (fx.floor() as usize, fy.floor() as usize);
         let (tx, ty) = (fx - i as f64, fy - j as f64);
-        let mut out = [0.0; 3];
+        let mut out = [0.0; FIELD_FLOATS];
         for (k, w) in [
             (j * self.size + i, (1.0 - tx) * (1.0 - ty)),
             (j * self.size + i + 1, tx * (1.0 - ty)),
@@ -363,8 +455,8 @@ impl MarginField {
                 *o += w * f64::from(*v);
             }
         }
-        let away = add(scale(self.east, out[1]), scale(self.north, out[2]));
-        Some((out[0], away))
+        let away = add(scale(self.east, out[2]), scale(self.north, out[3]));
+        Some((out[0], out[1], away))
     }
 }
 
@@ -380,6 +472,7 @@ fn nearest_level(map: &Heightmap, d: V3) -> u16 {
 
 /// A square grid of cells on the plane that touches the sphere at
 /// `center`.
+#[derive(Clone, Debug)]
 struct Plane {
     center: V3,
     east: V3,
@@ -413,88 +506,244 @@ impl Plane {
     }
 }
 
-/// The pieces of the coast near each cell of a plane, in cells. A piece
-/// joins the middles of the sides between a land texel and a sea texel in a
-/// square of four texels of `map`. Thus the coast depends only on which
-/// texels are land, and not on the cells or on the depth of the sea. A piece
-/// is in the list of the cell that holds its middle.
-fn coast_segments(map: &Heightmap, plane: &Plane) -> Vec<Vec<[(f64, f64); 2]>> {
+/// The pieces of a line, in cells, in the list of the cell that holds the
+/// middle of each piece.
+type Pieces = Vec<Vec<[(f64, f64); 2]>>;
+
+/// Adds a piece to the list of the cell that holds its middle.
+fn add_piece(out: &mut Pieces, size: usize, a: (f64, f64), b: (f64, f64)) {
+    let (mx, my) = ((0.5 * (a.0 + b.0)).round(), (0.5 * (a.1 + b.1)).round());
+    let last = (size - 1) as f64;
+    if (0.0..=last).contains(&mx) && (0.0..=last).contains(&my) {
+        out[my as usize * size + mx as usize].push([a, b]);
+    }
+}
+
+/// The pieces of the coast near the coast cells of a plane, in cells. A
+/// piece joins the middles of the sides between a land texel and a sea
+/// texel in a square of four texels of `map`. Thus the coast depends only on
+/// which texels are land, and not on the cells or on the depth of the sea.
+/// A coast cell is a cell with land and sea among it and the cells around
+/// it.
+fn coast_segments(map: &Heightmap, plane: &Plane, land: &[bool]) -> Pieces {
     let size = plane.size;
-    let mut out = vec![Vec::new(); size * size];
     let n = map.face_size();
-    let reach = (plane.half * std::f64::consts::SQRT_2).atan();
-    for face in 0..FACES {
-        let Some(rect) = brush_rect(n, face, plane.center, reach) else {
-            continue;
-        };
-        for y in rect.y0..rect.y1.min(n - 1) {
-            for x in rect.x0..rect.x1.min(n - 1) {
-                let corner = |dx: usize, dy: usize| {
-                    let (cx, cy) = (x + dx, y + dy);
-                    let level = map.get(face, cx as i64, cy as i64);
-                    (map.texel_dir(face, cx, cy), to_meters(f64::from(level)))
-                };
-                let ring = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
-                if ring.iter().all(|c| c.1 > 0.0) || ring.iter().all(|c| c.1 <= 0.0) {
-                    continue;
-                }
-                let mut points = Vec::new();
-                for e in 0..4 {
-                    let ((p0, v0), (p1, v1)) = (ring[e], ring[(e + 1) % 4]);
-                    if (v0 > 0.0) != (v1 > 0.0) {
-                        points.extend(plane.place(normalize(add(p0, p1))));
+    let coast_cells: Vec<usize> = (0..size * size)
+        .filter(|&k| {
+            let (i, j) = (k % size, k / size);
+            (i.saturating_sub(1)..(i + 2).min(size))
+                .flat_map(|x| (j.saturating_sub(1)..(j + 2).min(size)).map(move |y| y * size + x))
+                .any(|q| land[q] != land[k])
+        })
+        .collect();
+    // The pieces of the squares of texels near each coast cell. A square
+    // near two coast cells gives its pieces two times, and that changes no
+    // distance.
+    let found = par_map(coast_cells.len(), |c| {
+        let k = coast_cells[c];
+        let middle = plane.dir((k % size) as f64, (k / size) as f64);
+        let mut pieces = Vec::new();
+        for face in 0..FACES {
+            let Some(rect) = brush_rect(n, face, middle, 0.75 * plane.cell) else {
+                continue;
+            };
+            for y in rect.y0..rect.y1.min(n - 1) {
+                for x in rect.x0..rect.x1.min(n - 1) {
+                    let is_land = |dx: usize, dy: usize| {
+                        let level = map.get(face, (x + dx) as i64, (y + dy) as i64);
+                        to_meters(f64::from(level)) > 0.0
+                    };
+                    let land = [is_land(0, 0), is_land(1, 0), is_land(1, 1), is_land(0, 1)];
+                    if land.iter().all(|&l| l) || land.iter().all(|&l| !l) {
+                        continue;
+                    }
+                    let corners = [(0, 0), (1, 0), (1, 1), (0, 1)]
+                        .map(|(dx, dy)| map.texel_dir(face, x + dx, y + dy));
+                    let mut points = Vec::new();
+                    for e in 0..4 {
+                        if land[e] != land[(e + 1) % 4] {
+                            let middle = normalize(add(corners[e], corners[(e + 1) % 4]));
+                            points.extend(plane.place(middle));
+                        }
+                    }
+                    for pair in points.as_chunks::<2>().0 {
+                        pieces.push((pair[0], pair[1]));
                     }
                 }
-                for pair in points.as_chunks::<2>().0 {
-                    let (a, b) = (pair[0], pair[1]);
-                    let (mx, my) = ((0.5 * (a.0 + b.0)).round(), (0.5 * (a.1 + b.1)).round());
-                    let last = (size - 1) as f64;
-                    if (0.0..=last).contains(&mx) && (0.0..=last).contains(&my) {
-                        out[my as usize * size + mx as usize].push([a, b]);
-                    }
+            }
+        }
+        pieces
+    });
+    let mut out = vec![Vec::new(); size * size];
+    for (a, b) in found.into_iter().flatten() {
+        add_piece(&mut out, size, a, b);
+    }
+    out
+}
+
+/// The pieces of the line where `values` crosses `level`, in cells, from
+/// the values at the cell centers.
+fn level_segments(values: &[f64], size: usize, level: f64) -> Pieces {
+    let mut out = vec![Vec::new(); size * size];
+    for j in 0..size - 1 {
+        for i in 0..size - 1 {
+            let corner = |di: usize, dj: usize| {
+                let (x, y) = (i + di, j + dj);
+                ((x as f64, y as f64), values[y * size + x] - level)
+            };
+            let ring = [corner(0, 0), corner(1, 0), corner(1, 1), corner(0, 1)];
+            let mut points = Vec::new();
+            for e in 0..4 {
+                let ((p0, v0), (p1, v1)) = (ring[e], ring[(e + 1) % 4]);
+                if (v0 >= 0.0) != (v1 >= 0.0) {
+                    let t = v0 / (v0 - v1);
+                    points.push((p0.0 + (p1.0 - p0.0) * t, p0.1 + (p1.1 - p0.1) * t));
                 }
+            }
+            for pair in points.as_chunks::<2>().0 {
+                add_piece(&mut out, size, pair[0], pair[1]);
             }
         }
     }
     out
 }
 
-/// Smooths the directions away from the land of the sea cells of a field,
-/// with two box blurs of `BLUR` cells on each side. The coast of the texels
-/// is a staircase, so the direction to its nearest point jumps, and the
-/// patterns along the coast would break into beads.
+/// The cells within `radius` cells of a cell of `set`.
+fn dilate(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
+    let (squared, _) = distance_transform(set, size);
+    squared.iter().map(|&d| d <= radius * radius).collect()
+}
+
+/// The cells farther than `radius` cells from each cell outside `set`.
+fn erode(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
+    let outside: Vec<bool> = set.iter().map(|&c| !c).collect();
+    dilate(&outside, size, radius).iter().map(|&c| !c).collect()
+}
+
+/// `set` with its gaps narrower than 2 times `radius` cells filled.
+fn close(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
+    erode(&dilate(set, size, radius), size, radius)
+}
+
+/// `set` with its parts thinner than 2 times `radius` cells removed.
+fn open(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
+    dilate(&erode(set, size, radius), size, radius)
+}
+
+/// The share of land around each cell, from three box blurs of `radius`
+/// cells on each side. Past the side of the grid, the cells at the side go
+/// on.
+fn blur(land: &[bool], size: usize, radius: usize) -> Vec<f64> {
+    let mut values: Vec<f64> = land.iter().map(|&l| f64::from(u8::from(l))).collect();
+    let mut line = vec![0.0; size];
+    let mut sums = vec![0.0; size + 1];
+    let r = radius as i64;
+    for _ in 0..3 {
+        for axis in 0..2 {
+            for row in 0..size {
+                let at = |i: usize| {
+                    if axis == 0 {
+                        row * size + i
+                    } else {
+                        i * size + row
+                    }
+                };
+                for (i, v) in line.iter_mut().enumerate() {
+                    *v = values[at(i)];
+                }
+                for i in 0..size {
+                    sums[i + 1] = sums[i] + line[i];
+                }
+                for i in 0..size {
+                    let (lo, hi) = (i as i64 - r, i as i64 + r);
+                    let inside =
+                        sums[hi.min(size as i64 - 1) as usize + 1] - sums[lo.max(0) as usize];
+                    let before = (-lo).max(0) as f64 * line[0];
+                    let after = (hi - (size as i64 - 1)).max(0) as f64 * line[size - 1];
+                    values[at(i)] = (inside + before + after) / (2 * radius + 1) as f64;
+                }
+            }
+        }
+    }
+    values
+}
+
+/// The nearest point of `pieces` to each cell that is not a site, in cells,
+/// near the nearest site. Farther than `exact` cells from the nearest site,
+/// or with no piece near, the nearest point is half a cell from the center
+/// of the nearest site, toward the cell. With no site, it is `None`.
+fn nearest_points(
+    sites: &[bool],
+    pieces: &Pieces,
+    size: usize,
+    exact: f64,
+) -> Vec<Option<(f64, f64)>> {
+    let (_, nearest) = distance_transform(sites, size);
+    par_map(size * size, |k| {
+        if sites[k] || nearest[k] == usize::MAX {
+            return None;
+        }
+        let (i, j) = ((k % size) as f64, (k / size) as f64);
+        let (si, sj) = (nearest[k] % size, nearest[k] / size);
+        let (dx, dy) = (i - si as f64, j - sj as f64);
+        let away = dx.hypot(dy);
+        let edge = (si as f64 + 0.5 * dx / away, sj as f64 + 0.5 * dy / away);
+        if away > exact {
+            return Some(edge);
+        }
+        let mut best = (f64::MAX, edge);
+        for qj in sj.saturating_sub(SEARCH)..(sj + SEARCH + 1).min(size) {
+            for qi in si.saturating_sub(SEARCH)..(si + SEARCH + 1).min(size) {
+                for &[a, b] in &pieces[qj * size + qi] {
+                    let q = nearest_on_segment((i, j), a, b);
+                    let d = (i - q.0).hypot(j - q.1);
+                    if d < best.0 {
+                        best = (d, q);
+                    }
+                }
+            }
+        }
+        Some(best.1)
+    })
+}
+
+/// Smooths the directions toward the sea of the cells of a field, with two
+/// box blurs of `BLUR` cells on each side. The direction to the nearest
+/// point of a line jumps where two parts of the line are at the same
+/// distance, and the patterns along the coast would break there.
 fn smooth_directions(cells: &mut [f32], size: usize) {
-    let sea = |c: &[f32]| c[0] > 0.0 && c[0] < f32::MAX;
+    let used = |c: &[f32]| c[1] < f32::MAX && (c[2] != 0.0 || c[3] != 0.0);
     for _ in 0..2 {
         for axis in 0..2 {
             let before = cells.to_vec();
-            for j in 0..size {
-                for i in 0..size {
-                    let k = j * size + i;
-                    if !sea(&before[k * FIELD_FLOATS..]) {
+            let blurred = par_map(size * size, |k| {
+                let (i, j) = (k % size, k / size);
+                if !used(&before[k * FIELD_FLOATS..]) {
+                    return None;
+                }
+                let (mut x, mut y) = (0.0f64, 0.0f64);
+                for o in -(BLUR as i64)..=BLUR as i64 {
+                    let (oi, oj) = if axis == 0 {
+                        (i as i64 + o, j as i64)
+                    } else {
+                        (i as i64, j as i64 + o)
+                    };
+                    if oi < 0 || oj < 0 || oi >= size as i64 || oj >= size as i64 {
                         continue;
                     }
-                    let (mut x, mut y) = (0.0f64, 0.0f64);
-                    for o in -(BLUR as i64)..=BLUR as i64 {
-                        let (oi, oj) = if axis == 0 {
-                            (i as i64 + o, j as i64)
-                        } else {
-                            (i as i64, j as i64 + o)
-                        };
-                        if oi < 0 || oj < 0 || oi >= size as i64 || oj >= size as i64 {
-                            continue;
-                        }
-                        let q = (oj as usize * size + oi as usize) * FIELD_FLOATS;
-                        if sea(&before[q..]) {
-                            x += f64::from(before[q + 1]);
-                            y += f64::from(before[q + 2]);
-                        }
+                    let q = (oj as usize * size + oi as usize) * FIELD_FLOATS;
+                    if used(&before[q..]) {
+                        x += f64::from(before[q + 2]);
+                        y += f64::from(before[q + 3]);
                     }
-                    let length = x.hypot(y);
-                    if length > 1e-9 {
-                        cells[k * FIELD_FLOATS + 1] = (x / length) as f32;
-                        cells[k * FIELD_FLOATS + 2] = (y / length) as f32;
-                    }
+                }
+                let length = x.hypot(y);
+                (length > 1e-9).then(|| [(x / length) as f32, (y / length) as f32])
+            });
+            for (k, v) in blurred.into_iter().enumerate() {
+                if let Some([x, y]) = v {
+                    cells[k * FIELD_FLOATS + 2] = x;
+                    cells[k * FIELD_FLOATS + 3] = y;
                 }
             }
         }
@@ -519,37 +768,58 @@ fn nearest_on_segment(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> (f64, f64)
 /// The steps are those of Felzenszwalb and Huttenlocher (2012).
 fn distance_transform(sites: &[bool], size: usize) -> (Vec<f64>, Vec<usize>) {
     let inf = f64::MAX;
-    let mut f = vec![inf; size];
-    let mut out = vec![(inf, 0usize); size];
-    // The columns first: the nearest site in the same column.
-    let mut column = vec![(inf, usize::MAX); size * size];
-    for i in 0..size {
-        for (j, v) in f.iter_mut().enumerate() {
-            *v = if sites[j * size + i] { 0.0 } else { inf };
-        }
+    let envelope = |f: Vec<f64>| {
+        let mut out = vec![(inf, 0usize); size];
         lower_envelope(&f, &mut out);
-        for (j, &(d, at)) in out.iter().enumerate() {
-            if d < inf {
-                column[j * size + i] = (d, at * size + i);
-            }
-        }
-    }
+        out
+    };
+    // The columns first: the nearest site in the same column.
+    let columns = par_map(size, |i| {
+        envelope(
+            (0..size)
+                .map(|j| if sites[j * size + i] { 0.0 } else { inf })
+                .collect(),
+        )
+    });
     // Then the rows, from the columns.
+    let rows = par_map(size, |j| {
+        envelope((0..size).map(|i| columns[i][j].0).collect())
+    });
     let mut squared = vec![inf; size * size];
     let mut nearest = vec![usize::MAX; size * size];
-    for j in 0..size {
-        for (i, v) in f.iter_mut().enumerate() {
-            *v = column[j * size + i].0;
-        }
-        lower_envelope(&f, &mut out);
-        for (i, &(d, at)) in out.iter().enumerate() {
+    for (j, row) in rows.iter().enumerate() {
+        for (i, &(d, at)) in row.iter().enumerate() {
             if d < inf {
                 squared[j * size + i] = d;
-                nearest[j * size + i] = column[j * size + at].1;
+                nearest[j * size + i] = columns[at][j].1 * size + at;
             }
         }
     }
     (squared, nearest)
+}
+
+/// `f` of each number below `count`, in order, on the threads of the
+/// device.
+fn par_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = count.div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let f = &f;
+        let parts: Vec<_> = (0..count)
+            .step_by(chunk)
+            .map(|start| {
+                scope.spawn(move || {
+                    (start..(start + chunk).min(count))
+                        .map(f)
+                        .collect::<Vec<T>>()
+                })
+            })
+            .collect();
+        parts
+            .into_iter()
+            .flat_map(|part| part.join().expect("a worker thread of the field"))
+            .collect()
+    })
 }
 
 /// The lower envelope of the parabolas `(q - p)² + f[p]` for the `p` with a
@@ -599,11 +869,36 @@ fn lower_envelope(f: &[f64], out: &mut [(f64, usize)]) {
 }
 
 /// One margin stroke.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct MarginStroke {
     spec: Margin,
     face_size: usize,
-    field: Option<Arc<MarginField>>,
+    /// The fields of the stroke, in the order of their windows. A field that
+    /// the worker thread still builds is `None`.
+    fields: Vec<Option<Arc<MarginField>>>,
+    /// The center and the part for stamps of the last window.
+    last: Option<(V3, f64)>,
+    /// The stamps that wait for their field, in order, with the number of
+    /// the field.
+    waiting: VecDeque<(Stamp, usize)>,
+    worker: Option<Worker>,
+}
+
+/// The thread that builds the fields of a stroke in order. Each field gets
+/// the depth of the floor of the field before it.
+#[derive(Debug)]
+struct Worker {
+    jobs: mpsc::Sender<MarginInputs>,
+    done: mpsc::Receiver<Arc<MarginField>>,
+}
+
+/// One stamp of a stroke before it has its field.
+#[derive(Clone, Copy, Debug)]
+struct Stamp {
+    center: V3,
+    radius: f64,
+    hardness: f64,
+    flow: f64,
 }
 
 /// One stamp of a margin stroke: the texels that it can change and what it
@@ -629,7 +924,10 @@ impl MarginStroke {
         MarginStroke {
             spec: spec.clamped(),
             face_size,
-            field: None,
+            fields: Vec::new(),
+            last: None,
+            waiting: VecDeque::new(),
+            worker: None,
         }
     }
 
@@ -643,7 +941,8 @@ impl MarginStroke {
     /// stamp reads the distance field and the depth of the floor from
     /// `map`. A stamp outside the window of the field reads a new field with
     /// the same floor. Give `map` the ground from before the stroke, or the
-    /// ground of the stroke so far: a stroke does not change the land.
+    /// ground of the stroke so far: a stroke does not change the land. Use
+    /// `stamp` or `stamp_later` in one stroke, not both.
     pub fn stamp(
         &mut self,
         map: &Heightmap,
@@ -652,29 +951,133 @@ impl MarginStroke {
         hardness: f64,
         flow: f64,
     ) -> MarginPlan {
-        let center = normalize(center);
-        let step = FRAC_PI_2 / self.face_size as f64;
-        let radius = radius.max(2.0 * step);
-        let covered = self
-            .field
-            .as_ref()
-            .is_some_and(|field| field.covers(center, radius));
-        if !covered {
-            let floor = self.field.as_ref().map(|field| field.floor_m);
-            let field = MarginField::read(map, &self.spec, center, PAINT * radius, floor);
-            self.field = Some(Arc::new(field));
+        let stamp = self.stamp_of(center, radius, hardness, flow);
+        let window = self.window(map, stamp, true);
+        let field = self.fields[window].clone().expect("the field is there");
+        self.plan(stamp, field)
+    }
+
+    /// Adds a stamp as `stamp` does, but a new field builds on a worker
+    /// thread, and the stamp waits for it. Returns the plans of the stamps
+    /// that have their fields, in order.
+    pub fn stamp_later(
+        &mut self,
+        map: &Heightmap,
+        center: V3,
+        radius: f64,
+        hardness: f64,
+        flow: f64,
+    ) -> Vec<MarginPlan> {
+        let stamp = self.stamp_of(center, radius, hardness, flow);
+        let window = self.window(map, stamp, false);
+        self.waiting.push_back((stamp, window));
+        self.poll()
+    }
+
+    /// The plans of the waiting stamps that have their fields now, in
+    /// order.
+    pub fn poll(&mut self) -> Vec<MarginPlan> {
+        if let Some(worker) = &self.worker {
+            while let Ok(field) = worker.done.try_recv() {
+                let slot = self.fields.iter_mut().find(|f| f.is_none());
+                *slot.expect("a field that waits") = Some(field);
+            }
         }
-        let field = self.field.clone().expect("the stroke has a field");
+        self.ready()
+    }
+
+    /// Waits for the fields of all the waiting stamps, and returns their
+    /// plans in order.
+    pub fn finish(&mut self) -> Vec<MarginPlan> {
+        if let Some(worker) = &self.worker {
+            while let Some(slot) = self.fields.iter_mut().find(|f| f.is_none()) {
+                let field = worker.done.recv().expect("the worker of the stroke");
+                *slot = Some(field);
+            }
+        }
+        self.ready()
+    }
+
+    /// Whether a stamp waits for its field.
+    pub fn is_waiting(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+
+    fn ready(&mut self) -> Vec<MarginPlan> {
+        let mut out = Vec::new();
+        while let Some(&(stamp, window)) = self.waiting.front() {
+            let Some(field) = self.fields[window].clone() else {
+                break;
+            };
+            self.waiting.pop_front();
+            out.push(self.plan(stamp, field));
+        }
+        out
+    }
+
+    fn stamp_of(&self, center: V3, radius: f64, hardness: f64, flow: f64) -> Stamp {
+        let step = FRAC_PI_2 / self.face_size as f64;
+        Stamp {
+            center: normalize(center),
+            radius: radius.max(2.0 * step),
+            hardness: hardness.clamp(0.0, 0.999),
+            flow: flow.clamp(0.0, 1.0),
+        }
+    }
+
+    /// The number of the field of a stamp. The last window holds the stamp,
+    /// or the stroke reads a new window around it. With `now`, the field of
+    /// a new window builds at once.
+    fn window(&mut self, map: &Heightmap, stamp: Stamp, now: bool) -> usize {
+        if let Some((center, paint)) = self.last {
+            let a = dot(stamp.center, center).clamp(-1.0, 1.0).acos();
+            if a + stamp.radius <= paint {
+                return self.fields.len() - 1;
+            }
+        }
+        let paint = PAINT * stamp.radius;
+        let inputs = MarginInputs::read(map, &self.spec, stamp.center, paint, None);
+        self.last = Some((stamp.center, paint));
+        if now {
+            let floor = self
+                .fields
+                .last()
+                .map(|field| field.as_ref().expect("the fields are there").floor_m);
+            let field = inputs.with_floor(floor).build();
+            self.fields.push(Some(Arc::new(field)));
+        } else {
+            let worker = self.worker.get_or_insert_with(|| {
+                let (jobs, inbox) = mpsc::channel::<MarginInputs>();
+                let (outbox, done) = mpsc::channel();
+                std::thread::spawn(move || {
+                    let mut floor = None;
+                    for inputs in inbox {
+                        let field = inputs.with_floor(floor).build();
+                        floor = Some(field.floor_m);
+                        if outbox.send(Arc::new(field)).is_err() {
+                            break;
+                        }
+                    }
+                });
+                Worker { jobs, done }
+            });
+            worker.jobs.send(inputs).expect("the worker of the stroke");
+            self.fields.push(None);
+        }
+        self.fields.len() - 1
+    }
+
+    fn plan(&self, stamp: Stamp, field: Arc<MarginField>) -> MarginPlan {
         let n = self.face_size;
         MarginPlan {
             spec: self.spec,
             field,
-            center,
-            radius,
-            hardness: hardness.clamp(0.0, 0.999),
-            flow: flow.clamp(0.0, 1.0),
+            center: stamp.center,
+            radius: stamp.radius,
+            hardness: stamp.hardness,
+            flow: stamp.flow,
             face_size: n,
-            rects: std::array::from_fn(|face| brush_rect(n, face, center, radius)),
+            rects: std::array::from_fn(|face| brush_rect(n, face, stamp.center, stamp.radius)),
         }
     }
 }
@@ -682,10 +1085,12 @@ impl MarginStroke {
 /// The place of a texel for the profile.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Place {
-    /// The distance to the land, in kilometers.
+    /// The distance to the land, and the signed distance to the smoothed
+    /// coast, in kilometers.
     pub d: f64,
+    pub s: f64,
     /// The unit direction of the texel, and of the nearest point of the
-    /// coast.
+    /// smoothed coast.
     pub p: V3,
     pub coast: V3,
 }
@@ -717,16 +1122,17 @@ impl MarginPlan {
 
     /// The place of a unit direction, or `None` outside the field.
     pub(crate) fn place(&self, p: V3) -> Option<Place> {
-        let (d, away) = self.field.sample(p)?;
+        let (d, s, away) = self.field.sample(p)?;
+        // The nearest point of the smoothed coast.
         let tangent = add(away, scale(p, -dot(away, p)));
         let size = length(tangent);
         let coast = if size < 1e-6 {
             p
         } else {
-            let a = d / self.spec.world_km;
+            let a = s / self.spec.world_km;
             normalize(add(scale(p, a.cos()), scale(tangent, -a.sin() / size)))
         };
-        Some(Place { d, p, coast })
+        Some(Place { d, s, p, coast })
     }
 
     fn noise(&self, q: V3, size_km: f64, salt: u32) -> V3 {
@@ -823,16 +1229,25 @@ impl MarginPlan {
             .sum()
     }
 
-    /// The shape of the profile at a distance `x` from the coast in
-    /// kilometers, with a slope angle with the tangent `tan`.
-    pub(crate) fn shape(&self, x: f64, tan: f64) -> Shape {
+    /// The shelf width at a point of the smoothed coast, in kilometers.
+    pub(crate) fn width(&self, coast: V3) -> f64 {
         let w = self.spec.shelf_km;
+        let n = (1.4 * self.noise(coast, WIDTH_SIZE * w, SALT_WIDTH)[0]).clamp(-1.0, 1.0);
+        w * 2f64.powf(WIDTH_VARY * n)
+    }
+
+    /// The shape of the profile at a distance `d` from the land and a
+    /// distance `x` from the smoothed coast in kilometers, with a shelf
+    /// width `w` and a slope angle with the tangent `tan`.
+    pub(crate) fn shape(&self, d: f64, x: f64, w: f64, tan: f64) -> Shape {
         let b = self.spec.shelf_m;
         let floor = self.field.floor_m;
-        // The shelf goes down from the coast to the break, and the slope
-        // falls from the break.
+        // The shelf break is at the shelf width from the smoothed coast. The
+        // shelf goes down from the coast to the break, and the slope falls
+        // from the break.
         let down = x - w;
-        let upper = smooth_min(b * x / w, b - 1000.0 * tan * down, BREAK_ROUND);
+        let part = if down >= 0.0 { 1.0 } else { d / (d - down) };
+        let upper = smooth_min(b * part, b - 1000.0 * tan * down, BREAK_ROUND);
         // The rise is a parabola from the foot of the slope to the floor.
         let drop = b - floor;
         let height = RISE_PART * drop;
@@ -853,9 +1268,10 @@ impl MarginPlan {
     /// from before the stroke, in meters.
     pub(crate) fn profile(&self, at: Place, old: f64) -> f64 {
         let w = self.spec.shelf_km;
-        // The distance from the coast with the wander of the shelf break.
-        // Near the coast the wander fades, so the coast does not move.
-        let x = at.d - self.wander(at.p) * smoothstep(0.0, 0.5 * w, at.d);
+        // The distance from the smoothed coast with the wander of the shelf
+        // break. Near the coast the wander fades, so the coast does not
+        // move.
+        let x = at.s - self.wander(at.p) * smoothstep(0.0, 0.5 * w, at.d);
         let tan = self.slope(at.coast);
         let Shape {
             level: base,
@@ -863,7 +1279,7 @@ impl MarginPlan {
             slope,
             rise,
             t,
-        } = self.shape(x, tan);
+        } = self.shape(at.d, x, self.width(at.coast), tan);
         let on_slope = smoothstep(0.0, 0.15 * slope, down)
             * (1.0 - smoothstep(0.7 * slope, slope + 0.15 * rise, down));
         let deep = GULLY_DEPTH * (tan / SLOPE_DEG.to_radians().tan()).sqrt();
@@ -1022,7 +1438,9 @@ mod tests {
         let map = coast(512, 0.0);
         let plan = plan_of(&map);
         for lon in [1.0, 3.0, 6.0] {
-            let (d, away) = plan.field.sample(lonlat_to_dir(lon, 0.0)).unwrap();
+            let (d, s, away) = plan.field.sample(lonlat_to_dir(lon, 0.0)).unwrap();
+            // The coast is straight, so the smoothed coast is the coast.
+            assert!((s - d).abs() < 25.0, "{lon}: {s} {d}");
             let expected = lon.to_radians() * KM;
             assert!((d - expected).abs() < 25.0, "{lon}: {d} {expected}");
             // Away from the land is east.
@@ -1040,12 +1458,13 @@ mod tests {
         let map = coast(256, 0.0);
         let plan = plan_of(&map);
         let tan = SLOPE_DEG.to_radians().tan();
-        let at_break = plan.shape(100.0, tan).level;
+        let at_break = plan.shape(100.0, 100.0, 100.0, tan).level;
         assert!((at_break + 130.0).abs() < 10.0, "{at_break}");
-        assert!(plan.shape(0.0, tan).level.abs() < 1.0);
+        assert!(plan.shape(0.0, 0.0, 100.0, tan).level.abs() < 1.0);
         let mut last = 0.0;
         for k in 1..=20 {
-            let h = plan.shape(k as f64 * 5.0, tan).level;
+            let x = k as f64 * 5.0;
+            let h = plan.shape(x, x, 100.0, tan).level;
             let grade = (last - h) / 5000.0;
             assert!(h < last && grade < 0.003, "{k} {h}");
             last = h;
@@ -1057,7 +1476,9 @@ mod tests {
         let map = coast(256, 0.0);
         let mut plan = plan_of(&map);
         plan.spec.shelf_m = -400.0;
-        let h = plan.shape(100.0, SLOPE_DEG.to_radians().tan()).level;
+        let h = plan
+            .shape(100.0, 100.0, 100.0, SLOPE_DEG.to_radians().tan())
+            .level;
         assert!((h + 400.0).abs() < 10.0, "{h}");
         let stroke = MarginStroke::new(
             Margin {
@@ -1090,7 +1511,8 @@ mod tests {
         // The profile has that slope below the break.
         for deg in [1.5, 4.0, 9.0] {
             let tan = f64::to_radians(deg).tan();
-            let (a, b) = (plan.shape(102.0, tan).level, plan.shape(104.0, tan).level);
+            let level = |x| plan.shape(x, x, 100.0, tan).level;
+            let (a, b) = (level(102.0), level(104.0));
             let measured = ((a - b) / 2000.0).atan().to_degrees();
             assert!((measured - deg).abs() < 0.05 * deg, "{deg}: {measured}");
         }
@@ -1102,7 +1524,7 @@ mod tests {
         let plan = plan_of(&map);
         for deg in [2.0, 4.0, 8.0] {
             let tan = f64::to_radians(deg).tan();
-            let at = |x: f64| plan.shape(x, tan);
+            let at = |x: f64| plan.shape(x, x, 100.0, tan);
             let s = at(200.0);
             let foot = 100.0 + s.slope;
             for k in 0..=20 {
@@ -1174,6 +1596,77 @@ mod tests {
     }
 
     #[test]
+    fn the_shelf_break_does_not_follow_a_narrow_bay() {
+        let straight = |bay: bool| {
+            let n = 512;
+            let mut map = coast(n, 0.0);
+            if bay {
+                for y in 0..n {
+                    for x in 0..n {
+                        let d = map.texel_dir(0, x, y);
+                        let lon = d[1].atan2(d[0]).to_degrees();
+                        let lat = d[2].asin().to_degrees();
+                        if lon > -0.8 && lat.abs() < 0.6 {
+                            map.set(0, x, y, meters_to_level(-4500.0));
+                        }
+                    }
+                }
+            }
+            map
+        };
+        let (a, b) = (straight(false), straight(true));
+        // Off the mouth of the bay, the smoothed coast moves less than a
+        // sixth of the depth of the bay, 89 km.
+        let at = |map: &Heightmap, lon: f64| {
+            let plan = plan_of(map);
+            plan.field.sample(lonlat_to_dir(lon, 0.0)).unwrap().1
+        };
+        for lon in [1.2, 2.0] {
+            let (x, y) = (at(&a, lon), at(&b, lon));
+            assert!((x - y).abs() < 15.0, "{lon}: {x} {y}");
+        }
+        // In the bay, the sea is a shallow shelf.
+        let mut b = b;
+        paint(&mut b, spec(), (0.0, -3.0), (0.0, 3.0), 0.05);
+        let inside = meters(&b, -0.4, 0.0);
+        assert!(inside > -130.0 && inside < 0.0, "{inside}");
+    }
+
+    #[test]
+    fn the_shelf_width_varies_along_the_coast() {
+        let map = coast(256, 0.0);
+        let plan = plan_of(&map);
+        let widths: Vec<f64> = (0..4000)
+            .map(|k| plan.width(lonlat_to_dir(0.0, -40.0 + k as f64 * 0.02)))
+            .collect();
+        let lo = widths.iter().copied().fold(f64::MAX, f64::min);
+        let hi = widths.iter().copied().fold(0.0, f64::max);
+        assert!(lo >= 0.6 * 100.0 && hi <= WIDTH_MAX * 100.0, "{lo} {hi}");
+        assert!(lo < 0.75 * 100.0 && hi > 1.35 * 100.0, "{lo} {hi}");
+    }
+
+    /// The time to read a field on a large face.
+    #[test]
+    #[ignore = "manual"]
+    fn manual_time_of_a_field() {
+        let n = 8192;
+        let mut map = Heightmap::new(n, meters_to_level(-4500.0));
+        let half = 1200;
+        for y in n / 2 - half..n / 2 + half {
+            for x in n / 2 - half..n / 2 + half {
+                let d = map.texel_dir(0, x, y);
+                let lon = d[1].atan2(d[0]).to_degrees() + 2.0 * (d[2] * 40.0).sin();
+                if lon < 0.0 {
+                    map.set(0, x, y, meters_to_level(100.0));
+                }
+            }
+        }
+        let t = std::time::Instant::now();
+        let field = MarginField::read(&map, &spec(), lonlat_to_dir(1.0, 0.0), 0.04, None);
+        eprintln!("{:?} for {} cells", t.elapsed(), field.size);
+    }
+
+    #[test]
     fn the_shelf_break_wanders() {
         let map = coast(256, 0.0);
         let plan = plan_of(&map);
@@ -1198,6 +1691,7 @@ mod tests {
             let coast = lonlat_to_dir(0.0, -10.0 + k as f64 * 0.001);
             let at = Place {
                 d: 115.0,
+                s: 115.0,
                 p: coast,
                 coast,
             };
@@ -1280,6 +1774,44 @@ mod tests {
             }
         }
         assert!(most < 5.0, "{most}");
+    }
+
+    #[test]
+    fn a_stroke_with_fields_on_a_worker_gives_the_same_margin() {
+        let mut now = coast(256, 0.0);
+        let mut later = coast(256, 0.0);
+        let mut stroke = MarginStroke::new(spec(), 256);
+        later.begin_stroke();
+        let mut plans = 0;
+        for i in 0..=40 {
+            let p = lonlat_to_dir(2.0, -20.0 + i as f64);
+            for plan in stroke.stamp_later(&later, p, 0.03, 0.6, 1.0) {
+                later.margin(&plan);
+                plans += 1;
+            }
+        }
+        for plan in stroke.finish() {
+            later.margin(&plan);
+            plans += 1;
+        }
+        later.end_stroke();
+        assert_eq!(plans, 41);
+        assert!(!stroke.is_waiting());
+        paint_line(&mut now, spec(), 0.03);
+        assert_eq!(levels(&now), levels(&later));
+    }
+
+    /// The stroke of `a_stroke_with_fields_on_a_worker_gives_the_same_margin`
+    /// with `stamp`.
+    fn paint_line(map: &mut Heightmap, spec: Margin, radius: f64) {
+        let mut stroke = MarginStroke::new(spec, map.face_size());
+        map.begin_stroke();
+        for i in 0..=40 {
+            let p = lonlat_to_dir(2.0, -20.0 + i as f64);
+            let plan = stroke.stamp(map, p, radius, 0.6, 1.0);
+            map.margin(&plan);
+        }
+        map.end_stroke();
     }
 
     #[test]

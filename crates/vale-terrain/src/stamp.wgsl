@@ -1610,10 +1610,14 @@ const SALT_MARGIN_PIECE = 0x70696563u;
 const SALT_MARGIN_CANYON = 0x63616e79u;
 const SALT_MARGIN_SCAR = 0x73636172u;
 const SALT_MARGIN_RELIEF = 0x72656c66u;
+const SALT_MARGIN_WIDTH = 0x77696474u;
+const MARGIN_WIDTH_VARY = 0.7;
+const MARGIN_WIDTH_SIZE = 4.0;
 
 // The distance field of a margin pass: for each cell, the distance to the
-// land in kilometers and the east and north parts of the direction away from
-// it.
+// land and the signed distance to the smoothed coast in kilometers, and the
+// east and north parts of the direction toward the sea from the smoothed
+// coast.
 @group(0) @binding(15) var<storage, read> margin_field: array<f32>;
 
 // The numbers of a margin pass: the geometry of the field and the stamp.
@@ -1655,17 +1659,19 @@ fn smooth_min(a: f32, b: f32, k: f32) -> f32 {
     return b + (a - b) * h - k * h * (1.0 - h);
 }
 
-// The place of a texel for the profile: the distance to the land, and the
-// nearest point of the coast. `ok` is false outside the field.
+// The place of a texel for the profile: the distance to the land, the
+// signed distance to the smoothed coast, and the nearest point of the
+// smoothed coast. `ok` is false outside the field.
 struct MarginPlace {
     ok: bool,
     d: f32,
+    s: f32,
     coast: vec3<f32>,
 }
 
 // `MarginField::sample` and `MarginPlan::place`.
 fn margin_place(m: MarginPass, p: vec3<f32>) -> MarginPlace {
-    var out = MarginPlace(false, 0.0, p);
+    var out = MarginPlace(false, 0.0, 0.0, p);
     let z = dot(p, m.center);
     if z <= 0.0 {
         return out;
@@ -1683,24 +1689,24 @@ fn margin_place(m: MarginPass, p: vec3<f32>) -> MarginPlace {
     let ty = fy - f32(j);
     let ks = array<u32, 4>(j * m.size + i, j * m.size + i + 1u, (j + 1u) * m.size + i, (j + 1u) * m.size + i + 1u);
     let ws = array<f32, 4>((1.0 - tx) * (1.0 - ty), tx * (1.0 - ty), (1.0 - tx) * ty, tx * ty);
-    var sum = vec3<f32>(0.0);
+    var sum = vec4<f32>(0.0);
     for (var c = 0u; c < 4u; c++) {
-        let k = ks[c] * 3u;
+        let k = ks[c] * 4u;
         let d = margin_field[k];
         if d >= 3.0e38 {
             return out;
         }
-        sum += ws[c] * vec3<f32>(d, margin_field[k + 1u], margin_field[k + 2u]);
+        sum += ws[c] * vec4<f32>(d, margin_field[k + 1u], margin_field[k + 2u], margin_field[k + 3u]);
     }
-    let away = m.east * sum.y + m.north * sum.z;
+    let away = m.east * sum.z + m.north * sum.w;
     let tangent = away - p * dot(away, p);
     let size = length(tangent);
     var coast = p;
     if size >= 1e-6 {
-        let a = sum.x / ridge.world_km;
+        let a = sum.y / ridge.world_km;
         coast = normalize(p * cos(a) - tangent * (sin(a) / size));
     }
-    return MarginPlace(true, sum.x, coast);
+    return MarginPlace(true, sum.x, sum.y, coast);
 }
 
 // `MarginPlan::noise`.
@@ -1717,15 +1723,22 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
     let b = ridge.crest;
     let floor_m = ridge.range_spacing;
     let texel = ridge.spacing;
-    let wander = margin_noise(p, 1.5 * w, SALT_MARGIN_WANDER).x * 0.22 * w
-        + margin_noise(p, 0.45 * w, SALT_MARGIN_WANDER).y * 0.08 * w;
-    let x = at.d - wander * smooth_between(0.0, 0.5 * w, at.d);
+    let wander = margin_noise(p, 1.5 * w, SALT_MARGIN_WANDER).x * 0.15 * w
+        + margin_noise(p, 0.45 * w, SALT_MARGIN_WANDER).y * 0.06 * w;
+    let x = at.s - wander * smooth_between(0.0, 0.5 * w, at.d);
+    // `MarginPlan::width`.
+    let n_width = clamp(1.4 * margin_noise(at.coast, MARGIN_WIDTH_SIZE * w, SALT_MARGIN_WIDTH).x, -1.0, 1.0);
+    let width = w * exp2(MARGIN_WIDTH_VARY * n_width);
     let n_angle = clamp(1.4 * margin_noise(at.coast, MARGIN_ANGLE_SIZE * w, SALT_MARGIN_ANGLE).x, -1.0, 1.0);
     let deg = clamp(MARGIN_SLOPE_DEG * exp2(2.0 * n_angle), MARGIN_SLOPE_LOW, MARGIN_SLOPE_HIGH);
     let tan_slope = tan(radians(deg));
     // `MarginPlan::shape`.
-    let down = x - w;
-    let upper = smooth_min(b * x / w, b - 1000.0 * tan_slope * down, MARGIN_BREAK_ROUND);
+    let down = x - width;
+    var part = 1.0;
+    if down < 0.0 {
+        part = at.d / (at.d - down);
+    }
+    let upper = smooth_min(b * part, b - 1000.0 * tan_slope * down, MARGIN_BREAK_ROUND);
     let drop = b - floor_m;
     let height = MARGIN_RISE_PART * drop;
     let slope = (drop - height) / (1000.0 * tan_slope);
