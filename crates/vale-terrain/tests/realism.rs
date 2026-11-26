@@ -3,11 +3,11 @@
 
 use std::path::Path;
 
-use vale_terrain::math::{V3, lonlat_to_dir};
+use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, PACIFIC_FLANK,
-    Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts, meters_to_level,
-    realism,
+    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Heightmap, Limits, Margin, MarginLine,
+    PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts,
+    US_EAST_MARGIN, meters_to_level, realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -110,6 +110,50 @@ impl Painted {
         while from < line.len() {
             let plan = line.plan(from);
             self.map.ridge(&plan);
+            from = plan.end;
+        }
+        self.map.end_stroke();
+    }
+
+    /// A margin along an arc around `center` with a radius in kilometers,
+    /// clockwise from the azimuth `from` to the azimuth `to` in degrees, so
+    /// the land is outside the arc. The ground outside the arc is land at
+    /// `land_m` up to `land_km` from the middle of the patch.
+    #[allow(clippy::too_many_arguments)]
+    fn margin(
+        &mut self,
+        spec: Margin,
+        center: V3,
+        radius_km: f64,
+        from: f64,
+        to: f64,
+        land_m: f64,
+        land_km: f64,
+    ) {
+        let n = self.map.face_size();
+        let half = (land_km / self.world_km / (std::f64::consts::FRAC_PI_2 / n as f64)) as usize;
+        let land = meters_to_level(land_m);
+        let arc = radius_km / self.world_km;
+        for y in n / 2 - half..n / 2 + half {
+            for x in n / 2 - half..n / 2 + half {
+                let d = self.map.texel_dir(0, x, y);
+                if angle(d, center) > arc {
+                    self.map.set(0, x, y, land);
+                }
+            }
+        }
+        let mut line = MarginLine::new(spec, n);
+        let count = 64;
+        for i in 0..=count {
+            let azimuth = (from + (to - from) * f64::from(i) / f64::from(count)).to_radians();
+            line.push(offset(center, azimuth, arc), 1.0);
+        }
+        line.read_floor(&self.map);
+        self.map.begin_stroke();
+        let mut from = 0;
+        while from < line.len() {
+            let plan = line.plan(from);
+            self.map.margin(&plan);
             from = plan.end;
         }
         self.map.end_stroke();
@@ -491,6 +535,67 @@ fn a_fast_ridge_is_near_the_east_pacific_rise() {
     assert_within(&report, &reference, &RIDGE_LIMITS);
 }
 
+/// The brush radius of the margin test, in kilometers.
+const MARGIN_RADIUS_KM: f64 = 400.0;
+
+/// The direction at a distance in radians from `center` at an azimuth in
+/// radians from north.
+fn offset(center: V3, azimuth: f64, distance: f64) -> V3 {
+    let east = normalize(cross([0.0, 0.0, 1.0], center));
+    let north = cross(center, east);
+    let toward = add(scale(north, azimuth.cos()), scale(east, azimuth.sin()));
+    normalize(add(
+        scale(center, distance.cos()),
+        scale(toward, distance.sin()),
+    ))
+}
+
+/// A margin at the default settings between land at 20 m and a floor at
+/// 4,600 m, on a world of the size of the Earth, at the scale of the
+/// margin of the eastern United States. As there, the shelf break is an
+/// arc around a place to the southeast, 70 km northwest of the middle of
+/// the patch.
+fn earth_margin() -> Painted {
+    let mut painted = Painted::earth(4600.0);
+    let spec = Margin {
+        radius: MARGIN_RADIUS_KM / EARTH_KM,
+        shelf_m: -130.0,
+        land_left: true,
+        floor_m: -5000.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let to_center = 530.0 / EARTH_KM;
+    let center = offset(painted.center, 137f64.to_radians(), to_center);
+    painted.margin(spec, center, 600.0, 200.0, 420.0, 20.0, 900.0);
+    painted
+}
+
+const MARGIN_LIMITS: Within = Within {
+    slope: 0.5,
+    anisotropy: (0.5, 2.0),
+    rms: (0.7, 1.4),
+    histogram: 0.4,
+};
+
+#[test]
+fn a_margin_is_near_the_margin_of_the_eastern_united_states() {
+    let reference = Reference::parse(US_EAST_MARGIN).unwrap();
+    let (report, _) = compare(&earth_margin(), &reference, reference.direction());
+    assert_within(&report, &reference, &MARGIN_LIMITS);
+}
+
+/// The test stroke of a margin beside its reference patch, from
+/// `scripts/gebco-reference.sh us-east-margin`.
+#[test]
+#[ignore = "manual"]
+fn manual_margin_next_to_its_reference() {
+    let reference = Reference::parse(US_EAST_MARGIN).unwrap();
+    let gebco = gebco_patch("us-east-margin");
+    save_side_by_side("us-east-margin", &earth_margin(), &reference, &gebco);
+}
+
 /// The patch of a reference region from `scripts/gebco-reference.sh`.
 fn gebco_patch(name: &str) -> Vec<f32> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -594,9 +699,17 @@ fn manual_seamounts_next_to_the_pacific_flank() {
 }
 
 /// Draws a patch with row 0 at the south into `image` from column `x0` and
-/// row `y0`, with tints by depth and a hillshade from the northwest.
+/// row `y0`, with tints by depth and a hillshade from the northwest. The
+/// tints go from 4,500 m to 1,500 m, and from 5,200 m to 0 m on a patch
+/// with a shelf.
 fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, [x0, y0]: [usize; 2]) {
     let at = |x: usize, y: usize| f64::from(heights[y.min(n - 1) * n + x.min(n - 1)]);
+    let shelf = heights.iter().any(|&h| h > -500.0);
+    let (deep, span) = if shelf {
+        (5200.0, 5200.0)
+    } else {
+        (4500.0, 3000.0)
+    };
     for y in 0..n {
         for x in 0..n {
             let z = at(x, y);
@@ -604,7 +717,7 @@ fn draw(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, [x0
             let dy = (at(x, y + 1) - at(x, y.saturating_sub(1))) / (2.0 * cell_m);
             // A light from the northwest, 45 degrees up.
             let shade = ((dx - dy) * 0.707 + 1.0) / (1.0 + dx * dx + dy * dy).sqrt() * 0.707;
-            let t = ((z + 4500.0) / 3000.0).clamp(0.0, 1.0);
+            let t = ((z + deep) / span).clamp(0.0, 1.0);
             let tint = [30.0 + 140.0 * t, 60.0 + 140.0 * t, 130.0 + 100.0 * t];
             let k = (0.35 + 0.9 * shade).clamp(0.0, 1.3);
             let pixel = tint.map(|c| (c * k).clamp(0.0, 255.0) as u8);

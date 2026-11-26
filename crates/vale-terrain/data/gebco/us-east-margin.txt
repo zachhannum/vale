@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: 36.090 to 40.510 N, -75.307 to -69.493 E
+# Fetched: 2026-11-26
+# Made by: scripts/gebco-reference.sh us-east-margin
+
+region = Eastern United States margin, 38.3 N
+center = -72.4, 38.3
+size = 512
+cell_m = 920
+band_m = 3680, 40000
+fabric_deg = 40
+spectral_slope = -3.0122
+anisotropy = 0.3431
+rms_m = 612.87
+slope_histogram = 0.78795, 0.09827, 0.05481, 0.04222, 0.01657, 0.00017, 0.00000

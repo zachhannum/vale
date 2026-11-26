@@ -15,6 +15,7 @@ use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, face_of, meters_to_level,
 use crate::erode::ErodeStep;
 use crate::flow::{ChannelMap, ChannelWindow};
 use crate::line::{LinePlace, LinePlan, LinePoint};
+use crate::margin::MarginPlan;
 use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
@@ -1644,6 +1645,13 @@ impl Heightmap {
     /// stroke, as `ridge` lays an ocean ridge. Call this in a stroke.
     /// Returns the number of texels that changed.
     pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
+        self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
+    }
+
+    /// Lays the margin of a plan on the ground from before the stroke, as
+    /// `ridge` lays an ocean ridge. Returns the number of texels that
+    /// changed.
+    pub fn margin(&mut self, plan: &MarginPlan) -> usize {
         self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
     }
 

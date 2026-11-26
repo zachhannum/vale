@@ -42,6 +42,19 @@ epr-ridge)
 	# transform faults.
 	fabric_deg=-8
 	;;
+us-east-margin)
+	title="Eastern United States margin, 38.3 N"
+	lon=-72.4
+	lat=38.3
+	size=512
+	cell_m=920
+	# The band stops at 40 km, so the curve of the shelf break does not
+	# fill the spectrum.
+	band_max_m=40000
+	# The trend of the shelf break off New Jersey and the Delmarva
+	# Peninsula, N40E.
+	fabric_deg=40
+	;;
 *)
 	echo "unknown region: $region" >&2
 	exit 2
