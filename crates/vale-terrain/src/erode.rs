@@ -512,6 +512,8 @@ fn lowest_in(heights: &WindowHeights, corners: [V3; 4], middle: usize) -> usize 
 /// a level, so a weak brush adds up over the steps.
 pub struct Erosion {
     cells: Cells,
+    /// The level from which the cells get no rain in `steps`, or none.
+    dry: Option<u16>,
     /// The number of cells along one side of a face or of the window.
     side: usize,
     /// The number of texels along one side of a face of the heightmap.
@@ -704,7 +706,14 @@ impl Erosion {
             route_seed: 0,
             route_amount: 0.0,
             route: Vec::new(),
+            dry: None,
         }
+    }
+
+    /// Sets the level from which the cells get no rain in each later step of
+    /// `steps`, or none. Their water does not add to the flow below them.
+    pub fn set_dry_above(&mut self, level: Option<u16>) {
+        self.dry = level;
     }
 
     /// Sets the flow noise of each later step: the seed, and the branching
@@ -1042,7 +1051,7 @@ impl Erosion {
     }
 
     /// The width of a cell at the center of a face, in radians.
-    fn cell_angle(&self) -> f64 {
+    pub(crate) fn cell_angle(&self) -> f64 {
         match &self.cells {
             Cells::Global(grid) => FRAC_PI_2 / grid.m as f64,
             Cells::Window { window, .. } => FRAC_PI_2 * window.cell as f64 / self.face_size as f64,
@@ -1072,6 +1081,70 @@ impl Erosion {
                 self.levels[i] = new;
                 self.stale = true;
             }
+        }
+    }
+
+    /// The levels of the cells.
+    pub(crate) fn levels(&self) -> &[u16] {
+        &self.levels
+    }
+
+    /// Sets the cells under the brushes one time, as `lift` does. `level`
+    /// also gets the number of each cell.
+    pub(crate) fn lift_cells(
+        &mut self,
+        brushes: &[ErodeBrush],
+        level: impl Fn(usize, V3, u16) -> Option<u16>,
+    ) {
+        let side = self.side;
+        let mut cells = Vec::new();
+        self.cells_under(brushes, |_, row, x, _| cells.push((row, x)));
+        cells.sort_unstable();
+        cells.dedup();
+        let first = self.faces().start;
+        for (row, x) in cells {
+            let face = first + row / side;
+            let dir = face_dir(face, self.flat_u[x], self.flat_v[row % side]);
+            let i = row * side + x;
+            let Some(new) = level(i, dir, self.levels[i]) else {
+                continue;
+            };
+            self.heights[i] = f32::from(new);
+            if new != self.levels[i] {
+                self.levels[i] = new;
+                self.stale = true;
+            }
+        }
+    }
+
+    /// The change of the cells from the levels `before`, as one step: each
+    /// cell drops by the levels that it is lower now. The step changes the
+    /// texels under the brushes.
+    pub(crate) fn drops_since(&self, before: &[u16], brushes: &[ErodeBrush]) -> ErodeStep {
+        self.drops_since_to(before, &self.levels, brushes)
+    }
+
+    /// The change from the levels `before` to the levels `after`, as
+    /// `drops_since` gives it.
+    pub(crate) fn drops_since_to(
+        &self,
+        before: &[u16],
+        after: &[u16],
+        brushes: &[ErodeBrush],
+    ) -> ErodeStep {
+        let drops = before
+            .iter()
+            .zip(after)
+            .map(|(&b, &now)| b.saturating_sub(now))
+            .collect();
+        ErodeStep {
+            grid: self.grid(),
+            drops,
+            rects: self.rects(brushes, &vec![true; brushes.len()]),
+            limits: self.limits,
+            hill: Vec::new(),
+            lines: None,
+            channel: self.channel,
         }
     }
 
@@ -1220,11 +1293,21 @@ impl Erosion {
                 } else {
                     cells.map(|i| self.levels[i]).collect()
                 };
-                let rain = if self.rain.is_even() {
+                let mut rain = if self.rain.is_even() {
                     Vec::new()
                 } else {
                     self.rain_of(x0, y0, width, height)
                 };
+                if let Some(dry) = self.dry {
+                    if rain.is_empty() {
+                        rain = vec![1.0; levels.len()];
+                    }
+                    for (rain, &level) in rain.iter_mut().zip(&levels) {
+                        if level >= dry {
+                            *rain = 0.0;
+                        }
+                    }
+                }
                 let flow = self.drain_on(&grid, &levels, &[], &rain);
                 self.flow = None;
                 (flow, Some((x0, y0, width)))

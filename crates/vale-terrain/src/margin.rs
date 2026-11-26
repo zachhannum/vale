@@ -17,6 +17,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_of, warp};
+use crate::erode::{ErodeBrush, ErodeStep, Erosion};
+use crate::flow::Window;
 use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, falloff, noise3};
 use crate::line::smoothstep;
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
@@ -86,26 +88,28 @@ const WIDTH_MAX: f64 = 1.625;
 /// the window, in kilometers.
 const FAR_KM: f64 = 1.0e6;
 
-/// The spacing of the gullies on the slope, in kilometers, and the least
-/// spacing, in texels.
-const GULLY_KM: f64 = 3.0;
-const GULLY_TEXELS: f64 = 4.0;
+/// The steps of the erosion of a margin stroke, and its rate for a brush
+/// radius of 16 cells, at an amount of 1.
+pub const MARGIN_ERODE_STEPS: usize = 8;
+pub const MARGIN_ERODE_RATE: f64 = 3.0;
 
-/// The depth of a gully on a slope of `SLOPE_DEG`, in meters.
-const GULLY_DEPTH: f64 = 220.0;
+/// The part of the erosion that the shelf keeps. The part grows to 1 from
+/// half the depth of the shelf break to 1.5 times that depth.
+const SHELF_EROSION: f64 = 0.1;
 
-/// The spacing of the canyons along the coast, in kilometers, and the least
-/// spacing, in gully spacings.
-const CANYON_KM: f64 = 28.0;
-const CANYON_GULLIES: f64 = 6.0;
+/// The largest number of cells along one side of the erosion window of a
+/// margin stroke. A gully is a few cells wide, so the cells must be small
+/// for narrow gullies.
+pub const MARGIN_CELLS: usize = 1024;
 
-/// The largest depth of a canyon on the slope, in meters.
-const CANYON_DEPTH: f64 = 300.0;
+/// The room around the stamps of a margin stroke in its erosion window, as
+/// a part of the width of the stamps.
+const ERODE_ROOM: f64 = 0.15;
 
 /// The size of the features of the slide scars along the coast, in
-/// kilometers, and the least size, in gully spacings.
+/// kilometers, and the least size, in texels.
 const SCAR_KM: f64 = 70.0;
-const SCAR_GULLIES: f64 = 12.0;
+const SCAR_TEXELS: f64 = 48.0;
 
 /// The largest depth of a slide scar, in meters.
 const SCAR_DEPTH: f64 = 260.0;
@@ -113,6 +117,9 @@ const SCAR_DEPTH: f64 = 260.0;
 /// The height of the debris below a scar, as a part of the depth of the
 /// scar.
 const DEBRIS_PART: f64 = 0.45;
+
+/// How much more fine relief the slope has than the rise.
+const SLOPE_ROUGH: f64 = 1.5;
 
 /// The sizes of the features of the fine relief, in kilometers, and their
 /// heights on the rise, in meters.
@@ -140,9 +147,6 @@ const MAX_HALF: f64 = 0.6;
 
 const SALT_WANDER: u32 = 0x6d61_7267;
 const SALT_ANGLE: u32 = 0x736c_6f70;
-const SALT_GULLY: u32 = 0x6775_6c6c;
-const SALT_PIECE: u32 = 0x7069_6563;
-const SALT_CANYON: u32 = 0x6361_6e79;
 const SALT_SCAR: u32 = 0x7363_6172;
 const SALT_RELIEF: u32 = 0x7265_6c66;
 const SALT_WIDTH: u32 = 0x7769_6474;
@@ -1161,44 +1165,12 @@ impl MarginPlan {
         deg.to_radians().tan()
     }
 
-    /// The spacing of the gullies, in kilometers.
-    fn gully_km(&self) -> f64 {
-        GULLY_KM.max(GULLY_TEXELS * self.texel_km())
-    }
-
-    /// The depth of the gullies at a place, from 0 to 1.
-    pub(crate) fn gullies(&self, at: Place) -> f64 {
-        let spacing = self.gully_km();
-        let n = self.noise(at.coast, spacing, SALT_GULLY)[0];
-        let v = 1.0 - n.abs();
-        // Each gully deepens and fades down the slope, so the gullies are
-        // pieces with gaps.
-        let piece = self.noise(at.p, 2.5 * spacing, SALT_PIECE)[0];
-        v * v * v * smoothstep(-0.3, 0.5, piece)
-    }
-
-    /// The depth of the canyons in meters, at a place `down` kilometers
-    /// below the shelf break, with a slope and a rise of these widths in
-    /// kilometers. A canyon starts a little inside the shelf break, cuts the
-    /// slope, and goes on across the rise as a channel that gets shallower.
-    pub(crate) fn canyons(&self, at: Place, down: f64, slope: f64, rise: f64) -> f64 {
-        let texel = self.texel_km();
-        let size = CANYON_KM.max(CANYON_GULLIES * self.gully_km());
-        let n = self.noise(at.coast, size, SALT_CANYON);
-        let v = ((0.15 - n[0].abs()) / 0.15).clamp(0.0, 1.0);
-        let here = smoothstep(-0.2, 0.3, n[1]);
-        let deep = 0.4 + 0.3 * (n[2] + 1.0);
-        let head = -0.15 * size;
-        let start = smoothstep(head, head + 0.3 * slope + texel, down);
-        let channel = (-(down - slope).max(0.0) / (0.12 * rise + texel)).exp();
-        CANYON_DEPTH * deep * here * v * v.sqrt() * start * channel
-    }
-
-    /// The change of the slide scars and their debris, in meters. The
-    /// arguments are those of `canyons`.
+    /// The change of the slide scars and their debris, in meters, at a
+    /// place `down` kilometers below the shelf break, with a slope and a rise
+    /// of these widths in kilometers.
     pub(crate) fn scars(&self, at: Place, down: f64, slope: f64, rise: f64) -> f64 {
         let texel = self.texel_km();
-        let size = SCAR_KM.max(SCAR_GULLIES * self.gully_km());
+        let size = SCAR_KM.max(SCAR_TEXELS * texel);
         let n = self.noise(at.coast, size, SALT_SCAR);
         let here = smoothstep(0.25, 0.6, n[0]);
         let depth = SCAR_DEPTH * (0.3 + 0.35 * (n[1] + 1.0));
@@ -1265,8 +1237,8 @@ impl MarginPlan {
     }
 
     /// The level of the margin at a place, in meters, with the level `old`
-    /// from before the stroke, in meters.
-    pub(crate) fn profile(&self, at: Place, old: f64) -> f64 {
+    /// from before the stroke, in meters, with the fine relief if `relief`.
+    pub(crate) fn profile(&self, at: Place, old: f64, relief: bool) -> f64 {
         let w = self.spec.shelf_km;
         // The distance from the smoothed coast with the wander of the shelf
         // break. Near the coast the wander fades, so the coast does not
@@ -1280,16 +1252,17 @@ impl MarginPlan {
             rise,
             t,
         } = self.shape(at.d, x, self.width(at.coast), tan);
-        let on_slope = smoothstep(0.0, 0.15 * slope, down)
-            * (1.0 - smoothstep(0.7 * slope, slope + 0.15 * rise, down));
-        let deep = GULLY_DEPTH * (tan / SLOPE_DEG.to_radians().tan()).sqrt();
-        let mut level = base - deep * on_slope * self.gullies(at);
+        let mut level = base;
         level += self.scars(at, down, slope, rise);
-        level -= self.canyons(at, down, slope, rise);
-        // The fine relief is low on the shelf and high on the rise, and it
-        // fades near the coast.
-        let rough = (0.3 + 0.7 * smoothstep(0.0, slope, down)) * smoothstep(0.0, 0.3 * w, at.d);
-        level += rough * self.relief(at.p);
+        // The fine relief is low on the shelf, highest on the slope, and high
+        // on the rise, and it fades near the coast.
+        let on_slope = smoothstep(0.0, 0.15 * slope, down)
+            * (1.0 - smoothstep(0.8 * slope, slope + 0.1 * rise, down));
+        let rough = (0.3 + 0.7 * smoothstep(0.0, slope, down) + SLOPE_ROUGH * on_slope)
+            * smoothstep(0.0, 0.3 * w, at.d);
+        if relief {
+            level += rough * self.relief(at.p);
+        }
         // The margin fades into the floor from before the stroke at the end
         // of the rise.
         let fade = smoothstep(RISE_FADE, 1.0, t);
@@ -1300,6 +1273,11 @@ impl MarginPlan {
     /// stroke and the level `now`, at the unit direction `p`. The land does
     /// not change.
     pub(crate) fn level(&self, start: u16, now: u16, p: V3) -> u16 {
+        self.level_with(start, now, p, true)
+    }
+
+    /// The level of `level`, with the fine relief if `relief`.
+    fn level_with(&self, start: u16, now: u16, p: V3, relief: bool) -> u16 {
         let old = f64::from(start);
         if to_meters(old) > 0.0 {
             return now;
@@ -1316,11 +1294,102 @@ impl MarginPlan {
         let Some(at) = self.place(p) else {
             return now;
         };
-        let target = to_level(self.profile(at, to_meters(old)));
+        let target = to_level(self.profile(at, to_meters(old), relief));
         let cur = f64::from(now);
         let new = (cur + ((target - cur) * weight + 0.5).floor()).clamp(0.0, 65535.0);
         self.spec.limits.apply(cur, new) as u16
     }
+}
+
+/// The window of the cells of the erosion of a margin stroke: the stamps
+/// of the plans and room around them for the flow, with at most
+/// `MARGIN_CELLS` cells along one side. The cells are as small as that
+/// gives.
+pub fn margin_window(plans: &[MarginPlan], face_size: usize) -> Window {
+    let n = face_size;
+    let sum = plans
+        .iter()
+        .fold([0.0; 3], |sum, plan| add(sum, plan.center));
+    let center = normalize(sum);
+    let reach = plans
+        .iter()
+        .map(|plan| dot(plan.center, center).clamp(-1.0, 1.0).acos() + plan.radius)
+        .fold(0.0, f64::max);
+    let texels = 2.0 * reach * n as f64 / FRAC_PI_2 * (1.0 + ERODE_ROOM);
+    let mut cell = 1;
+    while (texels / cell as f64).ceil() as usize > MARGIN_CELLS && 2 * cell <= n / 8 {
+        cell *= 2;
+    }
+    let cells = MARGIN_CELLS
+        .min((texels / cell as f64).ceil() as usize + 2)
+        .min(n / cell);
+    let mut window = Window::centered(center, n, cell, cells);
+    // The window ends less than half a face past the face edge.
+    let step = cell as i64;
+    let past = (n as i64 / 2 - 1) / step * step;
+    let last = n as i64 + past - (cells * cell) as i64;
+    window.x0 = window.x0.clamp(-past, last);
+    window.y0 = window.y0.clamp(-past, last);
+    window
+}
+
+/// Erodes the margin of a stroke with stream power, as the Erode brush
+/// erodes land. `erosion` holds the cells of the ground from before the
+/// stroke. The cells under the stamps of the plans get the margin with no
+/// fine relief, stamp by stamp, and then `MARGIN_ERODE_STEPS` steps erode
+/// it. Thus the drops hold the channels, and the fine relief of the stamps
+/// stays. The flow runs down
+/// the slope to the deep floor, so the gullies and the canyons join as the
+/// valleys of a river do. The land does not change, and it gives the flow
+/// no water. `amount` from 0 to 1 sets the rate. Returns the drops: the
+/// margin of the cells minus the eroded margin.
+pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) -> ErodeStep {
+    let brushes: Vec<ErodeBrush> = plans
+        .iter()
+        .map(|plan| ErodeBrush {
+            center: plan.center,
+            radius: plan.radius,
+            hardness: plan.hardness,
+            flow: plan.flow,
+        })
+        .collect();
+    let Some(first) = plans.first() else {
+        return erosion.drops_since(erosion.levels(), &brushes);
+    };
+    let limits = first.spec.limits;
+    let top = to_level(TOP_M).floor() as u16;
+    erosion.set_limits(Limits {
+        ceiling: limits.ceiling.min(top),
+        ..limits
+    });
+    // Only the sea floor feeds the flow. The water of the land would cut
+    // too deep a canyon at the mouth of each of its basins.
+    erosion.set_dry_above(Some(to_level(0.0).ceil() as u16));
+    let start = erosion.levels().to_vec();
+    for (plan, brush) in plans.iter().zip(&brushes) {
+        erosion.lift_cells(std::slice::from_ref(brush), |i, dir, now| {
+            Some(plan.level_with(start[i], now, dir, false))
+        });
+    }
+    let margin = erosion.levels().to_vec();
+    let radius = plans.iter().map(|plan| plan.radius).fold(0.0, f64::max);
+    let rate = amount * MARGIN_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
+    erosion.steps(&brushes, rate, MARGIN_ERODE_STEPS);
+    // The shelf keeps a part of its drops, so the valleys of the rivers of
+    // the land across it are faint.
+    let shelf = -first.spec.shelf_m;
+    let kept: Vec<u16> = margin
+        .iter()
+        .zip(erosion.levels())
+        .map(|(&before, &now)| {
+            let part = SHELF_EROSION
+                + (1.0 - SHELF_EROSION)
+                    * smoothstep(0.5 * shelf, 1.5 * shelf, -to_meters(f64::from(before)));
+            let drop = f64::from(before.saturating_sub(now));
+            before - (drop * part).round() as u16
+        })
+        .collect();
+    erosion.drops_since_to(&margin, &kept, &brushes)
 }
 
 /// The smooth minimum of two numbers, with a rounding of `k`.
@@ -1338,6 +1407,7 @@ pub(crate) fn smooth_max(a: f64, b: f64, k: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::cube::meters_to_level;
+    use crate::flow::WindowHeights;
     use crate::math::{angle, lonlat_to_dir};
 
     const KM: f64 = 6371.0;
@@ -1680,13 +1750,11 @@ mod tests {
     }
 
     #[test]
-    fn the_slope_has_gullies_canyons_and_slide_scars_with_debris() {
+    fn the_slope_has_slide_scars_with_debris() {
         let map = coast(4096, 0.0);
         let plan = plan_of(&map);
         let (slope, rise) = (30.0, 400.0);
-        let mut gullies = 0;
-        let mut was = false;
-        let (mut canyon, mut cut, mut debris) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut cut, mut debris) = (0.0f64, 0.0f64);
         for k in 0..20_000 {
             let coast = lonlat_to_dir(0.0, -10.0 + k as f64 * 0.001);
             let at = Place {
@@ -1695,26 +1763,73 @@ mod tests {
                 p: coast,
                 coast,
             };
-            let deep = plan.gullies(at) > 0.4;
-            gullies += usize::from(deep && !was);
-            was = deep;
-            canyon = canyon.max(plan.canyons(at, 15.0, slope, rise));
             cut = cut.min(plan.scars(at, 0.6 * slope, slope, rise));
             debris = debris.max(plan.scars(at, slope + 0.1 * rise, slope, rise));
             // No scar reaches the shelf.
             assert_eq!(plan.scars(at, -5.0, slope, rise), 0.0);
         }
-        // 2,224 km of coast with a gully at each spacing, in pieces.
-        let spacings = (2224.0 / plan.gully_km()) as usize;
-        assert!(
-            gullies > spacings / 6 && gullies < 2 * spacings,
-            "{gullies}"
-        );
-        assert!(canyon > 0.5 * CANYON_DEPTH, "{canyon}");
         assert!(
             cut < -0.3 * SCAR_DEPTH && debris > 0.1 * SCAR_DEPTH,
             "{cut} {debris}"
         );
+    }
+
+    /// A margin stroke along the coast of `coast(n, 0.0)` with its erosion,
+    /// and the drops of the erosion in meters at places in degrees.
+    fn eroded(n: usize) -> (Heightmap, Heightmap, impl Fn(f64, f64) -> f64) {
+        let before = coast(n, 0.0);
+        let mut stroke = MarginStroke::new(spec(), n);
+        let plans: Vec<MarginPlan> = (0..=40)
+            .flat_map(|i| [0.8, 1.6, 2.4].map(|lon| (lon, -3.0 + 0.15 * f64::from(i))))
+            .map(|(lon, lat)| stroke.stamp(&before, lonlat_to_dir(lon, lat), 0.012, 0.7, 1.0))
+            .collect();
+        let window = margin_window(&plans, n);
+        let mut erosion = Erosion::window_alone(&WindowHeights::new(&before, window));
+        erosion.set_branching(7, 0.5);
+        let step = erode_margin(&mut erosion, &plans, 0.5);
+        let paint = |erode: bool| {
+            let mut map = coast(n, 0.0);
+            map.begin_stroke();
+            for plan in &plans {
+                map.margin(plan);
+            }
+            if erode {
+                map.erode(&step);
+            }
+            map.end_stroke();
+            map
+        };
+        let (plain, map) = (paint(false), paint(true));
+        let drop = move |lon: f64, lat: f64| meters(&plain, lon, lat) - meters(&map, lon, lat);
+        let map = paint(true);
+        (before, map, drop)
+    }
+
+    #[test]
+    fn the_erosion_cuts_channels_in_the_slope_and_keeps_the_land() {
+        let (before, map, drop) = eroded(2048);
+        let (old, new) = (levels(&before), levels(&map));
+        for (a, b) in new.iter().zip(&old) {
+            if to_meters(f64::from(*b)) > 0.0 {
+                assert_eq!(a, b, "the land changed");
+            }
+        }
+        // The channels of the slope: the places along the coast where the
+        // drop is deeper than 10 m and than at the places next to them.
+        let drops: Vec<f64> = (0..1000)
+            .map(|k| drop(1.15, -2.0 + k as f64 * 0.004))
+            .collect();
+        let deepest = drops.iter().copied().fold(0.0, f64::max);
+        let channels = drops
+            .windows(3)
+            .filter(|w| w[1] > 10.0 && w[1] >= w[0] && w[1] > w[2])
+            .count();
+        assert!(channels >= 5 && deepest > 50.0, "{channels} {deepest}");
+        // The shelf keeps most of its shape.
+        let shelf = (0..400)
+            .map(|k| drop(0.4, -2.0 + k as f64 * 0.01))
+            .fold(0.0, f64::max);
+        assert!(shelf < 0.5 * deepest, "{shelf} {deepest}");
     }
 
     #[test]

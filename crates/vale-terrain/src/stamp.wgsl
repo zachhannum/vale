@@ -1593,21 +1593,13 @@ const MARGIN_RISE_KM_PER_M = 0.25;
 const MARGIN_RISE_FADE = 0.7;
 const MARGIN_BREAK_ROUND = 30.0;
 const MARGIN_TOP = -0.5;
-const MARGIN_GULLY_KM = 3.0;
-const MARGIN_GULLY_TEXELS = 4.0;
-const MARGIN_GULLY_DEPTH = 220.0;
-const MARGIN_CANYON_KM = 28.0;
-const MARGIN_CANYON_GULLIES = 6.0;
-const MARGIN_CANYON_DEPTH = 300.0;
 const MARGIN_SCAR_KM = 70.0;
-const MARGIN_SCAR_GULLIES = 12.0;
+const MARGIN_SCAR_TEXELS = 48.0;
+const MARGIN_SLOPE_ROUGH = 1.5;
 const MARGIN_SCAR_DEPTH = 260.0;
 const MARGIN_DEBRIS_PART = 0.45;
 const SALT_MARGIN_WANDER = 0x6d617267u;
 const SALT_MARGIN_ANGLE = 0x736c6f70u;
-const SALT_MARGIN_GULLY = 0x67756c6cu;
-const SALT_MARGIN_PIECE = 0x70696563u;
-const SALT_MARGIN_CANYON = 0x63616e79u;
 const SALT_MARGIN_SCAR = 0x73636172u;
 const SALT_MARGIN_RELIEF = 0x72656c66u;
 const SALT_MARGIN_WIDTH = 0x77696474u;
@@ -1746,17 +1738,9 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
     let t = clamp((down - slope) / rise, 0.0, 1.0);
     let apron = floor_m + height * (1.0 - t) * (1.0 - t);
     let base = -smooth_min(-upper, -apron, 0.25 * height + 1.0);
-    // The gullies.
-    let spacing = max(MARGIN_GULLY_KM, MARGIN_GULLY_TEXELS * texel);
-    let v_gully = 1.0 - abs(margin_noise(at.coast, spacing, SALT_MARGIN_GULLY).x);
-    let piece = margin_noise(p, 2.5 * spacing, SALT_MARGIN_PIECE).x;
-    let gullies = v_gully * v_gully * v_gully * smooth_between(-0.3, 0.5, piece);
-    let on_slope = smooth_between(0.0, 0.15 * slope, down)
-        * (1.0 - smooth_between(0.7 * slope, slope + 0.15 * rise, down));
-    let deep = MARGIN_GULLY_DEPTH * sqrt(tan_slope / tan(radians(MARGIN_SLOPE_DEG)));
-    var level = base - deep * on_slope * gullies;
+    var level = base;
     // The slide scars and their debris.
-    let scar_size = max(MARGIN_SCAR_KM, MARGIN_SCAR_GULLIES * spacing);
+    let scar_size = max(MARGIN_SCAR_KM, MARGIN_SCAR_TEXELS * texel);
     let ns = margin_noise(at.coast, scar_size, SALT_MARGIN_SCAR);
     let here = smooth_between(0.25, 0.6, ns.x);
     let scar_depth = MARGIN_SCAR_DEPTH * (0.3 + 0.35 * (ns.y + 1.0));
@@ -1767,16 +1751,6 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
     let q = (down - slope - 0.5 * lobe_length) / (0.5 * lobe_length + texel);
     let lobe = max(1.0 - q * q, 0.0);
     level += here * scar_depth * (MARGIN_DEBRIS_PART * lobe * lobe - cut);
-    // The canyons.
-    let canyon_size = max(MARGIN_CANYON_KM, MARGIN_CANYON_GULLIES * spacing);
-    let nc = margin_noise(at.coast, canyon_size, SALT_MARGIN_CANYON);
-    let v = clamp((0.15 - abs(nc.x)) / 0.15, 0.0, 1.0);
-    let canyon_here = smooth_between(-0.2, 0.3, nc.y);
-    let canyon_deep = 0.4 + 0.3 * (nc.z + 1.0);
-    let canyon_head = -0.15 * canyon_size;
-    let start = smooth_between(canyon_head, canyon_head + 0.3 * slope + texel, down);
-    let channel = exp(-max(down - slope, 0.0) / (0.12 * rise + texel));
-    level -= MARGIN_CANYON_DEPTH * canyon_deep * canyon_here * v * sqrt(v) * start * channel;
     // The fine relief.
     let least = 2.0 * texel;
     let sizes = array<f32, 4>(40.0, 16.0, 7.0, 3.5);
@@ -1786,7 +1760,10 @@ fn margin_profile(at: MarginPlace, p: vec3<f32>, old: f32) -> f32 {
         let fade = smooth_between(least, 2.0 * least, sizes[k]);
         relief += margin_noise(p, sizes[k], SALT_MARGIN_RELIEF + k).x * heights[k] * fade;
     }
-    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down)) * smooth_between(0.0, 0.3 * w, at.d);
+    let on_slope = smooth_between(0.0, 0.15 * slope, down)
+        * (1.0 - smooth_between(0.8 * slope, slope + 0.1 * rise, down));
+    let rough = (0.3 + 0.7 * smooth_between(0.0, slope, down) + MARGIN_SLOPE_ROUGH * on_slope)
+        * smooth_between(0.0, 0.3 * w, at.d);
     level += rough * relief;
     let fade = smooth_between(MARGIN_RISE_FADE, 1.0, t);
     return min(level + (old - level) * fade, max(MARGIN_TOP, old));
