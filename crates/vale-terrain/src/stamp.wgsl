@@ -2762,6 +2762,7 @@ const V_LAGOON = 58u;
 const V_EXTENT = 59u;
 const V_SHORE = 60u;
 const V_REEF = 61u;
+const V_CONVEX = 62u;
 
 // Number `i` of volcano `v`.
 fn volcano(v: u32, i: u32) -> f32 {
@@ -2846,6 +2847,7 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     re = re * (1.0 + 0.05 * n.x * fade);
     let x = volcano_foot(1.0 - re);
     var f = x + (x * sqrt(x) - x) * shield;
+    f += (x * (2.0 - x) - f) * volcano(v, V_CONVEX);
     f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * max(1.0 - re, 0.0);
     let top = volcano(v, V_TOP);
     f = min(f, top) / top;

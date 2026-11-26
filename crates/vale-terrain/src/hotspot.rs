@@ -20,8 +20,8 @@ use crate::line::{LinePlace, LinePlan, LinePoint, REACH, StrokeLine, bump, noise
 use crate::margin::{circle_window, smooth_min};
 use crate::math::{V3, add, angle, cross, dot, normalize, scale};
 use crate::seamount::{
-    CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PLAN_VOLCANOES, REEF, RIM,
-    SHIELD_RATIO, SHORE, Volcano, draw, gdh1_age, gdh1_depth, sea_floor, shield_volcano,
+    CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PLAN_VOLCANOES, REEF, RIM, SHORE,
+    Volcano, draw, gdh1_age, gdh1_depth, sea_floor, shield_volcano,
 };
 
 /// The brush radius of the app on a world of the size of the Earth, in
@@ -38,6 +38,10 @@ pub const HOTSPOT_HEIGHT_RANGE: (f64, f64) = (500.0, 12000.0);
 pub const HOTSPOT_SPEED_MM: f64 = 90.0;
 pub const HOTSPOT_SPEED_RANGE: (f64, f64) = (10.0, 200.0);
 
+/// The height of a volcano over its base radius. The Hawaiian volcanoes are
+/// steeper than a lone seamount.
+const HOTSPOT_RATIO: f64 = 0.12;
+
 /// The height of the swell over the hotspot, in meters (Crough 1983).
 const SWELL_M: f64 = 1000.0;
 
@@ -53,8 +57,8 @@ const STEP: (f64, f64) = (0.6, 1.4);
 /// height of its volcanoes. The distance is a part of the base radius of the
 /// largest volcano.
 const DOUBLE_SIZE: f64 = 8.0;
-const DOUBLE_ABOVE: f64 = 0.25;
-const DOUBLE_ACROSS: f64 = 0.3;
+const DOUBLE_ABOVE: f64 = 0.0;
+const DOUBLE_ACROSS: f64 = 0.4;
 const DOUBLE_HEIGHT: f64 = 0.85;
 
 /// The largest distance of a volcano of a single line from the line, as a
@@ -284,7 +288,7 @@ impl HotspotLine {
         chain.reset_age = gdh1_age(chain.floor_depth - SWELL_M);
 
         // The places of the volcanoes, from the end of the line back.
-        let largest = spec.height_m / SHIELD_RATIO / (km * 1000.0);
+        let largest = spec.height_m / HOTSPOT_RATIO / (km * 1000.0);
         let spacing = SPACING * largest;
         struct Site {
             s: f64,
@@ -338,8 +342,17 @@ impl HotspotLine {
             let seed = hash(k as u32, spec.seed, SALT_SHAPE, 0);
             let load_age = (chain.floor_age - age).max(0.0);
             let height = site.raw * factor;
-            let Some(mut v) = shield_volcano(seed, center, axis, height, reach, load_age, km, n)
-            else {
+            let Some(mut v) = shield_volcano(
+                seed,
+                center,
+                axis,
+                height,
+                HOTSPOT_RATIO,
+                reach,
+                load_age,
+                km,
+                n,
+            ) else {
                 continue;
             };
             v.0[GROWTH] = growth(age) as f32;
@@ -489,6 +502,7 @@ impl HotspotPlan {
 
     /// The depth of the floor at the end of the line in meters, the reset
     /// age, and the plate speed in radians per million years.
+    #[cfg(feature = "gpu")]
     pub(crate) fn swell_numbers(&self) -> (f64, f64, f64) {
         self.chain.as_ref().map_or((0.0, 0.0, 1.0), |chain| {
             (chain.floor_depth, chain.reset_age, chain.speed)
@@ -524,7 +538,7 @@ impl HotspotPlan {
 /// The number of erode steps of a hotspot track, and their rate at an
 /// erosion of 1.
 pub const HOTSPOT_ERODE_STEPS: usize = 8;
-pub const HOTSPOT_ERODE_RATE: f64 = 3.0;
+pub const HOTSPOT_ERODE_RATE: f64 = 24.0;
 
 /// The radius of the erode brush of an island, in base radii.
 const ISLAND_BRUSH: f64 = 1.2;
@@ -842,7 +856,7 @@ mod tests {
         let mut long = line(spec, N, -20.0, 20.0, 1.0);
         let (_, _) = lay(&mut long, N, FLOOR_M);
         let chain = long.chain.clone().unwrap();
-        let largest = spec.height_m / SHIELD_RATIO / 1000.0;
+        let largest = spec.height_m / HOTSPOT_RATIO / 1000.0;
         let length = long.length();
         let mut along = Vec::new();
         let mut across = Vec::new();
@@ -888,7 +902,7 @@ mod tests {
         for (v, &h) in chain.volcanoes.iter().zip(&chain.heights_m) {
             assert!(v.shield() && v.cones() == 1 && v.rifts() >= 2);
             let radius_m = v.base_radius() * KM * 1000.0;
-            assert!((h / radius_m - SHIELD_RATIO).abs() < 1e-3);
+            assert!((h / radius_m - HOTSPOT_RATIO).abs() < 1e-3);
         }
         // Lower volcanoes vary in height.
         let lowest = chain.heights_m.iter().copied().fold(f64::MAX, f64::min);
@@ -1088,7 +1102,16 @@ mod tests {
             .expect("an atoll");
         let v = &chain.volcanoes[i];
         let c = v.center();
-        let lagoon = meters(map.level_at(c));
+        // The lagoon: the lowest level near the center.
+        let (east, north) = frame(c);
+        let r = 0.15 * v.base_radius();
+        let lagoon = (0..64)
+            .map(|k| {
+                let (x, y) = (f64::from(k % 8) / 3.5 - 1.0, f64::from(k / 8) / 3.5 - 1.0);
+                let p = normalize(add(add(c, scale(east, r * x)), scale(north, r * y)));
+                meters(map.level_at(p))
+            })
+            .fold(f64::MAX, f64::min);
         // The rim: the highest texel on rays from the center.
         let n = map.face_size();
         let texel = |p: V3| {
@@ -1096,7 +1119,6 @@ mod tests {
             let at = |a: f64| ((crate::cube::warp(a) + 1.0) * 0.5 * n as f64).floor() as i64;
             meters(f64::from(map.get(face, at(a), at(b))))
         };
-        let (east, north) = frame(c);
         let mut rims = Vec::new();
         for k in 0..16 {
             let a = f64::from(k) / 16.0 * std::f64::consts::TAU;

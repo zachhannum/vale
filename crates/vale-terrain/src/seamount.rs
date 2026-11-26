@@ -114,6 +114,7 @@ pub(crate) const LAGOON: usize = 58;
 const EXTENT: usize = 59;
 pub(crate) const SHORE: usize = 60;
 pub(crate) const REEF: usize = 61;
+const CONVEX: usize = 62;
 
 /// The cap of a volcano with no cap.
 pub(crate) const NO_CAP: f32 = 65535.0;
@@ -131,7 +132,7 @@ const CONE_RATIO: f64 = 0.2;
 const CONE_RATIO_SPREAD: f64 = 0.05;
 
 /// The height over the base radius of a large shield.
-pub(crate) const SHIELD_RATIO: f64 = 0.09;
+const SHIELD_RATIO: f64 = 0.09;
 
 /// The heights in meters where a cone becomes a shield.
 const SHIELD_FROM_M: f64 = 1500.0;
@@ -174,6 +175,11 @@ const ELASTIC_MAX_KM: f64 = 40.0;
 /// The moat of the volcano is deepest at its center, and it is at most this
 /// part of the height.
 const FLEX_MAX: f64 = 0.6;
+
+/// The part of the profile of a shield volcano of a line that is convex, as
+/// the Hawaiian volcanoes: their submarine flanks are steep, and their tops
+/// are gentle.
+const CONVEX_SHIELD: f64 = 0.85;
 
 /// The moats of a line of volcanoes add up to a moat that is narrower than
 /// the moat of one volcano. The flexural length of a shield volcano of a
@@ -324,6 +330,8 @@ impl Volcano {
         let re = re * (1.0 + 0.05 * n[0] * fade);
         let x = foot(1.0 - re);
         let mut f = x + (x.powf(1.5) - x) * shield;
+        // A convex volcano has steep lower flanks and a gentle top.
+        f += (x * (2.0 - x) - f) * self.get(CONVEX);
         f *= 1.0 + self.get(GULLY_SIZE) * n[1] * 4.0 * re.min(1.0) * (1.0 - re).max(0.0);
         let top = self.get(TOP);
         f = f.min(top) / top;
@@ -907,7 +915,8 @@ fn flexure(age_myr: f64, contrast: f64, volume: f64, radius_m: f64, height_m: f6
 
 /// A shield volcano of one cone with rift zones and slides, or `None` if it
 /// does not show on a heightmap with `n` texels along a face side. `axis`
-/// is a unit vector square to `center`, `height_m` is the height, and
+/// is a unit vector square to `center`, `height_m` is the height, `ratio`
+/// is the height over the base radius, and
 /// `load_age` is the age of the plate under it in millions of years, in
 /// a world with a radius of `km` kilometers. Volcanic rock fills its moat.
 /// It reaches `reach` radians from its center. A volcano that does not fit
@@ -918,6 +927,7 @@ pub(crate) fn shield_volcano(
     center: V3,
     axis: V3,
     height_m: f64,
+    ratio: f64,
     reach: f64,
     load_age: f64,
     km: f64,
@@ -925,11 +935,13 @@ pub(crate) fn shield_volcano(
 ) -> Option<Volcano> {
     let r = |i: u32| draw(seed, i);
     let mut v = [0f32; VOLCANO_FLOATS];
-    let mut radius = height_m / SHIELD_RATIO / (km * 1000.0);
+    let mut radius = height_m / ratio / (km * 1000.0);
     let mut height_m = height_m;
-    let stretch = 1.0 + 0.15 * r(3);
-    let rifts = 2 + (r(5) * 3.0) as usize;
-    let rift_size = 0.6 + 0.4 * r(6);
+    // The volcano and two of its rift zones run along the axis, as the
+    // Hawaiian volcanoes run along their chain.
+    let stretch = 1.15 + 0.25 * r(3);
+    let rifts = 2 + (r(5) * 2.0) as usize;
+    let rift_size = 0.25 + 0.25 * r(6);
     let rift_start = r(7) * TAU;
     let outline = [
         0.06 + 0.06 * r(20),
@@ -960,17 +972,22 @@ pub(crate) fn shield_volcano(
     put(&mut v, HEIGHT, height_m * LEVELS_PER_M);
     put(&mut v, RADIUS, radius);
     put(&mut v, SHIELD, 1.0);
+    put(&mut v, CONVEX, CONVEX_SHIELD);
     put(&mut v, TOP, 1.0);
     put(&mut v, CONES, 1.0);
     put(&mut v, CONE_HEIGHT, 1.0);
     put(&mut v, STRETCH, stretch);
     put(&mut v, RIFTS, rifts as f64);
     for i in 0..rifts {
-        let even = rift_start + TAU * i as f64 / rifts as f64;
+        let angle = match i {
+            0 => 0.0,
+            1 => PI,
+            _ => rift_start,
+        };
         put(
             &mut v,
             RIFT_ANGLE + i,
-            wrap(even + 0.6 * (r(30 + i as u32) - 0.5)),
+            wrap(angle + 0.6 * (r(30 + i as u32) - 0.5)),
         );
     }
     put(&mut v, RIFT_SIZE, rift_size);
@@ -985,7 +1002,7 @@ pub(crate) fn shield_volcano(
         put(&mut v, SLIDE + 3 * s + 2, 0.25 + 0.25 * r(40 + s as u32));
     }
     put(&mut v, GULLIES, 40.0 + 16.0 * r(42));
-    put(&mut v, GULLY_SIZE, 0.07 + 0.06 * r(43));
+    put(&mut v, GULLY_SIZE, 0.05 + 0.03 * r(43));
     put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));
     put(&mut v, FLEX, moat_m * LEVELS_PER_M);
     put(
