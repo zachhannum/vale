@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use vale_store::{RasterId, Smoothing};
-use vale_terrain::{Heightmap, LocalPyramid, smoothing_level};
+use vale_terrain::{Bands, Heightmap, LocalPyramid, SEA_LEVEL, smoothing_level};
 
 use super::line::simplify;
 use super::math::{V3, add, angle, cross, dot, length, normalize, scale};
@@ -30,11 +30,98 @@ const TOLERANCE: f64 = 0.1;
 /// The halvings of a step that finds no line.
 const RETRIES: usize = 4;
 
+/// The sea of a raster layer: the level of sea level and the blend depth
+/// of the smoothing, both from 0 to 1 of the range of the layer. `None`: the
+/// layer has no stop at sea level.
+pub fn sea_of(bands: &Bands, smoothing: Smoothing) -> Option<(f64, f64)> {
+    bands.sea()?;
+    let range = bands.max() - bands.min();
+    let depth = f64::from(smoothing.blend_depth) / range;
+    let level = f64::from(bands.level(SEA_LEVEL)) / 65535.0;
+    (range > 0.0).then_some((level, depth))
+}
+
+/// The levels of the field that the display shows for a raster layer: the
+/// level above sea level, the level below it, sea level, and the blend
+/// depth, as `shown_field` in `field.wgsl` takes them. A depth below 0: no
+/// sea.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lod {
+    pub land: f64,
+    pub sea_lod: f64,
+    pub sea: f64,
+    pub depth: f64,
+}
+
+impl Lod {
+    /// The full detail.
+    pub const FULL: Lod = Lod::flat(0.0);
+
+    /// One level everywhere.
+    pub const fn flat(lod: f64) -> Lod {
+        Lod {
+            land: lod,
+            sea_lod: lod,
+            sea: 0.0,
+            depth: -1.0,
+        }
+    }
+
+    /// The levels of `smoothing` for a source of `face_size` texels at
+    /// `points_per_radian`. `sea` is from `sea_of`.
+    pub fn of(
+        smoothing: Smoothing,
+        sea: Option<(f64, f64)>,
+        points_per_radian: f64,
+        face_size: u32,
+    ) -> Lod {
+        if !smoothing.on {
+            return Lod::FULL;
+        }
+        let level = |size: f32| smoothing_level(f64::from(size), points_per_radian, face_size);
+        let land = level(smoothing.feature_size);
+        match sea {
+            Some((sea, depth)) => Lod {
+                land,
+                sea_lod: level(smoothing.sea_feature_size),
+                sea,
+                depth,
+            },
+            None => Lod::flat(land),
+        }
+    }
+
+    /// Both levels at `max` or less.
+    pub fn min(self, max: f64) -> Lod {
+        Lod {
+            land: self.land.min(max),
+            sea_lod: self.sea_lod.min(max),
+            ..self
+        }
+    }
+
+    /// The finer of the two levels that the display shows.
+    pub fn finest(&self) -> f64 {
+        match self.depth < 0.0 {
+            true => self.land,
+            false => self.land.min(self.sea_lod),
+        }
+    }
+
+    /// The value at `d`, from 0 to 1, and its slope across one texel of
+    /// level 0.
+    pub fn field(&self, pyramid: &LocalPyramid, d: V3) -> [f64; 3] {
+        pyramid.shown_slope(d, self.land, self.sea_lod, self.sea, self.depth)
+    }
+}
+
 /// The color stops of one raster layer, and the field near the pen.
 pub struct StopTargets {
     raster: RasterId,
     field: LocalPyramid,
     smoothing: Smoothing,
+    /// From `sea_of`.
+    sea: Option<(f64, f64)>,
     /// The levels of the stops, from 0 to 1, in order.
     levels: Vec<f64>,
 }
@@ -43,12 +130,13 @@ impl StopTargets {
     /// The targets of the stops at `levels` of a raster layer. `map` is a
     /// snapshot of the heightmap, and the GPU has a copy of it with a face
     /// of `face_size` texels. A level at an end of the range has no line.
-    /// `None`: the copy is not a reduction of `map`.
+    /// `sea` is from `sea_of`. `None`: the copy is not a reduction of `map`.
     pub fn new(
         raster: RasterId,
         map: Heightmap,
         face_size: u32,
         smoothing: Smoothing,
+        sea: Option<(f64, f64)>,
         levels: impl IntoIterator<Item = f64>,
     ) -> Option<Self> {
         let mut levels: Vec<f64> = levels.into_iter().filter(|&l| l > 0.0 && l < 1.0).collect();
@@ -58,6 +146,7 @@ impl StopTargets {
             raster,
             field: LocalPyramid::new(map, face_size)?,
             smoothing,
+            sea,
             levels,
         })
     }
@@ -74,22 +163,23 @@ impl StopTargets {
         &self.field
     }
 
-    /// The level of the smooth field at `scale`, as the globe shows it.
-    pub fn lod(&self, scale: f64) -> f64 {
-        if !self.smoothing.on {
-            return 0.0;
-        }
-        let size = f64::from(self.smoothing.feature_size);
-        smoothing_level(size, scale, self.field.face_size())
+    /// The levels of the smooth field at `scale`, as the globe shows it.
+    pub fn lod(&self, scale: f64) -> Lod {
+        Lod::of(self.smoothing, self.sea, scale, self.field.face_size())
     }
 
-    fn up(&self, d: V3, lod: f64, level: f64) -> bool {
-        self.field.field(d, lod) >= level
+    /// The value that the globe shows at `d` with `lod`, from 0 to 1.
+    pub fn value(&self, d: V3, lod: Lod) -> f64 {
+        lod.field(&self.field, d)[0]
+    }
+
+    fn up(&self, d: V3, lod: Lod, level: f64) -> bool {
+        self.value(d, lod) >= level
     }
 
     /// The point between `a` and `b` where the side of the stop changes.
     /// `a` and `b` are on two sides.
-    fn crossing(&self, a: V3, b: V3, lod: f64, level: f64) -> V3 {
+    fn crossing(&self, a: V3, b: V3, lod: Lod, level: f64) -> V3 {
         let side = self.up(a, lod, level);
         let (mut a, mut b) = (a, b);
         for _ in 0..HALVINGS {
@@ -106,9 +196,9 @@ impl StopTargets {
     /// The direction of the line through `q`, with the higher side at the
     /// left, from the slope of the field over `h` radians. `None`: the
     /// field is flat.
-    fn tangent(&self, q: V3, lod: f64, h: f64) -> Option<V3> {
+    fn tangent(&self, q: V3, lod: Lod, h: f64) -> Option<V3> {
         let (u, v) = basis(q);
-        let at = |x: f64, y: f64| self.field.field(offset(q, u, v, x, y), lod);
+        let at = |x: f64, y: f64| self.value(offset(q, u, v, x, y), lod);
         let gu = at(h, 0.0) - at(-h, 0.0);
         let gv = at(0.0, h) - at(0.0, -h);
         let g = add(scale(u, gu), scale(v, gv));
@@ -168,7 +258,7 @@ pub fn snap(
         let mut values = vec![f64::NAN; side * side];
         for j in -n..=n {
             for i in (-n..=n).filter(|&i| inside(i, j)) {
-                values[index(i, j)] = layer.field.field(node(i, j), lod);
+                values[index(i, j)] = layer.value(node(i, j), lod);
             }
         }
         for j in -n..=n {
@@ -237,7 +327,7 @@ pub fn snap(
 pub struct StopLock {
     pub layer: usize,
     level: f64,
-    lod: f64,
+    lod: Lod,
     scale: f64,
     /// The march, with the signed arc length of each point. The snapped
     /// point is at 0, and the arc length grows to the back.
@@ -489,10 +579,11 @@ mod tests {
 
     fn stop(c: V3, radius: f64) -> Arc<StopTargets> {
         let smoothing = Smoothing {
-            on: true,
             feature_size: 2.0,
+            ..Smoothing::default()
         };
-        Arc::new(StopTargets::new(RASTER, cap(c), 512, smoothing, [level(radius)]).unwrap())
+        let levels = [level(radius)];
+        Arc::new(StopTargets::new(RASTER, cap(c), 512, smoothing, None, levels).unwrap())
     }
 
     fn targets(stop: &Arc<StopTargets>, vectors: &[vale_store::Layer]) -> Arc<Targets> {
@@ -509,7 +600,7 @@ mod tests {
     fn on_line(t: &StopTargets, d: V3, c: V3, scale: f64) -> bool {
         let lod = t.lod(scale);
         let slope = 0.3 * angle(d, c).sin();
-        (t.field().field(d, lod) - t.levels()[0]).abs() < 2.0 * slope * 1e-3 / scale
+        (t.value(d, lod) - t.levels()[0]).abs() < 2.0 * slope * 1e-3 / scale
     }
 
     fn north(lon: f64, lat: f64, pts: f64, scale: f64) -> V3 {
@@ -574,6 +665,83 @@ mod tests {
             out.push(at(to, radius + 0.4 * f64::from(i)));
         }
         out
+    }
+
+    /// `cap` around the north pole, with a fine ripple of 0.005 that a
+    /// sea floor size of 8 points smooths away.
+    fn rough_cap() -> Heightmap {
+        let n = 512;
+        let mut map = Heightmap::new(n, 0);
+        let full = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        for face in 0..FACES {
+            let mut data = Vec::with_capacity(n * n);
+            for y in 0..n {
+                for x in 0..n {
+                    let d = map.texel_dir(face, x, y);
+                    let ripple = 0.005 * (400.0 * d[0]).sin() * (400.0 * d[1]).sin();
+                    data.push(((0.5 + 0.3 * d[2] + ripple) * 65535.0).round() as u16);
+                }
+            }
+            map.store_rect(face, full, &data);
+        }
+        map
+    }
+
+    /// The snap of points along the parallel at `lat` to a stop at `level`
+    /// of `rough_cap`, with sea level at 0.5. The land has the full detail,
+    /// and the sea floor has a size of 8 points. Gives the targets, the
+    /// levels of the field, and each hit.
+    fn rough_hits(lat: f64, level: f64) -> (Arc<StopTargets>, Lod, Vec<V3>) {
+        let smoothing = Smoothing {
+            feature_size: 0.0,
+            sea_feature_size: 8.0,
+            ..Smoothing::default()
+        };
+        let sea = Some((0.5, 0.02));
+        let t = StopTargets::new(RASTER, rough_cap(), 512, smoothing, sea, [level]).unwrap();
+        let lod = t.lod(SCALE);
+        assert_eq!(lod.land, 0.0);
+        assert!(lod.sea_lod > 2.0, "{lod:?}");
+        let t = Arc::new(t);
+        let hits = (0..16)
+            .map(|k| {
+                let p = lonlat_to_dir(f64::from(k) * 22.5 + 3.0, lat);
+                let hit = snap(std::slice::from_ref(&t), |_| true, p, SCALE, 30.0 / SCALE);
+                hit.unwrap_or_else(|| panic!("no hit at {k}")).dir
+            })
+            .collect();
+        (t, lod, hits)
+    }
+
+    #[test]
+    fn the_snap_target_of_the_coast_is_on_the_land_field() {
+        let (t, lod, hits) = rough_hits(0.0, 0.5);
+        for d in hits {
+            let land = t.field().field(d, lod.land);
+            assert!((land - 0.5).abs() < 1e-5, "{land}");
+            assert!((t.value(d, lod) - 0.5).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn the_snap_target_of_a_sea_contour_follows_the_blended_field() {
+        // 0.05 below sea level is past the blend depth, so the value there
+        // is the sea floor field, and the ripple of the land field is gone.
+        let (t, lod, hits) = rough_hits(-9.6, 0.45);
+        let mut off_land: f64 = 0.0;
+        for d in hits {
+            let shown = t.value(d, lod);
+            assert!((shown - 0.45).abs() < 1e-5, "{shown}");
+            let sea = t.field().field(d, lod.sea_lod);
+            assert!((sea - shown).abs() < 1e-9, "{sea} {shown}");
+            off_land = off_land.max((t.field().field(d, lod.land) - 0.45).abs());
+        }
+        assert!(off_land > 1e-3, "{off_land}");
     }
 
     #[test]
@@ -716,7 +884,7 @@ mod tests {
             let lod = t.lod(SCALE);
             let near = |d: V3, pts: f64| {
                 let slope = 0.3 * angle(d, c).sin();
-                (t.field().field(d, lod) - t.levels()[0]).abs() < 1.5 * slope * pts / SCALE
+                (t.value(d, lod) - t.levels()[0]).abs() < 1.5 * slope * pts / SCALE
             };
             for w in line.windows(2) {
                 assert!(on_line(&t, w[0], c, SCALE));

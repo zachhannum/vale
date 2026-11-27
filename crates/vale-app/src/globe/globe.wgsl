@@ -142,11 +142,13 @@ fn pixel_slope(d: vec3<f32>, slope: vec2<f32>, dx: vec3<f32>, dy: vec3<f32>) -> 
     return vec2<f32>(dot(g, dx), dot(g, dy));
 }
 
-// The value of the layer at a world direction, from 0 to 1, at the level
-// of the smoothing. The y and z parts are the change of the value across one
+// The value of the layer at a world direction, from 0 to 1, at the levels
+// of the smoothing: the land level above sea level, with a blend to the sea
+// level below it. The y and z parts are the change of the value across one
 // texel.
 fn shown(d: vec3<f32>) -> vec3<f32> {
-    return field(d, u32(u.params.x), u.detail.x, u32(u.detail.y));
+    let n = u32(u.params.x);
+    return shown_field(d, n, u.detail.x, u.detail.z, u32(u.detail.y), u.flat.x, u.detail.w);
 }
 
 // The first two bytes of a texel of the channel map. A texel past the face gives
@@ -318,10 +320,12 @@ fn hillshade(d: vec3<f32>, pixel: f32) -> f32 {
     }
     east = normalize(east);
     let north = cross(d, east);
-    // The slope of the field at the shown level, or at the level where one
+    // The slope of the field at the shown levels, or at the level where one
     // texel is one pixel if that is coarser.
-    let lod = max(u.detail.x, log2(pixel * u.params.x / (PI * 0.5)));
-    let h = field(d, u32(u.params.x), lod, u32(u.detail.y));
+    let fine = log2(pixel * u.params.x / (PI * 0.5));
+    let land = max(u.detail.x, fine);
+    let sea = max(u.detail.z, fine);
+    let h = shown_field(d, u32(u.params.x), land, sea, u32(u.detail.y), u.flat.x, u.detail.w);
     // The change of the value in one radian to the east and to the north.
     let g = pixel_slope(d, h.yz, east, north);
     let z = max(1.0, sqrt(pixel * u.shade.w / RELIEF_REF_M));

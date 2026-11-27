@@ -58,8 +58,9 @@ pub struct Uniforms {
     pub ground: [f32; 4],
     /// The color of the canvas around the globe.
     pub back: [f32; 4],
-    /// The level of the smooth field that the layer shows, and the coarsest
-    /// level of its source.
+    /// The level of the smooth field that the layer shows above sea level,
+    /// the coarsest level of its source, the level below sea level, and the
+    /// blend depth from 0 to 1 of the range. A depth below 0: no sea.
     pub detail: [f32; 4],
     /// 1 when the passes of the lines of the stops ran for this layer, then
     /// the radius of their search in pixels.

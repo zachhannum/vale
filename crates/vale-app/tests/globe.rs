@@ -1431,6 +1431,9 @@ fn the_gradient_adds_moves_and_removes_a_stop() {
         h.step();
         assert_eq!(h.state().globe.preview.selected, selected);
     }
+    h.get_by_label(vale_app::ui::elevation::REMOVE)
+        .scroll_to_me();
+    h.run();
     h.get_by_label(vale_app::ui::elevation::REMOVE).click();
     h.step();
     assert_eq!(stops(&h).len(), count);
@@ -7731,6 +7734,9 @@ fn the_desktop_panel_sets_the_line_of_the_selected_stop() {
     let sea = h.state().globe.map.bands.sea().unwrap();
     h.state_mut().globe.preview.selected = Some((id, sea));
     h.run_steps(2);
+    h.get_by_label(vale_app::ui::pad::raster::LINE)
+        .scroll_to_me();
+    h.run();
     h.get_by_label(vale_app::ui::pad::raster::LINE).click();
     h.run_steps(2);
     assert!(h.state().globe.map.bands.stops()[sea].line.on);
@@ -7752,6 +7758,8 @@ fn the_desktop_band_controls_rename_the_band() {
     let sea = h.state().globe.map.bands.sea().unwrap();
     h.state_mut().globe.preview.selected = Some((id, sea));
     h.run_steps(2);
+    h.get_by_label(BAND_NAME).scroll_to_me();
+    h.run();
     h.get_by_label(BAND_NAME).click();
     h.run_steps(1);
     h.event(egui::Event::Text("Lowland".into()));
@@ -7804,6 +7812,8 @@ fn the_desktop_list_has_one_row_per_band_with_the_card_controls() {
     let before = h.state().globe.map.bands.colors().to_vec();
     h.get_by_label(&band_row(sea + 2)).click();
     h.run_steps(2);
+    h.get_by_label(REMOVE).scroll_to_me();
+    h.run();
     h.get_by_label(REMOVE).click();
     h.run_steps(2);
     let mut want = before.clone();
@@ -7908,11 +7918,12 @@ fn brush_layer(h: &Harness<'static, AppState>) -> RasterId {
 }
 
 /// Turns the smoothing of a raster layer on or off, with a feature size in
-/// points.
+/// points on land and on the sea floor.
 fn set_smoothing(h: &mut Harness<'static, AppState>, id: RasterId, on: bool, points: f32) {
     let state = h.state_mut();
     assert!(state.set_raster_smoothing(id, on));
     assert!(state.set_raster_feature_size(id, points));
+    assert!(state.set_raster_sea_feature_size(id, points));
     h.step();
 }
 
@@ -8037,6 +8048,87 @@ fn a_bump_smaller_than_the_feature_size_has_no_line_with_the_smoothing() {
     let full: f32 = line_columns(&mut h, "full bump").iter().sum();
     assert!(full > 3.0, "{full}");
     assert!(smooth < 0.5, "{smooth}");
+}
+
+/// The dark part of the middle third of the canvas that the line of the
+/// stop at `index` adds, in pixels.
+fn stop_ink(h: &mut Harness<'static, AppState>, index: usize, name: &str) -> f32 {
+    let set = |h: &mut Harness<'static, AppState>, on| {
+        let line = vale_terrain::StopLine {
+            on,
+            weight: lines::LINE_WEIGHT,
+            color: [0; 3],
+            ..Default::default()
+        };
+        assert!(h.state_mut().globe.map.bands.set_line(index, line));
+    };
+    set(h, false);
+    let plain = canvas_image(h);
+    set(h, true);
+    let lined = canvas_image(h);
+    if std::env::var_os("VALE_LINE_IMAGES").is_some() {
+        lined.save(format!("/tmp/line-{name}.png")).unwrap();
+    }
+    let (w, height) = (lined.width(), lined.height());
+    let ink = |x, y| {
+        let a = f32::from(plain.get_pixel(x, y).0[0]).max(1.0);
+        let b = f32::from(lined.get_pixel(x, y).0[0]);
+        (a - b).max(0.0) / a
+    };
+    (w / 3..2 * w / 3)
+        .flat_map(|x| (0..height).map(move |y| (x, y)))
+        .map(|(x, y)| ink(x, y))
+        .sum()
+}
+
+/// A layer at `ground` meters with a bump of four texels at `top` meters at
+/// the middle of face +x, and stops at -2000 m, sea level, and 1500 m. The
+/// land has the full detail, and the sea floor has `sea_size` points.
+fn bump_harness(ground: f64, top: f64, sea_size: f32) -> (Harness<'static, AppState>, RasterId) {
+    const N: usize = 256;
+    let mut h = line_harness(RasterDisplay::Bands, [0.0, 0.0, 1.0]);
+    let globe = &mut h.state_mut().globe;
+    globe.set_face_size(N);
+    globe.map.fill(meters_to_level(ground));
+    for (x, y) in [(127, 127), (128, 127), (127, 128), (128, 128)] {
+        globe.map.set(0, x, y, meters_to_level(top));
+    }
+    lines::set_stops(
+        &mut globe.map.bands,
+        true,
+        &[-2000.0, 0.0, 1500.0],
+        &[[255; 3]; 4],
+    );
+    globe.view = GlobeView::centered(0.0, 0.0);
+    let id = brush_layer(&h);
+    set_smoothing(&mut h, id, true, 0.0);
+    let state = h.state_mut();
+    assert!(state.set_raster_sea_feature_size(id, sea_size));
+    assert!(state.set_raster_blend_depth(id, 100.0));
+    h.step();
+    (h, id)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_sea_bump_smaller_than_the_sea_floor_size_has_no_line_and_a_land_bump_keeps_it() {
+    let _gpu = one_gpu_test();
+    // The stop at -2000 m is the second stop, and the stop at 1500 m is the
+    // fourth.
+    let (mut h, id) = bump_harness(-3000.0, -1000.0, 8.0);
+    assert_eq!(h.state().globe.smoothing_level(id), 0.0);
+    let level = h.state().globe.sea_smoothing_level(id);
+    assert!(level >= 2.0, "{level}");
+    let smooth = stop_ink(&mut h, 1, "smooth sea bump");
+    assert!(h.state_mut().set_raster_sea_feature_size(id, 0.0));
+    h.step();
+    let full = stop_ink(&mut h, 1, "full sea bump");
+    assert!(full > 3.0, "{full}");
+    assert!(smooth < 0.5, "{smooth}");
+
+    let (mut h, _) = bump_harness(500.0, 2500.0, 8.0);
+    let land = stop_ink(&mut h, 3, "land bump");
+    assert!(land > 3.0, "{land}");
 }
 
 /// A map of smooth waves over the sphere.

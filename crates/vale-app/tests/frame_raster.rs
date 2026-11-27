@@ -1445,3 +1445,78 @@ fn images_in(pdf: &[u8]) -> usize {
         .matches("/Subtype/Image")
         .count()
 }
+
+/// An Atlas workspace with a grey height layer of rough ground around
+/// `meters`, whose land has the full detail, and a frame at the middle.
+fn rough_atlas(meters: f64) -> (App, RasterId) {
+    let mut state = AppState::new(Document::empty()).unwrap();
+    state.headless = true;
+    state.set_layout(Layout::Pad);
+    vale_app::ui::atlas::add_frame(&mut state).expect("a page takes a frame");
+    state.globe.set_face_size(256);
+    let height = state.add_height();
+    state.set_raster_display(height, RasterDisplay::Grey);
+    state.set_raster_rivers(height, false);
+    state.set_raster_hillshade(height, false);
+    assert!(state.set_raster_smoothing(height, true));
+    assert!(state.set_raster_feature_size(height, 0.0));
+    assert!(state.set_raster_sea_feature_size(height, 0.0));
+    assert!(state.set_raster_blend_depth(height, 0.0));
+    let map = state.globe.raster_map_mut(height).unwrap();
+    for face in 0..6 {
+        for y in 0..256 {
+            for x in 0..256 {
+                let rough = ((x * 7919 + y * 104_729 + face * 31) % 17) as f64 - 8.0;
+                let level = vale_terrain::meters_to_level(meters + 60.0 * rough);
+                map.set(face, x, y, level);
+            }
+        }
+    }
+    let id = vale_app::ui::atlas::open_page(&state).frames[0].id;
+    let frame = state.doc.project.atlas.frame_mut(id).unwrap();
+    frame.center = [10.0, 20.0];
+    frame.scale = 3.2e7;
+    frame.graticule.on = false;
+    state.touch();
+    state.workspace = Workspace::Atlas;
+    let setup = egui_kittest::wgpu::default_wgpu_setup();
+    let mut h = headless::ui_harness(state, (1194.0, 834.0), 1.0, setup);
+    h.set_render_every_step(true);
+    h.run_steps(4);
+    (h, height)
+}
+
+/// A row of 120 pixels through the middle of the frame, with the sea floor
+/// size `points` in the map of the frame.
+fn sea_row(h: &mut App, height: RasterId, points: f32) -> Vec<u8> {
+    let frame = open_frame(h);
+    let layer = h.state().doc.project.raster_layer(height).unwrap().id;
+    h.state_mut()
+        .edit_map_raster(frame.map, layer, height, |state| {
+            state.set_raster_sea_feature_size(height, points);
+        });
+    let style = h.state().doc.map_style(frame.map, layer).unwrap();
+    let smoothing = style.raster_symbolizer().unwrap().smoothing;
+    assert_eq!(smoothing.sea_feature_size, points);
+    h.state_mut().touch();
+    h.run_steps(4);
+    let start = screen(h, anchor(&frame.shape)) + eframe::egui::vec2(-60.0, 17.0);
+    row(h, start, 120)
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_frame_smooths_the_sea_floor_by_the_sea_floor_size() {
+    let _gpu = one_gpu_test();
+    let (mut h, height) = rough_atlas(-4000.0);
+    let rough = sea_row(&mut h, height, 0.0);
+    let smooth = sea_row(&mut h, height, 8.0);
+    let steps = |r: &[u8]| -> u32 { r.windows(2).map(|w| u32::from(w[0].abs_diff(w[1]))).sum() };
+    assert!(steps(&smooth) * 2 < steps(&rough), "{rough:?} {smooth:?}");
+
+    // The land does not change with the sea floor size.
+    let (mut h, height) = rough_atlas(4000.0);
+    let rough = sea_row(&mut h, height, 0.0);
+    assert!(steps(&rough) > 20, "{rough:?}");
+    assert_eq!(sea_row(&mut h, height, 8.0), rough);
+}
