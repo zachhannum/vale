@@ -5,11 +5,13 @@
 //! Caldwell and others (1976): it goes down to the axis, and an outer rise
 //! stands before it. Normal faults parallel to the axis break the outer
 //! slope into horsts and grabens (Masson 1991). The faults start near the
-//! outer rise, and their throw grows toward the axis. The wall on the side
-//! of the overriding plate is steeper, and gullies make it rough. An
-//! accretionary margin has a prism of thrust ridges on that wall and a
-//! forearc basin behind it. An eroding margin has a steeper, rougher wall
-//! with slide scars.
+//! outer rise, and their throw grows toward the axis. The flat floor of
+//! the axis changes in width along it. The wall on the side of the
+//! overriding plate is steeper, with a steep lower wall. Gullies make it
+//! rough, and blocks make its upper part ragged and its top edge uneven. An
+//! accretionary margin has a prism of short, curved thrust ridges on the
+//! lower wall and a forearc basin behind the wall. An eroding margin has a
+//! steeper, rougher wall with slide scars.
 //!
 //! The change adds to the ground from before the stroke, so the hills and
 //! the seamounts of the incoming plate go down with it. The brush is a line
@@ -42,9 +44,17 @@ const DEEPS: [(f64, f64); 2] = [(400.0, 0.25), (100.0, 0.12)];
 const BEND_VARY: f64 = 0.1;
 const BEND_VARY_KM: f64 = 300.0;
 
-/// Half of the width of the flat floor of the axis, in kilometers, past
-/// half of a texel.
-const FLOOR_KM: f64 = 1.0;
+/// The mean of half of the width of the flat floor of the axis, in
+/// kilometers, past half of a texel. Each half changes along the axis by
+/// up to `FLOOR_VARY` of the mean, with a wavelength of `FLOOR_VARY_KM`.
+const FLOOR_KM: f64 = 1.5;
+const FLOOR_VARY: f64 = 0.7;
+const FLOOR_VARY_KM: f64 = 25.0;
+
+/// The middle of the axis floor moves off the line by up to this number of
+/// kilometers, with this wavelength along it.
+const AXIS_WANDER_KM: f64 = 1.5;
+const AXIS_WANDER_LENGTH_KM: f64 = 45.0;
 
 /// The mean distance between two bending faults, in kilometers and in
 /// texels at the least.
@@ -80,12 +90,21 @@ const GRABENS: f64 = 0.2;
 /// The width of the inner wall, as a part of the distance from the axis
 /// to the zero of the outer wall: for an accretionary margin and for an
 /// eroding margin.
-const WALL: [f64; 2] = [0.6, 0.35];
+const WALL: [f64; 2] = [1.0, 0.55];
+
+/// The lower wall is steeper: it takes `LOWER_SHARE` of the depth over
+/// `LOWER_WIDTH` of the wall width.
+const LOWER_WIDTH: f64 = 0.45;
+const LOWER_SHARE: f64 = 0.6;
 
 /// The width of the inner wall changes along the axis by this part, with
 /// this wavelength in kilometers.
 const WALL_VARY: f64 = 0.15;
 const WALL_VARY_KM: f64 = 200.0;
+
+/// Two shorter octaves of the change of the wall width, as the part and
+/// the wavelength in kilometers, make the top of the wall uneven.
+const WALL_EDGE: [(f64, f64); 2] = [(0.12, 35.0), (0.06, 11.0)];
 
 /// The mean distance between two thrust ridges of a prism, in kilometers
 /// and in texels at the least.
@@ -94,12 +113,25 @@ const PRISM_TEXELS: f64 = 4.0;
 
 /// The mean length of a piece of a thrust ridge, in kilometers, and the
 /// largest shift of the end of a piece, as a part of that length.
-const PRISM_PIECE_KM: f64 = 75.0;
-const PRISM_BREAK: f64 = 0.33;
+const PRISM_PIECE_KM: f64 = 35.0;
+const PRISM_BREAK: f64 = 0.4;
 
 /// Half of the length over which a piece fades in or out, as a part of the
 /// piece length.
-const PRISM_OVERLAP: f64 = 0.15;
+const PRISM_OVERLAP: f64 = 0.25;
+
+/// A piece bows across the axis by up to this number of ridge spacings at
+/// its middle.
+const PRISM_BOW: f64 = 0.6;
+
+/// The height of a piece changes along it with this wavelength in
+/// kilometers, down to `PRISM_LOW_PART` of its height.
+const PRISM_SWELL_KM: f64 = 12.0;
+const PRISM_LOW_PART: f64 = 0.25;
+
+/// The prism fades out between these parts of the wall width, so the
+/// ridges make the lower wall rough.
+const PRISM_TOP: (f64, f64) = (0.35, 0.6);
 
 /// The largest shift of a piece across the axis, in ridge spacings.
 const PRISM_SHIFT: f64 = 0.2;
@@ -131,7 +163,7 @@ const BASIN_VARY_KM: f64 = 150.0;
 
 /// The height of the roughness of the inner wall, as a part of the depth
 /// of the axis: for an accretionary margin and for an eroding margin.
-const ROUGH_PART: [f64; 2] = [0.12, 0.18];
+const ROUGH_PART: [f64; 2] = [0.18, 0.27];
 
 /// The octaves of the roughness: the size along the axis and across it in
 /// kilometers, and the weight. The roughness is longer down the wall, as
@@ -142,6 +174,32 @@ const ROUGH_OCTAVES: [[f64; 3]; 4] = [
     [3.0, 6.0, 0.36],
     [1.5, 3.0, 0.2],
 ];
+
+/// The height of the blocks of the upper inner wall, as a part of the
+/// depth of the axis: for an accretionary margin and for an eroding
+/// margin.
+const BLOCK_PART: [f64; 2] = [0.4, 0.6];
+
+/// The octaves of the blocks: the size along the axis and across it in
+/// kilometers, and the weight.
+const BLOCK_OCTAVES: [[f64; 3]; 2] = [[14.0, 9.0, 1.0], [6.0, 4.0, 0.5]];
+
+/// Half of the width of the step between two blocks, as a part of a block.
+const BLOCK_EDGE: f64 = 0.25;
+
+/// The edges of the blocks bend by this part of a block, with a wavelength
+/// of `BLOCK_WARP_KM`.
+const BLOCK_WARP: f64 = 0.8;
+const BLOCK_WARP_KM: f64 = 20.0;
+
+/// The blocks grow up the wall between the first two parts of the wall
+/// width, and fade between the last two. Past the top of the wall, only
+/// blocks that go down stay, with `BLOCK_DOWN` of their height, out to
+/// `BLOCK_PAST` of the wall width past the last part, so they break the
+/// edge.
+const BLOCK_RISE: [f64; 4] = [0.3, 0.55, 0.9, 1.1];
+const BLOCK_PAST: f64 = 0.3;
+const BLOCK_DOWN: f64 = 0.6;
 
 /// The length of the cells along the axis that each have one slide scar,
 /// in kilometers.
@@ -171,6 +229,7 @@ const SALT_FAULT: u32 = 0x666c_7473;
 const SALT_PRISM: u32 = 0x7072_736d;
 const SALT_ROUGH: u32 = 0x7267_6877;
 const SALT_SCAR: u32 = 0x7363_7273;
+const SALT_BLOCK: u32 = 0x626c_6b73;
 
 /// The channels of the hashes and the noise.
 const DEEP_WIDE: u32 = 0;
@@ -178,6 +237,13 @@ const DEEP_FINE: u32 = 1;
 const BEND: u32 = 2;
 const WALL_CHANNEL: u32 = 3;
 const BASIN: u32 = 4;
+const FLOOR_IN: u32 = 5;
+const FLOOR_OVER: u32 = 6;
+const AXIS_WANDER: u32 = 7;
+const WALL_EDGE_CHANNEL: u32 = 8;
+const BOW: u32 = 5;
+const SWELL: u32 = 6;
+const WARP: u32 = 4;
 const PLACE: u32 = 0;
 const THROW: u32 = 1;
 const KIND: u32 = 2;
@@ -320,6 +386,18 @@ pub(crate) struct Section {
     pub amp: f64,
 }
 
+/// The flat floor of the axis at one place along it, in kilometers.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Floor {
+    /// The distance of the middle of the floor from the line, toward the
+    /// incoming plate.
+    pub middle: f64,
+    /// The width of the floor from the middle to the foot of the outer
+    /// wall, and to the foot of the inner wall.
+    pub incoming: f64,
+    pub overriding: f64,
+}
+
 impl TrenchPlan {
     /// The flexural parameter of the incoming plate, in kilometers, from
     /// the elastic thickness at its age.
@@ -366,13 +444,29 @@ impl TrenchPlan {
     /// from the axis toward the incoming plate, at a distance along the line
     /// in kilometers. A distance below zero is on the overriding plate.
     pub(crate) fn profile(&self, u_km: f64, x: f64, s: Section) -> f64 {
-        let half = FLOOR_KM + 0.5 * self.texel_km();
-        if x >= 0.0 {
-            let xp = (x - half).max(0.0);
+        let floor = self.floor(u_km);
+        if x >= floor.middle {
+            let xp = (x - floor.middle - floor.incoming).max(0.0);
             s.depth * caldwell(xp / s.bend - 1.0) + self.faults(u_km, xp, s)
         } else {
-            let yp = (-x - half).max(0.0);
+            let yp = (floor.middle - x - floor.overriding).max(0.0);
             self.overriding(u_km, yp, s)
+        }
+    }
+
+    /// The flat floor of the axis at a distance along the line in
+    /// kilometers.
+    pub(crate) fn floor(&self, u_km: f64) -> Floor {
+        let seed = self.seed(SALT_DEEP);
+        let base = 0.5 * self.texel_km();
+        let half = |channel: u32| {
+            let n = noise1(u_km / FLOOR_VARY_KM, channel, 0, seed).0;
+            base + FLOOR_KM * (1.0 + FLOOR_VARY * n)
+        };
+        Floor {
+            middle: AXIS_WANDER_KM * noise1(u_km / AXIS_WANDER_LENGTH_KM, AXIS_WANDER, 0, seed).0,
+            incoming: half(FLOOR_IN),
+            overriding: half(FLOOR_OVER),
         }
     }
 
@@ -428,18 +522,33 @@ impl TrenchPlan {
             TrenchMargin::Accretionary => WALL[0],
             TrenchMargin::Eroding => WALL[1],
         };
-        let vary = noise1(u_km / WALL_VARY_KM, WALL_CHANNEL, 0, self.seed(SALT_DEEP)).0;
-        part * s.bend * (1.0 + WALL_VARY * vary)
+        let seed = self.seed(SALT_DEEP);
+        let mut vary = WALL_VARY * noise1(u_km / WALL_VARY_KM, WALL_CHANNEL, 0, seed).0;
+        for (i, (part, length)) in WALL_EDGE.into_iter().enumerate() {
+            vary += part * noise1(u_km / length, WALL_EDGE_CHANNEL + i as u32, 0, seed).0;
+        }
+        part * s.bend * (1.0 + vary)
     }
 
     /// The change on the overriding plate at a distance `yp` in kilometers
     /// from the edge of the axis floor, in meters.
     pub(crate) fn overriding(&self, u_km: f64, yp: f64, s: Section) -> f64 {
         let wall = self.wall_km(u_km, s);
-        let mut change = -s.depth * (1.0 - smoothstep(0.0, wall, yp));
+        let rise = LOWER_SHARE * smoothstep(0.0, LOWER_WIDTH * wall, yp)
+            + (1.0 - LOWER_SHARE) * smoothstep(0.0, wall, yp);
+        let mut change = -s.depth * (1.0 - rise);
         // Gullies and slides make the wall rough.
         let t = (yp / wall).clamp(0.0, 1.0);
         let rough = self.roughness(u_km, yp) * 4.0 * t * (1.0 - t) * s.depth;
+        // Blocks make the upper wall ragged, and blocks that slid down
+        // break its top edge.
+        let q = yp / wall;
+        let b = self.blocks(u_km, yp);
+        let blocks = (b
+            * smoothstep(BLOCK_RISE[0], BLOCK_RISE[1], q)
+            * (1.0 - smoothstep(BLOCK_RISE[2], BLOCK_RISE[3], q))
+            + BLOCK_DOWN * b.min(0.0) * bump((q - BLOCK_RISE[3]) / BLOCK_PAST))
+            * s.depth;
         match self.trench.margin {
             TrenchMargin::Accretionary => {
                 let vary = noise1(u_km / BASIN_VARY_KM, BASIN, 0, self.seed(SALT_DEEP)).0;
@@ -447,16 +556,39 @@ impl TrenchPlan {
                 let basin = smoothstep(0.95 * wall, wall + 0.3 * width, yp)
                     * (1.0 - smoothstep(wall + 0.7 * width, wall + width, yp));
                 let toe = smoothstep(0.0, 0.15 * wall, yp);
-                let top = 1.0 - smoothstep(0.9 * wall, 1.1 * wall, yp);
+                let top = 1.0 - smoothstep(PRISM_TOP.0 * wall, PRISM_TOP.1 * wall, yp);
                 change += self.prism(u_km, yp) * s.amp * toe * top - BASIN_DEPTH * s.depth * basin;
-                change += ROUGH_PART[0] * rough;
+                change += ROUGH_PART[0] * rough + BLOCK_PART[0] * blocks;
             }
             TrenchMargin::Eroding => {
-                change += ROUGH_PART[1] * rough;
+                change += ROUGH_PART[1] * rough + BLOCK_PART[1] * blocks;
                 change -= self.scars(u_km, yp, wall, s);
             }
         }
         change
+    }
+
+    /// The blocks of the inner wall, from -1 to 1: value noise with steep
+    /// steps between flat cells, and bent edges.
+    pub(crate) fn blocks(&self, u_km: f64, yp: f64) -> f64 {
+        let seed = self.seed(SALT_BLOCK);
+        let warp = |octave: u32| {
+            BLOCK_WARP
+                * noise2(
+                    u_km / BLOCK_WARP_KM,
+                    yp / BLOCK_WARP_KM,
+                    WARP + octave,
+                    seed,
+                )
+        };
+        let (du, dy) = (warp(0), warp(1));
+        let (mut sum, mut total) = (0.0, 0.0);
+        for (i, [along, across, weight]) in BLOCK_OCTAVES.into_iter().enumerate() {
+            let n = steps2(u_km / along + du, yp / across + dy, i as u32, seed);
+            sum += weight * n;
+            total += weight;
+        }
+        sum / total
     }
 
     /// The thrust ridges of an accretionary prism, in meters, at a distance
@@ -490,13 +622,20 @@ impl TrenchPlan {
                 if along <= 0.0 {
                     continue;
                 }
+                // Each piece is a curve, and its height swells and fades
+                // along it.
                 let shift = PRISM_SHIFT * (2.0 * unit(h(k, j, SHIFT)) - 1.0);
+                let middle = 0.5 * (b0 + b1);
+                let q = ((u_km - middle) / (0.5 * (b1 - b0))).clamp(-1.0, 1.0);
+                let bow = PRISM_BOW * (2.0 * unit(h(k, j, BOW)) - 1.0) * (1.0 - q * q);
                 let center =
-                    spacing * (f64::from(k) + shift + wander) + tilt * (u_km - 0.5 * (b0 + b1));
+                    spacing * (f64::from(k) + shift + wander + bow) + tilt * (u_km - middle);
                 let d = yp - center;
                 let width = (if d < 0.0 { PRISM_FRONT } else { PRISM_BACK }) * spacing;
-                let height = PRISM_HEIGHT_M.0
-                    + (PRISM_HEIGHT_M.1 - PRISM_HEIGHT_M.0) * unit(h(k, j, HEIGHT));
+                let swell = noise1(u_km / PRISM_SWELL_KM, k as u32, SWELL, seed).0;
+                let height = (PRISM_HEIGHT_M.0
+                    + (PRISM_HEIGHT_M.1 - PRISM_HEIGHT_M.0) * unit(h(k, j, HEIGHT)))
+                    * (PRISM_LOW_PART + (1.0 - PRISM_LOW_PART) * smoothstep(-0.6, 0.6, swell));
                 best = best.max(height * along * bump(d.abs() / width));
             }
         }
@@ -584,11 +723,24 @@ pub(crate) fn caldwell(x: f64) -> f64 {
 /// value at each lattice point is from a hash, and a smoothstep joins the
 /// values.
 pub(crate) fn noise2(x: f64, y: f64, octave: u32, seed: u32) -> f64 {
-    let (i, j) = (x.floor(), y.floor());
-    let (sx, sy) = (x - i, y - j);
-    let (i, j) = (i as i32, j as i32);
+    let (sx, sy) = (x - x.floor(), y - y.floor());
+    let fade = |t: f64| t * t * (3.0 - 2.0 * t);
+    lattice2(x, y, fade(sx), fade(sy), octave, seed)
+}
+
+/// Value noise of two numbers as `noise2`, but flat near each lattice
+/// point, with a step of a width of `2 BLOCK_EDGE` halfway between two.
+pub(crate) fn steps2(x: f64, y: f64, octave: u32, seed: u32) -> f64 {
+    let (sx, sy) = (x - x.floor(), y - y.floor());
+    let fade = |t: f64| smoothstep(0.5 - BLOCK_EDGE, 0.5 + BLOCK_EDGE, t);
+    lattice2(x, y, fade(sx), fade(sy), octave, seed)
+}
+
+/// The values of the lattice points of the cell of `x` and `y`, joined
+/// with the weights `tx` and `ty`.
+fn lattice2(x: f64, y: f64, tx: f64, ty: f64, octave: u32, seed: u32) -> f64 {
+    let (i, j) = (x.floor() as i32, y.floor() as i32);
     let value = |a: i32, b: i32| 2.0 * unit(hash(a as u32, b as u32, octave, seed)) - 1.0;
-    let (tx, ty) = (sx * sx * (3.0 - 2.0 * sx), sy * sy * (3.0 - 2.0 * sy));
     let low = value(i, j) + (value(i.wrapping_add(1), j) - value(i, j)) * tx;
     let high = value(i, j.wrapping_add(1))
         + (value(i.wrapping_add(1), j.wrapping_add(1)) - value(i, j.wrapping_add(1))) * tx;
@@ -689,12 +841,12 @@ mod tests {
     #[test]
     fn the_incoming_plate_follows_the_caldwell_profile() {
         let plan = plan(TrenchMargin::Accretionary);
-        let half = FLOOR_KM + 0.5 * plan.texel_km();
         for u_km in [500.0, 900.0, 1700.0] {
             let s = plan.section(u_km, 1.0);
+            let floor = plan.floor(u_km);
             for i in 0..60 {
                 let xp = 4.0 * f64::from(i);
-                let change = plan.change_m(at(&plan, u_km, xp + half));
+                let change = plan.change_m(at(&plan, u_km, xp + floor.middle + floor.incoming));
                 let faults = plan.faults(u_km, xp, s);
                 let expected = s.depth * caldwell(xp / s.bend - 1.0);
                 assert!(
@@ -882,7 +1034,8 @@ mod tests {
         let u_km = 1200.0;
         let s = plan.section(u_km, 1.0);
         let wall = plan.wall_km(u_km, s);
-        let half = FLOOR_KM + 0.5 * plan.texel_km();
+        let floor = plan.floor(u_km);
+        let half = floor.overriding - floor.middle;
         // Ridges on the wall: local highs of the prism across the axis.
         let prism: Vec<f64> = (0..200)
             .map(|i| plan.prism(u_km, wall * f64::from(i) / 200.0))
