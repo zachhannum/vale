@@ -105,7 +105,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     match mode {
         Mode::OceanRidge => out.extend([Magma, Hills, Scale]),
         // The strength of a trench is its depth.
-        Mode::Trench => out.push(Strength),
+        Mode::Trench => out.extend([Strength, Age]),
         Mode::Warp => out.extend([Strength, Scale]),
         Mode::Flatten => out.push(Rate),
         Mode::AbyssalHills => out.extend([Rate, Hills, Scale]),

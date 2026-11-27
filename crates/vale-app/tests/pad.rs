@@ -3073,7 +3073,7 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Flip side",
         "Brush margin accretionary",
         "Brush margin eroding",
-        "Brush age value",
+        "Brush age",
         "Brush seed value",
     ] {
         assert!(control(&h, row).is_some(), "{row}");
@@ -3090,13 +3090,11 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
     }
     // A typed age past an end gives the end, and a smaller age gives a
     // narrower bend.
-    for (text, value) in [("0", 10.0), ("900", 200.0), ("40", 40.0)] {
+    for (text, value) in [("-5", 0.0), ("900", 200.0), ("50", 50.0)] {
         type_value(&mut h, "Brush age", text);
         let got = h.state().globe.brush.trench_age_myr;
         assert!((got - value).abs() < 1e-6, "{text}: {got}");
     }
-    step(&mut h, "Brush age", true);
-    assert_eq!(h.state().globe.brush.trench_age_myr, 50.0);
     assert!(h.query_by_label("Outer rise 118 km").is_none());
     tap(&mut h, "Flip side");
     assert_eq!(h.state().globe.brush.trench_side, TrenchSide::Right);
@@ -3127,7 +3125,7 @@ fn the_trench_mode_fits_on_the_smallest_ipad() {
         "Brush strength",
         "Flip side",
         "Brush margin eroding",
-        "Brush age value",
+        "Brush age",
         "Brush seed value",
     ] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));

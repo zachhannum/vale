@@ -26,7 +26,7 @@ use crate::globe::brush::{
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, TRENCH_AGE_MYR, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
+    TALUS_DEG, TERRACE_STEP_M, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1720,9 +1720,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .decimals(0)
             .suffix(" m")
             .show(ui);
-        number::slider("Age", &mut brush.trench_age_myr, TRENCH_AGE_MYR)
-            .step(10.0)
-            .decimals(0)
+        number::slider("Age", &mut brush.trench_age_myr, FLOOR_AGE_MYR)
             .suffix(" Myr")
             .show(ui);
         ui.label(outer_rise_text(brush.trench_age_myr));

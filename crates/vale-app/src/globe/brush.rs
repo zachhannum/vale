@@ -72,8 +72,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
-/// The limits of the age of the floor of the seamounts mode and of the
-/// hotspot track mode, in millions of years.
+/// The limits of the age of the floor of the seamounts mode, of the
+/// hotspot track mode, and of the incoming plate of the trench mode, in
+/// millions of years.
 pub const FLOOR_AGE_MYR: std::ops::RangeInclusive<f64> = 0.0..=200.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
@@ -91,9 +92,6 @@ pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
     HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
 /// The limits of the depth of the trench mode, in meters.
 pub const TRENCH_DEPTH_M: std::ops::RangeInclusive<f64> = 500.0..=4000.0;
-/// The limits of the age of the incoming plate of the trench mode, in
-/// millions of years.
-pub const TRENCH_AGE_MYR: std::ops::RangeInclusive<f64> = 10.0..=200.0;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -497,7 +495,7 @@ impl BrushSettings {
                 .clamp(*TRENCH_DEPTH_M.start(), *TRENCH_DEPTH_M.end()),
             age_myr: self
                 .trench_age_myr
-                .clamp(*TRENCH_AGE_MYR.start(), *TRENCH_AGE_MYR.end()),
+                .clamp(*FLOOR_AGE_MYR.start(), *FLOOR_AGE_MYR.end()),
             side: self.trench_side,
             margin: self.trench_margin,
             world_km,
