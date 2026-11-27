@@ -585,6 +585,8 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
         "smoothing": {
             "on": r.smoothing.on,
             "feature_size": f64::from(r.smoothing.feature_size),
+            "sea_feature_size": f64::from(r.smoothing.sea_feature_size),
+            "blend_depth": f64::from(r.smoothing.blend_depth),
         },
         "hillshade": {
             "on": h.on,
@@ -603,20 +605,26 @@ fn raster_json(r: &RasterSymbolizer) -> Json {
 }
 
 /// The smoothing of a raster. A raster of style version 2 has none, and it reads as the default.
+/// A smoothing without a sea size smooths the sea as the land, and one without a blend depth gets
+/// the default depth.
 fn read_smoothing(j: Option<&Json>) -> Smoothing {
     let d = Smoothing::default();
     let Some(m) = j.and_then(Json::as_object) else {
         return d;
     };
-    let size = m
-        .get("feature_size")
-        .and_then(Json::as_f64)
-        .map(|v| v as f32);
+    let number = |key| m.get(key).and_then(Json::as_f64).map(|v| v as f32);
+    let size = |v: Option<f32>, default| match v {
+        Some(v) if v.is_finite() => v.clamp(0.0, Smoothing::FEATURE_SIZE_MAX),
+        _ => default,
+    };
+    let feature_size = size(number("feature_size"), d.feature_size);
     Smoothing {
         on: m.get("on").and_then(Json::as_bool).unwrap_or(d.on),
-        feature_size: match size {
-            Some(v) if v.is_finite() => v.clamp(0.0, Smoothing::FEATURE_SIZE_MAX),
-            _ => d.feature_size,
+        feature_size,
+        sea_feature_size: size(number("sea_feature_size"), feature_size),
+        blend_depth: match number("blend_depth") {
+            Some(v) if v.is_finite() => v.clamp(0.0, Smoothing::BLEND_DEPTH_MAX),
+            _ => d.blend_depth,
         },
     }
 }

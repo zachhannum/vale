@@ -358,6 +358,8 @@ fn colors() -> vale_style::RasterSymbolizer {
         smoothing: vale_store::Smoothing {
             on: false,
             feature_size: 3.5,
+            sea_feature_size: 6.0,
+            blend_depth: 900.0,
         },
         hillshade: vale_store::Hillshade {
             on: true,
@@ -374,6 +376,25 @@ fn a_raster_style_round_trips() {
     let back = LayerStyle::from_json(&style.to_json()).unwrap();
     assert_eq!(back, style);
     assert_eq!(back.raster_symbolizer(), Some(&colors()));
+}
+
+#[test]
+fn a_raster_style_without_the_sea_smoothing_smooths_the_sea_as_the_land() {
+    let json = LayerStyle::raster(colors()).to_json();
+    let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let smoothing = value
+        .pointer_mut("/rules/0/symbolizers/0/smoothing")
+        .and_then(serde_json::Value::as_object_mut)
+        .unwrap();
+    assert!(smoothing.remove("sea_feature_size").is_some());
+    assert!(smoothing.remove("blend_depth").is_some());
+    let back = LayerStyle::from_json(&value.to_string()).unwrap();
+    let want = vale_store::Smoothing {
+        sea_feature_size: 3.5,
+        blend_depth: vale_store::Smoothing::BLEND_DEPTH_DEFAULT,
+        ..colors().smoothing
+    };
+    assert_eq!(back.raster_symbolizer().unwrap().smoothing, want);
 }
 
 #[test]
@@ -489,7 +510,7 @@ fn a_raster_style_without_a_blend_mode_blends_as_normal() {
     let old = json
         .replace(",\"blend\":\"overlay\"", "")
         .replace("\"blend\":\"overlay\",", "");
-    assert!(!old.contains("blend"));
+    assert!(!old.contains("\"blend\""));
     let back = LayerStyle::from_json(&old).unwrap();
     assert_eq!(
         back.raster_symbolizer().unwrap().blend,

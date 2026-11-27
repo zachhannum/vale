@@ -582,12 +582,20 @@ pub struct Smoothing {
     pub on: bool,
     /// The minimum feature size, in points. 0 gives the full detail.
     pub feature_size: f32,
+    /// The minimum feature size below sea level, in points.
+    pub sea_feature_size: f32,
+    /// The depth below sea level, in the unit of the layer, over which the
+    /// display blends from the land size to the sea size.
+    pub blend_depth: f32,
 }
 
 impl Smoothing {
     /// The largest feature size, in points.
     pub const FEATURE_SIZE_MAX: f32 = 8.0;
     pub const FEATURE_SIZE_DEFAULT: f32 = 2.0;
+    /// The largest blend depth, in the unit of the layer.
+    pub const BLEND_DEPTH_MAX: f32 = 20000.0;
+    pub const BLEND_DEPTH_DEFAULT: f32 = 200.0;
 }
 
 impl Default for Smoothing {
@@ -595,6 +603,8 @@ impl Default for Smoothing {
         Smoothing {
             on: true,
             feature_size: Smoothing::FEATURE_SIZE_DEFAULT,
+            sea_feature_size: Smoothing::FEATURE_SIZE_DEFAULT,
+            blend_depth: Smoothing::BLEND_DEPTH_DEFAULT,
         }
     }
 }
@@ -606,6 +616,16 @@ pub(crate) fn clamp_feature_size(points: f32) -> f32 {
         points.clamp(0.0, Smoothing::FEATURE_SIZE_MAX)
     } else {
         Smoothing::FEATURE_SIZE_DEFAULT
+    }
+}
+
+/// A blend depth from 0 to the largest depth. A value that is not finite
+/// gives the default depth.
+pub(crate) fn clamp_blend_depth(depth: f32) -> f32 {
+    if depth.is_finite() {
+        depth.clamp(0.0, Smoothing::BLEND_DEPTH_MAX)
+    } else {
+        Smoothing::BLEND_DEPTH_DEFAULT
     }
 }
 
@@ -1015,6 +1035,26 @@ impl Project {
         let size = clamp_feature_size(points);
         self.raster_mut(id)
             .map(|r| r.smoothing.feature_size = size)
+            .is_some()
+    }
+
+    /// Sets the minimum feature size of the smoothing of a raster below sea
+    /// level, in points. A value outside 0 to the largest size gets the
+    /// nearest limit.
+    pub fn set_raster_sea_feature_size(&mut self, id: RasterId, points: f32) -> bool {
+        let size = clamp_feature_size(points);
+        self.raster_mut(id)
+            .map(|r| r.smoothing.sea_feature_size = size)
+            .is_some()
+    }
+
+    /// Sets the depth below sea level over which the smoothing of a raster
+    /// blends from the land size to the sea size, in the unit of the layer.
+    /// A value outside 0 to the largest depth gets the nearest limit.
+    pub fn set_raster_blend_depth(&mut self, id: RasterId, depth: f32) -> bool {
+        let depth = clamp_blend_depth(depth);
+        self.raster_mut(id)
+            .map(|r| r.smoothing.blend_depth = depth)
             .is_some()
     }
 
@@ -2049,6 +2089,20 @@ mod tests {
         ] {
             assert!(p.set_raster_feature_size(ids[1], given));
             assert_eq!(p.raster(ids[1]).unwrap().smoothing.feature_size, kept);
+            assert!(p.set_raster_sea_feature_size(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().smoothing.sea_feature_size, kept);
+        }
+        let deep = Smoothing::BLEND_DEPTH_MAX;
+        for (given, kept) in [
+            (500.0, 500.0),
+            (0.0, 0.0),
+            (1.0e6, deep),
+            (-1.0, 0.0),
+            (f32::NAN, 200.0),
+            (f32::INFINITY, 200.0),
+        ] {
+            assert!(p.set_raster_blend_depth(ids[1], given));
+            assert_eq!(p.raster(ids[1]).unwrap().smoothing.blend_depth, kept);
         }
         assert_eq!(p.raster(ids[1]).unwrap().hillshade, Hillshade::default());
         assert!(p.set_raster_hillshade(ids[1], true));
@@ -2090,6 +2144,8 @@ mod tests {
         assert!(!p.set_raster_unit(ids[0], "m"));
         assert!(!p.set_raster_smoothing(ids[0], true));
         assert!(!p.set_raster_feature_size(ids[0], 1.0));
+        assert!(!p.set_raster_sea_feature_size(ids[0], 1.0));
+        assert!(!p.set_raster_blend_depth(ids[0], 1.0));
         assert!(!p.set_raster_hillshade(ids[0], true));
         assert!(!p.set_raster_hillshade_opacity(ids[0], 0.5));
         assert!(!p.set_raster_hillshade_highlights(ids[0], false));

@@ -31,7 +31,8 @@ use crate::gpkg::{
 use crate::{
     BlendMode, Collection, CollectionId, Feature, Field, FieldType, GeometryKind, Hillshade, Image,
     ImageId, Layer, LayerId, LayerKind, Project, Raster, RasterDisplay, RasterId, Rgba, Smoothing,
-    Stop, StopLine, Units, Uuid, Value, World, clamp_feature_size, clamp_opacity, infer_fields,
+    Stop, StopLine, Units, Uuid, Value, World, clamp_blend_depth, clamp_feature_size,
+    clamp_opacity, infer_fields,
 };
 
 /// The default limit of the size of the log, in bytes of compressed images.
@@ -1273,6 +1274,8 @@ fn put_raster(out: &mut Vec<u8>, raster: &Raster) {
     for name in &raster.names {
         put_bytes(out, name.as_bytes());
     }
+    out.extend_from_slice(&raster.smoothing.sea_feature_size.to_le_bytes());
+    out.extend_from_slice(&raster.smoothing.blend_depth.to_le_bytes());
 }
 
 fn put_image(out: &mut Vec<u8>, image: &Image) {
@@ -1353,6 +1356,8 @@ fn smoothing(r: &mut Reader) -> Option<Smoothing> {
     Some(Smoothing {
         on: on != 0,
         feature_size,
+        sea_feature_size: feature_size,
+        blend_depth: Smoothing::BLEND_DEPTH_DEFAULT,
     })
 }
 
@@ -1386,7 +1391,9 @@ fn hillshade(r: &mut Reader) -> Option<Hillshade> {
 /// the smoothing, and gets the default hillshade. An image of a version
 /// before 17 has no switch of the rivers, and shows them. An image of a
 /// version before 18 has no switch of the lines, and shows them. An image of
-/// a version before 23 has no blend mode, and blends as normal.
+/// a version before 23 has no blend mode, and blends as normal. An image of
+/// a version before 44 has no sea size and no blend depth, and gets the land
+/// size and the default depth.
 fn raster(r: &mut Reader) -> Option<Raster> {
     let id = RasterId(r.u32()?);
     let face_size = r.u32()?;
@@ -1406,7 +1413,7 @@ fn raster(r: &mut Reader) -> Option<Raster> {
     let colors = (0..count(r)?)
         .map(|_| r.take())
         .collect::<Option<Vec<_>>>()?;
-    let smoothing = smoothing(r)?;
+    let mut smoothing = smoothing(r)?;
     let hillshade = match r.0.is_empty() {
         true => Hillshade::default(),
         false => hillshade(r)?,
@@ -1433,6 +1440,10 @@ fn raster(r: &mut Reader) -> Option<Raster> {
     }
     if names.len() != colors.len() {
         names.clear();
+    }
+    if !r.0.is_empty() {
+        smoothing.sea_feature_size = clamp_feature_size(f32::from_le_bytes(r.take()?));
+        smoothing.blend_depth = clamp_blend_depth(f32::from_le_bytes(r.take()?));
     }
     r.0.is_empty().then_some(Raster {
         id,
@@ -2140,6 +2151,8 @@ mod tests {
         rain.smoothing = Smoothing {
             on: false,
             feature_size: 3.25,
+            sea_feature_size: 5.5,
+            blend_depth: 750.0,
         };
         rain.stops = vec![
             Stop {
@@ -2182,6 +2195,19 @@ mod tests {
         rain.blend = BlendMode::SoftLight;
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
+        assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
+        // An image of version 43 ends after the names, and it gets the land
+        // size below sea level and the default blend depth.
+        out.truncate(out.len() - 8);
+        let land = Smoothing {
+            sea_feature_size: rain.smoothing.feature_size,
+            blend_depth: Smoothing::BLEND_DEPTH_DEFAULT,
+            ..rain.smoothing
+        };
+        let rain = Raster {
+            smoothing: land,
+            ..rain
+        };
         assert_eq!(raster(&mut Reader(&out)), Some(rain.clone()));
         // An image of version 36 ends after the blend mode.
         out.truncate(out.len() - 4);
@@ -2234,7 +2260,7 @@ mod tests {
         };
         let mut full = Vec::new();
         put_raster(&mut full, &rain);
-        full.truncate(full.len() - 4 - 2 - (4 + rain.blend.id().len()));
+        full.truncate(full.len() - 8 - 4 - 2 - (4 + rain.blend.id().len()));
         let light = HILLSHADE_LEN - 4 - 2;
         // The image ends after the highlights.
         let out = &full[..full.len() - light];
@@ -2284,7 +2310,7 @@ mod tests {
         rain.colors = vec![[255, 0, 128], [7, 7, 7]];
         let mut out = Vec::new();
         put_raster(&mut out, &rain);
-        out.truncate(out.len() - 4);
+        out.truncate(out.len() - 8 - 4);
         let old = raster(&mut Reader(&out)).unwrap();
         assert!(old.names.is_empty());
         assert_eq!(old.colors, rain.colors);
@@ -2320,9 +2346,15 @@ mod tests {
         ];
         let mut out = Vec::new();
         put_raster_v13(&mut out, &rain, &old);
+        // The image smooths the sea as the land.
         let shown = Raster {
             rivers: true,
             lines: true,
+            smoothing: Smoothing {
+                sea_feature_size: rain.smoothing.feature_size,
+                blend_depth: Smoothing::BLEND_DEPTH_DEFAULT,
+                ..rain.smoothing
+            },
             ..rain.clone()
         };
         assert_eq!(raster_v13(&mut Reader(&out)), Some(shown));
