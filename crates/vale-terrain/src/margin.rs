@@ -92,7 +92,7 @@ const FAR_KM: f64 = 1.0e6;
 /// The largest number of cells along one side of the erosion window of a
 /// margin stroke. A gully is a few cells wide, so the cells must be small
 /// for narrow gullies.
-pub const MARGIN_CELLS: usize = 1024;
+pub const MARGIN_CELLS: usize = 2048;
 
 /// The room around the stamps of a margin stroke in its erosion window, as
 /// a part of the width of the stamps.
@@ -721,7 +721,7 @@ fn distance_transform(sites: &[bool], size: usize) -> (Vec<f64>, Vec<usize>) {
 
 /// `f` of each number below `count`, in order, on the threads of the
 /// device.
-fn par_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(super) fn par_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let chunk = count.div_ceil(threads).max(1);
     std::thread::scope(|scope| {
@@ -1247,34 +1247,19 @@ pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) ->
         return erosion.drops_since(erosion.levels(), &brushes);
     };
     let start = erosion.levels().to_vec();
-    let dirs: Vec<Cell<Option<V3>>> = start.iter().map(|_| Cell::new(None)).collect();
+    let weights: Vec<Cell<f32>> = start.iter().map(|_| Cell::new(0.0)).collect();
     for (plan, brush) in plans.iter().zip(&brushes) {
         erosion.lift_cells(std::slice::from_ref(brush), |i, dir, now| {
-            dirs[i].set(Some(dir));
+            let chord = length(add(dir, scale(brush.center, -1.0)));
+            let k = 2.0 * (0.5 * chord).min(1.0).asin() / brush.radius;
+            if k < 1.0 {
+                let w = (falloff(k, brush.hardness) * brush.flow) as f32;
+                weights[i].set(weights[i].get().max(w));
+            }
             Some(plan.level_with(start[i], now, dir, false))
         });
     }
-    let dirs: Vec<Option<V3>> = dirs.into_iter().map(Cell::into_inner).collect();
-    let weights: Vec<f32> = dirs
-        .iter()
-        .map(|dir| {
-            let Some(dir) = *dir else {
-                return 0.0;
-            };
-            brushes
-                .iter()
-                .map(|b| {
-                    let chord = length(add(dir, scale(b.center, -1.0)));
-                    let k = 2.0 * (0.5 * chord).min(1.0).asin() / b.radius;
-                    if k >= 1.0 {
-                        0.0
-                    } else {
-                        falloff(k, b.hardness) * b.flow
-                    }
-                })
-                .fold(0.0, f64::max) as f32
-        })
-        .collect();
+    let weights: Vec<f32> = weights.into_iter().map(Cell::into_inner).collect();
     let margin = erosion.levels().to_vec();
     let mut heights: Vec<f32> = margin
         .iter()
@@ -1284,7 +1269,7 @@ pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) ->
     let grid = canyons::Grid {
         side: erosion.side(),
         cell_km: erosion.cell_angle() * spec.world_km,
-        dirs: &dirs,
+        dir: &|i| erosion.cell_dir(i),
         weights: &weights,
         world_km: spec.world_km,
         seed: spec.seed,

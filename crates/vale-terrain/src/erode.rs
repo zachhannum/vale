@@ -1089,6 +1089,17 @@ impl Erosion {
         self.route_amount / (2.0 * ROUTE_NOISE)
     }
 
+    /// The unit direction of the center of cell `i`.
+    pub(crate) fn cell_dir(&self, i: usize) -> V3 {
+        let row = i / self.side;
+        let face = self.faces().start + row / self.side;
+        face_dir(
+            face,
+            self.flat_u[i % self.side],
+            self.flat_v[row % self.side],
+        )
+    }
+
     /// The number of cells along one side of a face or of the window.
     pub(crate) fn side(&self) -> usize {
         self.side
