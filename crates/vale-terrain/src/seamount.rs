@@ -178,12 +178,12 @@ const APRON: f64 = 1.9;
 
 /// The plate: Young's modulus in pascals, Poisson's ratio, the densities of
 /// the mantle, the volcano, and the sea water in kg/m³, and gravity.
-const YOUNG: f64 = 1.0e11;
-const POISSON: f64 = 0.25;
-const MANTLE: f64 = 3300.0;
+pub(crate) const YOUNG: f64 = 1.0e11;
+pub(crate) const POISSON: f64 = 0.25;
+pub(crate) const MANTLE: f64 = 3300.0;
 const ROCK: f64 = 2800.0;
-const WATER: f64 = 1030.0;
-const GRAVITY: f64 = 9.81;
+pub(crate) const WATER: f64 = 1030.0;
+pub(crate) const GRAVITY: f64 = 9.81;
 
 /// The elastic thickness in kilometers is this factor times the square root
 /// of the age in millions of years (Watts 2001), inside the limits.
