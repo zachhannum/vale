@@ -115,6 +115,8 @@ const EXTENT: usize = 59;
 pub(crate) const SHORE: usize = 60;
 pub(crate) const REEF: usize = 61;
 const CONVEX: usize = 62;
+pub(crate) const BREAK: usize = 63;
+const PEDESTAL_REACH: usize = 47;
 
 /// The cap of a volcano with no cap.
 pub(crate) const NO_CAP: f32 = 65535.0;
@@ -187,6 +189,33 @@ const CONVEX_SHIELD: f64 = 0.85;
 /// as far from the line as those of the Hawaiian chain (Watts and ten Brink
 /// 1989).
 const LINE_FLEX: f64 = 1.3;
+
+/// A volcano of a line with a break grows past the sea: its lava flows
+/// spread on land and stop in the sea. Its submarine flank is this many
+/// times as steep as its flank on land.
+const BREAK_SLOPES: f64 = 3.0;
+
+/// The foot of a volcano with a break curves into the floor over this part
+/// of the base radius on each side of the base.
+const BREAK_FOOT: f64 = 0.18;
+
+/// The submarine flank of a volcano with a break has slumps and debris:
+/// lumps of this part of the height, with this many lumps in a base radius.
+const LUMPS: f64 = 0.16;
+const LUMP_SIZE: f64 = 3.0;
+
+/// The lumps have two more octaves, each this many times as fine.
+const FINE: f64 = 3.0;
+
+/// A volcano with a break stands on a pedestal that runs along its axis, so
+/// the volcanoes of a line stand on one ridge. The pedestal is this part of
+/// the height at the break, and it reaches at least this many base radii
+/// along the axis, and this many across it. It is flat to `PEDESTAL_FLAT`
+/// of its reach.
+const PEDESTAL: f64 = 0.75;
+pub(crate) const PEDESTAL_ALONG: f64 = 1.6;
+const PEDESTAL_ACROSS: f64 = 0.9;
+pub(crate) const PEDESTAL_FLAT: f64 = 0.35;
 
 /// Below this coherence, the slopes have no main direction.
 pub const FABRIC_COHERENCE: f64 = 0.25;
@@ -281,7 +310,39 @@ impl Volcano {
             let theta = dv.atan2(du) + self.get(CONE_TURN + i);
             edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta, i as u32));
         }
+        let b = self.get(BREAK);
+        if b > 0.0 {
+            edifice = edifice.max(self.pedestal(u, v, b));
+        }
         edifice * self.get(HEIGHT) * (1.0 - smoothstep(0.85 * reach, reach, d))
+    }
+
+    /// The place of a unit direction in base radii along the axis and
+    /// across it.
+    pub(crate) fn local(&self, p: V3) -> (f64, f64) {
+        let (c, a) = (self.center(), self.v3(AXIS));
+        let radius = self.get(RADIUS);
+        (dot(p, a) / radius, dot(p, cross(c, a)) / radius)
+    }
+
+    /// Sets the reach of the pedestal along the axis, in base radii. The
+    /// volcano reaches farther if it needs to, inside its reach.
+    pub(crate) fn set_pedestal_reach(&mut self, along: f64) {
+        self.0[PEDESTAL_REACH] = along as f32;
+        let far = (1.2 * along * self.get(RADIUS)).min(0.95 * self.reach());
+        self.0[EXTENT] = self.get(EXTENT).max(far) as f32;
+    }
+
+    /// The pedestal at `u` base radii along the axis and `v` across it, as a
+    /// part of the height, with the break `b`.
+    fn pedestal(&self, u: f64, v: f64, b: f64) -> f64 {
+        let seed = (self.0[SEED] as u32) ^ 3;
+        let (lu, lv) = (u * LUMP_SIZE, v * LUMP_SIZE);
+        let n = noise3([lu, lv, 0.5], seed);
+        let (du, dv) = (u / self.get(PEDESTAL_REACH), v / PEDESTAL_ACROSS);
+        let t = (du * du + dv * dv).sqrt() * (1.0 + 0.15 * n[0]);
+        let top = PEDESTAL * b * (1.0 + LUMPS * lumps(lu, lv, 7.5, seed));
+        top * (1.0 - smoothstep(PEDESTAL_FLAT, 1.0, t))
     }
 
     /// The moat of the plate at a unit direction at full growth, in 16-bit
@@ -328,11 +389,24 @@ impl Volcano {
         // meets the floor in a smooth curve.
         let fade = 1.0 - smoothstep(1.0 - FOOT, 1.0 + FOOT, re);
         let re = re * (1.0 + 0.05 * n[0] * fade);
-        let x = foot(1.0 - re);
-        let mut f = x + (x.powf(1.5) - x) * shield;
-        // A convex volcano has steep lower flanks and a gentle top.
-        f += (x * (2.0 - x) - f) * self.get(CONVEX);
+        let b = self.get(BREAK);
+        let x = foot(1.0 - re, if b > 0.0 { BREAK_FOOT } else { FOOT });
+        let mut f = if b > 0.0 {
+            broken(x, b)
+        } else {
+            let f = x + (x.powf(1.5) - x) * shield;
+            // A convex volcano has steep lower flanks and a gentle top.
+            f + (x * (2.0 - x) - f) * self.get(CONVEX)
+        };
         f *= 1.0 + self.get(GULLY_SIZE) * n[1] * 4.0 * re.min(1.0) * (1.0 - re).max(0.0);
+        if b > 0.0 {
+            // The lumps have no direction, and they fade toward the break.
+            let (s, c) = theta.sin_cos();
+            let k = r * LUMP_SIZE;
+            let lump = lumps(k * c, k * s, 2.5, seed ^ 2);
+            let below = (f / b).min(1.0);
+            f += LUMPS * lump * 4.0 * below * (1.0 - below);
+        }
         let top = self.get(TOP);
         f = f.min(top) / top;
         let crater_radius = self.get(CRATER_RADIUS);
@@ -614,15 +688,37 @@ fn tangent_frame(center: V3) -> (V3, V3) {
 }
 
 /// The height of a flank at `u` base radii inside the base, as a part of
-/// the height: `u` itself, with a curve into the floor near the base.
-fn foot(u: f64) -> f64 {
-    if u >= FOOT {
+/// the height: `u` itself, with a curve into the floor from `w` base radii
+/// inside the base to `w` outside it.
+fn foot(u: f64, w: f64) -> f64 {
+    if u >= w {
         u
-    } else if u > -FOOT {
-        (u + FOOT) * (u + FOOT) / (4.0 * FOOT)
+    } else if u > -w {
+        (u + w) * (u + w) / (4.0 * w)
     } else {
         0.0
     }
+}
+
+/// The height of the flank of a volcano with the break `b` at `x` base
+/// radii inside the base, as a part of the height. Below the break, the
+/// flank is straight and steep. Above it, the flank is gentle, and it is
+/// gentler near the summit.
+fn broken(x: f64, b: f64) -> f64 {
+    let at = b / (b + BREAK_SLOPES * (1.0 - b));
+    if x <= at {
+        b * x / at
+    } else {
+        let t = (x - at) / (1.0 - at);
+        b + (1.0 - b) * (t + 0.5 * t * (1.0 - t))
+    }
+}
+
+/// The lumps of the flank of a volcano with a break at a place in lumps:
+/// noise of three octaves.
+fn lumps(x: f64, y: f64, z: f64, seed: u32) -> f64 {
+    let n = |f: f64, w: f64| noise3([f * x, f * y, z + w], seed)[0];
+    n(1.0, 0.0) + 0.8 * n(FINE, 2.0) + 0.5 * n(FINE * FINE, 4.0)
 }
 
 /// An angle in the range from -pi to pi.
@@ -941,7 +1037,7 @@ pub(crate) fn shield_volcano(
     // Hawaiian volcanoes run along their chain.
     let stretch = 1.0 + 0.15 * r(3);
     let rifts = 2 + (r(5) * 2.0) as usize;
-    let rift_size = 0.25 + 0.25 * r(6);
+    let rift_size = 0.08 + 0.1 * r(6);
     let rift_start = r(7) * TAU;
     let outline = [
         0.06 + 0.06 * r(20),
@@ -1001,8 +1097,10 @@ pub(crate) fn shield_volcano(
         put(&mut v, SLIDE + 3 * s + 1, 0.25 + 0.2 * r(38 + s as u32));
         put(&mut v, SLIDE + 3 * s + 2, 0.25 + 0.25 * r(40 + s as u32));
     }
-    put(&mut v, GULLIES, 40.0 + 16.0 * r(42));
-    put(&mut v, GULLY_SIZE, 0.05 + 0.03 * r(43));
+    put(&mut v, PEDESTAL_REACH, PEDESTAL_ALONG);
+    // The flank noise is broad and faint, so it makes no rays.
+    put(&mut v, GULLIES, 7.0 + 4.0 * r(42));
+    put(&mut v, GULLY_SIZE, 0.01 + 0.01 * r(43));
     put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));
     put(&mut v, FLEX, moat_m * LEVELS_PER_M);
     put(
@@ -1172,7 +1270,7 @@ mod tests {
     fn the_foot_of_a_flank_curves_into_the_floor() {
         // The slope falls with no step from the flank to the floor.
         let step = 0.001;
-        let slope = |u: f64| (foot(u + step) - foot(u - step)) / (2.0 * step);
+        let slope = |u: f64| (foot(u + step, FOOT) - foot(u - step, FOOT)) / (2.0 * step);
         let mut last = slope(1.0);
         let mut u = 1.0;
         while u > -1.0 {
@@ -1181,7 +1279,7 @@ mod tests {
             last = s;
             u -= step;
         }
-        assert_eq!(foot(-FOOT), 0.0);
+        assert_eq!(foot(-FOOT, FOOT), 0.0);
         assert!((slope(0.0) - 0.5).abs() < 0.01);
     }
 

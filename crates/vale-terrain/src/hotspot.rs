@@ -20,8 +20,8 @@ use crate::line::{LinePlace, LinePlan, LinePoint, REACH, StrokeLine, bump, noise
 use crate::margin::{circle_window, smooth_min};
 use crate::math::{V3, add, angle, cross, dot, normalize, scale};
 use crate::seamount::{
-    CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PLAN_VOLCANOES, REEF, RIM, SHORE,
-    Volcano, draw, gdh1_age, gdh1_depth, sea_floor, shield_volcano,
+    BREAK, CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PEDESTAL_ALONG, PLAN_VOLCANOES,
+    REEF, RIM, SHORE, Volcano, draw, gdh1_age, gdh1_depth, sea_floor, shield_volcano,
 };
 
 /// The brush radius of the app on a world of the size of the Earth, in
@@ -38,9 +38,12 @@ pub const HOTSPOT_HEIGHT_RANGE: (f64, f64) = (500.0, 12000.0);
 pub const HOTSPOT_SPEED_MM: f64 = 90.0;
 pub const HOTSPOT_SPEED_RANGE: (f64, f64) = (10.0, 200.0);
 
-/// The height of a volcano over its base radius. The Hawaiian volcanoes are
-/// steeper than a lone seamount.
-const HOTSPOT_RATIO: f64 = 0.12;
+/// The height of a volcano over its base radius.
+const HOTSPOT_RATIO: f64 = 0.1;
+
+/// The places of the volcanoes are parts of the base radius of the largest
+/// volcano at this ratio of height over base radius.
+const PLACE_RATIO: f64 = 0.12;
 
 /// The height of the swell over the hotspot, in meters (Crough 1983).
 const SWELL_M: f64 = 1000.0;
@@ -96,7 +99,11 @@ const GROW_MYR: f64 = 0.5;
 
 /// The deepest sum of the moats under the chain, as a part of the height of
 /// the largest volcano.
-const LINE_MOAT: f64 = 0.3;
+const LINE_MOAT: f64 = 0.17;
+
+/// The middle of the gap between two volcanoes is at this part of the reach
+/// of their pedestals.
+const PEDESTAL_MIDDLE: f64 = 0.5;
 
 /// The rounding of the join of two volcanoes, in meters.
 const JOIN_M: f64 = 100.0;
@@ -308,7 +315,7 @@ impl HotspotLine {
         chain.reset_age = gdh1_age(chain.floor_depth - SWELL_M);
 
         // The places of the volcanoes, from the end of the line back.
-        let largest = spec.height_m / HOTSPOT_RATIO / (km * 1000.0);
+        let largest = spec.height_m / PLACE_RATIO / (km * 1000.0);
         let spacing = SPACING * largest;
         struct Site {
             s: f64,
@@ -417,6 +424,30 @@ impl HotspotLine {
             chain.ages.push(age);
         }
 
+        // The pedestal of each volcano reaches past the middle of the gap to
+        // the next volcano along its axis on each side, so the chain stands
+        // on one ridge.
+        let reaches: Vec<f64> = (chain.volcanoes.iter())
+            .map(|v| {
+                let mut gap = [f64::INFINITY; 2];
+                for w in &chain.volcanoes {
+                    let (u, across) = v.local(w.center());
+                    if u.abs() > 0.25 && u.abs() > across.abs() {
+                        let side = usize::from(u > 0.0);
+                        gap[side] = gap[side].min(u.abs());
+                    }
+                }
+                let gap = gap
+                    .into_iter()
+                    .filter(|g| g.is_finite())
+                    .fold(0.0, f64::max);
+                (0.5 * gap / PEDESTAL_MIDDLE).max(PEDESTAL_ALONG)
+            })
+            .collect();
+        for (v, reach) in chain.volcanoes.iter_mut().zip(reaches) {
+            v.set_pedestal_reach(reach);
+        }
+
         // The moats add up under the chain. The volcanoes stand on the
         // floor over them.
         let moats = |vs: &[Volcano]| -> Vec<f64> {
@@ -443,7 +474,11 @@ impl HotspotLine {
             let c = v.center();
             let edifice_m = v.edifice(c) / LEVELS_PER_M;
             let start_m = ELEV_MIN + map.level_at(c) / LEVELS_PER_M;
-            let peak = start_m + swell_full - moat / LEVELS_PER_M + edifice_m;
+            let base_m = start_m + swell_full - moat / LEVELS_PER_M;
+            let peak = base_m + edifice_m;
+            // The flank breaks at the sea of the time of its growth.
+            let height_m = v.height() / LEVELS_PER_M;
+            v.0[BREAK] = (-base_m / height_m).clamp(0.05, 1.0) as f32;
             let swell = |t: f64| chain.floor_depth - gdh1_depth(chain.reset_age + t);
             let sunk = |t: f64| swell(GROW_MYR).max(0.0) - swell(t).max(0.0);
             let above = |t: f64| peak - ISLAND_EROSION_M * (t - GROW_MYR).max(0.0) - sunk(t);
@@ -597,7 +632,7 @@ pub const HOTSPOT_ERODE_STEPS: usize = 8;
 pub const HOTSPOT_ERODE_RATE: f64 = 24.0;
 
 /// The radius of the erode brush of an island, in base radii.
-const ISLAND_BRUSH: f64 = 1.2;
+const ISLAND_BRUSH: f64 = 1.0;
 
 /// An eroded cell keeps all of its drop from this age in millions of years.
 const KEEP_MYR: f64 = 4.0;
@@ -798,6 +833,7 @@ mod tests {
     use crate::flow::WindowHeights;
     use crate::line::LINE_SPACING;
     use crate::math::lonlat_to_dir;
+    use std::f64::consts::TAU;
 
     const KM: f64 = 6371.0;
     const N: usize = 2048;
@@ -913,7 +949,7 @@ mod tests {
         let mut long = line(spec, N, -20.0, 20.0, 1.0);
         let (_, _) = lay(&mut long, N, FLOOR_M);
         let chain = long.chain.clone().unwrap();
-        let largest = spec.height_m / HOTSPOT_RATIO / 1000.0;
+        let largest = spec.height_m / PLACE_RATIO / 1000.0;
         let length = long.length();
         let mut along = Vec::new();
         let mut across = Vec::new();
@@ -1277,6 +1313,109 @@ mod tests {
         );
         assert!(moat.0 < -300.0);
         assert!(arch.0 > 50.0 && arch.1 > moat.1 + 100.0);
+        // The moat stays above the bottom of the range.
+        let mut low = f64::MAX;
+        for i in -100..=100 {
+            for j in -60..=60 {
+                low = low.min(at(&map, 0.1 * f64::from(i), 0.1 * f64::from(j)));
+            }
+        }
+        eprintln!("lowest {low:.0} m");
+        assert!(low > ELEV_MIN + 150.0, "{low}");
+    }
+
+    #[test]
+    fn the_flanks_have_no_rays() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        lay(&mut line, N, FLOOR_M);
+        // The edifice on rings around the summit of each island, above its
+        // break. Rays down the slope are waves of many cycles around a ring.
+        let count = 720;
+        let (mut rays, mut rings) = (0.0, 0);
+        let islands = line.volcanoes().iter().filter(|v| v.get(BREAK) < 0.7);
+        for v in islands {
+            let c = v.center();
+            let (east, north) = frame(c);
+            for i in 0..6 {
+                let r = (0.15 + 0.05 * f64::from(i)) * v.base_radius();
+                let ring: Vec<f64> = (0..count)
+                    .map(|k| {
+                        let (s, co) = (TAU * f64::from(k) / f64::from(count)).sin_cos();
+                        let p = add(c, add(scale(east, r * co), scale(north, r * s)));
+                        v.edifice(normalize(p)) / v.height()
+                    })
+                    .collect();
+                // The amplitude of the waves of 20 to 120 cycles.
+                let power: f64 = (20..=120)
+                    .map(|m| {
+                        let (mut a, mut b) = (0.0, 0.0);
+                        for (k, e) in ring.iter().enumerate() {
+                            let turn = TAU * f64::from(m) * k as f64 / f64::from(count);
+                            a += e * turn.cos();
+                            b += e * turn.sin();
+                        }
+                        (a * a + b * b) * 2.0 / f64::from(count * count)
+                    })
+                    .sum();
+                rays += power.sqrt();
+                rings += 1;
+            }
+        }
+        assert!(rings >= 18, "{rings}");
+        let rays = rays / f64::from(rings);
+        eprintln!("rays {rays:.4} of the height");
+        assert!(rays < 0.0025, "{rays}");
+    }
+
+    #[test]
+    fn islands_are_broad_and_stand_on_a_ridge() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        let (map, _) = lay(&mut line, N, FLOOR_M);
+        let chain = line.chain.clone().unwrap();
+        // The crest of the chain: the highest ground across the line.
+        let crest = |lon: f64| {
+            (-30..=30)
+                .map(|j| at(&map, lon, degrees(2.0 * f64::from(j))))
+                .fold(f64::MIN, f64::max)
+        };
+        let lon = |v: &Volcano| v.center()[1].atan2(v.center()[0]).to_degrees();
+        let mut islands: Vec<f64> = (chain.volcanoes.iter())
+            .filter(|v| meters(map.level_at(v.center())) > 0.0)
+            .map(lon)
+            .collect();
+        islands.sort_by(f64::total_cmp);
+        assert!(islands.len() > 3);
+        // The channels between islands less than 350 km apart are shallow:
+        // the floor beside them is deeper than 4,000 m.
+        let mut deepest = 0.0f64;
+        for w in islands.windows(2).filter(|w| w[1] - w[0] < degrees(350.0)) {
+            let steps = ((w[1] - w[0]) / 0.02).ceil() as usize;
+            let low = (0..=steps)
+                .map(|k| crest(w[0] + (w[1] - w[0]) * k as f64 / steps as f64))
+                .fold(f64::MAX, f64::min);
+            deepest = deepest.min(low);
+        }
+        eprintln!("deepest channel {deepest:.0} m");
+        assert!(deepest > -2500.0, "{deepest}");
+        // Across the youngest island, the flank on land is gentle, and the
+        // flank under the sea is steep.
+        let c = chain.volcanoes[0].center();
+        let (_, north) = frame(c);
+        let height = |km: f64| meters(map.level_at(normalize(add(c, scale(north, km / KM)))));
+        let (mut land, mut sea) = (Vec::new(), Vec::new());
+        for k in 0..250 {
+            let km = f64::from(k);
+            let (h, slope) = (height(km), (height(km) - height(km + 1.0)).abs() / 1000.0);
+            if h > 200.0 {
+                land.push(slope);
+            } else if h < -500.0 && h > -3000.0 {
+                sea.push(slope);
+            }
+        }
+        let mean = |d: &[f64]| d.iter().sum::<f64>() / d.len() as f64;
+        let (land, sea) = (mean(&land), mean(&sea));
+        eprintln!("slopes: land {land:.3}, sea {sea:.3}");
+        assert!(land < 0.1 && sea > 2.0 * land, "{land} {sea}");
     }
 
     #[test]

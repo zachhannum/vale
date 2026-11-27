@@ -2723,12 +2723,20 @@ fn limited(old: f32, next: f32) -> f32 {
 }
 
 // The constants of `seamount.rs`, with the same names but for `CONE_FOOT`
-// for `FOOT` and `SLIDE_APRON` for `APRON`, and the places in
-// `Volcano`.
+// for `FOOT`, `SLIDE_APRON` for `APRON`, and a `CONE_` prefix for the
+// lumps, and the places in `Volcano`.
 const VOLCANO_FLOATS = 64u;
 const RIFT_WIDTH = 0.3;
 const CONE_FOOT = 0.35;
 const SLIDE_APRON = 1.9;
+const BREAK_SLOPES = 3.0;
+const BREAK_FOOT = 0.18;
+const CONE_LUMPS = 0.16;
+const CONE_LUMP_SIZE = 3.0;
+const CONE_FINE = 3.0;
+const PEDESTAL = 0.75;
+const PEDESTAL_ACROSS = 0.9;
+const PEDESTAL_FLAT = 0.35;
 const V_CENTER = 0u;
 const V_AXIS = 3u;
 const V_GROWTH = 6u;
@@ -2763,6 +2771,8 @@ const V_EXTENT = 59u;
 const V_SHORE = 60u;
 const V_REEF = 61u;
 const V_CONVEX = 62u;
+const V_BREAK = 63u;
+const V_PEDESTAL_REACH = 47u;
 
 // Number `i` of volcano `v`.
 fn volcano(v: u32, i: u32) -> f32 {
@@ -2813,14 +2823,46 @@ fn wrap_angle(a: f32) -> f32 {
 }
 
 // The steps of `foot` of `seamount.rs`.
-fn volcano_foot(u: f32) -> f32 {
-    if u >= CONE_FOOT {
+fn volcano_foot(u: f32, w: f32) -> f32 {
+    if u >= w {
         return u;
     }
-    if u > -CONE_FOOT {
-        return (u + CONE_FOOT) * (u + CONE_FOOT) / (4.0 * CONE_FOOT);
+    if u > -w {
+        return (u + w) * (u + w) / (4.0 * w);
     }
     return 0.0;
+}
+
+// The steps of `broken` of `seamount.rs`.
+fn volcano_broken(x: f32, b: f32) -> f32 {
+    let at = b / (b + BREAK_SLOPES * (1.0 - b));
+    if x <= at {
+        return b * x / at;
+    }
+    let t = (x - at) / (1.0 - at);
+    return b + (1.0 - b) * (t + 0.5 * t * (1.0 - t));
+}
+
+// The steps of `lumps` of `seamount.rs`.
+fn volcano_lumps(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let f = CONE_FINE;
+    let a = noise3(vec3<f32>(x, y, z), seed).x;
+    let b = noise3(vec3<f32>(f * x, f * y, z + 2.0), seed).x;
+    let c = noise3(vec3<f32>(f * f * x, f * f * y, z + 4.0), seed).x;
+    return a + 0.8 * b + 0.5 * c;
+}
+
+// The steps of `Volcano::pedestal`.
+fn volcano_pedestal(v: u32, u: f32, w: f32, b: f32) -> f32 {
+    let seed = u32(volcano(v, V_SEED)) ^ 3u;
+    let lu = u * CONE_LUMP_SIZE;
+    let lw = w * CONE_LUMP_SIZE;
+    let n = noise3(vec3<f32>(lu, lw, 0.5), seed);
+    let du = u / volcano(v, V_PEDESTAL_REACH);
+    let dw = w / PEDESTAL_ACROSS;
+    let t = sqrt(du * du + dw * dw) * (1.0 + 0.15 * n.x);
+    let top = PEDESTAL * b * (1.0 + CONE_LUMPS * volcano_lumps(lu, lw, 7.5, seed));
+    return top * (1.0 - smooth_between(PEDESTAL_FLAT, 1.0, t));
 }
 
 // The steps of `Volcano::profile`.
@@ -2845,10 +2887,24 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     let n = noise3(q, seed);
     let fade = 1.0 - smooth_between(1.0 - CONE_FOOT, 1.0 + CONE_FOOT, re);
     re = re * (1.0 + 0.05 * n.x * fade);
-    let x = volcano_foot(1.0 - re);
-    var f = x + (x * sqrt(x) - x) * shield;
-    f += (x * (2.0 - x) - f) * volcano(v, V_CONVEX);
+    let b = volcano(v, V_BREAK);
+    var f = 0.0;
+    if b > 0.0 {
+        f = volcano_broken(volcano_foot(1.0 - re, BREAK_FOOT), b);
+    } else {
+        let x = volcano_foot(1.0 - re, CONE_FOOT);
+        f = x + (x * sqrt(x) - x) * shield;
+        f += (x * (2.0 - x) - f) * volcano(v, V_CONVEX);
+    }
     f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * max(1.0 - re, 0.0);
+    if b > 0.0 {
+        let k = r * CONE_LUMP_SIZE;
+        let s = sin_any(theta);
+        let c = cos_any(theta);
+        let lump = volcano_lumps(k * c, k * s, 2.5, seed ^ 2u);
+        let below = min(f / b, 1.0);
+        f += CONE_LUMPS * lump * 4.0 * below * (1.0 - below);
+    }
     let top = volcano(v, V_TOP);
     f = min(f, top) / top;
     let crater_radius = volcano(v, V_CRATER_RADIUS);
@@ -2902,6 +2958,10 @@ fn volcano_edifice(v: u32, p: vec3<f32>) -> f32 {
         let r = sqrt(du * du + dw * dw);
         let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
         edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
+    }
+    let brk = volcano(v, V_BREAK);
+    if brk > 0.0 {
+        edifice = max(edifice, volcano_pedestal(v, u, w, brk));
     }
     return edifice * volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
 }
