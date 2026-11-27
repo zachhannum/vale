@@ -1042,9 +1042,9 @@ fn earth_trench() -> Painted {
 
 const TRENCH_LIMITS: Within = Within {
     slope: 0.5,
-    anisotropy: (0.5, 2.0),
-    rms: (0.7, 1.4),
-    histogram: 0.4,
+    anisotropy: (0.8, 1.6),
+    rms: (0.78, 1.25),
+    histogram: 0.2,
 };
 
 #[test]
