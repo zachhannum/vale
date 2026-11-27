@@ -10,7 +10,8 @@ use vale_terrain::{
     LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Margin, MarginStroke, Mode, OuterFlow, Pyramid,
     RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
     SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan, TILE_SIZE,
-    TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout,
+    TILES_WGSL, TexelRect, Trench, TrenchLine, TrenchMargin, TrenchPlan, TrenchSide, WINDOW_CELLS,
+    Window, WindowHeights, channel_map, pyramid_layout,
     tiles_layout, window_channels,
 };
 
@@ -3663,6 +3664,40 @@ impl LineSpec for Hotspot {
     }
 }
 
+impl LineSpec for Trench {
+    type Line = TrenchLine;
+    type Plan = TrenchPlan;
+    fn line(self, n: usize) -> TrenchLine {
+        TrenchLine::new(self, n)
+    }
+    fn radius(line: &TrenchLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut TrenchLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &TrenchLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &TrenchLine, from: usize) -> TrenchPlan {
+        line.plan(from)
+    }
+    fn margin(line: &TrenchLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &TrenchPlan) {
+        map.trench(plan);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &TrenchPlan,
+    ) -> bool {
+        map.trench(queue, enc, plan)
+    }
+}
+
 /// The points of a stroke through places, each in degrees of longitude and
 /// latitude, with a flow for each one. The points are as far apart as the
 /// points of the app.
@@ -4256,6 +4291,83 @@ fn gpu_range_in_steps_matches_one_plan_on_the_cpu() {
     let start = smooth_ground(256);
     let run = ridge_run(&start, range_spec(0.1), &RIDGE_BEND, true, false);
     assert_ridge("range, S-bend in steps", &run, &[0, 2]);
+}
+
+fn trench_spec(radius: f64, side: TrenchSide, margin: TrenchMargin) -> Trench {
+    Trench {
+        radius,
+        depth_m: 2500.0,
+        age_myr: 80.0,
+        side,
+        margin,
+        world_km: 6371.0,
+        seed: 7,
+        limits: Limits::default(),
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_trench_matches_cpu_for_a_straight_stroke() {
+    let start = smooth_ground(256);
+    for radius in [0.04, 0.08] {
+        for (side, margin) in [
+            (TrenchSide::Left, TrenchMargin::Accretionary),
+            (TrenchSide::Right, TrenchMargin::Eroding),
+        ] {
+            let places = [(-12.0, 5.0), (-12.0 + 250.0 * radius, -3.0)];
+            let run = ridge_run(
+                &start,
+                trench_spec(radius, side, margin),
+                &places,
+                false,
+                false,
+            );
+            let name = format!("trench, straight, radius {radius}, {side:?}, {margin:?}");
+            assert_ridge(&name, &run, &[0]);
+            assert_eq!(run.skipped, 0);
+        }
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_trench_matches_cpu_across_a_face_edge() {
+    let start = smooth_ground(256);
+    let spec = trench_spec(0.06, TrenchSide::Left, TrenchMargin::Eroding);
+    let run = ridge_run(&start, spec, &RIDGE_BEND, false, true);
+    assert_ridge("trench, S-bend across a face edge", &run, &[0, 2]);
+}
+
+/// The faults, the prism, and the scars are a few texels wide on a large
+/// face, and the distance along a long line needs most of the digits of a
+/// 32-bit number.
+#[test]
+#[ignore = "gpu"]
+fn gpu_trench_matches_cpu_on_a_large_face() {
+    let start = smooth_ground(2048);
+    let places = [
+        (-40.0, -20.0),
+        (-10.0, 12.0),
+        (20.0, -10.0),
+        (44.0, 24.0),
+        (60.0, 20.0),
+    ];
+    for margin in [TrenchMargin::Accretionary, TrenchMargin::Eroding] {
+        let spec = trench_spec(0.03, TrenchSide::Right, margin);
+        let run = ridge_run(&start, spec, &places, false, true);
+        assert_ridge(&format!("trench, large face, {margin:?}"), &run, &[0, 2]);
+        assert!(run.plans > 3, "{}", run.plans);
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_trench_in_steps_matches_one_plan_on_the_cpu() {
+    let start = smooth_ground(256);
+    let spec = trench_spec(0.06, TrenchSide::Right, TrenchMargin::Accretionary);
+    let run = ridge_run(&start, spec, &RIDGE_BEND, true, true);
+    assert_ridge("trench, S-bend in steps", &run, &[0, 2]);
 }
 
 #[test]

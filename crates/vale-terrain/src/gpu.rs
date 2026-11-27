@@ -28,6 +28,7 @@ use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
 use crate::tiles::{Pool, TILES_WGSL, tiles_layout};
+use crate::trench::{TrenchMargin, TrenchPlan};
 
 /// The number of face passes in one batch. One group of stamps takes one pass
 /// for each face that it touches.
@@ -329,7 +330,12 @@ struct RidgeUniforms {
     /// hardness as the height. A margin pass has the depth of the floor as
     /// the spacing, the depth and the width of the shelf as `crest` and
     /// `segment`, the texel width in kilometers as `spacing`, and the field
-    /// and the stamp in the first two segments.
+    /// and the stamp in the first two segments. A trench pass has the
+    /// depth of the axis in meters as the height, π/4 times the flexural
+    /// parameter in kilometers as the spacing, the margin as the piece
+    /// length (0 for accretionary, 1 for eroding), the side of the incoming
+    /// plate as the tilt (1 on the right, -1 on the left), and the texel
+    /// width in kilometers as `half_texel`.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
@@ -1641,6 +1647,43 @@ impl GpuHeightmap {
             ..bytemuck::Zeroable::zeroed()
         };
         self.line_pass(queue, enc, &plan.line, cell, 11, spec.limits, header, None)
+    }
+
+    /// Adds the trench of a plan to `enc`, as `ridge` adds an ocean ridge.
+    /// The result is that of `Heightmap::trench`.
+    pub fn trench(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &TrenchPlan,
+    ) -> bool {
+        let spec = &plan.trench;
+        // The cell of the distances along the line is the brush radius.
+        let cell = spec.radius;
+        let length_cell = (plan.length / cell + 0.5).floor();
+        let header = RidgeUniforms {
+            length: [
+                length_cell as f32,
+                (plan.length - length_cell * cell) as f32,
+            ],
+            radius: spec.radius as f32,
+            segment: cell as f32,
+            texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
+            sin_reach: (REACH * spec.radius).sin() as f32,
+            world_km: spec.world_km as f32,
+            seed: spec.seed,
+            half_texel: plan.texel_km() as f32,
+            segment_km: (cell * spec.world_km) as f32,
+            range_height: spec.depth_m as f32,
+            range_spacing: (FRAC_PI_4 * plan.alpha_km()) as f32,
+            range_piece: match spec.margin {
+                TrenchMargin::Accretionary => 0.0,
+                TrenchMargin::Eroding => 1.0,
+            },
+            range_tilt: plan.toward() as f32,
+            ..bytemuck::Zeroable::zeroed()
+        };
+        self.line_pass(queue, enc, &plan.line, cell, 21, spec.limits, header, None)
     }
 
     /// Adds the passes of a line brush plan to `enc`, as `ridge`. `header`

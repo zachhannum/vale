@@ -115,6 +115,8 @@ const SEAMOUNTS = 17u;
 const ABYSSAL = 18u;
 const MARGIN = 19u;
 const HOTSPOT = 20u;
+// The mode of a trench pass.
+const TRENCH = 21u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -2708,6 +2710,303 @@ fn range_level(at: RidgePoint, old: f32) -> f32 {
     return clamp(old + floor(change + 0.5), 0.0, 65535.0);
 }
 
+// The numbers of `trench.rs`, with a `TRENCH_` prefix.
+const TRENCH_LEVELS_PER_M = 5.46125;
+const TRENCH_DEEP_WIDE_KM = 400.0;
+const TRENCH_DEEP_WIDE = 0.25;
+const TRENCH_DEEP_FINE_KM = 100.0;
+const TRENCH_DEEP_FINE = 0.12;
+const TRENCH_BEND_VARY = 0.1;
+const TRENCH_BEND_VARY_KM = 300.0;
+const TRENCH_FLOOR_KM = 1.0;
+const TRENCH_FAULT_KM = 6.0;
+const TRENCH_FAULT_TEXELS = 3.0;
+const TRENCH_FAULT_JITTER = 0.25;
+const TRENCH_FAULT_WANDER = 1.2;
+const TRENCH_FAULT_WANDER_KM = 60.0;
+const TRENCH_FAULT_LENGTH_KM = 40.0;
+const TRENCH_THROW_PART = 0.12;
+const TRENCH_THROW_MAX_M = 500.0;
+const TRENCH_SCARP_KM = 0.8;
+const TRENCH_TILTED = 0.6;
+const TRENCH_GRABENS = 0.2;
+const TRENCH_WALL_ACCRETIONARY = 0.6;
+const TRENCH_WALL_ERODING = 0.35;
+const TRENCH_WALL_VARY = 0.15;
+const TRENCH_WALL_VARY_KM = 200.0;
+const TRENCH_PRISM_KM = 12.0;
+const TRENCH_PRISM_TEXELS = 4.0;
+const TRENCH_PRISM_PIECE_KM = 75.0;
+const TRENCH_PRISM_BREAK = 0.33;
+const TRENCH_PRISM_OVERLAP = 0.15;
+const TRENCH_PRISM_SHIFT = 0.2;
+const TRENCH_PRISM_WANDER = 0.3;
+const TRENCH_PRISM_WANDER_KM = 40.0;
+const TRENCH_PRISM_ECHELON = 0.5;
+const TRENCH_PRISM_FRONT = 0.25;
+const TRENCH_PRISM_BACK = 0.55;
+const TRENCH_PRISM_LOW_M = 150.0;
+const TRENCH_PRISM_HIGH_M = 400.0;
+const TRENCH_BASIN_WIDTH = 0.8;
+const TRENCH_BASIN_DEPTH = 0.2;
+const TRENCH_BASIN_VARY = 0.2;
+const TRENCH_BASIN_VARY_KM = 150.0;
+const TRENCH_ROUGH_PART = 0.06;
+const TRENCH_SCAR_CELL_KM = 30.0;
+const TRENCH_SCAR_NARROW_KM = 8.0;
+const TRENCH_SCAR_WIDE_KM = 20.0;
+const TRENCH_SCAR_TEXELS = 4.0;
+const TRENCH_SCAR_DEPTH = 0.1;
+const TRENCH_SCAR_HEAD_LOW = 0.65;
+const TRENCH_SCAR_HEAD_HIGH = 0.85;
+const TRENCH_SCAR_LENGTH = 0.5;
+const TRENCH_SCAR_HEAD_KM = 1.0;
+const TRENCH_SCAR_HEAD_TEXELS = 1.5;
+const SALT_TRENCH_DEEP = 0x74726e63u;
+const SALT_TRENCH_FAULT = 0x666c7473u;
+const SALT_TRENCH_PRISM = 0x7072736du;
+const SALT_TRENCH_ROUGH = 0x72676877u;
+const SALT_TRENCH_SCAR = 0x73637273u;
+
+// The settings of the profile at one place along the axis, as `Section` in
+// `trench.rs`.
+struct TrenchSection {
+    depth: f32,
+    bend: f32,
+    amp: f32,
+}
+
+// The sine of PI / 4 times `x`. The steps take the angle to less than
+// PI / 4 and use the series.
+fn trench_sin_quarter(x: f32) -> f32 {
+    let m = round(x / 4.0);
+    let f = x / 4.0 - m;
+    let half = vec2<f32>(2.0 * PI_4 * f);
+    var s = 2.0 * sin_series(half).x * cos_series(half).x;
+    if (i32(m) & 1) != 0 {
+        s = -s;
+    }
+    return s;
+}
+
+// `caldwell` in `trench.rs`.
+fn trench_caldwell(x: f32) -> f32 {
+    return 1.4142135623730951 * exp_precise(-PI_4 * (x + 1.0)) * trench_sin_quarter(x);
+}
+
+// `noise2` in `trench.rs`.
+fn trench_noise2(x: f32, y: f32, octave: u32, seed: u32) -> f32 {
+    let fx = floor(x);
+    let fy = floor(y);
+    let sx = x - fx;
+    let sy = y - fy;
+    let i = i32(fx);
+    let j = i32(fy);
+    let v00 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(i), bitcast<u32>(j), octave), seed)) - 1.0;
+    let v10 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(i + 1), bitcast<u32>(j), octave), seed)) - 1.0;
+    let v01 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(i), bitcast<u32>(j + 1), octave), seed)) - 1.0;
+    let v11 = 2.0 * unit(hash(vec3<u32>(bitcast<u32>(i + 1), bitcast<u32>(j + 1), octave), seed)) - 1.0;
+    let tx = sx * sx * (3.0 - 2.0 * sx);
+    let ty = sy * sy * (3.0 - 2.0 * sy);
+    let low = v00 + (v10 - v00) * tx;
+    let high = v01 + (v11 - v01) * tx;
+    return low + (high - low) * ty;
+}
+
+// `TrenchPlan::section`. The depth is in `range_height`, and π/4 times the
+// flexural parameter in `range_spacing`.
+fn trench_section(u_km: f32, amp: f32) -> TrenchSection {
+    let seed = ridge.seed ^ SALT_TRENCH_DEEP;
+    let field = 1.0
+        + TRENCH_DEEP_WIDE * noise1(u_km / TRENCH_DEEP_WIDE_KM, 0u, 0u, seed).x
+        + TRENCH_DEEP_FINE * noise1(u_km / TRENCH_DEEP_FINE_KM, 1u, 0u, seed).x;
+    let vary = 1.0 + TRENCH_BEND_VARY * noise1(u_km / TRENCH_BEND_VARY_KM, 2u, 0u, seed).x;
+    return TrenchSection(ridge.range_height * field * amp, ridge.range_spacing * vary, amp);
+}
+
+// `TrenchPlan::faults`. The texel width in kilometers is in `half_texel`.
+fn trench_faults(u_km: f32, xp: f32, s: TrenchSection) -> f32 {
+    let texel = ridge.half_texel;
+    let seed = ridge.seed ^ SALT_TRENCH_FAULT;
+    let spacing = max(TRENCH_FAULT_KM, TRENCH_FAULT_TEXELS * texel);
+    let scarp = max(TRENCH_SCARP_KM, texel);
+    let most = min(TRENCH_THROW_PART * s.depth, TRENCH_THROW_MAX_M * s.amp);
+    let wander = TRENCH_FAULT_WANDER * spacing
+        * noise1(u_km / TRENCH_FAULT_WANDER_KM, 3u, 0u, seed).x;
+    let k = i32(floor((xp - wander) / spacing));
+    var sum = 0.0;
+    for (var j = k - 1; j <= k + 1; j++) {
+        let ja = bitcast<u32>(j);
+        let jb = bitcast<u32>(j + 1);
+        let a = spacing * (f32(j) + TRENCH_FAULT_JITTER
+            * (2.0 * unit(hash(vec3<u32>(ja, 0u, 0u), seed)) - 1.0)) + wander;
+        let b = spacing * (f32(j + 1) + TRENCH_FAULT_JITTER
+            * (2.0 * unit(hash(vec3<u32>(jb, 0u, 0u), seed)) - 1.0)) + wander;
+        let window = smooth_between(a - 0.5 * scarp, a + 0.5 * scarp, xp)
+            - smooth_between(b - 0.5 * scarp, b + 0.5 * scarp, xp);
+        if window <= 0.0 {
+            continue;
+        }
+        let middle = 0.5 * (a + b) / s.bend - 1.0;
+        let grow = 1.0 - smooth_between(-1.0, 1.0, middle);
+        let fade = noise1(u_km / TRENCH_FAULT_LENGTH_KM, ja, 4u, seed).x;
+        let fault_throw = most * grow * smooth_between(-0.3, 0.3, fade)
+            * (0.6 + 0.4 * unit(hash(vec3<u32>(ja, 1u, 0u), seed)));
+        let kind = unit(hash(vec3<u32>(ja, 2u, 0u), seed));
+        var block = 0.5 * fault_throw;
+        if kind < TRENCH_TILTED {
+            let t = clamp((xp - a) / (b - a), 0.0, 1.0);
+            block = fault_throw * (0.5 - t);
+        } else if kind < TRENCH_TILTED + TRENCH_GRABENS {
+            block = -0.5 * fault_throw;
+        }
+        sum += window * block;
+    }
+    return sum * smooth_between(0.0, spacing, xp);
+}
+
+// `TrenchPlan::wall_km`. The margin is in `range_piece`: 0 for an
+// accretionary margin, 1 for an eroding margin.
+fn trench_wall(u_km: f32, s: TrenchSection) -> f32 {
+    var part = TRENCH_WALL_ACCRETIONARY;
+    if ridge.range_piece > 0.5 {
+        part = TRENCH_WALL_ERODING;
+    }
+    let vary = noise1(u_km / TRENCH_WALL_VARY_KM, 3u, 0u, ridge.seed ^ SALT_TRENCH_DEEP).x;
+    return part * s.bend * (1.0 + TRENCH_WALL_VARY * vary);
+}
+
+// `TrenchPlan::prism`.
+fn trench_prism(u_km: f32, yp: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_TRENCH_PRISM;
+    let spacing = max(TRENCH_PRISM_KM, TRENCH_PRISM_TEXELS * ridge.half_texel);
+    let piece = TRENCH_PRISM_PIECE_KM;
+    let overlap = TRENCH_PRISM_OVERLAP * piece;
+    var side = 1.0;
+    if (hash(vec3<u32>(0u, 0u, 4u), seed) & 1u) != 0u {
+        side = -1.0;
+    }
+    let tilt = side * TRENCH_PRISM_ECHELON * spacing / piece;
+    let k0 = i32(round(yp / spacing));
+    var best = 0.0;
+    for (var k = k0 - 2; k <= k0 + 2; k++) {
+        let kb = bitcast<u32>(k);
+        let phase = unit(hash(vec3<u32>(kb, 0u, 0u), seed));
+        let wander = TRENCH_PRISM_WANDER
+            * noise1(u_km / TRENCH_PRISM_WANDER_KM, kb, 3u, seed).x;
+        let j0 = i32(floor(u_km / piece - phase));
+        for (var j = j0 - 1; j <= j0 + 1; j++) {
+            let ja = bitcast<u32>(j);
+            let jb = bitcast<u32>(j + 1);
+            let b0 = (f32(j) + phase + TRENCH_PRISM_BREAK
+                * (2.0 * unit(hash(vec3<u32>(kb, ja, 1u), seed)) - 1.0)) * piece;
+            let b1 = (f32(j + 1) + phase + TRENCH_PRISM_BREAK
+                * (2.0 * unit(hash(vec3<u32>(kb, jb, 1u), seed)) - 1.0)) * piece;
+            let along = smooth_between(b0 - overlap, b0 + overlap, u_km)
+                * (1.0 - smooth_between(b1 - overlap, b1 + overlap, u_km));
+            if along <= 0.0 {
+                continue;
+            }
+            let shift = TRENCH_PRISM_SHIFT * (2.0 * unit(hash(vec3<u32>(kb, ja, 2u), seed)) - 1.0);
+            let center = spacing * (f32(k) + shift + wander) + tilt * (u_km - 0.5 * (b0 + b1));
+            let d = yp - center;
+            var width = TRENCH_PRISM_BACK * spacing;
+            if d < 0.0 {
+                width = TRENCH_PRISM_FRONT * spacing;
+            }
+            let height = TRENCH_PRISM_LOW_M + (TRENCH_PRISM_HIGH_M - TRENCH_PRISM_LOW_M)
+                * unit(hash(vec3<u32>(kb, ja, 3u), seed));
+            best = max(best, height * along * bump(abs(d) / width));
+        }
+    }
+    return best;
+}
+
+// `TrenchPlan::roughness`.
+fn trench_roughness(u_km: f32, yp: f32) -> f32 {
+    let seed = ridge.seed ^ SALT_TRENCH_ROUGH;
+    let sum = trench_noise2(u_km / 12.0, yp / 25.0, 0u, seed)
+        + 0.5 * trench_noise2(u_km / 6.0, yp / 12.0, 1u, seed)
+        + 0.25 * trench_noise2(u_km / 3.0, yp / 6.0, 2u, seed);
+    return sum / 1.75;
+}
+
+// `TrenchPlan::scars`.
+fn trench_scars(u_km: f32, yp: f32, wall: f32, s: TrenchSection) -> f32 {
+    let seed = ridge.seed ^ SALT_TRENCH_SCAR;
+    let texel = ridge.half_texel;
+    let head_width = max(TRENCH_SCAR_HEAD_KM, TRENCH_SCAR_HEAD_TEXELS * texel);
+    let length = TRENCH_SCAR_LENGTH * wall;
+    let c0 = i32(floor(u_km / TRENCH_SCAR_CELL_KM));
+    var deepest = 0.0;
+    for (var c = c0 - 1; c <= c0 + 1; c++) {
+        let cb = bitcast<u32>(c);
+        let center = (f32(c) + 0.2 + 0.6 * unit(hash(vec3<u32>(cb, 0u, 0u), seed)))
+            * TRENCH_SCAR_CELL_KM;
+        let width = max(TRENCH_SCAR_NARROW_KM + (TRENCH_SCAR_WIDE_KM - TRENCH_SCAR_NARROW_KM)
+            * unit(hash(vec3<u32>(cb, 1u, 0u), seed)), TRENCH_SCAR_TEXELS * texel);
+        let q = (u_km - center) / (0.5 * width);
+        let lateral = bump(q);
+        if lateral <= 0.0 {
+            continue;
+        }
+        let head = wall * (TRENCH_SCAR_HEAD_LOW + (TRENCH_SCAR_HEAD_HIGH - TRENCH_SCAR_HEAD_LOW)
+            * unit(hash(vec3<u32>(cb, 2u, 0u), seed))) - 0.35 * length * q * q;
+        let below = 1.0 - smooth_between(head - head_width, head, yp);
+        let down = smooth_between(head - length, head - 0.3 * length, yp);
+        let depth = TRENCH_SCAR_DEPTH * s.depth * (0.7 + 0.6 * unit(hash(vec3<u32>(cb, 3u, 0u), seed)));
+        deepest = max(deepest, depth * lateral * below * down);
+    }
+    return deepest;
+}
+
+// `TrenchPlan::overriding`.
+fn trench_overriding(u_km: f32, yp: f32, s: TrenchSection) -> f32 {
+    let wall = trench_wall(u_km, s);
+    var change = -s.depth * (1.0 - smooth_between(0.0, wall, yp));
+    if ridge.range_piece < 0.5 {
+        let vary = noise1(u_km / TRENCH_BASIN_VARY_KM, 4u, 0u, ridge.seed ^ SALT_TRENCH_DEEP).x;
+        let width = TRENCH_BASIN_WIDTH * wall * (1.0 + TRENCH_BASIN_VARY * vary);
+        let basin = smooth_between(0.95 * wall, wall + 0.3 * width, yp)
+            * (1.0 - smooth_between(wall + 0.7 * width, wall + width, yp));
+        let toe = smooth_between(0.0, 0.15 * wall, yp);
+        let top = 1.0 - smooth_between(0.9 * wall, 1.1 * wall, yp);
+        change += trench_prism(u_km, yp) * s.amp * toe * top - TRENCH_BASIN_DEPTH * s.depth * basin;
+    } else {
+        let t = clamp(yp / wall, 0.0, 1.0);
+        change += TRENCH_ROUGH_PART * s.depth * trench_roughness(u_km, yp) * 4.0 * t * (1.0 - t);
+        change -= trench_scars(u_km, yp, wall, s);
+    }
+    return change;
+}
+
+// The level of a texel on the trench. `old` is its level from before the
+// stroke. The steps are those of `TrenchPlan::level`, without the limits.
+// The side of the incoming plate is in `range_tilt`: 1 on the right of the
+// line, -1 on the left.
+fn trench_level(at: RidgePoint, old: f32) -> f32 {
+    let r = ridge.radius;
+    let km = ridge.world_km;
+    let window = 1.0 - smooth_between(r, RIDGE_REACH * r, sqrt(at.across * at.across + at.past2));
+    let taper = smooth_between(0.0, TAPER * r, at.end);
+    let amp = at.flow * taper * window;
+    if amp <= 0.0 {
+        return old;
+    }
+    let u_km = at.cell * ridge.segment_km + at.rest * km;
+    let s = trench_section(u_km, amp);
+    let x = ridge.range_tilt * at.across * km;
+    let half = TRENCH_FLOOR_KM + 0.5 * ridge.half_texel;
+    var change = 0.0;
+    if x >= 0.0 {
+        let xp = max(x - half, 0.0);
+        change = s.depth * trench_caldwell(xp / s.bend - 1.0) + trench_faults(u_km, xp, s);
+    } else {
+        change = trench_overriding(u_km, max(-x - half, 0.0), s);
+    }
+    return clamp(old + floor(change * TRENCH_LEVELS_PER_M + 0.5), 0.0, 65535.0);
+}
+
 // The level of a texel after a change from `old` to `next`. The steps are
 // those of `Limits::apply`.
 fn limited(old: f32, next: f32) -> f32 {
@@ -3297,6 +3596,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let point = ridge_place(p);
         if point.on {
             value = limited(value, hotspot_level(point, p, value));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == TRENCH {
+        let point = ridge_place(normalize(texel_dir(group.face, at)));
+        if point.on {
+            value = limited(value, trench_level(point, value));
         }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
