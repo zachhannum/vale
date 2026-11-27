@@ -2735,6 +2735,7 @@ const CONE_LUMPS = 0.16;
 const CONE_LUMP_SIZE = 3.0;
 const CONE_FINE = 3.0;
 const PEDESTAL = 0.75;
+const PEDESTAL_SEA = 0.85;
 const PEDESTAL_ACROSS = 0.9;
 const PEDESTAL_FLAT = 0.35;
 const ARM_BLEND = 0.35;
@@ -2862,8 +2863,8 @@ fn volcano_foot(u: f32, w: f32) -> f32 {
 // The steps of `broken` of `seamount.rs`.
 fn volcano_broken(x: f32, b: f32) -> f32 {
     let at = b / (b + BREAK_SLOPES * (1.0 - b));
-    if x <= at {
-        return b * x / at;
+    if x <= at || at >= 1.0 {
+        return b * min(x, 1.0) / at;
     }
     let t = (x - at) / (1.0 - at);
     return b + (1.0 - b) * (t + 0.5 * t * (1.0 - t));
@@ -2887,7 +2888,8 @@ fn volcano_pedestal(v: u32, u: f32, w: f32, b: f32) -> f32 {
     let du = u / volcano(v, V_PEDESTAL_REACH);
     let dw = w / PEDESTAL_ACROSS;
     let t = sqrt(du * du + dw * dw) * (1.0 + 0.15 * n.x);
-    let top = PEDESTAL * b * (1.0 + CONE_LUMPS * volcano_lumps(lu, lw, 7.5, seed));
+    let island = 1.0 - smooth_between(PEDESTAL_SEA, 1.0, b);
+    let top = PEDESTAL * b * island * (1.0 + CONE_LUMPS * volcano_lumps(lu, lw, 7.5, seed));
     return top * (1.0 - smooth_between(PEDESTAL_FLAT, 1.0, t));
 }
 
@@ -3008,7 +3010,7 @@ fn volcano_island(v: u32, u: f32, w: f32, b: f32) -> f32 {
     f += CONE_LUMPS * volcano_lumps(lu, lw, 2.5, seed ^ 2u) * 4.0 * below * (1.0 - below);
     f += FLOWS * volcano_octaves(su, w, seed ^ 9u, texel) * smooth_between(0.5 * b, b, f);
     let cinders = volcano(v, V_CINDERS);
-    if cinders > 0.0 {
+    if cinders > 0.0 && b < 1.0 {
         let n = noise3(vec3<f32>(u / CINDER_SIZE, w / CINDER_SIZE, 3.5), seed ^ 11u).x;
         let cone = max((n - 0.55) / 0.45, 0.0);
         f += cinders * CINDER_HEIGHT * cone * cone * smooth_between(b, 1.0, f);

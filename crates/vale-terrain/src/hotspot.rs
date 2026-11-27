@@ -138,6 +138,7 @@ const LINE_MOAT: f64 = 0.13;
 /// The middle of the gap between two volcanoes is at this part of the reach
 /// of their pedestals.
 const PEDESTAL_MIDDLE: f64 = 0.5;
+const PEDESTAL_JOIN: f64 = 3.5;
 
 /// The rounding of the join of two islands, in meters, so lava fills the
 /// saddle between them. A volcano with a wave-cut top does not round, and
@@ -425,9 +426,10 @@ impl HotspotLine {
                     } else if g(3) < LONG_GAP_PART * fade * (0.5 + weak) {
                         LONG_GAP
                     } else {
-                        GROUP_GAP
+                        let (low, high) = GROUP_GAP;
+                        (low * (1.0 + weak), high * (1.0 + weak))
                     };
-                    s += spacing * (low + (high - low) * g(2)) * (1.0 + weak);
+                    s += spacing * (low + (high - low) * g(2));
                     if s > length {
                         break;
                     }
@@ -541,30 +543,6 @@ impl HotspotLine {
             chain.ages.push(age);
         }
 
-        // The pedestal of each volcano reaches past the middle of the gap to
-        // the next volcano along its axis on each side, so the chain stands
-        // on one ridge.
-        let reaches: Vec<f64> = (chain.volcanoes.iter())
-            .map(|v| {
-                let mut gap = [f64::INFINITY; 2];
-                for w in &chain.volcanoes {
-                    let (u, across) = v.local(w.center());
-                    if u.abs() > 0.25 && u.abs() > across.abs() {
-                        let side = usize::from(u > 0.0);
-                        gap[side] = gap[side].min(u.abs());
-                    }
-                }
-                let gap = gap
-                    .into_iter()
-                    .filter(|g| g.is_finite())
-                    .fold(0.0, f64::max);
-                (0.5 * gap / PEDESTAL_MIDDLE).max(PEDESTAL_ALONG)
-            })
-            .collect();
-        for (v, reach) in chain.volcanoes.iter_mut().zip(reaches) {
-            v.set_pedestal_reach(reach);
-        }
-
         // The moats add up under the chain. The volcanoes stand on the
         // floor over them.
         let moats = |vs: &[Volcano]| -> Vec<f64> {
@@ -618,7 +596,9 @@ impl HotspotLine {
             chain.drowned.push(drowned);
             let band = REEF_BAND * chain.heights_m[i] * LEVELS_PER_M;
             if age < drowned {
-                if age > GROW_MYR && edifice_m > 0.0 {
+                // Only the land erodes, so a volcano that never rose to the
+                // sea keeps its summit.
+                if age > GROW_MYR && edifice_m > 0.0 && peak > 0.0 {
                     let base = peak - sunk(age) - edifice_m;
                     let f = ((above(age) - base) / edifice_m).clamp(0.0, 1.0);
                     v.set_lower(1.0 - f);
@@ -659,6 +639,32 @@ impl HotspotLine {
                 }
             }
         }
+        // The pedestal of each volcano reaches past the middle of the gap to
+        // the next volcano along its axis on each side, so the chain stands
+        // on one ridge. A neighbor farther than `PEDESTAL_JOIN` base radii
+        // does not join it, so the ridge breaks in a long gap. A volcano
+        // that never rose to the sea has no pedestal, so it joins none.
+        let reaches: Vec<f64> = (chain.volcanoes.iter())
+            .map(|v| {
+                let mut gap = [f64::INFINITY; 2];
+                for w in chain.volcanoes.iter().filter(|w| w.get(BREAK) < 1.0) {
+                    let (u, across) = v.local(w.center());
+                    if u.abs() > 0.25 && u.abs() > across.abs() {
+                        let side = usize::from(u > 0.0);
+                        gap[side] = gap[side].min(u.abs());
+                    }
+                }
+                let gap = gap
+                    .into_iter()
+                    .filter(|&g| g <= PEDESTAL_JOIN)
+                    .fold(0.0, f64::max);
+                (0.5 * gap / PEDESTAL_MIDDLE).max(PEDESTAL_ALONG)
+            })
+            .collect();
+        for (v, reach) in chain.volcanoes.iter_mut().zip(reaches) {
+            v.set_pedestal_reach(reach);
+        }
+
         self.chain = Some(Arc::new(chain));
     }
 

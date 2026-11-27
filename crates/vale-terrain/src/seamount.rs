@@ -232,6 +232,8 @@ const PEDESTAL: f64 = 0.75;
 pub(crate) const PEDESTAL_ALONG: f64 = 1.6;
 const PEDESTAL_ACROSS: f64 = 0.9;
 pub(crate) const PEDESTAL_FLAT: f64 = 0.35;
+/// The pedestal fades out from this break to a break of 1.
+const PEDESTAL_SEA: f64 = 0.85;
 
 /// The rift zones of an island join the summit with this rounding, in
 /// parts of the reach.
@@ -447,7 +449,10 @@ impl Volcano {
         let n = noise3([lu, lv, 0.5], seed);
         let (du, dv) = (u / self.get(PEDESTAL_REACH), v / PEDESTAL_ACROSS);
         let t = (du * du + dv * dv).sqrt() * (1.0 + 0.15 * n[0]);
-        let top = PEDESTAL * b * (1.0 + LUMPS * lumps(lu, lv, 7.5, seed));
+        // A volcano that never rose to the sea has no pedestal, so a chain
+        // of seamounts is a row of edifices.
+        let island = 1.0 - smoothstep(PEDESTAL_SEA, 1.0, b);
+        let top = PEDESTAL * b * island * (1.0 + LUMPS * lumps(lu, lv, 7.5, seed));
         top * (1.0 - smoothstep(PEDESTAL_FLAT, 1.0, t))
     }
 
@@ -486,7 +491,7 @@ impl Volcano {
         f += LUMPS * lumps(lu, lv, 2.5, seed ^ 2) * 4.0 * below * (1.0 - below);
         f += FLOWS * octaves(su, v, seed ^ 9, texel) * smoothstep(0.5 * b, b, f);
         let cinders = self.get(CINDERS);
-        if cinders > 0.0 {
+        if cinders > 0.0 && b < 1.0 {
             let n = noise3([u / CINDER_SIZE, v / CINDER_SIZE, 3.5], seed ^ 11)[0];
             let cone = ((n - 0.55) / 0.45).max(0.0);
             f += cinders * CINDER_HEIGHT * cone * cone * smoothstep(b, 1.0, f);
@@ -893,8 +898,10 @@ fn foot(u: f64, w: f64) -> f64 {
 /// gentler near the summit.
 fn broken(x: f64, b: f64) -> f64 {
     let at = b / (b + BREAK_SLOPES * (1.0 - b));
-    if x <= at {
-        b * x / at
+    // A volcano with no land is one straight flank. The smooth join of the
+    // rift zones can put `x` a little past the summit.
+    if x <= at || at >= 1.0 {
+        b * x.min(1.0) / at
     } else {
         let t = (x - at) / (1.0 - at);
         b + (1.0 - b) * (t + 0.5 * t * (1.0 - t))
