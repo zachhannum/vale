@@ -65,6 +65,17 @@ hawaii)
 	# The trend of the chain from Hawaii to Kauai, N60W.
 	fabric_deg=-60
 	;;
+manihiki)
+	title="Manihiki Plateau, 8.8 S"
+	lon=-163.0
+	lat=-8.8
+	size=1024
+	cell_m=1380
+	band_max_m=225000
+	# The trend of the Manihiki Scarp on the east side and of the Danger
+	# Islands Troughs on the west side, N5W.
+	fabric_deg=-5
+	;;
 *)
 	echo "unknown region: $region" >&2
 	exit 2

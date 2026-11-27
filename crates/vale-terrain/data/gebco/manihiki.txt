@@ -1,0 +1,17 @@
+# The realism reference of a GEBCO patch.
+# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9
+# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020
+# Bounds of the fetch: -15.331 to -2.269 N, -169.772 to -156.228 E
+# Fetched: 2026-11-27
+# Made by: scripts/gebco-reference.sh manihiki
+
+region = Manihiki Plateau, 8.8 S
+center = -163, -8.8
+size = 1024
+cell_m = 1380
+band_m = 5520, 225000
+fabric_deg = -5
+spectral_slope = -3.0851
+anisotropy = 1.8808
+rms_m = 866.61
+slope_histogram = 0.42819, 0.23891, 0.16664, 0.10666, 0.05129, 0.00823, 0.00008
