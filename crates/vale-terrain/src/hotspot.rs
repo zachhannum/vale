@@ -115,10 +115,22 @@ const FREE_M: f64 = 100.0;
 /// years.
 const ISLAND_EROSION_M: f64 = 600.0;
 
-/// The waves cut the top of a volcano flat at this depth in meters when it
-/// goes under the sea, with a rounding of `CAP_ROUND_M`.
+/// The waves cut the top of a volcano at this depth in meters when it goes
+/// under the sea, with a rounding of `CAP_ROUND_M`.
 const WAVE_BASE_M: f64 = 20.0;
-const CAP_ROUND_M: f64 = 30.0;
+const CAP_ROUND_M: f64 = 60.0;
+
+/// The waves cut the platform of a sinking island from the time when its
+/// summit is this many meters above the sea, so the platform has the
+/// outline of the island then. The platform keeps this part of the relief
+/// of the island, and it slopes down to its edge.
+const PLATFORM_M: f64 = 400.0;
+const PLATFORM_RELIEF: f64 = 0.15;
+
+/// After it drowns, a volcano sinks by up to this many meters more, with
+/// this time in millions of years, as the younger volcanoes load the plate.
+const SINK_M: f64 = 600.0;
+const SINK_MYR: f64 = 5.0;
 
 /// The level of the top of a reef and of the floor of a lagoon, in meters.
 const REEF_TOP_M: f64 = -1.0;
@@ -515,9 +527,27 @@ impl HotspotLine {
                     v.0[REEF] = 1.0;
                 }
             } else {
-                let cap = level_of_m(-WAVE_BASE_M - (sunk(age) - sunk(drowned)));
-                v.0[CAP] = cap as f32;
                 let since = age - drowned;
+                let sink = SINK_M * (1.0 - (-since / SINK_MYR).exp());
+                let cap = level_of_m(-WAVE_BASE_M - (sunk(age) - sunk(drowned)) - sink);
+                v.0[CAP] = cap as f32;
+                // The top keeps the erosion of the time when the waves began
+                // to cut it, and it sinks with the cap.
+                if edifice_m > 0.0 {
+                    let (mut low, mut high) = (GROW_MYR, drowned);
+                    if above(low) > PLATFORM_M {
+                        for _ in 0..60 {
+                            let mid = 0.5 * (low + high);
+                            if above(mid) > PLATFORM_M {
+                                low = mid;
+                            } else {
+                                high = mid;
+                            }
+                        }
+                    }
+                    let eroded = ISLAND_EROSION_M * (low - GROW_MYR);
+                    v.set_lower(((eroded + sink) / edifice_m).min(1.0));
+                }
                 if spec.reefs && since < REEF_MYR {
                     v.0[RIM] = band as f32;
                     v.0[SHORE] = cap as f32;
@@ -778,7 +808,11 @@ fn shaped(v: &Volcano, base: f64, e: f64) -> (f64, f64) {
     let z = base + e;
     let cap = v.get(CAP);
     let mut s = if cap < f64::from(NO_CAP) {
-        smooth_min(z, cap, CAP_ROUND_M * LEVELS_PER_M)
+        // The platform is at the cap where the top of the volcano is, and it
+        // slopes down to its edge.
+        let k = PLATFORM_RELIEF;
+        let edge = cap - k / (1.0 - k) * (PLATFORM_M + WAVE_BASE_M) * LEVELS_PER_M;
+        smooth_min(z, edge + k * (z - edge), CAP_ROUND_M * LEVELS_PER_M)
     } else {
         z
     };
@@ -792,7 +826,7 @@ fn shaped(v: &Volcano, base: f64, e: f64) -> (f64, f64) {
         let outer = s.max(reef);
         let lagoon = v.get(LAGOON);
         let inner = if lagoon > 0.0 {
-            smoothstep(0.2, 0.5, (z - shore) / band)
+            smoothstep(0.0, 0.15, (z - shore) / band)
         } else {
             0.0
         };
@@ -1108,7 +1142,8 @@ mod tests {
             let gdh1 = gdh1_depth(chain.reset_age + age(b)) - gdh1_depth(chain.reset_age + age(a));
             assert!((sunk - gdh1).abs() < 1.0, "{sunk} {gdh1}");
         }
-        // The flat tops of the guyots sink in the same way.
+        // The flat tops of the guyots sink in the same way, and by the load
+        // of the younger volcanoes.
         let mut line = self::line(
             Hotspot {
                 speed_mm: 30.0,
@@ -1130,7 +1165,11 @@ mod tests {
             let (i, j) = (w[0], w[1]);
             let cap = |i: usize| meters(chain.volcanoes[i].get(CAP));
             let sunk = cap(i) - cap(j);
-            let drop = |i: usize| chain.swell_m(chain.drowned[i]) - chain.swell_m(chain.ages[i]);
+            let drop = |i: usize| {
+                let since = chain.ages[i] - chain.drowned[i];
+                let load = SINK_M * (1.0 - (-since / SINK_MYR).exp());
+                chain.swell_m(chain.drowned[i]) - chain.swell_m(chain.ages[i]) + load
+            };
             assert!((sunk - (drop(j) - drop(i))).abs() < 0.5, "{sunk}");
         }
     }
@@ -1245,8 +1284,8 @@ mod tests {
             if age <= drowned || drowned < 5.0 {
                 continue;
             }
-            // The levels near the center, and the part of them within 40 m
-            // of the highest.
+            // The levels near the center, and the part of them within 100 m
+            // of the cap. The platform slopes down to its edge.
             let c = v.center();
             let (east, north) = frame(c);
             let r = 0.1 * v.base_radius();
@@ -1262,7 +1301,7 @@ mod tests {
             levels.sort_by(f64::total_cmp);
             let top = levels[levels.len() / 2];
             let cap = meters(v.get(CAP));
-            let flat = levels.iter().filter(|&&m| m > cap - 40.0).count();
+            let flat = levels.iter().filter(|&&m| m > cap - 100.0).count();
             eprintln!("age {age:.1}: top {top:.0} m, cap {cap:.0} m, flat {flat}");
             assert!(top < -WAVE_BASE_M + 5.0);
             assert!(flat > levels.len() * 3 / 4, "{flat}");
@@ -1297,16 +1336,19 @@ mod tests {
             .expect("an atoll");
         let v = &chain.volcanoes[i];
         let c = v.center();
-        // The lagoon: the lowest level near the center.
+        // The lagoon: the middle level near the center. A landslide scar
+        // can cut into the platform.
         let (east, north) = frame(c);
-        let r = 0.15 * v.base_radius();
-        let lagoon = (0..64)
+        let r = 0.06 * v.base_radius();
+        let mut levels: Vec<f64> = (0..64)
             .map(|k| {
                 let (x, y) = (f64::from(k % 8) / 3.5 - 1.0, f64::from(k / 8) / 3.5 - 1.0);
                 let p = normalize(add(add(c, scale(east, r * x)), scale(north, r * y)));
                 meters(map.level_at(p))
             })
-            .fold(f64::MAX, f64::min);
+            .collect();
+        levels.sort_by(f64::total_cmp);
+        let lagoon = levels[levels.len() / 2];
         // The rim: the highest texel on rays from the center.
         let n = map.face_size();
         let texel = |p: V3| {
@@ -1625,13 +1667,13 @@ mod tests {
         lay(&mut line, N, FLOOR_M);
         let chain = line.chain.clone().unwrap();
         let (mut young, mut old) = (0, 0);
-        for (v, &age) in chain.volcanoes.iter().zip(&chain.ages) {
+        for (i, (v, &age)) in chain.volcanoes.iter().zip(&chain.ages).enumerate() {
             if age < CALDERA_MYR {
                 // A young volcano has a caldera and no scars.
                 assert_eq!(v.slides(), 0);
                 assert!(v.crater());
                 young += 1;
-            } else if age > SLIDE_MYR && v.get(BREAK) < 0.7 {
+            } else if age > SLIDE_MYR && age < chain.drowned[i] && v.get(BREAK) < 0.7 {
                 assert!((1..=3).contains(&v.slides()), "{}", v.slides());
                 assert!(!v.crater());
                 // Each scar cuts deep into the volcano out from its head.

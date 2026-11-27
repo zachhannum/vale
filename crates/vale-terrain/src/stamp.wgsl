@@ -3123,7 +3123,10 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
 const HOTSPOT_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
 const HOTSPOT_JOIN_M = 800.0;
 const HOTSPOT_FREE_M = 100.0;
-const HOTSPOT_CAP_ROUND_M = 30.0;
+const HOTSPOT_CAP_ROUND_M = 60.0;
+const HOTSPOT_WAVE_BASE_M = 20.0;
+const HOTSPOT_PLATFORM_M = 400.0;
+const HOTSPOT_PLATFORM_RELIEF = 0.15;
 const HOTSPOT_REEF_TOP_M = -1.0;
 const HOTSPOT_REEF_WALL = 2.0;
 
@@ -3135,7 +3138,10 @@ fn hotspot_shaped(v: u32, base: f32, e: f32) -> vec2<f32> {
     let cap = volcano(v, V_CAP);
     var s = z;
     if cap < 65535.0 {
-        s = smooth_min(z, cap, HOTSPOT_CAP_ROUND_M * HOTSPOT_LEVELS_PER_M);
+        let k = HOTSPOT_PLATFORM_RELIEF;
+        let rise = (HOTSPOT_PLATFORM_M + HOTSPOT_WAVE_BASE_M) * HOTSPOT_LEVELS_PER_M;
+        let edge = cap - k / (1.0 - k) * rise;
+        s = smooth_min(z, edge + k * (z - edge), HOTSPOT_CAP_ROUND_M * HOTSPOT_LEVELS_PER_M);
     }
     let band = volcano(v, V_RIM);
     if band > 0.0 {
@@ -3146,7 +3152,7 @@ fn hotspot_shaped(v: u32, base: f32, e: f32) -> vec2<f32> {
         let lagoon = volcano(v, V_LAGOON);
         var inner = 0.0;
         if lagoon > 0.0 {
-            inner = smooth_between(0.2, 0.5, (z - shore) / band);
+            inner = smooth_between(0.0, 0.15, (z - shore) / band);
         }
         let reefed = outer + (lagoon - outer) * inner;
         s += (reefed - s) * volcano(v, V_REEF);
