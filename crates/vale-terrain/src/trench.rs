@@ -6,9 +6,10 @@
 //! stands before it. Normal faults parallel to the axis break the outer
 //! slope into horsts and grabens (Masson 1991). The faults start near the
 //! outer rise, and their throw grows toward the axis. The wall on the side
-//! of the overriding plate is steeper. An accretionary margin has a prism
-//! of thrust ridges on that wall and a forearc basin behind it. An eroding
-//! margin has a rough wall with slide scars.
+//! of the overriding plate is steeper, and gullies make it rough. An
+//! accretionary margin has a prism of thrust ridges on that wall and a
+//! forearc basin behind it. An eroding margin has a steeper, rougher wall
+//! with slide scars.
 //!
 //! The change adds to the ground from before the stroke, so the hills and
 //! the seamounts of the incoming plate go down with it. The brush is a line
