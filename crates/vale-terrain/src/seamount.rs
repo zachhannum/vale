@@ -12,6 +12,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI, TAU};
 use crate::cube::{ELEV_MAX, ELEV_MIN, FACES, face_dir, unwarp};
 use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, falloff, hash, noise3};
 use crate::line::{smoothstep, unit};
+use crate::margin::smooth_min;
 use crate::math::{V3, angle, cross, dot, normalize};
 
 /// The number of 32-bit numbers of one volcano in `SeamountPlan::floats`.
@@ -118,6 +119,21 @@ const CONVEX: usize = 62;
 pub(crate) const BREAK: usize = 63;
 const PEDESTAL_REACH: usize = 47;
 
+// A volcano with a break has one cone and no outline, so those places hold
+// the shape of its island: the reach, the width, and the bend of each rift
+// zone, the radius of the summit, the texel size in base radii, the cinder
+// cones, the head of each landslide, and the part of the height that
+// erosion took from its top. Its third landslide is at `SLIDE_3`.
+const ARM_LENGTH: usize = 15;
+const ARM_WIDTH: usize = 19;
+const ARM_BEND: usize = 49;
+const CORE: usize = 53;
+const TEXEL: usize = 54;
+const CINDERS: usize = 14;
+const SLIDE_HEAD: usize = 29;
+const SLIDE_3: usize = 32;
+const LOWER: usize = 55;
+
 /// The cap of a volcano with no cap.
 pub(crate) const NO_CAP: f32 = 65535.0;
 
@@ -217,6 +233,47 @@ pub(crate) const PEDESTAL_ALONG: f64 = 1.6;
 const PEDESTAL_ACROSS: f64 = 0.9;
 pub(crate) const PEDESTAL_FLAT: f64 = 0.35;
 
+/// The rift zones of an island join the summit with this rounding, in
+/// parts of the reach.
+const ARM_BLEND: f64 = 0.35;
+
+/// The lobes of the lava flows bend the outline of an island by up to this
+/// part of the reach. Their largest lobes are this many to a base radius,
+/// and each finer octave has this part of the size of the one before.
+const LOBES: f64 = 0.22;
+const LOBE_SIZE: f64 = 2.5;
+const LOBE_GAIN: f64 = 0.7;
+const OCTAVES: u32 = 6;
+
+/// The relief of the lava flows on an island, as a part of the height.
+const FLOWS: f64 = 0.01;
+
+/// The cinder cones: their size in base radii and their most height as a
+/// part of the height.
+const CINDER_SIZE: f64 = 0.03;
+const CINDER_HEIGHT: f64 = 0.05;
+
+/// A landslide scar: the width of its headwall in base radii, the height of
+/// its floor over the sea at its head as a part of the height, and the fall
+/// of the floor for each base radius out from the head.
+const SCAR_WALL: f64 = 0.03;
+const SCAR_FLOOR: f64 = 0.03;
+const SCAR_FALL: f64 = 1.2;
+
+/// The headwall of a landslide scar bends by up to this many base radii.
+const SCAR_BEND: f64 = 0.05;
+
+/// The debris of a landslide reaches from this many base radii out from
+/// the summit to `APRON`, and its blocks are this part of the height.
+const DEBRIS_FROM: f64 = 0.8;
+const DEBRIS: f64 = 0.06;
+
+/// A volcano younger than this many millions of years has a summit
+/// caldera, and landslides cut scars into a volcano older than
+/// `SLIDE_MYR`.
+const CALDERA_MYR: f64 = 1.0;
+const SLIDE_MYR: f64 = 1.2;
+
 /// Below this coherence, the slopes have no main direction.
 pub const FABRIC_COHERENCE: f64 = 0.25;
 
@@ -303,16 +360,17 @@ impl Volcano {
         let radius = self.get(RADIUS);
         let (u, v) = (x / radius, y / radius);
         let mut edifice: f64 = 0.0;
-        for i in 0..self.cones() {
-            let du = (u - self.get(CONE_OFFSET + i)) / self.get(STRETCH);
-            let dv = v - self.get(CONE_SIDE + i);
-            let r = (du * du + dv * dv).sqrt();
-            let theta = dv.atan2(du) + self.get(CONE_TURN + i);
-            edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta, i as u32));
-        }
         let b = self.get(BREAK);
         if b > 0.0 {
-            edifice = edifice.max(self.pedestal(u, v, b));
+            edifice = self.island(u, v, b).max(self.pedestal(u, v, b));
+        } else {
+            for i in 0..self.cones() {
+                let du = (u - self.get(CONE_OFFSET + i)) / self.get(STRETCH);
+                let dv = v - self.get(CONE_SIDE + i);
+                let r = (du * du + dv * dv).sqrt();
+                let theta = dv.atan2(du) + self.get(CONE_TURN + i);
+                edifice = edifice.max(self.get(CONE_HEIGHT + i) * self.profile(r, theta, i as u32));
+            }
         }
         edifice * self.get(HEIGHT) * (1.0 - smoothstep(0.85 * reach, reach, d))
     }
@@ -327,6 +385,12 @@ impl Volcano {
 
     /// Sets the reach of the pedestal along the axis, in base radii. The
     /// volcano reaches farther if it needs to, inside its reach.
+    /// Sets the part of the height that erosion took from the top of an
+    /// island.
+    pub(crate) fn set_lower(&mut self, part: f64) {
+        self.0[LOWER] = part as f32;
+    }
+
     pub(crate) fn set_pedestal_reach(&mut self, along: f64) {
         self.0[PEDESTAL_REACH] = along as f32;
         let far = (1.2 * along * self.get(RADIUS)).min(0.95 * self.reach());
@@ -343,6 +407,82 @@ impl Volcano {
         let t = (du * du + dv * dv).sqrt() * (1.0 + 0.15 * n[0]);
         let top = PEDESTAL * b * (1.0 + LUMPS * lumps(lu, lv, 7.5, seed));
         top * (1.0 - smoothstep(PEDESTAL_FLAT, 1.0, t))
+    }
+
+    /// The volcano with the break `b` at `u` base radii along the axis and
+    /// `v` across it, as a part of the height. It is a summit with long,
+    /// narrow rift zones, so its island has arms and points. Lava flows
+    /// bend its outline, and landslides cut scars into old islands.
+    fn island(&self, u: f64, v: f64, b: f64) -> f64 {
+        let seed = self.0[SEED] as u32;
+        let texel = self.get(TEXEL);
+        let su = u / self.get(STRETCH);
+        // The distance from the summit and from the crest of each rift
+        // zone, as a part of its reach.
+        let mut re = su.hypot(v) / self.get(CORE);
+        for k in 0..self.rifts() {
+            let (s, c) = self.get(RIFT_ANGLE + k).sin_cos();
+            let along = su * c + v * s;
+            let t = along / self.get(ARM_LENGTH + k);
+            let width = self.get(ARM_WIDTH + k) * (1.0 - 0.45 * t.clamp(0.0, 1.0));
+            let across = (v * c - su * s - self.get(ARM_BEND + k) * along * along) / width;
+            let behind = along.min(0.0) / width;
+            let arm = (t.max(0.0) * t.max(0.0) + behind * behind + across * across).sqrt();
+            re = smooth_min(re, arm, ARM_BLEND);
+        }
+        let fade = 1.0 - smoothstep(0.8, 1.1, re);
+        re *= 1.0 + LOBES * octaves(su, v, seed ^ 5, texel) * fade;
+        let mut f = broken(foot(1.0 - re, BREAK_FOOT), b);
+        // The submarine flank has slumps and debris. The land has lava
+        // flows and cinder cones.
+        let (lu, lv) = (su * LUMP_SIZE, v * LUMP_SIZE);
+        let below = (f / b).min(1.0);
+        f += LUMPS * lumps(lu, lv, 2.5, seed ^ 2) * 4.0 * below * (1.0 - below);
+        f += FLOWS * octaves(su, v, seed ^ 9, texel) * smoothstep(0.5 * b, b, f);
+        let cinders = self.get(CINDERS);
+        if cinders > 0.0 {
+            let n = noise3([u / CINDER_SIZE, v / CINDER_SIZE, 3.5], seed ^ 11)[0];
+            let cone = ((n - 0.55) / 0.45).max(0.0);
+            f += cinders * CINDER_HEIGHT * cone * cone * smoothstep(b, 1.0, f);
+        }
+        // Erosion lowers the top of an old island down to the sea of its
+        // growth, so the land shrinks faster than the volcano.
+        let lower = self.get(LOWER);
+        if lower > 0.0 {
+            f -= lower * smoothstep(b - 1.6 * lower, b, f);
+        }
+        let crater = self.get(CRATER_RADIUS);
+        if crater > 0.0 {
+            let k = su.hypot(v) / crater;
+            f -= self.get(CRATER_DEPTH) * (1.0 - smoothstep(0.7, 1.0, k));
+        }
+        let mut debris = 0.0;
+        for s in 0..3 {
+            let at = if s < 2 { SLIDE + 3 * s } else { SLIDE_3 };
+            let depth = self.get(at + 2);
+            if depth <= 0.0 {
+                continue;
+            }
+            let (sn, cs) = self.get(at).sin_cos();
+            let width = self.get(at + 1);
+            let along = su * cs + v * sn;
+            let across = v * cs - su * sn;
+            let out = along - self.get(SLIDE_HEAD + s);
+            // The headwall curves around the head of the amphitheater, and
+            // the floor falls from the head to the sea and below it.
+            let wide = width * (1.0 + 0.6 * out.max(0.0));
+            let side = 1.0 - smoothstep(0.8, 1.0, across.abs() / wide);
+            let bent = out - across * across / width + SCAR_BEND * octaves(u, v, seed ^ 17, texel);
+            let scar = smoothstep(0.0, SCAR_WALL, bent) * side;
+            let floor = b + SCAR_FLOOR - SCAR_FALL * out;
+            f += (f.min(floor) - f) * scar * depth;
+            let lobe = smoothstep(DEBRIS_FROM, 1.0, along)
+                * (1.0 - smoothstep(0.8 * APRON, APRON, along))
+                * (1.0 - smoothstep(0.7, 1.0, across.abs() / (1.3 * wide)));
+            let blocks = noise3([u * 10.0, v * 10.0, 6.5], seed ^ 13)[0];
+            debris += depth * DEBRIS * lobe * (0.3 + (blocks - 0.2).max(0.0));
+        }
+        f.max(0.0) + debris
     }
 
     /// The moat of the plate at a unit direction at full growth, in 16-bit
@@ -721,6 +861,23 @@ fn lumps(x: f64, y: f64, z: f64, seed: u32) -> f64 {
     n(1.0, 0.0) + 0.8 * n(FINE, 2.0) + 0.5 * n(FINE * FINE, 4.0)
 }
 
+/// Noise with no direction at `u` and `v` base radii, from the lobes of
+/// `LOBE_SIZE` down to two texels of `texel` base radii. An octave finer
+/// than four texels fades out.
+fn octaves(u: f64, v: f64, seed: u32, texel: f64) -> f64 {
+    let (mut size, mut gain, mut sum) = (LOBE_SIZE, 1.0, 0.0);
+    for i in 0..OCTAVES {
+        let keep = 1.0 - smoothstep(0.25, 0.5, size * texel);
+        if keep <= 0.0 {
+            break;
+        }
+        sum += gain * keep * noise3([u * size, v * size, 1.5 * f64::from(i)], seed)[0];
+        size *= 2.0;
+        gain *= LOBE_GAIN;
+    }
+    sum
+}
+
 /// An angle in the range from -pi to pi.
 fn wrap(a: f64) -> f64 {
     (a + PI).rem_euclid(TAU) - PI
@@ -1009,14 +1166,13 @@ fn flexure(age_myr: f64, contrast: f64, volume: f64, radius_m: f64, height_m: f6
     (moat_m, flex_m)
 }
 
-/// A shield volcano of one cone with rift zones and slides, or `None` if it
-/// does not show on a heightmap with `n` texels along a face side. `axis`
-/// is a unit vector square to `center`, `height_m` is the height, `ratio`
-/// is the height over the base radius, and
-/// `load_age` is the age of the plate under it in millions of years, in
-/// a world with a radius of `km` kilometers. Volcanic rock fills its moat.
-/// It reaches `reach` radians from its center. A volcano that does not fit
-/// in that reach is smaller.
+/// The shield volcano of an island, or `None` if it does not show on a
+/// heightmap with `n` texels along a face side. `axis` is a unit vector
+/// square to `center`, `height_m` is the height, `ratio` is the height over
+/// the base radius, `age` is its age in millions of years, and `load_age`
+/// is the age of the plate under it, in a world with a radius of `km`
+/// kilometers. Volcanic rock fills its moat. It reaches `reach` radians
+/// from its center. A volcano that does not fit in that reach is smaller.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn shield_volcano(
     seed: u32,
@@ -1025,27 +1181,30 @@ pub(crate) fn shield_volcano(
     height_m: f64,
     ratio: f64,
     reach: f64,
+    age: f64,
     load_age: f64,
     km: f64,
     n: usize,
 ) -> Option<Volcano> {
     let r = |i: u32| draw(seed, i);
+    let side = |i: u32| if r(i) < 0.5 { -1.0 } else { 1.0 };
     let mut v = [0f32; VOLCANO_FLOATS];
     let mut radius = height_m / ratio / (km * 1000.0);
     let mut height_m = height_m;
-    // The volcano and two of its rift zones run along the axis, as the
-    // Hawaiian volcanoes run along their chain.
     let stretch = 1.0 + 0.15 * r(3);
-    let rifts = 2 + (r(5) * 2.0) as usize;
-    let rift_size = 0.08 + 0.1 * r(6);
-    let rift_start = r(7) * TAU;
-    let outline = [
-        0.06 + 0.06 * r(20),
-        0.05 + 0.05 * r(21),
-        0.03 + 0.04 * r(22),
+    // One rift zone runs near the axis, as the Hawaiian volcanoes run along
+    // their chain. The second runs to the other side, and the third, if
+    // any, runs off to one side, so no two volcanoes have the same arms.
+    let rifts = 2 + usize::from(r(5) < 0.45);
+    let first = if r(8) < 0.5 { 0.0 } else { PI } + 1.0 * (r(30) - 0.5);
+    let angles = [
+        first,
+        first + PI + side(9) * (0.5 + 0.7 * r(31)),
+        first + side(10) * (1.3 + 0.8 * r(32)),
     ];
-    let outline_max = 1.0 + outline.iter().sum::<f64>() + 0.05;
-    let mut extent = stretch * APRON * outline_max * (1.0 + rift_size) * radius;
+    let lengths = [1.0 + 0.35 * r(50), 0.9 + 0.3 * r(51), 0.7 + 0.25 * r(52)];
+    let reach_most = lengths.iter().fold(APRON, |a, &b| a.max(b)) * 1.05;
+    let mut extent = stretch * reach_most * radius;
     if extent > 0.85 * reach {
         let fit = 0.85 * reach / extent;
         radius *= fit;
@@ -1073,34 +1232,44 @@ pub(crate) fn shield_volcano(
     put(&mut v, CONES, 1.0);
     put(&mut v, CONE_HEIGHT, 1.0);
     put(&mut v, STRETCH, stretch);
+    put(&mut v, CORE, 0.45 + 0.15 * r(53));
+    put(&mut v, TEXEL, step / radius);
     put(&mut v, RIFTS, rifts as f64);
-    for i in 0..rifts {
-        let angle = match i {
-            0 => 0.0,
-            1 => PI,
-            _ => rift_start,
-        };
+    for k in 0..rifts {
+        let i = k as u32;
+        put(&mut v, RIFT_ANGLE + k, wrap(angles[k]));
+        put(&mut v, ARM_LENGTH + k, lengths[k]);
+        put(&mut v, ARM_WIDTH + k, 0.4 + 0.15 * r(54 + i));
+        put(&mut v, ARM_BEND + k, 0.4 * (r(57 + i) - 0.5));
+    }
+    // A young volcano has a summit caldera. An old one has cinder cones,
+    // and landslides cut scars into its sides.
+    let radius_km = radius_m / 1000.0;
+    if age < CALDERA_MYR {
+        put(&mut v, CRATER_RADIUS, (2.0 + 1.5 * r(60)) / radius_km);
+        put(&mut v, CRATER_DEPTH, (150.0 + 150.0 * r(61)) / height_m);
+    }
+    put(&mut v, CINDERS, smoothstep(0.3, 1.5, age));
+    let slides = if age < SLIDE_MYR {
+        0
+    } else {
+        1 + (r(62) * r(62) * 3.0) as usize
+    };
+    let flank = side(63);
+    for s in 0..slides {
+        let at = if s < 2 { SLIDE + 3 * s } else { SLIDE_3 };
+        let i = 3 * s as u32;
+        let flank = if s == 1 { -flank } else { flank };
         put(
             &mut v,
-            RIFT_ANGLE + i,
-            wrap(angle + 0.6 * (r(30 + i as u32) - 0.5)),
+            at,
+            wrap(flank * FRAC_PI_2 + 2.0 * (r(64 + i) - 0.5)),
         );
-    }
-    put(&mut v, RIFT_SIZE, rift_size);
-    for (k, &size) in outline.iter().enumerate() {
-        put(&mut v, OUTLINE + k, size);
-        put(&mut v, OUTLINE_PHASE + k, r(24 + k as u32) * TAU);
-    }
-    let count = 1 + (r(35) * 2.0) as usize;
-    for s in 0..count {
-        put(&mut v, SLIDE + 3 * s, wrap(r(36 + s as u32) * TAU));
-        put(&mut v, SLIDE + 3 * s + 1, 0.25 + 0.2 * r(38 + s as u32));
-        put(&mut v, SLIDE + 3 * s + 2, 0.25 + 0.25 * r(40 + s as u32));
+        put(&mut v, at + 1, 0.15 + 0.15 * r(65 + i));
+        put(&mut v, at + 2, 0.7 + 0.3 * r(66 + i));
+        put(&mut v, SLIDE_HEAD + s, 0.1 + 0.2 * r(73 + s as u32));
     }
     put(&mut v, PEDESTAL_REACH, PEDESTAL_ALONG);
-    // The flank noise is broad and faint, so it makes no rays.
-    put(&mut v, GULLIES, 7.0 + 4.0 * r(42));
-    put(&mut v, GULLY_SIZE, 0.01 + 0.01 * r(43));
     put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));
     put(&mut v, FLEX, moat_m * LEVELS_PER_M);
     put(

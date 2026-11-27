@@ -106,11 +106,11 @@ const LINE_MOAT: f64 = 0.17;
 const PEDESTAL_MIDDLE: f64 = 0.5;
 
 /// The rounding of the join of two volcanoes, in meters.
-const JOIN_M: f64 = 100.0;
+const JOIN_M: f64 = 800.0;
 
 /// The summit of an island goes down by this many meters in each million
 /// years.
-const ISLAND_EROSION_M: f64 = 150.0;
+const ISLAND_EROSION_M: f64 = 500.0;
 
 /// The waves cut the top of a volcano flat at this depth in meters when it
 /// goes under the sea, with a rounding of `CAP_ROUND_M`.
@@ -412,6 +412,7 @@ impl HotspotLine {
                 height,
                 HOTSPOT_RATIO,
                 reach,
+                age,
                 load_age,
                 km,
                 n,
@@ -472,13 +473,13 @@ impl HotspotLine {
             let moat = sums[i];
             v.0[HEIGHT] = (v.height() + moat) as f32;
             let c = v.center();
-            let edifice_m = v.edifice(c) / LEVELS_PER_M;
             let start_m = ELEV_MIN + map.level_at(c) / LEVELS_PER_M;
             let base_m = start_m + swell_full - moat / LEVELS_PER_M;
-            let peak = base_m + edifice_m;
             // The flank breaks at the sea of the time of its growth.
             let height_m = v.height() / LEVELS_PER_M;
             v.0[BREAK] = (-base_m / height_m).clamp(0.05, 1.0) as f32;
+            let edifice_m = v.edifice(c) / LEVELS_PER_M;
+            let peak = base_m + edifice_m;
             let swell = |t: f64| chain.floor_depth - gdh1_depth(chain.reset_age + t);
             let sunk = |t: f64| swell(GROW_MYR).max(0.0) - swell(t).max(0.0);
             let above = |t: f64| peak - ISLAND_EROSION_M * (t - GROW_MYR).max(0.0) - sunk(t);
@@ -503,7 +504,7 @@ impl HotspotLine {
                 if age > GROW_MYR && edifice_m > 0.0 {
                     let base = peak - sunk(age) - edifice_m;
                     let f = ((above(age) - base) / edifice_m).clamp(0.0, 1.0);
-                    v.0[HEIGHT] = (v.height() * f) as f32;
+                    v.set_lower(1.0 - f);
                 }
                 if spec.reefs && peak > 0.0 {
                     v.0[RIM] = band as f32;
@@ -628,14 +629,22 @@ impl HotspotPlan {
 
 /// The number of erode steps of a hotspot track, and their rate at an
 /// erosion of 1.
-pub const HOTSPOT_ERODE_STEPS: usize = 8;
-pub const HOTSPOT_ERODE_RATE: f64 = 24.0;
+pub const HOTSPOT_ERODE_STEPS: usize = 24;
+pub const HOTSPOT_ERODE_RATE: f64 = 6.0;
 
 /// The radius of the erode brush of an island, in base radii.
-const ISLAND_BRUSH: f64 = 1.0;
+const ISLAND_BRUSH: f64 = 1.3;
 
-/// An eroded cell keeps all of its drop from this age in millions of years.
-const KEEP_MYR: f64 = 4.0;
+/// An eroded cell keeps a part of its drop that grows with the square of
+/// its age, and all of it from this age in millions of years. From there to
+/// twice this age, the drop grows by up to `OLD_GAIN` more, so the old
+/// islands have deep valleys.
+const KEEP_MYR: f64 = 3.0;
+const OLD_GAIN: f64 = 1.0;
+
+/// The rain shadow makes the drop on the windward side of an island larger
+/// by this part times the shadow, and on the lee side smaller by as much.
+const WINDWARD: f64 = 1.0;
 
 impl HotspotLine {
     /// One erode brush over each volcano that is an island.
@@ -682,6 +691,8 @@ pub fn hotspot_window(line: &HotspotLine, face_size: usize) -> Window {
 /// base level: the sea floor does not change, and the land goes down to the
 /// sea and no lower. A cell keeps a part of its drop that grows with its
 /// age, so the old islands have deep valleys and the young ones have few.
+/// With a rain shadow, the drop is larger on the side of each island that
+/// faces the wind of the rain of `erosion`, and smaller on its lee side.
 /// `amount` from 0 to 1 sets the rate. Returns the drops: the levels of the
 /// line minus the eroded levels. Lay each plan of the line before the step.
 pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> ErodeStep {
@@ -698,9 +709,28 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     let plan = line.plan_all();
     let speed = plan.chain.as_ref().map_or(1.0, |chain| chain.speed);
     let ages: Vec<Cell<f64>> = erosion.levels().iter().map(|_| Cell::new(0.0)).collect();
+    let sides: Vec<Cell<f64>> = erosion.levels().iter().map(|_| Cell::new(1.0)).collect();
+    let rain = erosion.rain();
+    let windward = if rain.is_even() {
+        0.0
+    } else {
+        WINDWARD * rain.shadow.min(1.0)
+    };
     erosion.lift_cells(&brushes, |i, dir, now| match plan.line.place(dir) {
         LinePlace::On(at) => {
             ages[i].set((plan.line.length - at.u).max(0.0) / speed);
+            // The side of the nearest island that the cell is on.
+            let near = (brushes.iter()).min_by(|a, b| {
+                (angle(a.center, dir) / a.radius).total_cmp(&(angle(b.center, dir) / b.radius))
+            });
+            if let Some(near) = near.filter(|_| windward > 0.0) {
+                let out = add(dir, scale(near.center, -dot(dir, near.center)));
+                let length = dot(out, out).sqrt();
+                if length > 0.0 {
+                    let up = dot(scale(out, 1.0 / length), rain.upwind(near.center));
+                    sides[i].set(1.0 + windward * up);
+                }
+            }
             Some(plan.level_of(&plan.volcanoes, now, at, dir))
         }
         _ => None,
@@ -709,13 +739,21 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     let radius = brushes.iter().map(|b| b.radius).fold(0.0, f64::max);
     let rate = amount * HOTSPOT_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
     erosion.steps(&brushes, rate, HOTSPOT_ERODE_STEPS);
-    let kept: Vec<u16> = (lifted.iter().zip(erosion.levels()).zip(&ages))
-        .map(|((&before, &now), age)| {
-            let part = (age.get() / KEEP_MYR).min(1.0);
-            let drop = f64::from(before.saturating_sub(now));
-            before - (drop * part).round() as u16
-        })
-        .collect();
+    let kept: Vec<u16> = (lifted
+        .iter()
+        .zip(erosion.levels())
+        .zip(ages.iter().zip(&sides)))
+    .map(|((&before, &now), (age, side))| {
+        let age = age.get();
+        let gain = 1.0 + OLD_GAIN * smoothstep(KEEP_MYR, 2.0 * KEEP_MYR, age);
+        let part = (age / KEEP_MYR).min(1.0).powi(2) * gain * side.get();
+        let drop = f64::from(before.saturating_sub(now)) * part;
+        // The windward drop is larger than the drop of the steps, and
+        // it stops at the sea.
+        let room = f64::from(before.saturating_sub(sea));
+        before - drop.min(room).round() as u16
+    })
+    .collect();
     erosion.drops_since_to(&lifted, &kept, &brushes)
 }
 

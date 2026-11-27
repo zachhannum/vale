@@ -7,7 +7,7 @@ use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale}
 use vale_terrain::{
     ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII, HOTSPOT_HEIGHT_M,
     HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine, LINE_SPACING, Limits,
-    Margin, MarginStroke, PACIFIC_FLANK, Patch, Realism, Reference, Ridge, RidgeLine,
+    Margin, MarginStroke, PACIFIC_FLANK, Patch, Rain, Realism, Reference, Ridge, RidgeLine,
     SeamountStroke, Seamounts, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
     hotspot_window, margin_window, meters_to_level, realism,
 };
@@ -666,6 +666,11 @@ fn earth_hotspot() -> Painted {
     let window = hotspot_window(&line, n);
     let mut erosion = Erosion::window_alone(&WindowHeights::new(&painted.map, window));
     erosion.set_branching(spec.seed, 0.5);
+    // The trade wind comes from the northeast.
+    erosion.set_rain(Rain {
+        wind: 45.0,
+        shadow: 0.6,
+    });
     let step = erode_hotspot(&mut erosion, &line, 0.5);
     painted.map.begin_stroke();
     let mut from = 0;
