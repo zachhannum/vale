@@ -264,6 +264,13 @@ const SCAR_WALL: f64 = 0.03;
 const SCAR_FLOOR: f64 = 0.03;
 const SCAR_FALL: f64 = 1.2;
 
+/// A landslide scar is at most this part of the height deep.
+const SCAR_MOST: f64 = 0.2;
+
+/// A landslide scar ends from this many base radii out from the summit
+/// to 0.3 base radii farther.
+const SCAR_END: f64 = 0.9;
+
 /// The headwall of a landslide scar bends by up to this many base radii.
 const SCAR_BEND: f64 = 0.03;
 
@@ -510,11 +517,12 @@ impl Volcano {
             // The headwall curves around the head of the amphitheater, and
             // the floor falls from the head to the sea and below it.
             let wide = width * (1.0 + 0.6 * out.max(0.0));
-            let side = 1.0 - smoothstep(0.8, 1.0, across.abs() / wide);
+            let side = 1.0 - smoothstep(0.6, 1.0, across.abs() / wide);
             let bent = out - across * across / width + SCAR_BEND * octaves(u, v, seed ^ 17, texel);
-            let scar = smoothstep(0.0, SCAR_WALL, bent) * side;
+            let end = 1.0 - smoothstep(SCAR_END, SCAR_END + 0.3, along);
+            let scar = smoothstep(0.0, SCAR_WALL, bent) * side * end;
             let floor = b + SCAR_FLOOR - SCAR_FALL * out;
-            f += (f.min(floor) - f) * scar * depth;
+            f += (f.min(floor) - f).max(-SCAR_MOST) * scar * depth;
             let lobe = smoothstep(DEBRIS_FROM, 1.0, along)
                 * (1.0 - smoothstep(0.8 * APRON, APRON, along))
                 * (1.0 - smoothstep(0.7, 1.0, across.abs() / (1.3 * wide)));
@@ -1242,7 +1250,9 @@ pub(crate) fn shield_volcano(
         first + side(10) * (1.3 + 0.8 * r(32)),
     ];
     let lengths = [0.9 + 0.3 * r(50), 0.8 + 0.25 * r(51), 0.62 + 0.22 * r(52)];
-    let reach_most = lengths.iter().fold(APRON, |a, &b| a.max(b)) * 1.05;
+    // The foot of a rift zone reaches up to twice its length, with a break
+    // at the top.
+    let reach_most = lengths.iter().fold(APRON, |a, &b| a.max(2.0 * b)) * 1.05;
     let mut extent = stretch * reach_most * radius;
     if extent > 0.85 * reach {
         let fit = 0.85 * reach / extent;

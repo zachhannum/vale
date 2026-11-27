@@ -2749,6 +2749,8 @@ const CINDER_HEIGHT = 0.05;
 const SCAR_WALL = 0.03;
 const SCAR_FLOOR = 0.03;
 const SCAR_FALL = 1.2;
+const SCAR_MOST = 0.2;
+const SCAR_END = 0.9;
 const SCAR_BEND = 0.03;
 const DEBRIS_FROM = 0.8;
 const DEBRIS = 0.06;
@@ -3038,12 +3040,13 @@ fn volcano_island(v: u32, u: f32, w: f32, b: f32) -> f32 {
         let across = w * cs - su * sn;
         let out = along - volcano(v, V_SLIDE_HEAD + s);
         let wide = width * (1.0 + 0.6 * max(out, 0.0));
-        let side = 1.0 - smooth_between(0.8, 1.0, abs(across) / wide);
+        let side = 1.0 - smooth_between(0.6, 1.0, abs(across) / wide);
         let bent = out - across * across / width
             + SCAR_BEND * volcano_octaves(u, w, seed ^ 17u, texel);
-        let scar = smooth_between(0.0, SCAR_WALL, bent) * side;
+        let end = 1.0 - smooth_between(SCAR_END, SCAR_END + 0.3, along);
+        let scar = smooth_between(0.0, SCAR_WALL, bent) * side * end;
         let floor = b + SCAR_FLOOR - SCAR_FALL * out;
-        f += (min(f, floor) - f) * scar * depth;
+        f += max(min(f, floor) - f, -SCAR_MOST) * scar * depth;
         let lobe = smooth_between(DEBRIS_FROM, 1.0, along)
             * (1.0 - smooth_between(0.8 * SLIDE_APRON, SLIDE_APRON, along))
             * (1.0 - smooth_between(0.7, 1.0, abs(across) / (1.3 * wide)));
