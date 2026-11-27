@@ -1692,6 +1692,25 @@ impl AppState {
         set
     }
 
+    /// Sets the minimum feature size of a raster layer below sea level, in
+    /// points.
+    pub fn set_raster_sea_feature_size(&mut self, id: RasterId, points: f32) -> bool {
+        let set = self.doc.project.set_raster_sea_feature_size(id, points);
+        raster_style::store_raster_styles(&mut self.doc.project);
+        self.sync_globe();
+        set
+    }
+
+    /// Sets the depth below sea level over which the smoothing of a raster
+    /// layer blends from the land size to the sea floor size, in the unit
+    /// of the layer.
+    pub fn set_raster_blend_depth(&mut self, id: RasterId, depth: f32) -> bool {
+        let set = self.doc.project.set_raster_blend_depth(id, depth);
+        raster_style::store_raster_styles(&mut self.doc.project);
+        self.sync_globe();
+        set
+    }
+
     /// Sets the unit of the values of a raster layer. The unit of a height
     /// layer stays, and no other layer gets that unit.
     pub fn set_raster_unit(&mut self, id: RasterId, unit: &str) -> bool {

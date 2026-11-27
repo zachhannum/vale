@@ -3401,6 +3401,51 @@ fn the_desktop_style_editor_picks_the_height_layer_of_flow() {
 }
 
 #[test]
+fn the_desktop_style_section_has_the_land_and_the_sea_floor_sizes() {
+    use vale_app::ui::pad::raster::{BLEND_DEPTH, FEATURE_SIZE, LAND_SIZE, SEA_SIZE};
+    let mut state = state_with(Document::sample());
+    state.workspace = Workspace::Globe;
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(SIZE.0 as f32, 1600.0))
+        .with_pixels_per_point(1.0)
+        .build_ui_state(|ui, state: &mut AppState| draw(ui, state), state);
+    let height = h.state_mut().add_raster(RasterSpec::height("Height", 64));
+    let height = height.unwrap();
+    h.state_mut().select(Some(LayerRef::Raster(height)));
+    h.state_mut().globe.preview.panel = true;
+    h.run_steps(3);
+    use egui::accesskit::Role;
+    let control = |h: &Harness<'static, AppState>, name: &str| {
+        let slider = h.query_by_role_and_label(Role::Slider, name).is_some();
+        slider || h.query_by_role_and_label(Role::SpinButton, name).is_some()
+    };
+    for name in [LAND_SIZE, SEA_SIZE, BLEND_DEPTH] {
+        assert!(control(&h, name), "no {name}");
+    }
+    assert!(!control(&h, FEATURE_SIZE));
+    h.get_by_label(&format!("Increase {BLEND_DEPTH}")).click();
+    h.run_steps(2);
+    let smoothing = h.state().doc.project.raster(height).unwrap().smoothing;
+    assert_eq!(smoothing.blend_depth, 210.0);
+
+    // Another raster layer has one feature size.
+    let rain = RasterSpec {
+        name: "Rain".to_string(),
+        unit: "mm".to_string(),
+        min: 0.0,
+        max: 4000.0,
+        face_size: 64,
+    };
+    let rain = h.state_mut().add_raster(rain).unwrap();
+    h.state_mut().select(Some(LayerRef::Raster(rain)));
+    h.run_steps(3);
+    assert!(control(&h, FEATURE_SIZE));
+    for name in [LAND_SIZE, SEA_SIZE, BLEND_DEPTH] {
+        assert!(!control(&h, name), "{name}");
+    }
+}
+
+#[test]
 fn the_desktop_ramp_menus_open_the_editor_window() {
     use vale_app::ui::RampSource;
     use vale_app::ui::pad::classify::CLASSIFY;
