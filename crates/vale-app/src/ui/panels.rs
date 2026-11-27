@@ -22,9 +22,9 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_KM, MARGIN_SHELF_M,
-    NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN,
+    NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
+    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
     SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
     shape_text,
 };
@@ -48,7 +48,7 @@ pub const ABYSSAL_HILLS: &str = "Abyssal hills";
 /// The name of the margin mode of the brush.
 pub const MARGIN: &str = "Margin";
 /// The hint of the margin mode.
-pub const MARGIN_HINT: &str = "Paint along a coast.";
+pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1650,12 +1650,6 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .step(10.0)
             .decimals(0)
             .suffix(" m")
-            .show(ui);
-        number::stepper("Shelf width", &mut brush.margin_shelf_km)
-            .range(MARGIN_SHELF_KM)
-            .step(5.0)
-            .decimals(0)
-            .suffix(" km")
             .show(ui);
         seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {

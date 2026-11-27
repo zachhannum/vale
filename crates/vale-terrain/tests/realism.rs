@@ -117,14 +117,17 @@ impl Painted {
     }
 
     /// Land at `land_m` outside a circle around `center` with a radius in
-    /// kilometers, up to `land_km` from the middle of the patch, and a
+    /// kilometers, a rough shelf at 150 m for about `shelf_km` in front of
+    /// the land, with bays and spurs as a user paints them, both up to `land_km` from the middle of the patch, and a
     /// margin stroke in rows over the patch, with a brush radius in
     /// kilometers, and its erosion.
+    #[allow(clippy::too_many_arguments)]
     fn margin(
         &mut self,
         spec: Margin,
         center: V3,
         radius_km: f64,
+        shelf_km: f64,
         land_m: f64,
         land_km: f64,
         brush_km: f64,
@@ -132,11 +135,21 @@ impl Painted {
         let n = self.map.face_size();
         let half = (land_km / self.world_km / (std::f64::consts::FRAC_PI_2 / n as f64)) as usize;
         let land = meters_to_level(land_m);
+        let shelf = meters_to_level(-150.0);
         let arc = radius_km / self.world_km;
+        let tau = std::f64::consts::TAU;
         for y in n / 2 - half..n / 2 + half {
             for x in n / 2 - half..n / 2 + half {
-                if angle(self.map.texel_dir(0, x, y), center) > arc {
-                    self.map.set(0, x, y, land);
+                let d = self.map.texel_dir(0, x, y);
+                let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
+                let wobble = 10.0 * (tau * lat / 1.3).sin()
+                    + 5.0 * (tau * lon / 0.6 + 1.0).sin()
+                    + 2.0 * (tau * (lat + lon) / 0.25).sin();
+                let shelf_arc = arc - (shelf_km + wobble) / self.world_km;
+                match angle(d, center) {
+                    a if a > arc => self.map.set(0, x, y, land),
+                    a if a > shelf_arc => self.map.set(0, x, y, shelf),
+                    _ => {}
                 }
             }
         }
@@ -558,23 +571,22 @@ fn offset(center: V3, azimuth: f64, distance: f64) -> V3 {
     ))
 }
 
-/// A margin at the default settings between land at 20 m and a floor at
-/// 4,600 m, on a world of the size of the Earth, at the scale of the
-/// margin of the eastern United States. As there, the shelf break is an
-/// arc around a place to the southeast, 70 km northwest of the middle of
-/// the patch.
+/// A margin at the default settings on a rough shelf between land at 20 m
+/// and a floor at 4,600 m, on a world of the size of the Earth, at the
+/// scale of the margin of the eastern United States. As there, the shelf
+/// break is an arc around a place to the southeast, near the middle of the
+/// patch.
 fn earth_margin() -> Painted {
     let mut painted = Painted::earth(4600.0);
     let spec = Margin {
         shelf_m: -130.0,
-        shelf_km: 100.0,
         world_km: EARTH_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),
     };
     let to_center = 530.0 / EARTH_KM;
     let center = offset(painted.center, 137f64.to_radians(), to_center);
-    painted.margin(spec, center, 700.0, 20.0, 900.0, MARGIN_BRUSH_KM);
+    painted.margin(spec, center, 700.0, 120.0, 20.0, 900.0, MARGIN_BRUSH_KM);
     painted
 }
 
@@ -964,8 +976,8 @@ fn manual_abyssal_hills_on_curved_strokes() {
     eprintln!("wrote {}", out.display());
 }
 
-/// A margin along a ragged coast with bays and headlands, painted with a
-/// stroke along the coast, in `target/realism/ragged-coast.png`.
+/// A margin on a rough shelf with bays and spurs, painted with a stroke
+/// along the shelf, in `target/realism/ragged-coast.png`.
 #[test]
 #[ignore = "manual"]
 fn manual_margin_on_a_ragged_coast() {
@@ -977,18 +989,19 @@ fn manual_margin_on_a_ragged_coast() {
         for x in n / 2 - half..n / 2 + half {
             let d = map.texel_dir(0, x, y);
             let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
-            // A coast along a meridian with bays and headlands of several
-            // sizes.
+            // A coast along a meridian, and a shelf with bays and spurs of
+            // several sizes.
             let edge =
                 1.2 * (lat * 0.9).sin() + 0.6 * (lat * 2.3 + 1.0).sin() + 0.3 * (lat * 5.1).sin();
-            if lon < edge - 2.0 {
+            if lon < -3.5 {
                 map.set(0, x, y, meters_to_level(200.0));
+            } else if lon < edge - 1.0 {
+                map.set(0, x, y, meters_to_level(-150.0));
             }
         }
     }
     let spec = Margin {
         shelf_m: -130.0,
-        shelf_km: 100.0,
         world_km: EARTH_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),
@@ -1026,14 +1039,16 @@ fn manual_margin_close_up() {
         for x in n / 2 - half..n / 2 + half {
             let d = map.texel_dir(0, x, y);
             let (lon, lat) = (d[1].atan2(d[0]).to_degrees(), d[2].asin().to_degrees());
-            if lon < -1.0 + 0.3 * (lat * 1.7).sin() {
+            let coast = -1.0 + 0.3 * (lat * 1.7).sin();
+            if lon < coast {
                 map.set(0, x, y, meters_to_level(50.0));
+            } else if lon < coast + 1.0 {
+                map.set(0, x, y, meters_to_level(-150.0));
             }
         }
     }
     let spec = Margin {
         shelf_m: -130.0,
-        shelf_km: 100.0,
         world_km: EARTH_KM,
         seed: RIDGE_SEED,
         limits: Limits::default(),
@@ -1068,5 +1083,8 @@ fn manual_margin_close_up() {
     let out = root.join("target/realism/margin-close.f32");
     std::fs::create_dir_all(out.parent().unwrap()).unwrap();
     let bytes: Vec<u8> = patch.heights.iter().flat_map(|h| h.to_le_bytes()).collect();
-    std::fs::write(out, bytes).unwrap();
+    std::fs::write(&out, bytes).unwrap();
+    let mut image = image::RgbImage::new(512, 512);
+    draw(&mut image, &patch.heights, 512, 600.0, [0, 0]);
+    image.save(out.with_extension("png")).unwrap();
 }

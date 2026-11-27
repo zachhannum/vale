@@ -8,7 +8,7 @@ use vale_terrain::{
     AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
     ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, LINE_SPACING, Limits,
     MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge, SHELF_DEPTH_RANGE,
-    SHELF_WIDTH_RANGE, Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
+    Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -76,9 +76,6 @@ pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
 /// The limits of the depth of the shelf break of the margin mode, in
 /// meters.
 pub const MARGIN_SHELF_M: std::ops::RangeInclusive<f64> = SHELF_DEPTH_RANGE.0..=SHELF_DEPTH_RANGE.1;
-/// The limits of the width of the shelf of the margin mode, in kilometers.
-pub const MARGIN_SHELF_KM: std::ops::RangeInclusive<f64> =
-    SHELF_WIDTH_RANGE.0..=SHELF_WIDTH_RANGE.1;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -214,8 +211,6 @@ pub struct BrushSettings {
     pub abyssal_fit: bool,
     /// The depth of the shelf break of the margin mode, in meters.
     pub margin_shelf_m: f64,
-    /// The width of the shelf of the margin mode, in kilometers.
-    pub margin_shelf_km: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -280,7 +275,6 @@ impl Default for BrushSettings {
             abyssal_scale: 1.0,
             abyssal_fit: true,
             margin_shelf_m: -130.0,
-            margin_shelf_km: 100.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -429,9 +423,6 @@ impl BrushSettings {
             shelf_m: self
                 .margin_shelf_m
                 .clamp(SHELF_DEPTH_RANGE.0, SHELF_DEPTH_RANGE.1),
-            shelf_km: self
-                .margin_shelf_km
-                .clamp(SHELF_WIDTH_RANGE.0, SHELF_WIDTH_RANGE.1),
             world_km,
             seed,
             limits: self.limits(),
@@ -1441,21 +1432,17 @@ mod tests {
     }
 
     #[test]
-    fn the_margin_spec_carries_the_shelf_depth_and_the_shelf_width() {
+    fn the_margin_spec_carries_the_shelf_depth() {
         let mut brush = BrushSettings {
             mode: Mode::Margin,
             ..BrushSettings::default()
         };
         assert!(!brush.size_is_fixed());
         let spec = brush.margin_spec(6371.0, 7);
-        assert_eq!((spec.shelf_m, spec.shelf_km), (-130.0, 100.0));
+        assert_eq!(spec.shelf_m, -130.0);
         brush.margin_shelf_m = -5000.0;
-        brush.margin_shelf_km = 1000.0;
         let spec = brush.margin_spec(6371.0, 7);
-        assert_eq!(
-            (spec.shelf_m, spec.shelf_km),
-            (SHELF_DEPTH_RANGE.0, SHELF_WIDTH_RANGE.1)
-        );
+        assert_eq!(spec.shelf_m, SHELF_DEPTH_RANGE.0);
     }
 
     #[test]

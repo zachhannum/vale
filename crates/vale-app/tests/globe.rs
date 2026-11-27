@@ -4890,17 +4890,19 @@ fn pen_line_of(
     h.step();
 }
 
-/// Puts land north of 8° of latitude, 500 m high, on the sea floor of the
-/// heightmap.
+/// Puts land north of 8° of latitude, 500 m high, and a rough shelf at
+/// 150 m from 8° to 6.5° of latitude, on the sea floor of the heightmap.
 fn set_coast(map: &mut vale_terrain::Heightmap) {
     let north = lonlat_to_dir(0.0, 90.0);
     let n = map.face_size();
-    let land = meters_to_level(500.0);
+    let (land, shelf) = (meters_to_level(500.0), meters_to_level(-150.0));
     for face in 0..6 {
         for y in 0..n {
             for x in 0..n {
-                if angle(map.texel_dir(face, x, y), north) < 82f64.to_radians() {
-                    map.set(face, x, y, land);
+                match angle(map.texel_dir(face, x, y), north).to_degrees() {
+                    a if a < 82.0 => map.set(face, x, y, land),
+                    a if a < 83.5 => map.set(face, x, y, shelf),
+                    _ => {}
                 }
             }
         }
@@ -5105,7 +5107,7 @@ fn a_margin_stroke_erodes_its_slope_after_the_last_stamp() {
         .zip(&margin)
         .map(|(a, m)| m.saturating_sub(*a))
         .max();
-    assert!(lowered > 100, "{lowered}");
+    assert!(lowered > 50, "{lowered}");
     assert!(deep.unwrap() > 10, "{deep:?}");
     let raised = app
         .iter()
@@ -6153,17 +6155,13 @@ fn the_brush_panel_has_the_margin_mode_and_its_settings() {
     let brush = &h.state().globe.brush;
     assert_eq!(brush.mode, Mode::Margin);
     assert!(!brush.size_is_fixed());
-    assert_eq!(
-        (brush.margin_shelf_m, brush.margin_shelf_km),
-        (-130.0, 100.0)
-    );
+    assert_eq!(brush.margin_shelf_m, -130.0);
     for name in [
-        "Paint along a coast.",
+        "Paint over a rough shelf.",
         "Radius",
         "Hardness",
         "Flow",
         "Shelf depth",
-        "Shelf width",
         "Seed",
         "Erosion",
         "Branching",

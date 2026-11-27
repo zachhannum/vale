@@ -1,15 +1,18 @@
 //! The passive margin brush.
 //!
-//! The brush makes the edge of a continent that rifted from another
-//! continent: a shallow shelf, a steeper slope, and a gentle rise at the
-//! foot of the slope. Each stamp moves the sea floor under the brush toward
-//! the margin profile. The profile is a function of the distance from the
-//! nearest land, so the coast sets the side of the margin, and the land does
-//! not change.
+//! The brush reshapes a rough shelf that the user paints into the edge of a
+//! continent that rifted from another continent: a shallow shelf, a steeper
+//! slope, and a gentle rise at the foot of the slope. Each stamp moves the
+//! sea floor under the brush toward the margin profile. The profile is a
+//! function of the distance from the painted shelf edge, the line where the
+//! painted ground crosses the edge depth, a little below the shelf break.
+//! The slope crosses that depth on the line, so the outline of the painted
+//! shelf stays, and the land does not change.
 //!
-//! A stroke reads a field of the distance to the land in a window around the
-//! brush. The patterns along the coast come from the nearest point of the
-//! coast, so a second stroke over the same place gives the same margin.
+//! A stroke reads a field of the distance to the shelf edge in a window
+//! around the brush. The patterns along the edge come from the nearest
+//! point of the edge, so a second stroke over the same place gives the same
+//! margin.
 
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -24,11 +27,10 @@ use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, falloff, noise3
 use crate::line::smoothstep;
 use crate::math::{V3, add, cross, dot, length, normalize, scale};
 
+mod canyons;
+
 /// The limits of the depth of the shelf break, in meters.
 pub const SHELF_DEPTH_RANGE: (f64, f64) = (-1000.0, -20.0);
-
-/// The limits of the width of the shelf, in kilometers.
-pub const SHELF_WIDTH_RANGE: (f64, f64) = (5.0, 400.0);
 
 /// The mean angle of the slope, in degrees (Pratson and Haxby 1996).
 pub(crate) const SLOPE_DEG: f64 = 4.0;
@@ -36,9 +38,14 @@ pub(crate) const SLOPE_DEG: f64 = 4.0;
 /// The least and the largest angle of the slope, in degrees.
 pub(crate) const SLOPE_RANGE_DEG: (f64, f64) = (1.0, 10.0);
 
-/// The length of the features of the slope angle along the coast, in shelf
-/// widths.
-const ANGLE_SIZE: f64 = 2.0;
+/// The length of the features of the slope angle along the shelf edge, in
+/// kilometers.
+const ANGLE_KM: f64 = 200.0;
+
+/// The length of the small features of the slope angle along the shelf
+/// edge, in kilometers, and their part of the exponent of the angle.
+const ANGLE_SMALL_KM: f64 = 50.0;
+const ANGLE_SMALL: f64 = 0.8;
 
 /// The part of the depth below the shelf break that the rise takes.
 const RISE_PART: f64 = 0.4;
@@ -65,47 +72,27 @@ const BREAK_ROUND: f64 = 30.0;
 /// The highest level of the margin, in meters, so the sea stays sea.
 const TOP_M: f64 = -0.5;
 
-/// The size of the features of the wander of the shelf break and its
-/// largest distance, in shelf widths, for each of two octaves.
-const WANDER: [(f64, f64); 2] = [(1.5, 0.15), (0.45, 0.06)];
+/// The depth of the shelf edge below the shelf break, as a part of the
+/// drop from the break to the floor. The edge is in the middle of the
+/// slope, and the slide scars are below it, so a second stroke finds the
+/// same edge.
+const EDGE_PART: f64 = 0.3;
 
-/// The smoothed coast fills the bays narrower than 2 times `CLOSE` shelf
-/// widths and removes the headlands thinner than 2 times `OPEN` shelf
-/// widths, and a blur of `SOFT` shelf widths makes its corners round. The
-/// shelf break, the slope, and the rise follow the smoothed coast.
-const CLOSE: f64 = 2.0;
-const OPEN: f64 = 0.5;
-const SOFT: f64 = 0.5;
+/// The fine relief fades over this distance from the land, in kilometers.
+const RELIEF_FADE_KM: f64 = 30.0;
 
-/// The shelf width changes along the coast by a factor of 2 to the power
-/// of up to this number, with features of `WIDTH_SIZE` shelf widths.
-const WIDTH_VARY: f64 = 0.7;
-const WIDTH_SIZE: f64 = 4.0;
+/// The distance from the shelf edge where the field looks for the land, in
+/// kilometers.
+const SHELF_REACH_KM: f64 = 200.0;
 
-/// The largest factor of the shelf width.
-const WIDTH_MAX: f64 = 1.625;
-
-/// The distance to the smoothed coast of a cell inside it with no sea in
-/// the window, in kilometers.
+/// The distance to the land or to the shelf edge of a cell with none in the
+/// window, in kilometers.
 const FAR_KM: f64 = 1.0e6;
-
-/// The steps of the erosion of a margin stroke, and its rate for a brush
-/// radius of 16 cells, at an amount of 1.
-pub const MARGIN_ERODE_STEPS: usize = 8;
-pub const MARGIN_ERODE_RATE: f64 = 3.0;
-
-/// The part of the erosion that the shelf keeps. The part grows to 1 from
-/// half the depth of the shelf break to 1.5 times that depth.
-const SHELF_EROSION: f64 = 0.1;
 
 /// The largest number of cells along one side of the erosion window of a
 /// margin stroke. A gully is a few cells wide, so the cells must be small
 /// for narrow gullies.
-pub const MARGIN_CELLS: usize = 1024;
-
-/// The depth that each drop of the erosion loses on the rise, in meters,
-/// so the small channels go and the large ones stay.
-const RISE_LOSS_M: f64 = 150.0;
+pub const MARGIN_CELLS: usize = 2048;
 
 /// The room around the stamps of a margin stroke in its erosion window, as
 /// a part of the width of the stamps.
@@ -147,20 +134,15 @@ const PAINT: f64 = 4.0;
 /// The largest half width of a window, in radians.
 const MAX_HALF: f64 = 0.6;
 
-const SALT_WANDER: u32 = 0x6d61_7267;
 const SALT_ANGLE: u32 = 0x736c_6f70;
 const SALT_SCAR: u32 = 0x7363_6172;
 const SALT_RELIEF: u32 = 0x7265_6c66;
-const SALT_WIDTH: u32 = 0x7769_6474;
 
 /// The settings of a margin stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Margin {
     /// The depth of the shelf break, in meters.
     pub shelf_m: f64,
-    /// The width of the shelf from the coast to the shelf break, in
-    /// kilometers.
-    pub shelf_km: f64,
     /// The radius of the world, in kilometers.
     pub world_km: f64,
     pub seed: u32,
@@ -172,19 +154,16 @@ impl Margin {
     fn clamped(self) -> Margin {
         Margin {
             shelf_m: self.shelf_m.clamp(SHELF_DEPTH_RANGE.0, SHELF_DEPTH_RANGE.1),
-            shelf_km: self
-                .shelf_km
-                .clamp(SHELF_WIDTH_RANGE.0, SHELF_WIDTH_RANGE.1),
             world_km: self.world_km.max(1.0),
             ..self
         }
     }
 }
 
-/// The distance to the land in a window: a square grid of cells on the plane
-/// that touches the sphere at `center`. A cell holds the distance to the
-/// nearest land in kilometers and the direction away from that land on the
-/// plane.
+/// The distances to the land and to the shelf edge in a window: a square
+/// grid of cells on the plane that touches the sphere at `center`. A cell
+/// holds the distances in kilometers and the direction away from the shelf
+/// edge on the plane.
 #[derive(Clone, Debug)]
 pub struct MarginField {
     /// A number that no other field of this process has.
@@ -200,10 +179,11 @@ pub struct MarginField {
     /// The depth of the deep floor at the foot of the rise, in meters.
     pub floor_m: f64,
     /// For each cell, row by row from the south: the distance to the land,
-    /// the signed distance to the smoothed coast in kilometers, positive in
-    /// the sea, and the east and north parts of the direction toward the
-    /// sea from the smoothed coast. A cell with no land in the window has
-    /// the distances `f32::MAX`.
+    /// the signed distance to the shelf edge in kilometers, positive on the
+    /// deep side, and the east and north parts of the direction toward the
+    /// deep side from the shelf edge. A cell with no land in the window has
+    /// the distance to the land `FAR_KM`. A cell on the deep side with no
+    /// shelf edge in the window has the distances `f32::MAX`.
     pub cells: Vec<f32>,
     /// The distance from `center` where the stamps can be, in radians.
     paint: f64,
@@ -219,18 +199,35 @@ fn to_level(m: f64) -> f64 {
     (m - ELEV_MIN) / (ELEV_MAX - ELEV_MIN) * 65535.0
 }
 
-/// The distance from the coast where the margin ends, at most, in
+/// The distance from the shelf edge where the margin ends, at most, in
 /// kilometers, for a floor of `floor_m`.
 fn reach_km(spec: &Margin, floor_m: f64) -> f64 {
     let drop = spec.shelf_m - floor_m;
     let height = RISE_PART * drop;
     let tan = SLOPE_RANGE_DEG.0.to_radians().tan();
-    spec.shelf_km * (WIDTH_MAX + WANDER[0].1 + WANDER[1].1 + 2.0 * CLOSE)
-        + (drop - height) / (1000.0 * tan)
-        + RISE_KM_PER_M * height
+    SHELF_REACH_KM + (drop - height) / (1000.0 * tan) + RISE_KM_PER_M * height
 }
 
-/// What a distance field needs from the heightmap: the land at the cell
+/// The edge depth, in meters. The shelf edge is where the painted ground
+/// crosses it.
+fn edge_m(spec: &Margin, floor_m: f64) -> f64 {
+    spec.shelf_m - EDGE_PART * (spec.shelf_m - floor_m)
+}
+
+/// The depth of the deep floor in the levels of a window, in meters: the
+/// depth that `FLOOR_PART` of the ground deeper than `LEAST_DROP` below the
+/// shelf break is below.
+fn floor_of(spec: &Margin, levels: &[f64]) -> f64 {
+    let deep = spec.shelf_m - LEAST_DROP;
+    let mut out: Vec<f64> = levels.iter().copied().filter(|&m| m < deep).collect();
+    if out.is_empty() {
+        return deep;
+    }
+    out.sort_by(f64::total_cmp);
+    out[(FLOOR_PART * out.len() as f64) as usize]
+}
+
+/// What a distance field needs from the heightmap: the levels at the cell
 /// centers and the pieces of the coast. `MarginInputs::build` makes the
 /// field from it, on any thread.
 #[derive(Clone, Debug)]
@@ -278,8 +275,8 @@ impl MarginInputs {
             normalize(east)
         };
         let north = cross(center, east);
-        // The window holds the stamps, and the land that a margin under them
-        // can reach.
+        // The window holds the stamps, and the shelf edge and the land that
+        // a margin under them can reach.
         let km = spec.world_km;
         let half = (paint + reach_km(&spec, floor_m.unwrap_or(ELEV_MIN)) / km).min(MAX_HALF);
         let half = half.tan();
@@ -310,11 +307,9 @@ impl MarginInputs {
         }
     }
 
-    /// The distance field. The land is the ground above the sea level.
-    /// With no depth of the floor, the field also reads it: the depth that
-    /// `FLOOR_PART` of the sea farther from the land than the widest shelf
-    /// and a slope of `SLOPE_DEG` is below. A margin from an earlier stroke
-    /// is shallower, so it does not change that depth.
+    /// The distance field. The land is the ground above the sea level, and
+    /// the shelf edge is the line where the ground crosses the edge depth. With no depth of the floor, the field also reads it
+    /// with `floor_of`.
     pub fn build(self) -> MarginField {
         let MarginInputs {
             spec,
@@ -333,43 +328,42 @@ impl MarginInputs {
             ..
         } = plane;
         let km = spec.world_km;
+        let deep = spec.shelf_m - LEAST_DROP;
+        let floor_m = floor_m
+            .unwrap_or_else(|| floor_of(&spec, &levels))
+            .min(deep);
         let land: Vec<bool> = levels.iter().map(|&m| m > 0.0).collect();
-        // The coast, and the smoothed coast: the edge of the land with its
-        // narrow bays filled and its thin headlands removed, and a light
-        // blur.
-        let exact = reach_km(&spec, floor_m.unwrap_or(ELEV_MIN)) / (cell * km);
+        // The coast, and the shelf edge: the line where the painted ground
+        // crosses the edge depth.
+        let exact = reach_km(&spec, floor_m) / (cell * km);
         let coast = nearest_points(&land, &pieces, size, exact);
-        let cells_of = |part: f64| part * spec.shelf_km / (cell * km);
-        let closed = open(&close(&land, size, cells_of(CLOSE)), size, cells_of(OPEN));
-        let radius = (cells_of(SOFT).round() as usize).max(1);
-        let soft = blur(&closed, size, radius);
-        let soft_land: Vec<bool> = soft.iter().map(|&v| v >= 0.5).collect();
-        let soft_sea: Vec<bool> = soft_land.iter().map(|&l| !l).collect();
-        let soft_segments = level_segments(&soft, size, 0.5);
-        let outside = nearest_points(&soft_land, &soft_segments, size, exact);
-        let inside = nearest_points(&soft_sea, &soft_segments, size, exact);
+        let depth = edge_m(&spec, floor_m);
+        let shallow: Vec<bool> = levels.iter().map(|&m| m >= depth).collect();
+        let deep_side: Vec<bool> = shallow.iter().map(|&l| !l).collect();
+        let edge = level_segments(&levels, size, depth);
+        let outside = nearest_points(&shallow, &edge, size, exact);
+        let inside = nearest_points(&deep_side, &edge, size, exact);
         let distance = |k: usize, q: (f64, f64)| {
             let here = plane.dir((k % size) as f64, (k / size) as f64);
             dot(here, plane.dir(q.0, q.1)).clamp(-1.0, 1.0).acos() * km
         };
-        let both = par_map(size * size, |k| {
+        let cells = par_map(size * size, |k| {
             let d = match coast[k] {
                 _ if land[k] => 0.0,
                 Some(q) => distance(k, q),
-                None => f64::MAX,
+                None => FAR_KM,
             };
             let (i, j) = ((k % size) as f64, (k / size) as f64);
-            // The signed distance to the smoothed coast, and the direction
-            // toward the sea from it.
-            let (s, away) = match (soft_land[k], outside[k], inside[k]) {
+            // The signed distance to the shelf edge, and the direction
+            // toward the deep side from it.
+            let (s, away) = match (shallow[k], outside[k], inside[k]) {
                 (false, Some(q), _) => (distance(k, q), (i - q.0, j - q.1)),
                 (true, _, Some(q)) => (-distance(k, q), (q.0 - i, q.1 - j)),
                 (true, _, None) => (-FAR_KM, (0.0, 0.0)),
                 (false, None, _) => (f64::MAX, (0.0, 0.0)),
             };
             let size = away.0.hypot(away.1).max(1e-9);
-            let missing = d == f64::MAX || s == f64::MAX;
-            let cell = if missing {
+            if s == f64::MAX {
                 [f32::MAX, f32::MAX, 0.0, 0.0]
             } else {
                 [
@@ -378,28 +372,10 @@ impl MarginInputs {
                     (away.0 / size) as f32,
                     (away.1 / size) as f32,
                 ]
-            };
-            (d, cell)
+            }
         });
-        let distances: Vec<f64> = both.iter().map(|b| b.0).collect();
-        let mut cells: Vec<f32> = both.iter().flat_map(|b| b.1).collect();
+        let mut cells: Vec<f32> = cells.into_iter().flatten().collect();
         smooth_directions(&mut cells, size);
-        let deep = spec.shelf_m - LEAST_DROP;
-        let floor_m = floor_m.unwrap_or_else(|| {
-            let far = spec.shelf_km * WIDTH_MAX + 1500.0 / (1000.0 * SLOPE_DEG.to_radians().tan());
-            let mut out: Vec<f64> = (0..size * size)
-                .filter(|&k| distances[k] > far && levels[k] < deep)
-                .map(|k| levels[k])
-                .collect();
-            if out.is_empty() {
-                out = levels.iter().copied().filter(|&m| m < deep).collect();
-            }
-            if out.is_empty() {
-                return deep;
-            }
-            out.sort_by(f64::total_cmp);
-            out[(FLOOR_PART * out.len() as f64) as usize]
-        });
         MarginField {
             id: FIELD_IDS.fetch_add(1, Ordering::Relaxed),
             center,
@@ -407,7 +383,7 @@ impl MarginInputs {
             north,
             size,
             cell,
-            floor_m: floor_m.min(deep),
+            floor_m,
             cells,
             paint,
         }
@@ -427,11 +403,11 @@ impl MarginField {
         a + radius <= self.paint
     }
 
-    /// The distance to the land and the signed distance to the smoothed
-    /// coast in kilometers, and the direction toward the sea from the
-    /// smoothed coast, at a unit direction, from the 4 cells around it. A
-    /// direction outside the window, or near a cell with no land in the
-    /// window, gives `None`.
+    /// The distance to the land and the signed distance to the shelf edge
+    /// in kilometers, and the direction toward the deep side from the shelf
+    /// edge, at a unit direction, from the 4 cells around it. A direction
+    /// outside the window, or near a cell with no shelf edge in the window,
+    /// gives `None`.
     pub(crate) fn sample(&self, p: V3) -> Option<(f64, f64, V3)> {
         let z = dot(p, self.center);
         if z <= 0.0 {
@@ -466,14 +442,13 @@ impl MarginField {
     }
 }
 
-/// The level of the texel nearest to a unit direction. A stroke does not
-/// change which texels are land, so the land cells of a field do not depend
-/// on the depth of the sea.
+/// The level of the texel nearest to a unit direction, from before the
+/// stroke. Thus the fields of a stroke do not depend on its earlier stamps.
 fn nearest_level(map: &Heightmap, d: V3) -> u16 {
     let n = map.face_size();
     let (face, a, b) = face_of(d);
-    let at = |v: f64| (((warp(v) + 1.0) * 0.5 * n as f64).floor() as i64).clamp(0, n as i64 - 1);
-    map.get(face, at(a), at(b))
+    let at = |v: f64| (((warp(v) + 1.0) * 0.5 * n as f64).floor() as usize).min(n - 1);
+    map.level_before(face, at(a), at(b))
 }
 
 /// A square grid of cells on the plane that touches the sphere at
@@ -614,66 +589,6 @@ fn level_segments(values: &[f64], size: usize, level: f64) -> Pieces {
     out
 }
 
-/// The cells within `radius` cells of a cell of `set`.
-fn dilate(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
-    let (squared, _) = distance_transform(set, size);
-    squared.iter().map(|&d| d <= radius * radius).collect()
-}
-
-/// The cells farther than `radius` cells from each cell outside `set`.
-fn erode(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
-    let outside: Vec<bool> = set.iter().map(|&c| !c).collect();
-    dilate(&outside, size, radius).iter().map(|&c| !c).collect()
-}
-
-/// `set` with its gaps narrower than 2 times `radius` cells filled.
-fn close(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
-    erode(&dilate(set, size, radius), size, radius)
-}
-
-/// `set` with its parts thinner than 2 times `radius` cells removed.
-fn open(set: &[bool], size: usize, radius: f64) -> Vec<bool> {
-    dilate(&erode(set, size, radius), size, radius)
-}
-
-/// The share of land around each cell, from three box blurs of `radius`
-/// cells on each side. Past the side of the grid, the cells at the side go
-/// on.
-fn blur(land: &[bool], size: usize, radius: usize) -> Vec<f64> {
-    let mut values: Vec<f64> = land.iter().map(|&l| f64::from(u8::from(l))).collect();
-    let mut line = vec![0.0; size];
-    let mut sums = vec![0.0; size + 1];
-    let r = radius as i64;
-    for _ in 0..3 {
-        for axis in 0..2 {
-            for row in 0..size {
-                let at = |i: usize| {
-                    if axis == 0 {
-                        row * size + i
-                    } else {
-                        i * size + row
-                    }
-                };
-                for (i, v) in line.iter_mut().enumerate() {
-                    *v = values[at(i)];
-                }
-                for i in 0..size {
-                    sums[i + 1] = sums[i] + line[i];
-                }
-                for i in 0..size {
-                    let (lo, hi) = (i as i64 - r, i as i64 + r);
-                    let inside =
-                        sums[hi.min(size as i64 - 1) as usize + 1] - sums[lo.max(0) as usize];
-                    let before = (-lo).max(0) as f64 * line[0];
-                    let after = (hi - (size as i64 - 1)).max(0) as f64 * line[size - 1];
-                    values[at(i)] = (inside + before + after) / (2 * radius + 1) as f64;
-                }
-            }
-        }
-    }
-    values
-}
-
 /// The nearest point of `pieces` to each cell that is not a site, in cells,
 /// near the nearest site. Farther than `exact` cells from the nearest site,
 /// or with no piece near, the nearest point is half a cell from the center
@@ -806,7 +721,7 @@ fn distance_transform(sites: &[bool], size: usize) -> (Vec<f64>, Vec<usize>) {
 
 /// `f` of each number below `count`, in order, on the threads of the
 /// device.
-fn par_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
+pub(super) fn par_map<T: Send>(count: usize, f: impl Fn(usize) -> T + Sync) -> Vec<T> {
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
     let chunk = count.div_ceil(threads).max(1);
     std::thread::scope(|scope| {
@@ -1091,14 +1006,14 @@ impl MarginStroke {
 /// The place of a texel for the profile.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Place {
-    /// The distance to the land, and the signed distance to the smoothed
-    /// coast, in kilometers.
+    /// The distance to the land, and the signed distance to the shelf edge,
+    /// in kilometers.
     pub d: f64,
     pub s: f64,
     /// The unit direction of the texel, and of the nearest point of the
-    /// smoothed coast.
+    /// shelf edge.
     pub p: V3,
-    pub coast: V3,
+    pub edge: V3,
 }
 
 /// The shape of the profile at one place, with no details.
@@ -1129,16 +1044,16 @@ impl MarginPlan {
     /// The place of a unit direction, or `None` outside the field.
     pub(crate) fn place(&self, p: V3) -> Option<Place> {
         let (d, s, away) = self.field.sample(p)?;
-        // The nearest point of the smoothed coast.
+        // The nearest point of the shelf edge.
         let tangent = add(away, scale(p, -dot(away, p)));
         let size = length(tangent);
-        let coast = if size < 1e-6 {
+        let edge = if size < 1e-6 {
             p
         } else {
             let a = s / self.spec.world_km;
             normalize(add(scale(p, a.cos()), scale(tangent, -a.sin() / size)))
         };
-        Some(Place { d, s, p, coast })
+        Some(Place { d, s, p, edge })
     }
 
     fn noise(&self, q: V3, size_km: f64, salt: u32) -> V3 {
@@ -1148,21 +1063,11 @@ impl MarginPlan {
         )
     }
 
-    /// The distance that the shelf break moves away from the coast, in
-    /// kilometers.
-    pub(crate) fn wander(&self, p: V3) -> f64 {
-        let w = self.spec.shelf_km;
-        WANDER
-            .iter()
-            .enumerate()
-            .map(|(k, &(size, amount))| self.noise(p, size * w, SALT_WANDER)[k] * amount * w)
-            .sum()
-    }
-
-    /// The slope angle at a point of the coast, as a tangent.
-    pub(crate) fn slope(&self, coast: V3) -> f64 {
-        let n = self.noise(coast, ANGLE_SIZE * self.spec.shelf_km, SALT_ANGLE)[0];
-        let n = (1.4 * n).clamp(-1.0, 1.0);
+    /// The slope angle at a point of the shelf edge, as a tangent.
+    pub(crate) fn slope(&self, edge: V3) -> f64 {
+        let large = self.noise(edge, ANGLE_KM, SALT_ANGLE)[0];
+        let small = self.noise(edge, ANGLE_SMALL_KM, SALT_ANGLE)[1];
+        let n = (1.4 * large).clamp(-1.0, 1.0) + ANGLE_SMALL * small;
         let deg = (SLOPE_DEG * 4f64.powf(n)).clamp(SLOPE_RANGE_DEG.0, SLOPE_RANGE_DEG.1);
         deg.to_radians().tan()
     }
@@ -1173,14 +1078,14 @@ impl MarginPlan {
     pub(crate) fn scars(&self, at: Place, down: f64, slope: f64, rise: f64) -> f64 {
         let texel = self.texel_km();
         let size = SCAR_KM.max(SCAR_TEXELS * texel);
-        let n = self.noise(at.coast, size, SALT_SCAR);
+        let n = self.noise(at.edge, size, SALT_SCAR);
         let here = smoothstep(0.25, 0.6, n[0]);
         let depth = SCAR_DEPTH * (0.3 + 0.35 * (n[1] + 1.0));
-        let head = slope * (0.05 + 0.175 * (n[2] + 1.0));
+        let head = slope * (0.55 + 0.1 * (n[2] + 1.0));
         // The scar: a steep headwall, and a floor that runs out at the foot
         // of the slope.
         let cut = smoothstep(head, head + 0.08 * slope + 0.5 * texel, down)
-            * (1.0 - smoothstep(0.75 * slope, slope + 0.05 * rise + texel, down));
+            * (1.0 - smoothstep(0.85 * slope, slope + 0.05 * rise + texel, down));
         // The debris: a lobe on the rise below the scar.
         let length = 0.15 * rise + 0.3 * size;
         let q = (down - slope - 0.5 * length) / (0.5 * length + texel);
@@ -1203,27 +1108,20 @@ impl MarginPlan {
             .sum()
     }
 
-    /// The shelf width at a point of the smoothed coast, in kilometers.
-    pub(crate) fn width(&self, coast: V3) -> f64 {
-        let w = self.spec.shelf_km;
-        let n = (1.4 * self.noise(coast, WIDTH_SIZE * w, SALT_WIDTH)[0]).clamp(-1.0, 1.0);
-        w * 2f64.powf(WIDTH_VARY * n)
-    }
-
     /// The shape of the profile at a distance `d` from the land and a
-    /// distance `x` from the smoothed coast in kilometers, with a shelf
-    /// width `w` and a slope angle with the tangent `tan`.
-    pub(crate) fn shape(&self, d: f64, x: f64, w: f64, tan: f64) -> Shape {
+    /// signed distance `x` from the shelf edge in kilometers, with a slope
+    /// angle with the tangent `tan`.
+    pub(crate) fn shape(&self, d: f64, x: f64, tan: f64) -> Shape {
         let b = self.spec.shelf_m;
         let floor = self.field.floor_m;
-        // The shelf break is at the shelf width from the smoothed coast. The
-        // shelf goes down from the coast to the break, and the slope falls
-        // from the break.
-        let down = x - w;
+        // The shelf break is on the shelf side of the edge, so the slope
+        // crosses the edge depth on the edge. The shelf goes down from
+        // the coast to the break, and the slope falls from the break.
+        let drop = b - floor;
+        let down = x + EDGE_PART * drop / (1000.0 * tan);
         let part = if down >= 0.0 { 1.0 } else { d / (d - down) };
         let upper = smooth_min(b * part, b - 1000.0 * tan * down, BREAK_ROUND);
         // The rise is a parabola from the foot of the slope to the floor.
-        let drop = b - floor;
         let height = RISE_PART * drop;
         let slope = (drop - height) / (1000.0 * tan);
         let rise = RISE_KM_PER_M * height;
@@ -1238,39 +1136,23 @@ impl MarginPlan {
         }
     }
 
-    /// The place of a unit direction on the rise, from 0 at its top to 1 at
-    /// its foot, or `None` outside the field. Above the rise it is 0.
-    pub(crate) fn rise_part(&self, p: V3) -> Option<f64> {
-        let at = self.place(p)?;
-        let w = self.spec.shelf_km;
-        let x = at.s - self.wander(at.p) * smoothstep(0.0, 0.5 * w, at.d);
-        Some(
-            self.shape(at.d, x, self.width(at.coast), self.slope(at.coast))
-                .t,
-        )
-    }
-
     /// The level of the margin at a place, in meters, with the level `old`
     /// from before the stroke, in meters, with the fine relief if `relief`.
     pub(crate) fn profile(&self, at: Place, old: f64, relief: bool) -> f64 {
-        let w = self.spec.shelf_km;
-        // The distance from the smoothed coast with the wander of the shelf
-        // break. Near the coast the wander fades, so the coast does not
-        // move.
-        let x = at.s - self.wander(at.p) * smoothstep(0.0, 0.5 * w, at.d);
-        let tan = self.slope(at.coast);
         let Shape {
             level: base,
             down,
             slope,
             rise,
             t,
-        } = self.shape(at.d, x, self.width(at.coast), tan);
+        } = self.shape(at.d, at.s, self.slope(at.edge));
         let mut level = base;
         level += self.scars(at, down, slope, rise);
         // The fine relief is low on the shelf and high on the rise, and it
         // fades near the coast.
-        let rough = (0.3 + 0.7 * smoothstep(0.0, slope, down)) * smoothstep(0.0, 0.3 * w, at.d);
+        let rough =
+            (0.3 + 0.7 * smoothstep(0.0, slope, down)) * smoothstep(0.0, RELIEF_FADE_KM, at.d);
+
         if relief {
             level += rough * self.relief(at.p);
         }
@@ -1344,16 +1226,13 @@ pub fn margin_window(plans: &[MarginPlan], face_size: usize) -> Window {
     window
 }
 
-/// Erodes the margin of a stroke with stream power, as the Erode brush
-/// erodes land. `erosion` holds the cells of the ground from before the
-/// stroke. The cells under the stamps of the plans get the margin with no
-/// fine relief, stamp by stamp, and then `MARGIN_ERODE_STEPS` steps erode
-/// it. Thus the drops hold the channels, and the fine relief of the stamps
-/// stays. The flow runs down
-/// the slope to the deep floor, so the gullies and the canyons join as the
-/// valleys of a river do. The land does not change, and it gives the flow
-/// no water. `amount` from 0 to 1 sets the rate. Returns the drops: the
-/// margin of the cells minus the eroded margin.
+/// Cuts the canyons of the margin of a stroke, as `canyons::carve` gives
+/// them. `erosion` holds the cells of the ground from before the stroke.
+/// The cells under the stamps of the plans get the margin with no fine
+/// relief, stamp by stamp, and then the canyons cut it. Thus the drops hold
+/// the canyons, and the fine relief of the stamps stays. The land does not
+/// change. `amount` from 0 to 1 sets the rate. Returns the drops: the
+/// margin of the cells minus the cut margin.
 pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) -> ErodeStep {
     let brushes: Vec<ErodeBrush> = plans
         .iter()
@@ -1367,47 +1246,43 @@ pub fn erode_margin(erosion: &mut Erosion, plans: &[MarginPlan], amount: f64) ->
     let Some(first) = plans.first() else {
         return erosion.drops_since(erosion.levels(), &brushes);
     };
-    let limits = first.spec.limits;
-    let top = to_level(TOP_M).floor() as u16;
-    erosion.set_limits(Limits {
-        ceiling: limits.ceiling.min(top),
-        ..limits
-    });
-    // Only the sea floor feeds the flow. The water of the land would cut
-    // too deep a canyon at the mouth of each of its basins.
-    erosion.set_dry_above(Some(to_level(0.0).ceil() as u16));
     let start = erosion.levels().to_vec();
-    // The place of each cell on the rise, from 0 at its top to 1 at its
-    // foot.
-    let on_rise: Vec<Cell<f64>> = start.iter().map(|_| Cell::new(0.0)).collect();
+    let weights: Vec<Cell<f32>> = start.iter().map(|_| Cell::new(0.0)).collect();
     for (plan, brush) in plans.iter().zip(&brushes) {
         erosion.lift_cells(std::slice::from_ref(brush), |i, dir, now| {
-            if let Some(t) = plan.rise_part(dir) {
-                on_rise[i].set(t);
+            let chord = length(add(dir, scale(brush.center, -1.0)));
+            let k = 2.0 * (0.5 * chord).min(1.0).asin() / brush.radius;
+            if k < 1.0 {
+                let w = (falloff(k, brush.hardness) * brush.flow) as f32;
+                weights[i].set(weights[i].get().max(w));
             }
             Some(plan.level_with(start[i], now, dir, false))
         });
     }
+    let weights: Vec<f32> = weights.into_iter().map(Cell::into_inner).collect();
     let margin = erosion.levels().to_vec();
-    let radius = plans.iter().map(|plan| plan.radius).fold(0.0, f64::max);
-    let rate = amount * MARGIN_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
-    erosion.steps(&brushes, rate, MARGIN_ERODE_STEPS);
-    // The shelf keeps a part of its drops, so the valleys of the rivers of
-    // the land across it are faint. On the rise, each drop loses a depth,
-    // so only the large channels stay.
-    let shelf = -first.spec.shelf_m;
-    let per_m = 65535.0 / (ELEV_MAX - ELEV_MIN);
+    let mut heights: Vec<f32> = margin
+        .iter()
+        .map(|&l| to_meters(f64::from(l)) as f32)
+        .collect();
+    let spec = first.spec;
+    let grid = canyons::Grid {
+        side: erosion.side(),
+        cell_km: erosion.cell_angle() * spec.world_km,
+        dir: &|i| erosion.cell_dir(i),
+        weights: &weights,
+        world_km: spec.world_km,
+        seed: spec.seed,
+        shelf_m: spec.shelf_m,
+        branching: erosion.branching(),
+    };
+    canyons::carve(&grid, &mut heights, amount);
     let kept: Vec<u16> = margin
         .iter()
-        .zip(erosion.levels())
-        .zip(&on_rise)
-        .map(|((&before, &now), rise)| {
-            let part = SHELF_EROSION
-                + (1.0 - SHELF_EROSION)
-                    * smoothstep(0.5 * shelf, 1.5 * shelf, -to_meters(f64::from(before)));
-            let lose = RISE_LOSS_M * per_m * smoothstep(0.0, 0.3, rise.get());
-            let drop = (f64::from(before.saturating_sub(now)) - lose).max(0.0);
-            before - (drop * part).round() as u16
+        .zip(&heights)
+        .map(|(&before, &h)| {
+            let new = to_level(f64::from(h)).round().clamp(0.0, f64::from(before));
+            spec.limits.apply(f64::from(before), new) as u16
         })
         .collect();
     erosion.drops_since_to(&margin, &kept, &brushes)
@@ -1436,28 +1311,42 @@ mod tests {
     fn spec() -> Margin {
         Margin {
             shelf_m: -130.0,
-            shelf_km: 100.0,
             world_km: KM,
             seed: 7,
             limits: Limits::default(),
         }
     }
 
-    /// Land at 100 m west of longitude `coast` on face 0 and between the
-    /// latitudes -25 and 25, and a floor at 4,500 m elsewhere.
-    fn coast(n: usize, coast: f64) -> Heightmap {
+    /// Ground on face 0 with the level in meters that `f` gives for a
+    /// longitude and a latitude in degrees, and a floor at 4,500 m on the
+    /// other faces.
+    fn painted(n: usize, f: impl Fn(f64, f64) -> f64) -> Heightmap {
         let mut map = Heightmap::new(n, meters_to_level(-4500.0));
         for y in 0..n {
             for x in 0..n {
                 let d = map.texel_dir(0, x, y);
                 let lon = d[1].atan2(d[0]).to_degrees();
                 let lat = d[2].asin().to_degrees();
-                if lon < coast && lat.abs() < 25.0 {
-                    map.set(0, x, y, meters_to_level(100.0));
-                }
+                map.set(0, x, y, meters_to_level(f(lon, lat)));
             }
         }
         map
+    }
+
+    /// The ground of a rough painted shelf: land at 100 m west of
+    /// longitude `coast` and between the latitudes -25 and 25, a flat shelf
+    /// at 150 m for 1 degree east of the land, and a floor at 4,500 m.
+    fn rough(coast: f64, lon: f64, lat: f64) -> f64 {
+        match lon - coast {
+            _ if lat.abs() >= 25.0 => -4500.0,
+            x if x < 0.0 => 100.0,
+            x if x < 1.0 => -150.0,
+            _ => -4500.0,
+        }
+    }
+
+    fn coast(n: usize, coast: f64) -> Heightmap {
+        painted(n, |lon, lat| rough(coast, lon, lat))
     }
 
     fn levels(map: &Heightmap) -> Vec<u16> {
@@ -1524,24 +1413,44 @@ mod tests {
         assert!(nearest.iter().all(|&s| s == usize::MAX));
     }
 
+    /// The signed distance from the shelf edge to the shelf break of
+    /// `plan`, in kilometers, for a slope angle with the tangent `tan`.
+    fn break_x(plan: &MarginPlan, tan: f64) -> f64 {
+        let b = plan.spec.shelf_m;
+        -(b - edge_m(&plan.spec, plan.field.floor_m)) / (1000.0 * tan)
+    }
+
     #[test]
-    fn the_field_gives_the_distance_to_the_land() {
+    fn the_field_gives_the_distances_to_the_land_and_to_the_shelf_edge() {
         let map = coast(512, 0.0);
         let plan = plan_of(&map);
-        for lon in [1.0, 3.0, 6.0] {
+        for lon in [0.5, 1.0, 3.0, 6.0] {
             let (d, s, away) = plan.field.sample(lonlat_to_dir(lon, 0.0)).unwrap();
-            // The coast is straight, so the smoothed coast is the coast.
-            assert!((s - d).abs() < 25.0, "{lon}: {s} {d}");
             let expected = lon.to_radians() * KM;
             assert!((d - expected).abs() < 25.0, "{lon}: {d} {expected}");
-            // Away from the land is east.
+            // The shelf edge is 1 degree from the coast.
+            let expected = (lon - 1.0).to_radians() * KM;
+            assert!((s - expected).abs() < 25.0, "{lon}: {s} {expected}");
+            // Away from the shelf is east.
             assert!(dot(away, [0.0, 1.0, 0.0]) > 0.95, "{away:?}");
         }
-        // The nearest point of the coast is on the coast.
+        // The nearest point of the shelf edge is on the shelf edge.
         let at = plan.place(lonlat_to_dir(4.0, 2.0)).unwrap();
-        let coast_lon = at.coast[1].atan2(at.coast[0]).to_degrees();
-        assert!(coast_lon.abs() < 0.3, "{coast_lon}");
+        let edge_lon = at.edge[1].atan2(at.edge[0]).to_degrees();
+        assert!((edge_lon - 1.0).abs() < 0.3, "{edge_lon}");
         assert!((plan.field.floor_m + 4500.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_slope_crosses_the_edge_depth_on_the_shelf_edge() {
+        let map = coast(256, 0.0);
+        let plan = plan_of(&map);
+        let depth = edge_m(&plan.spec, plan.field.floor_m);
+        for deg in [1.5, 4.0, 9.0] {
+            let tan = f64::to_radians(deg).tan();
+            let h = plan.shape(110.0, 0.0, tan).level;
+            assert!((h - depth).abs() < 0.05 * depth.abs(), "{deg}: {h}");
+        }
     }
 
     #[test]
@@ -1549,13 +1458,15 @@ mod tests {
         let map = coast(256, 0.0);
         let plan = plan_of(&map);
         let tan = SLOPE_DEG.to_radians().tan();
-        let at_break = plan.shape(100.0, 100.0, 100.0, tan).level;
+        // The land is 100 km from the break.
+        let x0 = break_x(&plan, tan) - 100.0;
+        let at_break = plan.shape(100.0, x0 + 100.0, tan).level;
         assert!((at_break + 130.0).abs() < 10.0, "{at_break}");
-        assert!(plan.shape(0.0, 0.0, 100.0, tan).level.abs() < 1.0);
+        assert!(plan.shape(0.0, x0, tan).level.abs() < 1.0);
         let mut last = 0.0;
         for k in 1..=20 {
             let x = k as f64 * 5.0;
-            let h = plan.shape(x, x, 100.0, tan).level;
+            let h = plan.shape(x, x0 + x, tan).level;
             let grade = (last - h) / 5000.0;
             assert!(h < last && grade < 0.003, "{k} {h}");
             last = h;
@@ -1567,9 +1478,8 @@ mod tests {
         let map = coast(256, 0.0);
         let mut plan = plan_of(&map);
         plan.spec.shelf_m = -400.0;
-        let h = plan
-            .shape(100.0, 100.0, 100.0, SLOPE_DEG.to_radians().tan())
-            .level;
+        let tan = SLOPE_DEG.to_radians().tan();
+        let h = plan.shape(100.0, break_x(&plan, tan), tan).level;
         assert!((h + 400.0).abs() < 10.0, "{h}");
         let stroke = MarginStroke::new(
             Margin {
@@ -1602,8 +1512,9 @@ mod tests {
         // The profile has that slope below the break.
         for deg in [1.5, 4.0, 9.0] {
             let tan = f64::to_radians(deg).tan();
-            let level = |x| plan.shape(x, x, 100.0, tan).level;
-            let (a, b) = (level(102.0), level(104.0));
+            let x0 = break_x(&plan, tan);
+            let level = |x| plan.shape(100.0 + x, x0 + x, tan).level;
+            let (a, b) = (level(2.0), level(4.0));
             let measured = ((a - b) / 2000.0).atan().to_degrees();
             assert!((measured - deg).abs() < 0.05 * deg, "{deg}: {measured}");
         }
@@ -1615,7 +1526,8 @@ mod tests {
         let plan = plan_of(&map);
         for deg in [2.0, 4.0, 8.0] {
             let tan = f64::to_radians(deg).tan();
-            let at = |x: f64| plan.shape(x, x, 100.0, tan);
+            let x0 = break_x(&plan, tan) - 100.0;
+            let at = |x: f64| plan.shape(x, x0 + x, tan);
             let s = at(200.0);
             let foot = 100.0 + s.slope;
             for k in 0..=20 {
@@ -1642,26 +1554,11 @@ mod tests {
     }
 
     #[test]
-    fn the_coast_sets_the_side_and_the_land_does_not_change() {
+    fn the_painted_shelf_sets_the_side_and_the_land_does_not_change() {
         for (land_east, sign) in [(false, 1.0), (true, -1.0)] {
             let n = 512;
-            let mut map = coast(n, 0.0);
-            if land_east {
-                // The land is east of the meridian.
-                for y in 0..n {
-                    for x in 0..n {
-                        let d = map.texel_dir(0, x, y);
-                        let lon = d[1].atan2(d[0]).to_degrees();
-                        let lat = d[2].asin().to_degrees();
-                        let m = if lon > 0.0 && lat.abs() < 25.0 {
-                            100.0
-                        } else {
-                            -4500.0
-                        };
-                        map.set(0, x, y, meters_to_level(m));
-                    }
-                }
-            }
+            // With the land east of the meridian, the shelf is west of it.
+            let mut map = painted(n, |lon, lat| rough(0.0, sign * lon, lat));
             let before = levels(&map);
             paint(
                 &mut map,
@@ -1686,54 +1583,49 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_shelf_break_does_not_follow_a_narrow_bay() {
-        let straight = |bay: bool| {
-            let n = 512;
-            let mut map = coast(n, 0.0);
-            if bay {
-                for y in 0..n {
-                    for x in 0..n {
-                        let d = map.texel_dir(0, x, y);
-                        let lon = d[1].atan2(d[0]).to_degrees();
-                        let lat = d[2].asin().to_degrees();
-                        if lon > -0.8 && lat.abs() < 0.6 {
-                            map.set(0, x, y, meters_to_level(-4500.0));
-                        }
-                    }
-                }
-            }
-            map
-        };
-        let (a, b) = (straight(false), straight(true));
-        // Off the mouth of the bay, the smoothed coast moves less than a
-        // sixth of the depth of the bay, 89 km.
-        let at = |map: &Heightmap, lon: f64| {
-            let plan = plan_of(map);
-            plan.field.sample(lonlat_to_dir(lon, 0.0)).unwrap().1
-        };
-        for lon in [1.2, 2.0] {
-            let (x, y) = (at(&a, lon), at(&b, lon));
-            assert!((x - y).abs() < 15.0, "{lon}: {x} {y}");
-        }
-        // In the bay, the sea is a shallow shelf.
-        let mut b = b;
-        paint(&mut b, spec(), (0.0, -3.0), (0.0, 3.0), 0.05);
-        let inside = meters(&b, -0.4, 0.0);
-        assert!(inside > -130.0 && inside < 0.0, "{inside}");
+    /// The longitude in degrees where the ground along a latitude first
+    /// goes below the edge depth east of the coast.
+    fn edge_at(map: &Heightmap, lat: f64) -> f64 {
+        let depth = edge_m(&spec(), -4500.0);
+        (0..2000)
+            .map(|k| k as f64 * 0.002)
+            .find(|&lon| meters(map, lon, lat) < depth)
+            .unwrap_or(f64::MAX)
     }
 
     #[test]
-    fn the_shelf_width_varies_along_the_coast() {
-        let map = coast(256, 0.0);
-        let plan = plan_of(&map);
-        let widths: Vec<f64> = (0..4000)
-            .map(|k| plan.width(lonlat_to_dir(0.0, -40.0 + k as f64 * 0.02)))
-            .collect();
-        let lo = widths.iter().copied().fold(f64::MAX, f64::min);
-        let hi = widths.iter().copied().fold(0.0, f64::max);
-        assert!(lo >= 0.6 * 100.0 && hi <= WIDTH_MAX * 100.0, "{lo} {hi}");
-        assert!(lo < 0.75 * 100.0 && hi > 1.35 * 100.0, "{lo} {hi}");
+    fn the_shelf_keeps_the_outline_that_the_user_painted() {
+        // A rough shelf with a deep inlet and a wide spur.
+        let n = 1024;
+        let mut map = painted(n, |lon, lat| {
+            let inlet = lat.abs() < 0.5 && lon > 0.4;
+            let spur = (3.0..4.0).contains(&lat) && (0.0..1.8).contains(&lon);
+            match rough(0.0, lon, lat) {
+                m if m < 0.0 && inlet => -4500.0,
+                m if m < 0.0 && spur => -150.0,
+                m => m,
+            }
+        });
+        let rows = [-3.0, 0.0, 3.5];
+        let before = rows.map(|lat| edge_at(&map, lat));
+        assert!(
+            (before[0] - 1.0).abs() < 0.1
+                && (before[1] - 0.4).abs() < 0.1
+                && (before[2] - 1.8).abs() < 0.1,
+            "{before:?}"
+        );
+        paint(&mut map, spec(), (1.0, -6.0), (1.0, 6.0), 0.05);
+        let after = rows.map(|lat| edge_at(&map, lat));
+        for (a, b) in after.iter().zip(&before) {
+            let km = (a - b).abs().to_radians() * KM;
+            assert!(km < 15.0, "{before:?} {after:?}");
+        }
+        // The shelf goes down to the break, and the deep side falls to the
+        // floor.
+        let shelf = meters(&map, 0.3, -3.0);
+        let foot = meters(&map, 3.0, -3.0);
+        assert!(shelf > -130.0 && shelf < -20.0, "{shelf}");
+        assert!(foot < -3000.0, "{foot}");
     }
 
     /// The time to read a field on a large face.
@@ -1758,33 +1650,21 @@ mod tests {
     }
 
     #[test]
-    fn the_shelf_break_wanders() {
-        let map = coast(256, 0.0);
-        let plan = plan_of(&map);
-        let w: Vec<f64> = (0..1000)
-            .map(|k| plan.wander(lonlat_to_dir(2.0, -40.0 + k as f64 * 0.08)))
-            .collect();
-        let lo = w.iter().copied().fold(f64::MAX, f64::min);
-        let hi = w.iter().copied().fold(f64::MIN, f64::max);
-        assert!(lo < -8.0 && hi > 8.0, "{lo} {hi}");
-        assert!(lo > -30.0 && hi < 30.0, "{lo} {hi}");
-    }
-
-    #[test]
     fn the_slope_has_slide_scars_with_debris() {
         let map = coast(4096, 0.0);
         let plan = plan_of(&map);
         let (slope, rise) = (30.0, 400.0);
         let (mut cut, mut debris) = (0.0f64, 0.0f64);
         for k in 0..20_000 {
-            let coast = lonlat_to_dir(0.0, -10.0 + k as f64 * 0.001);
+            let edge = lonlat_to_dir(0.0, -10.0 + k as f64 * 0.001);
             let at = Place {
                 d: 115.0,
-                s: 115.0,
-                p: coast,
-                coast,
+                s: 15.0,
+                p: edge,
+                edge,
             };
-            cut = cut.min(plan.scars(at, 0.6 * slope, slope, rise));
+
+            cut = cut.min(plan.scars(at, 0.84 * slope, slope, rise));
             debris = debris.max(plan.scars(at, slope + 0.1 * rise, slope, rise));
             // No scar reaches the shelf.
             assert_eq!(plan.scars(at, -5.0, slope, rise), 0.0);
@@ -1838,7 +1718,7 @@ mod tests {
         // The channels of the slope: the places along the coast where the
         // drop is deeper than 10 m and than at the places next to them.
         let drops: Vec<f64> = (0..1000)
-            .map(|k| drop(1.15, -2.0 + k as f64 * 0.004))
+            .map(|k| drop(1.0, -2.0 + k as f64 * 0.004))
             .collect();
         let deepest = drops.iter().copied().fold(0.0, f64::max);
         let channels = drops
@@ -1848,7 +1728,7 @@ mod tests {
         assert!(channels >= 5 && deepest > 50.0, "{channels} {deepest}");
         // The shelf keeps most of its shape.
         let shelf = (0..400)
-            .map(|k| drop(0.4, -2.0 + k as f64 * 0.01))
+            .map(|k| drop(0.25, -2.0 + k as f64 * 0.01))
             .fold(0.0, f64::max);
         assert!(shelf < 0.5 * deepest, "{shelf} {deepest}");
     }
@@ -1887,29 +1767,21 @@ mod tests {
 
     #[test]
     fn a_second_stroke_keeps_the_margin() {
-        // Under the hard part of the brush, the first stroke gives the
-        // margin, and a second stroke changes it little.
-        let mut map = coast(256, 0.0);
+        // A second stroke reads the shelf edge from the margin of the first
+        // stroke. The edge moves by less than a field cell, and more strokes
+        // do not move it farther.
+        let mut map = coast(1024, 0.0);
+        let rows = [-3.6, -1.0, 0.0, 2.0, 4.0];
         paint(&mut map, spec(), (2.0, -8.0), (2.0, 8.0), 0.05);
-        let once = levels(&map);
-        paint(&mut map, spec(), (2.0, -8.0), (2.0, 8.0), 0.05);
-        let twice = levels(&map);
-        let n = map.face_size();
-        let mut most = 0.0f64;
-        for y in 0..n {
-            for x in 0..n {
-                let p = map.texel_dir(0, x, y);
-                let lon = p[1].atan2(p[0]).to_degrees();
-                let lat = p[2].asin().to_degrees();
-                if (lon - 2.0).abs() > 1.2 || lat.abs() > 6.0 {
-                    continue;
-                }
-                let k = y * n + x;
-                let change = to_meters(f64::from(once[k])) - to_meters(f64::from(twice[k]));
-                most = most.max(change.abs());
-            }
+        let once = rows.map(|lat| edge_at(&map, lat));
+        for _ in 0..4 {
+            paint(&mut map, spec(), (2.0, -8.0), (2.0, 8.0), 0.05);
         }
-        assert!(most < 5.0, "{most}");
+        let later = rows.map(|lat| edge_at(&map, lat));
+        for (a, b) in once.iter().zip(&later) {
+            let km = (a - b).abs().to_radians() * KM;
+            assert!(km < 3.0, "{once:?} {later:?}");
+        }
     }
 
     #[test]

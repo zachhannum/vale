@@ -1905,7 +1905,6 @@ impl GpuHeightmap {
         stamp[1] = plan.flow as f32;
         let mut header = RidgeUniforms {
             radius: plan.radius as f32,
-            segment: spec.shelf_km as f32,
             crest: spec.shelf_m as f32,
             world_km: spec.world_km as f32,
             seed: spec.seed,
