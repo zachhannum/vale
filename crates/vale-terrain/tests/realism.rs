@@ -893,6 +893,8 @@ fn earth_trench() -> Painted {
     let spec = Seamounts {
         density: 12.0,
         height_m: 450.0,
+        // The Pacific floor south of the Aleutian Trench.
+        age_myr: 55.0,
         world_km: EARTH_KM,
         seed: 5,
         limits: Limits::default(),
