@@ -11,8 +11,7 @@ use vale_terrain::{
     RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
     SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan, TILE_SIZE,
     TILES_WGSL, TexelRect, Trench, TrenchLine, TrenchMargin, TrenchPlan, TrenchSide, WINDOW_CELLS,
-    Window, WindowHeights, channel_map, pyramid_layout,
-    tiles_layout, window_channels,
+    Window, WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,

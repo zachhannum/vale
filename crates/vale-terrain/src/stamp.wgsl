@@ -2751,7 +2751,8 @@ const TRENCH_BASIN_WIDTH = 0.8;
 const TRENCH_BASIN_DEPTH = 0.2;
 const TRENCH_BASIN_VARY = 0.2;
 const TRENCH_BASIN_VARY_KM = 150.0;
-const TRENCH_ROUGH_PART = 0.06;
+const TRENCH_ROUGH_ACCRETIONARY = 0.12;
+const TRENCH_ROUGH_ERODING = 0.18;
 const TRENCH_SCAR_CELL_KM = 30.0;
 const TRENCH_SCAR_NARROW_KM = 8.0;
 const TRENCH_SCAR_WIDE_KM = 20.0;
@@ -2925,10 +2926,11 @@ fn trench_prism(u_km: f32, yp: f32) -> f32 {
 // `TrenchPlan::roughness`.
 fn trench_roughness(u_km: f32, yp: f32) -> f32 {
     let seed = ridge.seed ^ SALT_TRENCH_ROUGH;
-    let sum = trench_noise2(u_km / 12.0, yp / 25.0, 0u, seed)
-        + 0.5 * trench_noise2(u_km / 6.0, yp / 12.0, 1u, seed)
-        + 0.25 * trench_noise2(u_km / 3.0, yp / 6.0, 2u, seed);
-    return sum / 1.75;
+    let sum = (2.0 * abs(trench_noise2(u_km / 12.0, yp / 25.0, 0u, seed)) - 1.0)
+        + 0.6 * (2.0 * abs(trench_noise2(u_km / 6.0, yp / 12.0, 1u, seed)) - 1.0)
+        + 0.36 * (2.0 * abs(trench_noise2(u_km / 3.0, yp / 6.0, 2u, seed)) - 1.0)
+        + 0.2 * (2.0 * abs(trench_noise2(u_km / 1.5, yp / 3.0, 3u, seed)) - 1.0);
+    return sum / 2.16;
 }
 
 // `TrenchPlan::scars`.
@@ -2964,6 +2966,8 @@ fn trench_scars(u_km: f32, yp: f32, wall: f32, s: TrenchSection) -> f32 {
 fn trench_overriding(u_km: f32, yp: f32, s: TrenchSection) -> f32 {
     let wall = trench_wall(u_km, s);
     var change = -s.depth * (1.0 - smooth_between(0.0, wall, yp));
+    let t = clamp(yp / wall, 0.0, 1.0);
+    let rough = trench_roughness(u_km, yp) * 4.0 * t * (1.0 - t) * s.depth;
     if ridge.range_piece < 0.5 {
         let vary = noise1(u_km / TRENCH_BASIN_VARY_KM, 4u, 0u, ridge.seed ^ SALT_TRENCH_DEEP).x;
         let width = TRENCH_BASIN_WIDTH * wall * (1.0 + TRENCH_BASIN_VARY * vary);
@@ -2972,9 +2976,9 @@ fn trench_overriding(u_km: f32, yp: f32, s: TrenchSection) -> f32 {
         let toe = smooth_between(0.0, 0.15 * wall, yp);
         let top = 1.0 - smooth_between(0.9 * wall, 1.1 * wall, yp);
         change += trench_prism(u_km, yp) * s.amp * toe * top - TRENCH_BASIN_DEPTH * s.depth * basin;
+        change += TRENCH_ROUGH_ACCRETIONARY * rough;
     } else {
-        let t = clamp(yp / wall, 0.0, 1.0);
-        change += TRENCH_ROUGH_PART * s.depth * trench_roughness(u_km, yp) * 4.0 * t * (1.0 - t);
+        change += TRENCH_ROUGH_ERODING * rough;
         change -= trench_scars(u_km, yp, wall, s);
     }
     return change;

@@ -128,14 +128,19 @@ const BASIN_DEPTH: f64 = 0.2;
 const BASIN_VARY: f64 = 0.2;
 const BASIN_VARY_KM: f64 = 150.0;
 
-/// The height of the roughness of an eroding wall, as a part of the depth
-/// of the axis.
-const ROUGH_PART: f64 = 0.06;
+/// The height of the roughness of the inner wall, as a part of the depth
+/// of the axis: for an accretionary margin and for an eroding margin.
+const ROUGH_PART: [f64; 2] = [0.12, 0.18];
 
 /// The octaves of the roughness: the size along the axis and across it in
 /// kilometers, and the weight. The roughness is longer down the wall, as
-/// gullies are.
-const ROUGH_OCTAVES: [[f64; 3]; 3] = [[12.0, 25.0, 1.0], [6.0, 12.0, 0.5], [3.0, 6.0, 0.25]];
+/// gullies are. Each octave has V-shaped gullies where its noise is zero.
+const ROUGH_OCTAVES: [[f64; 3]; 4] = [
+    [12.0, 25.0, 1.0],
+    [6.0, 12.0, 0.6],
+    [3.0, 6.0, 0.36],
+    [1.5, 3.0, 0.2],
+];
 
 /// The length of the cells along the axis that each have one slide scar,
 /// in kilometers.
@@ -431,6 +436,9 @@ impl TrenchPlan {
     pub(crate) fn overriding(&self, u_km: f64, yp: f64, s: Section) -> f64 {
         let wall = self.wall_km(u_km, s);
         let mut change = -s.depth * (1.0 - smoothstep(0.0, wall, yp));
+        // Gullies and slides make the wall rough.
+        let t = (yp / wall).clamp(0.0, 1.0);
+        let rough = self.roughness(u_km, yp) * 4.0 * t * (1.0 - t) * s.depth;
         match self.trench.margin {
             TrenchMargin::Accretionary => {
                 let vary = noise1(u_km / BASIN_VARY_KM, BASIN, 0, self.seed(SALT_DEEP)).0;
@@ -440,11 +448,10 @@ impl TrenchPlan {
                 let toe = smoothstep(0.0, 0.15 * wall, yp);
                 let top = 1.0 - smoothstep(0.9 * wall, 1.1 * wall, yp);
                 change += self.prism(u_km, yp) * s.amp * toe * top - BASIN_DEPTH * s.depth * basin;
+                change += ROUGH_PART[0] * rough;
             }
             TrenchMargin::Eroding => {
-                let t = (yp / wall).clamp(0.0, 1.0);
-                let rough = self.roughness(u_km, yp);
-                change += ROUGH_PART * s.depth * rough * 4.0 * t * (1.0 - t);
+                change += ROUGH_PART[1] * rough;
                 change -= self.scars(u_km, yp, wall, s);
             }
         }
@@ -495,12 +502,13 @@ impl TrenchPlan {
         best
     }
 
-    /// The roughness of an eroding wall, from about -1 to 1.
+    /// The roughness of the inner wall, from -1 to 1.
     pub(crate) fn roughness(&self, u_km: f64, yp: f64) -> f64 {
         let seed = self.seed(SALT_ROUGH);
         let (mut sum, mut total) = (0.0, 0.0);
         for (i, [along, across, weight]) in ROUGH_OCTAVES.into_iter().enumerate() {
-            sum += weight * noise2(u_km / along, yp / across, i as u32, seed);
+            let n = noise2(u_km / along, yp / across, i as u32, seed);
+            sum += weight * (2.0 * n.abs() - 1.0);
             total += weight;
         }
         sum / total

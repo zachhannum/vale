@@ -5,10 +5,11 @@ use std::path::Path;
 
 use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale};
 use vale_terrain::{
-    ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII, HOTSPOT_HEIGHT_M,
-    HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine, LINE_SPACING, Limits,
-    Margin, MarginStroke, PACIFIC_FLANK, Patch, Rain, Realism, Reference, Ridge, RidgeLine,
-    SeamountStroke, Seamounts, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
+    ALEUTIAN_TRENCH, ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII,
+    HOTSPOT_HEIGHT_M, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine,
+    LINE_SPACING, Limits, Margin, MarginStroke, Mode, PACIFIC_FLANK, Patch, Rain, Realism,
+    Reference, Ridge, RidgeLine, SeamountStroke, Seamounts, Stamp, Trench, TrenchLine,
+    TrenchMargin, TrenchSide, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
     hotspot_window, margin_window, meters_to_level, realism,
 };
 
@@ -746,6 +747,173 @@ fn manual_long_hotspot_tracks() {
         image.save(&out).unwrap();
         eprintln!("wrote {}", out.display());
     }
+}
+
+/// The azimuth of the Aleutian Trench near 172 W, in degrees.
+const TRENCH_AZIMUTH: f64 = 76.0;
+
+/// The distance of the trench axis north of the middle of the patch, in
+/// kilometers, as in the reference patch.
+const TRENCH_NORTH_KM: f64 = 60.0;
+
+/// A trench at the scale of the Aleutian Trench near 172 W on a world of
+/// the size of the Earth. The incoming plate is floor with abyssal hills and
+/// seamounts at 3,500 m. The overriding plate has a terrace and a rough
+/// slope up to a platform with islands, as a user paints them before the
+/// trench stroke. The real floor is 1,700 m deeper, but the heightmap ends
+/// at 6,000 m.
+fn earth_trench() -> Painted {
+    let floor_m = 3500.0;
+    let per_m = 65535.0 / 12000.0;
+    let mut painted = Painted::earth(floor_m);
+    let n = painted.map.face_size();
+    let azimuth = TRENCH_AZIMUTH.to_radians();
+    let across = azimuth - std::f64::consts::FRAC_PI_2;
+    let through = offset(painted.center, across, TRENCH_NORTH_KM / EARTH_KM);
+    // Abyssal hills that run north, under sediment.
+    let line: Vec<V3> = (-20..=20)
+        .map(|i| offset(painted.center, 0.0, f64::from(i) * 40.0 / EARTH_KM))
+        .collect();
+    let hills = AbyssalHills {
+        rate: 60.0,
+        hills: 0.65,
+        fit: true,
+        scale: 1.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    paint_abyssal(&mut painted.map, hills, &line, 0.06);
+    // The overriding plate is on the left of the trench line.
+    let ends = [-1.0, 1.0].map(|t| offset(through, azimuth, t * 0.1));
+    let left = normalize(cross(ends[0], ends[1]));
+    // Seamounts on the incoming plate.
+    let spec = Seamounts {
+        density: 6.0,
+        height_m: 700.0,
+        world_km: EARTH_KM,
+        seed: 5,
+        limits: Limits::default(),
+    };
+    let mut stroke = SeamountStroke::new(spec, n);
+    painted.map.begin_stroke();
+    for row in -4..=4 {
+        for column in -4..=4 {
+            let step = 0.012;
+            let east = offset(
+                painted.center,
+                std::f64::consts::FRAC_PI_2,
+                f64::from(column) * step,
+            );
+            let p = offset(east, 0.0, f64::from(row) * step);
+            if vale_terrain::math::dot(p, left) < 0.0 {
+                let plan = stroke.stamp(&painted.map, p, 0.015, 0.6, 1.0);
+                painted.map.seamounts(&plan);
+            }
+        }
+    }
+    painted.map.end_stroke();
+    // A terrace 1,000 m above the floor from 40 km to 90 km past the axis,
+    // and a slope up to a platform with islands at 140 km.
+    let half = (450.0 / EARTH_KM / (std::f64::consts::FRAC_PI_2 / n as f64)) as usize;
+    let step = |km: f64, from: f64, to: f64| {
+        let t = ((km - from) / (to - from)).clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    for y in n / 2 - half..n / 2 + half {
+        for x in n / 2 - half..n / 2 + half {
+            let p = painted.map.texel_dir(0, x, y);
+            let km = vale_terrain::math::dot(p, left).asin() * EARTH_KM;
+            let lift = 1000.0 * step(km, 10.0, 40.0) + (floor_m - 500.0) * step(km, 90.0, 140.0);
+            let level = f64::from(painted.map.get(0, x as i64, y as i64)) + lift * per_m;
+            painted.map.set(0, x, y, level.round().min(65535.0) as u16);
+        }
+    }
+    // Gullies on the slope, as a noise brush with sharp valleys down the
+    // slope paints them.
+    painted.map.begin_stroke();
+    for i in -6..=6 {
+        let on_axis = offset(through, azimuth, f64::from(i) * 60.0 / EARTH_KM);
+        let center = offset(on_axis, across, 110.0 / EARTH_KM);
+        let down = normalize(add(
+            left,
+            scale(center, -vale_terrain::math::dot(center, left)),
+        ));
+        painted.map.stamp(&Stamp {
+            center,
+            radius: 90.0 / EARTH_KM,
+            hardness: 0.5,
+            flow: 1.0,
+            mode: Mode::Noise,
+            level: 0,
+            strength: 500.0 * per_m,
+            lower: 500.0 * per_m,
+            talus: 0.0,
+            scale: 20.0 / EARTH_KM,
+            seed: RIDGE_SEED,
+            motion: scale(down, 1e-3),
+            ridged: true,
+            invert: true,
+            relief: 0.0,
+            grain: 1.5,
+            channel: vale_terrain::ChannelShape::default(),
+            limits: Limits::default(),
+        });
+    }
+    painted.map.end_stroke();
+    let spec = Trench {
+        radius: 350.0 / EARTH_KM,
+        depth_m: 2000.0,
+        age_myr: 55.0,
+        side: TrenchSide::Left,
+        margin: TrenchMargin::Accretionary,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let mut trench = TrenchLine::new(spec, n);
+    // The points of the app, a quarter of the brush radius apart.
+    for i in -110..=110 {
+        trench.push(
+            offset(through, azimuth, f64::from(i) * 0.25 * spec.radius),
+            1.0,
+        );
+    }
+    painted.map.begin_stroke();
+    let mut from = 0;
+    while from < trench.len() {
+        let plan = trench.plan(from);
+        painted.map.trench(&plan);
+        from = plan.end;
+    }
+    painted.map.end_stroke();
+    painted
+}
+
+const TRENCH_LIMITS: Within = Within {
+    slope: 0.5,
+    anisotropy: (0.5, 2.0),
+    rms: (0.7, 1.4),
+    histogram: 0.4,
+};
+
+#[test]
+fn a_trench_is_near_the_aleutian_trench() {
+    let reference = Reference::parse(ALEUTIAN_TRENCH).unwrap();
+    let (report, _) = compare(&earth_trench(), &reference, reference.direction());
+    assert_within(&report, &reference, &TRENCH_LIMITS);
+}
+
+/// The test stroke of a trench beside its reference patch, from
+/// `scripts/gebco-reference.sh aleutian-trench`.
+#[test]
+#[ignore = "manual"]
+fn manual_trench_next_to_its_reference() {
+    let reference = Reference::parse(ALEUTIAN_TRENCH).unwrap();
+    let gebco = gebco_patch("aleutian-trench");
+    let painted = earth_trench();
+    compare(&painted, &reference, reference.direction());
+    save_side_by_side("aleutian-trench", &painted, &reference, &gebco);
 }
 
 /// The patch of a reference region from `scripts/gebco-reference.sh`.
