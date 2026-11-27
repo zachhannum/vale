@@ -2089,6 +2089,58 @@ mod tests {
     }
 
     #[test]
+    fn the_ridge_breaks_in_long_gaps() {
+        // In a stretch of 3 mean distances or more with no volcano, and
+        // wider than the flanks of the volcanoes on each side, which reach
+        // up to two base radii, the crest of
+        // the chain drops to less than half of their crests, so no
+        // continuous ridge runs through it.
+        let n = N / 2;
+        let mut gaps = 0;
+        for seed in SEEDS {
+            let spec = seeded(seed);
+            let mut line = line(spec, n, -20.0, 20.0, 1.0);
+            let (map, before) = lay(&mut line, n, FLOOR_M);
+            let chain = line.chain.clone().unwrap();
+            let spacing = SPACING * spec.height_m / PLACE_RATIO / 1000.0;
+            // The crest across the line over the swell, in meters.
+            let crest = |lon: f64| {
+                let age = (20.0 - lon).to_radians() * KM / spec.speed_mm;
+                (-40..=40)
+                    .map(|j| {
+                        let km = 2.5 * f64::from(j);
+                        let swell = chain.swell_m(age) * bump(km.abs() / HOTSPOT_RADIUS_KM);
+                        at(&map, lon, degrees(km)) - at(&before, lon, degrees(km)) - swell
+                    })
+                    .fold(f64::MIN, f64::max)
+            };
+            // The distance of each volcano from the hotspot and its base
+            // radius, in kilometers.
+            let mut along: Vec<(f64, f64)> = (chain.ages.iter().zip(&chain.volcanoes))
+                .map(|(age, v)| (age * spec.speed_mm, v.base_radius() * KM))
+                .collect();
+            along.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for p in along.windows(2) {
+                let (a, b) = (p[0], p[1]);
+                if b.0 - a.0 < (3.0 * spacing).max(4.0 * a.1.max(b.1)) {
+                    continue;
+                }
+                let w = [a.0, b.0];
+                let lon = |km: f64| 20.0 - degrees(km);
+                let middle = crest(lon(0.5 * (w[0] + w[1])));
+                let sides = crest(lon(w[0])).min(crest(lon(w[1])));
+                eprintln!(
+                    "{seed}: gap {:.0} km, middle {middle:.0} m, sides {sides:.0} m",
+                    w[1] - w[0]
+                );
+                assert!(middle < 0.5 * sides, "{seed}: {middle} {sides}");
+                gaps += 1;
+            }
+        }
+        assert!(gaps >= SEEDS.len(), "{gaps}");
+    }
+
+    #[test]
     fn every_chain_makes_land_at_the_hotspot() {
         // At the default settings on a floor at -5,448 m, the group at the
         // hotspot is an island.

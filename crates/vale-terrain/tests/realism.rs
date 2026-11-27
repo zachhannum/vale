@@ -625,6 +625,18 @@ const HOTSPOT_KM: f64 = 1200.0;
 /// middle. The erosion is at 50%.
 fn earth_hotspot() -> Painted {
     let mut painted = Painted::earth(5400.0);
+    let km = |d: f64| d / EARTH_KM;
+    let end = offset(painted.center, std::f64::consts::FRAC_PI_2, km(210.0));
+    let end = offset(end, std::f64::consts::PI, km(150.0));
+    let start = offset(end, -60f64.to_radians(), km(HOTSPOT_KM));
+    paint_hotspot(&mut painted, RIDGE_SEED, start, end, HOTSPOT_KM, 8);
+    painted
+}
+
+/// Paints abyssal hills in `2 * reach + 1` strokes 150 km apart around the
+/// middle, and then a hotspot track at the default settings from `start` to
+/// `end`, `length_km` long, with the erosion at 50%.
+fn paint_hotspot(painted: &mut Painted, seed: u32, start: V3, end: V3, length_km: f64, reach: i32) {
     let n = painted.map.face_size();
     let km = |d: f64| d / EARTH_KM;
     // The old Pacific floor around the islands has abyssal hills. In the
@@ -639,7 +651,7 @@ fn earth_hotspot() -> Painted {
         limits: Limits::default(),
     };
     let trend = -75f64.to_radians();
-    let fabric: Vec<V3> = (-8..=8)
+    let fabric: Vec<V3> = (-reach..=reach)
         .map(|i| offset(painted.center, trend, km(150.0 * f64::from(i))))
         .collect();
     paint_abyssal(&mut painted.map, hills, &fabric, 0.15);
@@ -649,17 +661,14 @@ fn earth_hotspot() -> Painted {
         speed_mm: HOTSPOT_SPEED_MM,
         reefs: false,
         world_km: EARTH_KM,
-        seed: RIDGE_SEED,
+        seed,
         limits: Limits::default(),
     };
-    let end = offset(painted.center, std::f64::consts::FRAC_PI_2, km(210.0));
-    let end = offset(end, std::f64::consts::PI, km(150.0));
-    let start = offset(end, -60f64.to_radians(), km(HOTSPOT_KM));
     let mut line = HotspotLine::new(spec, n);
-    let count = (km(HOTSPOT_KM) / (LINE_SPACING * spec.radius)).ceil() as usize;
+    let count = (km(length_km) / (LINE_SPACING * spec.radius)).ceil() as usize;
     let tangent = cross(normalize(cross(start, end)), start);
     for i in 0..=count {
-        let (sin, cos) = (km(HOTSPOT_KM) * i as f64 / count as f64).sin_cos();
+        let (sin, cos) = (km(length_km) * i as f64 / count as f64).sin_cos();
         line.push(add(scale(start, cos), scale(tangent, sin)), 1.0);
     }
     line.finish(&painted.map);
@@ -681,7 +690,6 @@ fn earth_hotspot() -> Painted {
     }
     painted.map.erode(&step);
     painted.map.end_stroke();
-    painted
 }
 
 const HOTSPOT_LIMITS: Within = MARGIN_LIMITS;
@@ -703,6 +711,39 @@ fn manual_hotspot_next_to_its_reference() {
     let painted = earth_hotspot();
     compare(&painted, &reference, reference.direction());
     save_side_by_side("hawaii", &painted, &reference, &gebco);
+}
+
+/// The length of the long hotspot test stroke, in kilometers.
+const LONG_HOTSPOT_KM: f64 = 3000.0;
+
+/// Long hotspot tracks at the default settings for three seeds, each in a
+/// square of 3,584 km with north up, so the clusters, the long gaps, and the
+/// uneven sizes along the chain show.
+#[test]
+#[ignore = "manual"]
+fn manual_long_hotspot_tracks() {
+    let km = |d: f64| d / EARTH_KM;
+    let (size, cell_m) = (1024, 3500.0);
+    for seed in [1, 2, 3] {
+        let mut painted = Painted::earth(5400.0);
+        // The chain runs from the west-northwest to its end east of the
+        // middle.
+        let end = offset(
+            painted.center,
+            120f64.to_radians(),
+            km(0.5 * LONG_HOTSPOT_KM),
+        );
+        let start = offset(end, -60f64.to_radians(), km(LONG_HOTSPOT_KM));
+        paint_hotspot(&mut painted, seed, start, end, LONG_HOTSPOT_KM, 12);
+        let patch = Patch::from_heightmap(&painted.map, painted.center, EARTH_KM, size, cell_m);
+        let mut image = image::RgbImage::new(size as u32, size as u32);
+        draw(&mut image, &patch.heights, size, cell_m, [0, 0]);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let out = root.join(format!("target/realism/hotspot-long-{seed}.png"));
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        image.save(&out).unwrap();
+        eprintln!("wrote {}", out.display());
+    }
 }
 
 /// The patch of a reference region from `scripts/gebco-reference.sh`.
