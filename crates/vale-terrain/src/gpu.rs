@@ -24,6 +24,7 @@ use crate::heightmap::{
 use crate::hotspot::HotspotPlan;
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
+use crate::plateau::{PLAN_STAMPS, PlateauPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -1835,6 +1836,69 @@ impl GpuHeightmap {
                 mode: 17,
                 size: self.face_size as i32,
                 count: plan.volcanoes.len() as u32,
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(plan.limits),
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, [offset, 0, volcano_offset]);
+        }
+        true
+    }
+
+    /// Grows the plateau of a plan on the ground from before the stroke, as
+    /// `seamounts` grows volcanoes. The plan takes a slot of the volcano
+    /// buffer. Call `begin_stroke` at the start of each stroke, before its
+    /// first plan.
+    ///
+    /// Returns `false` and adds nothing if the batch is full. Then submit
+    /// `enc`, call `begin_batch`, and add the plan to a new encoder.
+    pub fn plateau(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &PlateauPlan,
+    ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        assert!(plan.stamps() <= PLAN_STAMPS, "the stamps");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let volcano_slot = self.used_seamount_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || volcano_slot == SEAMOUNT_SLOTS {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_seamount_slots
+            .store(volcano_slot + 1, Ordering::Relaxed);
+        let volcano_offset = volcano_slot * self.volcano_slot_size;
+        queue.write_buffer(
+            &self.volcanoes,
+            u64::from(volcano_offset),
+            bytemuck::cast_slice(plan.floats()),
+        );
+        let state = &mut *self.state();
+        let touched = plan.rects.iter().enumerate();
+        let touched: Vec<_> = touched
+            .filter_map(|(face, rect)| Some((face, (*rect)?)))
+            .collect();
+        for &(face, rect) in &touched {
+            self.keep_start(queue, enc, state, face, rect);
+        }
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 21,
+                size: self.face_size as i32,
                 origin: [rect.x0 as i32, rect.y0 as i32],
                 limits: packed(plan.limits),
                 ..bytemuck::Zeroable::zeroed()
