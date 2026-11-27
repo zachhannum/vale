@@ -77,7 +77,7 @@ import ──> world ──> sim ──> fields ──> classify ──> vector 
 
 Isotherm uses the Vale crates through path dependencies. A change to a shared crate and the change to each app that uses it go in one PR, so the two apps cannot drift apart.
 
-Some shared parts are modules of `vale-app` today. Phase 0 moves them into crates of their own: the globe renderer into `vale-globe`, and the pad widgets and the iOS lifecycle into `vale-shell`. Phase 6 moves the pen input into `vale-shell`, for the terrain editor. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
+The globe renderer is in the crate `vale-globe`. Other shared parts are modules of `vale-app` today. Phase 0 moves the pad widgets and the iOS lifecycle into `vale-shell`. Phase 6 moves the pen input into `vale-shell`, for the terrain editor. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
 
 No `vale-` crate depends on an `isotherm-` crate. The one exception is the Vale export of `isotherm-export`, which writes a Vale project through `vale-store`, in that direction only.
 
@@ -92,7 +92,7 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 | `vale-terrain` flow and erosion | Rivers and basins from the heightmap, and the erosion brush of the terrain editor. |
 | `vale-import` | PNG, 16-bit TIFF, and GeoTIFF read and write. |
 | `vale-store` GeoPackage and undo log | The project file. The extra tables get the prefix `isotherm_`. |
-| `vale-app/src/globe`, moved to `vale-globe` | The globe renderer, navigation, and the flat view. |
+| `vale-globe` | The globe renderer, navigation, and the flat view. |
 | `vale-app/src/pen`, moved to `vale-shell` in phase 6 | Apple Pencil input through UIKit, for the terrain editor. |
 | `vale-app/src/ui/pad`, moved to `vale-shell` | The theme and the touch-size widgets. |
 | `vale-app/src/lifecycle.rs`, `workcopy.rs`, `resume.rs`, moved to `vale-shell` | Save on background, the working copy, and the restore of the last session on iOS. |
