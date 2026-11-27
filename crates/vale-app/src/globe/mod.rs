@@ -17,7 +17,7 @@ use vale_terrain::{
     FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
     RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Trench, TrenchLine,
     Window, WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
-    reduced_face_size, sea_floor, smoothing_level,
+    reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -409,21 +409,6 @@ impl Ridging {
         }
     }
 
-    /// Gives a trench line with no points the age of the floor at the first
-    /// of `stamps`, on the ground of `map`. Returns the new settings.
-    fn date_trench(&mut self, map: &Heightmap, stamps: &[Stamp]) -> Option<Trench> {
-        let BrushLine::Trench(line) = &mut self.line else {
-            return None;
-        };
-        let first = stamps
-            .first()
-            .filter(|_| line.is_empty() && self.guide.is_none())?;
-        let mut spec = line.spec();
-        spec.age_myr = sea_floor(map, first.center, spec.radius).age_myr;
-        *line = TrenchLine::new(spec, map.face_size());
-        Some(spec)
-    }
-
     /// The angle from a direction to the line, in radians.
     fn distance(&self, p: V3) -> f64 {
         let mut best = f64::INFINITY;
@@ -481,8 +466,7 @@ impl HotspotErosion {
 
 /// The line of an ocean ridge, range, hotspot track, or trench stroke with
 /// a brush of this radius, in radians, on a world of `km` kilometers with a
-/// heightmap of face size `n`. Other modes have no line. A trench gets the
-/// age of its floor at its first point.
+/// heightmap of face size `n`. Other modes have no line.
 fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
     let (line, range, hotspot) = match brush.mode {
         Mode::OceanRidge => {
@@ -504,7 +488,7 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
             )
         }
         Mode::Trench => {
-            let spec = brush.trench_spec(radius, km, seed, 0.0);
+            let spec = brush.trench_spec(radius, km, seed);
             (BrushLine::Trench(TrenchLine::new(spec, n)), None, None)
         }
         _ => return None,
@@ -696,21 +680,6 @@ struct Active {
     /// The number of rectangles that the GPU has not given back. `None`: the
     /// stroke did not ask for its texels yet.
     reading: Option<usize>,
-}
-
-impl Active {
-    /// Gives the line of a trench stroke the age of the floor at its first
-    /// point, before the point joins the line.
-    fn date_trench(&mut self, map: &Heightmap, stamps: &[Stamp]) {
-        let ridge = self.ridge.as_mut();
-        let Some(spec) = ridge.and_then(|r| r.date_trench(map, stamps)) else {
-            return;
-        };
-        if let Some(held) = &mut self.held {
-            held.spec = HeldSpec::Trench(spec);
-            held.wanted.0 = held.spec;
-        }
-    }
 }
 
 /// An ocean ridge, a trench, or a basin that shows on the GPU. After the pen goes up,
@@ -3906,7 +3875,6 @@ impl Globe {
                                 level_at,
                                 &mut stamps,
                             );
-                            active.date_trench(map, &stamps);
                             if let Some(ridge) = &mut active.ridge {
                                 ridge.extend(&stamps);
                                 stamps.clear();
@@ -3950,7 +3918,6 @@ impl Globe {
                         active
                             .stroke
                             .finish(&self.brush, map.face_size(), &mut stamps);
-                        active.date_trench(map, &stamps);
                         if let Some(ridge) = &mut active.ridge {
                             ridge.extend(&stamps);
                             stamps.clear();
@@ -4208,11 +4175,7 @@ impl Globe {
         let spec = match held.spec {
             HeldSpec::Ridge(_) => HeldSpec::Ridge(self.brush.ridge_spec(held.radius, km, seed)),
             HeldSpec::Basin(_) => HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain)),
-            // The age of the floor stays that of the start of the stroke.
-            HeldSpec::Trench(old) => {
-                let spec = self.brush.trench_spec(held.radius, km, seed, old.age_myr);
-                HeldSpec::Trench(spec)
-            }
+            HeldSpec::Trench(_) => HeldSpec::Trench(self.brush.trench_spec(held.radius, km, seed)),
         };
         let wanted = (spec, self.brush.flow);
         if wanted != held.wanted {

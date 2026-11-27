@@ -22,7 +22,7 @@ use crate::globe::brush::{
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
     RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
     SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
-    TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
+    TRENCH_AGE_MYR, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3277,6 +3277,12 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         Mode::Trench => {
             row(ui, controls, state, Slider::Strength);
             let brush = &mut state.globe.brush;
+            let number = Number::new(TRENCH_AGE, brush.trench_age_myr, TRENCH_AGE_MYR)
+                .label("Age")
+                .step(10.0)
+                .unit("Myr");
+            apply(number.stepper(ui, controls), &mut brush.trench_age_myr);
+            raster::note(ui, &panels::outer_rise_text(brush.trench_age_myr));
             let (labels, names) = (TRENCH_SIDE_LABELS, TRENCH_SIDE_NAMES);
             let active = panels::TRENCH_SIDES
                 .iter()
@@ -3828,6 +3834,8 @@ pub const MARGIN_SHELF: &str = "Brush shelf depth";
 pub const HOTSPOT_SPEED_NAME: &str = "Brush plate speed";
 /// The name of the reefs switch of the hotspot track mode.
 pub const HOTSPOT_REEFS: &str = "Brush reefs";
+/// The name of the age stepper of the trench mode.
+pub const TRENCH_AGE: &str = "Brush age";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.

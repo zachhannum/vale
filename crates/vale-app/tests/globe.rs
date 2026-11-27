@@ -6367,8 +6367,13 @@ fn the_brush_panel_has_the_trench_mode_and_its_settings() {
     // The size is the width of the trench, so the zoom does not change it.
     assert!(brush.size_is_fixed());
     assert_eq!(brush.trench_depth_m, 2000.0);
+    assert_eq!(brush.trench_age_myr, 100.0);
+    let rise = format!("Outer rise {:.0} km", vale_terrain::outer_rise_km(100.0));
+    assert_eq!(rise, "Outer rise 118 km");
     for name in [
         "Draw the axis of the trench.",
+        "Age",
+        &rise,
         "Radius",
         "Flow",
         "Depth",
@@ -6410,7 +6415,7 @@ fn trench_harness(seed: u32) -> Harness<'static, AppState> {
 #[ignore = "gpu"]
 fn a_trench_stroke_gives_the_levels_of_the_cpu_trench() {
     use vale_app::globe::brush::Stroke;
-    use vale_terrain::{Heightmap, TrenchLine, sea_floor};
+    use vale_terrain::{Heightmap, TrenchLine};
     let _gpu = one_gpu_test();
     let mut h = trench_harness(7);
     let before = all_levels(&h);
@@ -6428,9 +6433,8 @@ fn a_trench_stroke_gives_the_levels_of_the_cpu_trench() {
     }
     stroke.finish(&brush, n, &mut stamps);
     let mut cpu = Heightmap::new(n, globe.map.base());
-    // The age of the floor comes from the ground at the first point.
-    let age = sea_floor(&cpu, stamps[0].center, 0.1).age_myr;
-    let spec = brush.trench_spec(0.1, globe.world_km, globe.world_seed, age);
+    let spec = brush.trench_spec(0.1, globe.world_km, globe.world_seed);
+    assert_eq!(spec.age_myr, 100.0);
     let mut line = TrenchLine::new(spec, n);
     for stamp in &stamps {
         line.push(stamp.center, stamp.flow);
@@ -6449,8 +6453,7 @@ fn a_trench_stroke_gives_the_levels_of_the_cpu_trench() {
         .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
         .collect();
     let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
-    // The empty world is young floor, so the bend is narrow.
-    assert!(changed > 1000, "{changed}");
+    assert!(changed > 2000, "{changed}");
     let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
     // The trench goes below the ground.
@@ -6490,6 +6493,7 @@ fn a_held_trench_follows_the_settings_until_it_is_applied() {
     let second = |h: &mut Harness<'static, AppState>| {
         let brush = &mut h.state_mut().globe.brush;
         brush.trench_depth_m = 3500.0;
+        brush.trench_age_myr = 40.0;
         brush.trench_side = TrenchSide::Right;
         brush.trench_margin = TrenchMargin::Eroding;
         brush.flow = 0.5;

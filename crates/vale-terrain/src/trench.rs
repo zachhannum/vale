@@ -398,13 +398,26 @@ pub(crate) struct Floor {
     pub overriding: f64,
 }
 
+/// The flexural parameter of a plate in kilometers, from the elastic
+/// thickness at its age in millions of years.
+fn alpha_km(age_myr: f64) -> f64 {
+    let te = elastic_km(age_myr) * 1000.0;
+    let rigidity = YOUNG * te.powi(3) / (12.0 * (1.0 - POISSON * POISSON));
+    (4.0 * rigidity / ((MANTLE - WATER) * GRAVITY)).powf(0.25) / 1000.0
+}
+
+/// The distance from the axis to the top of the outer rise in kilometers,
+/// on a plate of an age in millions of years. The bending faults start
+/// there.
+pub fn outer_rise_km(age_myr: f64) -> f64 {
+    FRAC_PI_2 * alpha_km(age_myr)
+}
+
 impl TrenchPlan {
     /// The flexural parameter of the incoming plate, in kilometers, from
     /// the elastic thickness at its age.
     pub(crate) fn alpha_km(&self) -> f64 {
-        let te = elastic_km(self.trench.age_myr) * 1000.0;
-        let rigidity = YOUNG * te.powi(3) / (12.0 * (1.0 - POISSON * POISSON));
-        (4.0 * rigidity / ((MANTLE - WATER) * GRAVITY)).powf(0.25) / 1000.0
+        alpha_km(self.trench.age_myr)
     }
 
     /// The width of a texel at the center of a face, in kilometers.
@@ -901,6 +914,12 @@ mod tests {
         let (height, x) = best;
         assert!(height > 200.0 && height < 900.0, "a rise of {height} m");
         assert!(x > 100.0 && x < 200.0, "the rise at {x} km");
+        // The panel gives this distance.
+        let told = outer_rise_km(line.spec().age_myr);
+        assert!(
+            (x - told).abs() < 15.0,
+            "the rise at {x} km, told {told} km"
+        );
     }
 
     /// The RMS of the fault relief over the line in a band of the profile

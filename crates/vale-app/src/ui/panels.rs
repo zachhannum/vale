@@ -26,7 +26,7 @@ use crate::globe::brush::{
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
+    TALUS_DEG, TERRACE_STEP_M, TRENCH_AGE_MYR, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1521,6 +1521,12 @@ pub(super) fn signed_percent(part: f64) -> String {
     }
 }
 
+/// The line with the distance from the axis of a trench to its outer rise,
+/// on a plate of an age in millions of years.
+pub(super) fn outer_rise_text(age_myr: f64) -> String {
+    format!("Outer rise {:.0} km", vale_terrain::outer_rise_km(age_myr))
+}
+
 /// The line with the age of the crust at the edge of an ocean ridge
 /// stroke. `radius_km` is the brush radius on the ground.
 pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_km: f64) -> String {
@@ -1715,6 +1721,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .decimals(0)
             .suffix(" m")
             .show(ui);
+        number::slider("Age", &mut brush.trench_age_myr, TRENCH_AGE_MYR)
+            .step(10.0)
+            .decimals(0)
+            .suffix(" Myr")
+            .show(ui);
+        ui.label(outer_rise_text(brush.trench_age_myr));
         ui.horizontal(|ui| {
             ui.label(TRENCH_SIDE);
             for (side, name) in TRENCH_SIDES {

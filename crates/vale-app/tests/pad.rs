@@ -3056,6 +3056,7 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     let brush = s.globe.brush;
     assert_eq!(brush.trench_depth_m, 2000.0);
+    assert_eq!(brush.trench_age_myr, 100.0);
     assert_eq!(brush.trench_side, TrenchSide::Left);
     assert_eq!(brush.trench_margin, TrenchMargin::Accretionary);
     // The strip has Size and Depth.
@@ -3073,10 +3074,12 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Brush side right",
         "Brush margin accretionary",
         "Brush margin eroding",
+        "Brush age value",
         "Brush seed value",
     ] {
         assert!(control(&h, row).is_some(), "{row}");
     }
+    assert!(h.query_by_label("Outer rise 118 km").is_some());
     for row in ["Brush hardness", "Brush shelf depth value", "Brush erosion"] {
         assert!(control(&h, row).is_none(), "{row}");
     }
@@ -3086,6 +3089,16 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
         let got = h.state().globe.brush.trench_depth_m;
         assert!((got - value).abs() < 1e-6, "{text}: {got}");
     }
+    // A typed age past an end gives the end, and a smaller age gives a
+    // narrower bend.
+    for (text, value) in [("0", 10.0), ("900", 200.0), ("40", 40.0)] {
+        type_value(&mut h, "Brush age", text);
+        let got = h.state().globe.brush.trench_age_myr;
+        assert!((got - value).abs() < 1e-6, "{text}: {got}");
+    }
+    step(&mut h, "Brush age", true);
+    assert_eq!(h.state().globe.brush.trench_age_myr, 50.0);
+    assert!(h.query_by_label("Outer rise 118 km").is_none());
     tap(&mut h, "Brush side right");
     assert_eq!(h.state().globe.brush.trench_side, TrenchSide::Right);
     tap(&mut h, "Brush margin eroding");
@@ -3115,6 +3128,7 @@ fn the_trench_mode_fits_on_the_smallest_ipad() {
         "Brush strength",
         "Brush side right",
         "Brush margin eroding",
+        "Brush age value",
         "Brush seed value",
     ] {
         let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));

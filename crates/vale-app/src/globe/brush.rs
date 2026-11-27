@@ -91,6 +91,9 @@ pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
     HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
 /// The limits of the depth of the trench mode, in meters.
 pub const TRENCH_DEPTH_M: std::ops::RangeInclusive<f64> = 500.0..=4000.0;
+/// The limits of the age of the incoming plate of the trench mode, in
+/// millions of years.
+pub const TRENCH_AGE_MYR: std::ops::RangeInclusive<f64> = 10.0..=200.0;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -242,6 +245,9 @@ pub struct BrushSettings {
     /// The depth of the axis of the trench mode below the floor at full
     /// flow, in meters.
     pub trench_depth_m: f64,
+    /// The age of the incoming plate of the trench mode, in millions of
+    /// years. It sets the width of the bend.
+    pub trench_age_myr: f64,
     /// The side of the overriding plate of the trench mode, seen along the
     /// stroke.
     pub trench_side: TrenchSide,
@@ -316,6 +322,7 @@ impl Default for BrushSettings {
             hotspot_reefs: false,
             hotspot_age_myr: 90.0,
             trench_depth_m: 2000.0,
+            trench_age_myr: 100.0,
             trench_side: TrenchSide::Left,
             trench_margin: TrenchMargin::Accretionary,
             channel_km: CHANNEL_WIDTH_KM,
@@ -472,15 +479,16 @@ impl BrushSettings {
     }
 
     /// The settings of a trench stroke with this brush radius, in radians.
-    /// `world_km` is the radius of the world, and `age_myr` is the age of
-    /// the floor at the start of the stroke.
-    pub fn trench_spec(&self, radius: f64, world_km: f64, seed: u32, age_myr: f64) -> Trench {
+    /// `world_km` is the radius of the world.
+    pub fn trench_spec(&self, radius: f64, world_km: f64, seed: u32) -> Trench {
         Trench {
             radius,
             depth_m: self
                 .trench_depth_m
                 .clamp(*TRENCH_DEPTH_M.start(), *TRENCH_DEPTH_M.end()),
-            age_myr,
+            age_myr: self
+                .trench_age_myr
+                .clamp(*TRENCH_AGE_MYR.start(), *TRENCH_AGE_MYR.end()),
             side: self.trench_side,
             margin: self.trench_margin,
             world_km,

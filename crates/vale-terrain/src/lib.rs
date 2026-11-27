@@ -103,7 +103,9 @@ pub use smooth::{
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
-pub use trench::{MAX_TRENCH_RADIUS, Trench, TrenchLine, TrenchMargin, TrenchPlan, TrenchSide};
+pub use trench::{
+    MAX_TRENCH_RADIUS, Trench, TrenchLine, TrenchMargin, TrenchPlan, TrenchSide, outer_rise_km,
+};
 pub use zonal::{Zonal, level_areas, line_zonal, polygon_zonal, rects_meet};
 
 // A worker thread makes the pipelines, and the main thread uses them.
