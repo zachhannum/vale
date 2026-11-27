@@ -94,7 +94,7 @@ pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan}
 pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
 pub use seamount::{
     FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,
-    VOLCANO_FLOATS, Volcano, elastic_km, gdh1_age, sea_floor,
+    VOLCANO_FLOATS, Volcano, elastic_km, sea_floor,
 };
 pub use smooth::{
     LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,

@@ -299,6 +299,7 @@ fn flank_spec() -> Seamounts {
     Seamounts {
         density: 4.0,
         height_m: 430.0,
+        age_myr: 4.0,
         world_km: WORLD_KM,
         seed: 5,
         limits: Limits::default(),
@@ -660,6 +661,7 @@ fn paint_hotspot(painted: &mut Painted, seed: u32, start: V3, end: V3, length_km
         height_m: HOTSPOT_HEIGHT_M,
         speed_mm: HOTSPOT_SPEED_MM,
         reefs: false,
+        age_myr: 90.0,
         world_km: EARTH_KM,
         seed,
         limits: Limits::default(),

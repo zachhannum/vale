@@ -4383,6 +4383,7 @@ fn seamount_spec(height_m: f64) -> Seamounts {
     Seamounts {
         density: 50.0,
         height_m,
+        age_myr: 60.0,
         world_km: 1000.0,
         seed: 11,
         limits: Limits::default(),
@@ -4584,6 +4585,7 @@ fn hotspot_spec() -> Hotspot {
         height_m: 9000.0,
         speed_mm: 40.0,
         reefs: true,
+        age_myr: 90.0,
         world_km: 6371.0,
         seed: 7,
         limits: Limits::default(),

@@ -118,7 +118,8 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::Noise if height => out.push(Relief),
         Mode::Range => out.push(Spacing),
         Mode::Basin => out.extend([Density, Age, Lakes]),
-        Mode::Seamounts => out.push(Density),
+        Mode::Seamounts => out.extend([Density, Age]),
+        Mode::Hotspot => out.push(Age),
         _ => {}
     }
     if matches!(

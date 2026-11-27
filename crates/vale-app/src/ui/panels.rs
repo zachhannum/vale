@@ -22,11 +22,11 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
-    MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
-    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
+    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
+    RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
+    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1678,6 +1678,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .show(ui);
         ui.label(hotspot_age_text(brush));
         ui.checkbox(&mut brush.hotspot_reefs, "Reefs");
+        number::slider("Age", &mut brush.hotspot_age_myr, FLOOR_AGE_MYR)
+            .suffix(" Myr")
+            .show(ui);
         seed(ui, state);
     } else if globe.brush.mode == Mode::Margin {
         let brush = &mut globe.brush;
@@ -1749,6 +1752,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Density", &mut brush.seamount_density, SEAMOUNT_DENSITY)
                 .log()
                 .format(density_text)
+                .show(ui);
+            number::slider("Age", &mut brush.seamount_age_myr, FLOOR_AGE_MYR)
+                .suffix(" Myr")
                 .show(ui);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {

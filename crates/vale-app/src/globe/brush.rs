@@ -71,6 +71,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
+/// The limits of the age of the floor of the seamounts mode and of the
+/// hotspot track mode, in millions of years.
+pub const FLOOR_AGE_MYR: std::ops::RangeInclusive<f64> = 0.0..=200.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
 pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
@@ -208,6 +211,8 @@ pub struct BrushSettings {
     pub seamount_density: f64,
     /// The characteristic height of the seamounts mode, in meters.
     pub seamount_height_m: f64,
+    /// The age of the floor of the seamounts mode, in millions of years.
+    pub seamount_age_myr: f64,
     /// The full spreading rate of the abyssal hills mode, in millimeters
     /// per year.
     pub abyssal_rate_mm: f64,
@@ -228,6 +233,9 @@ pub struct BrushSettings {
     /// Whether reefs grow on the sinking volcanoes of the hotspot track
     /// mode.
     pub hotspot_reefs: bool,
+    /// The age of the floor at the hotspot of the hotspot track mode, in
+    /// millions of years.
+    pub hotspot_age_myr: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -287,6 +295,7 @@ impl Default for BrushSettings {
             basin_lakes: 0.0,
             seamount_density: 50.0,
             seamount_height_m: 400.0,
+            seamount_age_myr: 60.0,
             abyssal_rate_mm: 60.0,
             abyssal_hills: 1.0,
             abyssal_scale: 1.0,
@@ -295,6 +304,7 @@ impl Default for BrushSettings {
             hotspot_speed_mm: HOTSPOT_SPEED_MM,
             hotspot_height_m: HOTSPOT_HEIGHT_M,
             hotspot_reefs: false,
+            hotspot_age_myr: 90.0,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -472,6 +482,7 @@ impl BrushSettings {
                 .hotspot_speed_mm
                 .clamp(HOTSPOT_SPEED_RANGE.0, HOTSPOT_SPEED_RANGE.1),
             reefs: self.hotspot_reefs,
+            age_myr: self.hotspot_age_myr,
             world_km,
             seed,
             limits: self.limits(),
@@ -531,6 +542,7 @@ impl BrushSettings {
         Seamounts {
             density: self.seamount_density,
             height_m: self.seamount_height_m,
+            age_myr: self.seamount_age_myr,
             world_km,
             seed,
             limits: self.limits(),
@@ -1525,13 +1537,16 @@ mod tests {
         let spec = brush.hotspot_spec(radius, 6371.0, 7);
         assert_eq!((spec.speed_mm, spec.height_m), (90.0, 9000.0));
         assert!(!spec.reefs);
+        assert_eq!(spec.age_myr, 90.0);
         assert!((brush.hotspot_age_per_1000_km() - 1000.0 / 90.0).abs() < 1e-9);
         brush.hotspot_speed_mm = 1.0;
         brush.hotspot_height_m = 1e6;
         brush.hotspot_reefs = true;
+        brush.hotspot_age_myr = 150.0;
         let spec = brush.hotspot_spec(radius, 6371.0, 7);
         assert_eq!((spec.speed_mm, spec.height_m), (10.0, 12000.0));
         assert!(spec.reefs);
+        assert_eq!(spec.age_myr, 150.0);
         brush.lock = Some(1.0);
         assert_eq!(brush.radius(360.0), MAX_RIDGE_RADIUS);
     }

@@ -21,7 +21,7 @@ use crate::margin::{circle_window, smooth_min};
 use crate::math::{V3, add, angle, cross, dot, normalize, scale};
 use crate::seamount::{
     BREAK, CAP, FLEX, GROWTH, HEIGHT, LAGOON, LEVELS_PER_M, NO_CAP, PEDESTAL_ALONG, PLAN_VOLCANOES,
-    REEF, RIM, SHORE, Volcano, draw, gdh1_age, gdh1_depth, sea_floor, shield_volcano,
+    REEF, RIM, SHORE, Volcano, draw, gdh1_age, gdh1_depth, shield_volcano,
 };
 
 /// The brush radius of the app on a world of the size of the Earth, in
@@ -203,6 +203,8 @@ pub struct Hotspot {
     pub speed_mm: f64,
     /// Whether reefs grow at sea level on the sinking volcanoes.
     pub reefs: bool,
+    /// The age of the floor at the hotspot, in millions of years.
+    pub age_myr: f64,
     /// The radius of the world, in kilometers.
     pub world_km: f64,
     /// The seed of the chain.
@@ -366,9 +368,8 @@ impl HotspotLine {
             seed: place_seed(spec.seed, end),
             ..spec
         };
-        let floor = sea_floor(map, end, r);
-        chain.floor_age = floor.age_myr;
-        chain.floor_depth = gdh1_depth(floor.age_myr);
+        chain.floor_age = spec.age_myr.max(0.0);
+        chain.floor_depth = gdh1_depth(chain.floor_age);
         chain.reset_age = gdh1_age(chain.floor_depth - SWELL_M);
 
         // The places of the volcanoes, from the end of the line back.
@@ -1049,6 +1050,7 @@ mod tests {
             height_m: HOTSPOT_HEIGHT_M,
             speed_mm: HOTSPOT_SPEED_MM,
             reefs: false,
+            age_myr: 90.0,
             world_km: KM,
             seed: 7,
             limits: Limits::default(),

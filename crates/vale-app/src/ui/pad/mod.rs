@@ -18,11 +18,11 @@ use super::{Action, AppState, Note, SaveMark, Workspace, globe, is_height, panel
 use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
-    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
-    MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
-    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
-    shape_text,
+    FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
+    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
+    RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
+    SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
+    WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3258,6 +3258,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
             raster::note(ui, &panels::hotspot_age_text(brush));
             let reefs = &mut brush.hotspot_reefs;
             widgets::switch_row(ui, controls, HOTSPOT_REEFS, "Reefs", reefs);
+            row(ui, controls, state, Slider::Age);
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Margin => {
@@ -3304,6 +3305,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::Seamounts {
         row(ui, controls, state, Slider::Density);
         raster::note(ui, SEAMOUNT_DENSITY_NOTE);
+        row(ui, controls, state, Slider::Age);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
     if mode == Mode::Basin {
@@ -3631,6 +3633,19 @@ pub(super) fn brush_slider(
                     .log()
                     .default(defaults.basin_density_km);
                 set(number, &mut brush.basin_density_km);
+            }
+            Slider::Age if matches!(mode, Mode::Seamounts | Mode::Hotspot) => {
+                let (age, default) = if mode == Mode::Hotspot {
+                    (&mut brush.hotspot_age_myr, defaults.hotspot_age_myr)
+                } else {
+                    (&mut brush.seamount_age_myr, defaults.seamount_age_myr)
+                };
+                let number = Number::new(name, *age, FLOOR_AGE_MYR)
+                    .label(label)
+                    .unit("Myr")
+                    .text(|age| format!("{age:.0} Myr"))
+                    .default(default);
+                set(number, age);
             }
             Slider::Age => {
                 let number = fraction(brush.basin_age, BASIN_AGE).default(defaults.basin_age);
