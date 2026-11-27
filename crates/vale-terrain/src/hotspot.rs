@@ -73,7 +73,7 @@ const SINGLE_ACROSS: f64 = 0.08;
 /// the group at the hotspot and grows to its full size over `FLUX_FADE`
 /// mean distances.
 const FLUX_SIZE: f64 = 6.0;
-const FLUX_LOW: f64 = 0.7;
+const FLUX_LOW: f64 = 0.5;
 const FLUX_FADE: f64 = 3.0;
 
 /// The supply of the hotspot pulses, so the volcanoes form in groups of
@@ -83,20 +83,39 @@ const FLUX_FADE: f64 = 3.0;
 /// over the hotspot has the most.
 const GROUP_MOST: f64 = 4.0;
 const GROUP_GAP: (f64, f64) = (1.0, 2.0);
-const GROUP_LOW: f64 = 0.85;
+/// The supply of the hotspot has strong and weak eras along the line, with
+/// this size in mean distances. In a weak era, the volcanoes are smaller,
+/// down to `ERA_LOW` of the size of a strong era, the gaps between groups
+/// are longer, and the volcanoes of a group are farther apart. A part of the
+/// gaps, larger in a weak era, are long gaps of `LONG_GAP` mean distances.
+const ERA_SIZE: f64 = 30.0;
+/// The eras start past the group at the hotspot and grow to their full
+/// size over this many mean distances, so the young chain is strong.
+const ERA_FADE: f64 = 20.0;
+const ERA_LOW: f64 = 0.6;
+const LONG_GAP_PART: f64 = 0.2;
+const LONG_GAP: (f64, f64) = (4.0, 12.0);
+
+/// The gap after the group at the hotspot, in mean distances, so its
+/// island stands apart.
+const FIRST_GAP: (f64, f64) = (2.4, 3.4);
+const GROUP_LOW: f64 = 0.7;
 
 /// No volcano is taller than the setting times an envelope. The envelope is
 /// 1 in the group at the hotspot. Past it, the envelope falls by `OLDER`
 /// over `OLDER_SIZE` mean distances, and then by up to `OLDEST` more with a
 /// size of `OLDEST_SIZE` mean distances.
-const OLDER: f64 = 0.05;
+const OLDER: f64 = 0.15;
 const OLDER_SIZE: f64 = 8.0;
-const OLDEST: f64 = 0.2;
+const OLDEST: f64 = 0.1;
 const OLDEST_SIZE: f64 = 40.0;
 
 /// The volcano over the hotspot grows to at most this part of the tallest
-/// other volcano of its group.
+/// other volcano of its group. Each other volcano of that group and of the
+/// next is at most `OTHERS` of the tallest, so the young island is one large
+/// shield with smaller ones.
 const HOTSPOT_PART: f64 = 0.8;
+const OTHERS: f64 = 0.75;
 
 /// The tallest volcano in meters.
 const HEIGHT_MOST_M: f64 = 13000.0;
@@ -114,7 +133,7 @@ const GROW_MYR: f64 = 0.5;
 
 /// The deepest sum of the moats under the chain, as a part of the height of
 /// the largest volcano.
-const LINE_MOAT: f64 = 0.15;
+const LINE_MOAT: f64 = 0.13;
 
 /// The middle of the gap between two volcanoes is at this part of the reach
 /// of their pedestals.
@@ -128,7 +147,7 @@ const FREE_M: f64 = 100.0;
 
 /// The summit of an island goes down by this many meters in each million
 /// years.
-const ISLAND_EROSION_M: f64 = 600.0;
+const ISLAND_EROSION_M: f64 = 200.0;
 
 /// The waves cut the top of a volcano at this depth in meters when it goes
 /// under the sea, with a rounding of `CAP_ROUND_M`.
@@ -169,6 +188,7 @@ const SALT_DOUBLE: u32 = 0x64_626c;
 const SALT_FLUX: u32 = 0x66_6c78;
 const SALT_SHAPE: u32 = 0x73_6870;
 const SALT_GROUP: u32 = 0x67_7270;
+const SALT_ERA: u32 = 0x65_7261;
 
 /// The settings of a hotspot track stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -371,6 +391,17 @@ impl HotspotLine {
         // The start of the second group, where the change of the supply
         // starts.
         let mut second = f64::INFINITY;
+        // The strength of the era at `s`, from 0 in a weak era to 1 in a
+        // strong one. The era starts past the group at the hotspot.
+        let era = |s: f64, second: f64| {
+            let n = noise1(s / (ERA_SIZE * spacing), SALT_ERA, 0, spec.seed).0;
+            let fade = if second.is_finite() {
+                smoothstep(second, second + ERA_FADE * spacing, s)
+            } else {
+                0.0
+            };
+            (1.0 - (1.0 - smoothstep(-0.6, 0.6, n)) * fade, fade)
+        };
         while s <= length && k < 4096 {
             // The group at the hotspot goes on until it has a volcano past
             // the hotspot.
@@ -387,7 +418,16 @@ impl HotspotLine {
                     GROUP_LOW + (1.0 - GROUP_LOW) * g(1)
                 };
                 if group > 0 {
-                    s += spacing * (GROUP_GAP.0 + (GROUP_GAP.1 - GROUP_GAP.0) * g(2));
+                    let (strong, fade) = era(s, second);
+                    let weak = 1.0 - strong;
+                    let (low, high) = if group == 1 {
+                        FIRST_GAP
+                    } else if g(3) < LONG_GAP_PART * fade * (0.5 + weak) {
+                        LONG_GAP
+                    } else {
+                        GROUP_GAP
+                    };
+                    s += spacing * (low + (high - low) * g(2)) * (1.0 + weak);
                     if s > length {
                         break;
                     }
@@ -421,8 +461,9 @@ impl HotspotLine {
             } else {
                 1.0
             };
+            let (strong, fade) = era(s, second);
             let flow = line.frame(length - s).2;
-            let size = 0.65 + 0.35 * d(1).powf(0.6);
+            let size = 0.45 + 0.55 * d(1).powf(0.6);
             let part = if off {
                 OFF_HEIGHT
             } else if double {
@@ -433,14 +474,17 @@ impl HotspotLine {
             sites.push(Site {
                 s,
                 across,
-                raw: size * flux * group_size * part,
+                raw: size * flux * group_size * part * (ERA_LOW + (1.0 - ERA_LOW) * strong),
                 env,
                 flow,
                 group,
             });
             left = left.saturating_sub(1);
             if !off {
-                let part = if double { 0.5 } else { 1.0 };
+                // The volcanoes crowd together in a strong era, and they are
+                // farther apart in a weak one.
+                let crowd = 1.0 + 0.4 * (1.0 - strong) - 0.2 * fade;
+                let part = if double { 0.5 } else { 1.0 } * crowd;
                 s += spacing * (STEP.0 + (STEP.1 - STEP.0) * d(2)) * part;
             }
             k += 1;
@@ -456,7 +500,14 @@ impl HotspotLine {
             .fold(0.0, f64::max);
         let height_of = |t: &Site| {
             let part = if most > 0.0 { t.raw / most } else { 0.0 };
-            let part = part.min(if t.s > 0.0 { 1.0 } else { HOTSPOT_PART });
+            let tallest = t.group == 1 && t.s > 0.0 && t.raw == most;
+            let part = part.min(if t.s == 0.0 {
+                HOTSPOT_PART
+            } else if tallest || t.group > 2 {
+                1.0
+            } else {
+                OTHERS
+            });
             (spec.height_m * t.flow * t.env * part).min(HEIGHT_MOST_M)
         };
         for (k, site) in sites.iter().enumerate() {
