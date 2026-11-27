@@ -278,23 +278,56 @@ Source: Slingo (1987).
 
 ### Köppen-Geiger classes
 
-The classes follow the thresholds of Peel, Finlayson, and McMahon (2007). Temperatures are in °C and precipitation is in mm. `T_hot` and `T_cold` are the means of the warmest month and the coldest month, `MAT` is the mean yearly temperature, and `MAP` is the yearly precipitation.
+The classes are the 30 classes of the maps of Beck et al. (2023), with their thresholds exactly. Beck et al. adapt them from Peel, Finlayson, and McMahon (2007). The Earth preset compares its classes with those maps, so `isotherm-classify` must give the same class as Beck et al. for the same monthly temperature and precipitation.
+
+The variables come from the twelve monthly means. Temperatures are in °C, and precipitation is in mm per month, or mm per year for `MAP`.
+
+| Variable | Meaning |
+| --- | --- |
+| `MAT` | Mean yearly temperature |
+| `T_hot`, `T_cold` | Temperature of the warmest month and of the coldest month |
+| `T_mon10` | Number of months with a temperature above 10 °C |
+| `MAP` | Yearly precipitation |
+| `P_dry` | Precipitation of the driest month |
+| `P_sdry`, `P_swet` | Precipitation of the driest month and of the wettest month in summer |
+| `P_wdry`, `P_wwet` | Precipitation of the driest month and of the wettest month in winter |
+
+Summer is the warmer of the two six-month periods April to September and October to March. Winter is the colder one. On another planet, the twelve months of the model year take the place of the calendar months, with the same split.
 
 ```
-P_th = 2 MAT       if 70 % or more of MAP falls in winter
-P_th = 2 MAT + 28  if 70 % or more of MAP falls in summer
+P_th = 2 MAT       if more than 70 % of MAP falls in winter
+P_th = 2 MAT + 28  if more than 70 % of MAP falls in summer
 P_th = 2 MAT + 14  otherwise
-
-B:  MAP < 10 P_th        (BW if MAP < 5 P_th, else BS)
-A:  not B, T_cold ≥ 18
-C:  not B, T_hot > 10, 0 < T_cold < 18
-D:  not B, T_hot > 10, T_cold ≤ 0
-E:  not B, T_hot ≤ 10    (ET if T_hot > 0, else EF)
 ```
 
-The Earth preset compares its classes with the maps of Beck et al. (2023), on the terrain of ETOPO 2022.
+| Class | Criterion |
+| --- | --- |
+| B, arid | `MAP < 10 P_th` |
+| BW, desert | B and `MAP < 5 P_th` |
+| BS, steppe | B and `MAP ≥ 5 P_th` |
+| third letter h, hot | B and `MAT ≥ 18` |
+| third letter k, cold | B and `MAT < 18` |
+| A, tropical | Not B and `T_cold ≥ 18` |
+| Af, rainforest | A and `P_dry ≥ 60` |
+| Am, monsoon | A, not Af, and `P_dry ≥ 100 − MAP/25` |
+| Aw, savannah | A, not Af, and `P_dry < 100 − MAP/25` |
+| C, temperate | Not B, `T_hot > 10`, and `0 < T_cold < 18` |
+| D, cold | Not B, `T_hot > 10`, and `T_cold ≤ 0` |
+| second letter s, dry summer | C or D, `P_sdry < 40`, and `P_sdry < P_wwet/3` |
+| second letter w, dry winter | C or D, and `P_wdry < P_swet/10` |
+| second letter f, no dry season | C or D, not s, and not w |
+| third letter a, hot summer | C or D, and `T_hot ≥ 22` |
+| third letter b, warm summer | C or D, not a, and `T_mon10 ≥ 4` |
+| third letter c, cold summer, in C | C, not a or b, and `1 ≤ T_mon10 < 4` |
+| third letter d, very cold winter | D, not a or b, and `T_cold < −38` |
+| third letter c, cold summer, in D | D, not a, b, or d |
+| E, polar | Not B and `T_hot ≤ 10` |
+| ET, tundra | E and `T_hot > 0` |
+| EF, frost | E and `T_hot ≤ 0` |
 
-Sources: Peel, Finlayson, and McMahon (2007), Beck et al. (2023), NOAA National Centers for Environmental Information (2022).
+The layer of the classes can also show As, tropical with a dry summer, which Beck et al. include in Aw. The score counts As as Aw.
+
+Sources: Beck et al. (2023), Peel, Finlayson, and McMahon (2007).
 
 ## Observations for the checks
 
@@ -302,10 +335,12 @@ The checks of the Earth preset compare its outputs with these data sets. `docs/i
 
 | Data set | License | Outputs |
 | --- | --- | --- |
-| ERA5 monthly averaged data on single levels (Copernicus Climate Change Service, 2019), described in Hersbach et al. (2020) | CC BY | Surface air temperature, sea ice, sea-level pressure, surface wind, cloud cover, sea surface temperature |
-| GPCP monthly precipitation, version 2.3 (Adler et al., 2017), described in Adler et al. (2018) | CC0 | Precipitation |
+| Köppen-Geiger maps of Beck et al. (2023), and the monthly temperature and precipitation that the maps come from | CC BY 4.0 | Climate classes, and the surface air temperature and the precipitation over land |
+| ERA5 monthly averaged data on single levels (Copernicus Climate Change Service, 2019), described in Hersbach et al. (2020) | CC BY | Surface air temperature over the sea, sea ice, sea-level pressure, surface wind, cloud cover, sea surface temperature |
+| GPCP monthly precipitation, version 2.3 (Adler et al., 2017), described in Adler et al. (2018) | CC0 | Precipitation over the sea |
 | Drifter climatology of near-surface currents (Laurindo, Mariano, and Lumpkin, 2017) | Not clear, to be confirmed before use | Ocean currents |
-| Köppen-Geiger maps of Beck et al. (2023) | CC BY 4.0 | Climate classes |
+
+Over land, the checks of temperature and precipitation use the climatology of Beck et al., not ERA5 or GPCP. The maps come from that climatology, so a model that passes those checks gets the inputs of the Köppen classes right. Beck et al. make the climatology from WorldClim V2, CHELSA V1.2, CHELSA V2.1, and CHPclim V1, moved to 1991 to 2020 with CRU TS V4.07 for temperature and GPCC V2022 for precipitation. They give it at 0.01°, 0.1°, 0.5°, and 1°. The coarse maps come from the 0.01° map by majority resampling, and the coarse climatologies come from the 0.01° climatology by averaging.
 
 ## References
 

@@ -147,18 +147,22 @@ At the end of tier 2, the model gives the outputs that the Köppen classes need,
 
 Each GPU step has a CPU reference version in `isotherm-sim`. A test runs both on a small grid and compares the results within a tolerance. GPU floats differ between vendors, so the goal is equal results within a tolerance, not equal bits.
 
-The Earth preset is the main test. It uses public data only: ETOPO 2022 for the terrain (public domain) and the Köppen-Geiger maps of Beck et al. (2023) for 1991 to 2020 (CC BY 4.0). A CI job runs the preset on a coarse grid and fails if the agreement of the land classes drops below its last value. The first target is 70 % of land cells. The later target is 80 %.
+The Earth preset is the main test. It uses public data only: ETOPO 2022 for the terrain (public domain) and the Köppen-Geiger maps of Beck et al. (2023) for 1991 to 2020 (CC BY 4.0), with the monthly temperature and precipitation that the maps come from. A CI job runs the preset on a coarse grid and fails if the agreement of the land classes drops below its last value. The score counts the agreement of the five main classes and of the 30 classes. The first target is 70 % of land cells in the five main classes, and the later target is 80 %. The score of the 30 classes has no fixed target, but it must not drop below its last value. Beck et al. report that their own maps of 1991 to 2020 agree with weather stations in 92 % of the main classes and 79 % of the 30 classes.
 
 The Köppen score alone is not sufficient. A class depends only on the monthly temperature and precipitation, so errors that cancel can give the right class, and wrong winds, currents, or clouds can still give plausible classes. Each output of the Earth preset therefore has its own check against observations, from the phase that adds the output.
 
 | Phase | Output | Observations | Check | First target |
 | --- | --- | --- | --- | --- |
-| 2 | Surface air temperature | ERA5 | RMS error of the zonal mean (the mean over each band of latitude), each month | 4 K |
-| 2 | Surface air temperature | ERA5 | Error of the seasonal range (warmest month minus coldest month), land and sea apart | 5 K |
+| 2 | Surface air temperature over land | Climatology of Beck et al. (2023) | RMS error of the zonal mean (the mean over each band of latitude), each month | 4 K |
+| 2 | Surface air temperature over the sea | ERA5 | RMS error of the zonal mean, each month | 4 K |
+| 2 | Surface air temperature over land | Climatology of Beck et al. (2023) | RMS error of the seasonal range (warmest month minus coldest month) | 5 K |
+| 2 | Surface air temperature over the sea | ERA5 | RMS error of the seasonal range | 5 K |
 | 2 | Sea ice | ERA5 | Error of the extent of each hemisphere, in the month of the largest extent and in the month of the smallest extent | 30 % |
-| 3 | Precipitation | GPCP | RMS error of the zonal mean, each month | 1.5 mm per day |
-| 3 | Precipitation | GPCP | Latitude of the zonal-mean peak near the equator, in January and July | 5° |
-| 3 | Precipitation | GPCP | Pattern correlation of the yearly mean over land | 0.6 |
+| 3 | Precipitation over land | Climatology of Beck et al. (2023) | RMS error of the zonal mean, each month | 1.5 mm per day |
+| 3 | Precipitation over the sea | GPCP | RMS error of the zonal mean, each month | 1.5 mm per day |
+| 3 | Precipitation | Climatology of Beck et al. (2023) over land, GPCP over the sea | Latitude of the zonal-mean peak near the equator, in January and July | 5° |
+| 3 | Precipitation over land | Climatology of Beck et al. (2023) | Pattern correlation of the yearly mean | 0.6 |
+| 3 | Precipitation over land | Climatology of Beck et al. (2023) | Share of cells where more than 70 % of the yearly precipitation falls in the same half of the year as in the observations, or in neither half in both | 70 % |
 | 3 | Sea-level pressure | ERA5 | Latitude of the subtropical highs in the zonal mean | 5° |
 | 3 | Surface wind | ERA5 | Latitude where the zonal-mean east-west wind changes sign, between the trade winds and the westerlies | 5° |
 | 3 | Surface wind | ERA5 | Pattern correlation of the vector wind, each month | 0.7 |
@@ -167,7 +171,17 @@ The Köppen score alone is not sufficient. A class depends only on the monthly t
 | 3 | Ocean currents | Drifter climatology of Laurindo, Mariano, and Lumpkin (2017) | Pattern correlation of the yearly mean surface current | 0.5 |
 | 3 | Ocean currents | Drifter climatology of Laurindo, Mariano, and Lumpkin (2017) | Ratio of the mean speed of the western boundary currents to the mean speed of the interior of each basin, in the model and in the observations | Within a factor of 2 |
 
-The observations are the means of 1991 to 2020, the period of the Köppen maps. ERA5 is under CC BY, and GPCP is under CC0. A script downloads each data set and reduces it to reference values on the coarse grid of the CI job. The repository holds the reference values and their attribution, not the data sets. Before the reference values of a data set go into the repository, its task makes sure that the license allows it.
+The checks and the Köppen score use the same reference, so a model cannot pass one and fail the other for a reason in the data:
+
+- The observations are the means of 1991 to 2020, the period of the Köppen maps.
+- Over land, the checks of temperature and precipitation use the climatology of Beck et al., which is the input of their maps. ERA5 and GPCP give only the values over the sea and the outputs that the climatology does not have.
+- `isotherm-classify` uses the thresholds of Beck et al. exactly, including the 0 °C boundary between C and D and their rule for summer and winter.
+- The script averages the 0.5° climatology of Beck et al. onto the cells of the CI grid, by area. The reference classes are the classes that `isotherm-classify` gives for that averaged climatology. The score compares the classes of the model with these reference classes, cell by cell. It also prints the agreement with the map of Beck et al. resampled to the same grid by majority, for comparison.
+- A test compares the reference classes with that resampled map. A low agreement means a fault in the classifier or in the averaging. The task of the classifier records the value.
+- The score and the checks over land count only the cells that are land in the preset and in the maps, without Antarctica, and they weight each cell by its area.
+- The temperature of the climatology on a coarse cell is a mean over its heights. The model compares its temperature at the mean height of the same cell.
+
+ERA5 is under CC BY, and GPCP is under CC0. A script downloads each data set and reduces it to reference values on the coarse grid of the CI job. The repository holds the reference values and their attribution, not the data sets. Before the reference values of a data set go into the repository, its task makes sure that the license allows it.
 
 The CI job of the Köppen score runs these checks too. A check fails if its result gets worse than its last value, or if it misses its first target. The first targets are a start. A later phase can make a target stricter, but not looser, and phase 8 makes each target stricter. `docs/isotherm/SCIENCE.md` gives the citation of each data set.
 
