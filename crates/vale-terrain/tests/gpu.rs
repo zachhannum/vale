@@ -3243,6 +3243,23 @@ fn shader_field(
     pyramid: &GpuPyramid,
     points: &[[f32; 4]],
 ) -> Vec<[f32; 3]> {
+    let params: Vec<u8> = [pyramid.face_size(), pyramid.max_level()]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    shader_values(gpu, tiles, pyramid, points, FIELD_TEST_WGSL, &params)
+}
+
+/// The values that the fragment shader `test` gives at each point, with
+/// `params` in its uniform buffer.
+fn shader_values(
+    gpu: &Gpu,
+    tiles: &GpuTiles,
+    pyramid: &GpuPyramid,
+    points: &[[f32; 4]],
+    test: &str,
+    params: &[u8],
+) -> Vec<[f32; 3]> {
     let device = &gpu.device;
     let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: None,
@@ -3251,11 +3268,7 @@ fn shader_field(
             fragment_buffer(1, wgpu::BufferBindingType::Storage { read_only: true }),
         ],
     });
-    let params: Vec<u8> = [pyramid.face_size(), pyramid.max_level()]
-        .iter()
-        .flat_map(|v| v.to_le_bytes())
-        .collect();
-    let params = buffer(gpu, wgpu::BufferUsages::UNIFORM, &params);
+    let params = buffer(gpu, wgpu::BufferUsages::UNIFORM, params);
     let bytes: Vec<u8> = points
         .iter()
         .flatten()
@@ -3278,9 +3291,7 @@ fn shader_field(
     });
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: None,
-        source: wgpu::ShaderSource::Wgsl(
-            format!("{TILES_WGSL}\n{FIELD_WGSL}\n{FIELD_TEST_WGSL}").into(),
-        ),
+        source: wgpu::ShaderSource::Wgsl(format!("{TILES_WGSL}\n{FIELD_WGSL}\n{test}").into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: None,
@@ -3449,18 +3460,111 @@ fn the_shader_field_matches_the_cpu_field() {
 /// Checks that the shader field and its slope at each point are within 1e-3
 /// of the range of the map from the CPU field.
 fn assert_fields_match(points: &[[f32; 4]], values: &[[f32; 3]], field: &Pyramid) {
+    assert_values_match(points, values, field, |d, lod| field.field_slope(d, lod));
+}
+
+/// Checks that each value and slope from the shader is within 1e-3 of the
+/// range of the map from `expected` at the direction and the lod of the
+/// point.
+fn assert_values_match(
+    points: &[[f32; 4]],
+    values: &[[f32; 3]],
+    field: &Pyramid,
+    expected: impl Fn(V3, f64) -> [f64; 3],
+) {
     let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
     let (low, high) = (all.iter().min().unwrap(), all.iter().max().unwrap());
     let range = f64::from(high - low) / 65535.0;
     for (point, value) in points.iter().zip(values) {
         let d = [point[0], point[1], point[2]].map(f64::from);
-        let expected = field.field_slope(d, f64::from(point[3]));
+        let expected = expected(d, f64::from(point[3]));
         for (value, expected) in value.iter().zip(expected) {
             let difference = (f64::from(*value) - expected).abs();
             assert!(
                 difference <= 1e-3 * range,
                 "{point:?}: the shader gives {value}, the CPU gives {expected}"
             );
+        }
+    }
+}
+
+/// A fragment shader that gives `shown_field` at each point: a direction and
+/// a land lod.
+const SHOWN_TEST_WGSL: &str = "
+struct Params {
+    n: u32,
+    max_level: u32,
+    sea_lod: f32,
+    sea: f32,
+    depth: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
+}
+
+@group(0) @binding(0) var<uniform> params: Params;
+@group(0) @binding(1) var<storage, read> points: array<vec4<f32>>;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    let at = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(at * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    let p = points[u32(at.x)];
+    let shown = shown_field(
+        p.xyz, params.n, p.w, params.sea_lod, params.max_level, params.sea, params.depth,
+    );
+    return vec4<f32>(shown, 1.0);
+}
+";
+
+#[test]
+#[ignore = "gpu"]
+fn the_shader_shown_field_matches_the_cpu() {
+    let gpu = gpu();
+    let cpu = hills(64);
+    let (tiles, pyramid) = tiles_and_pyramid(gpu, &cpu, 16);
+    let field = Pyramid::new(&cpu);
+    // Sea levels at the low, the middle, and the high part of the map.
+    let all: Vec<u16> = (0..FACES).flat_map(|f| field.face(0, f).to_vec()).collect();
+    let (low, high) = (*all.iter().min().unwrap(), *all.iter().max().unwrap());
+    let level = |t: f64| (f64::from(low) + t * f64::from(high - low)) / 65535.0;
+    let mut points = Vec::new();
+    for d in test_directions() {
+        for lod in [0.0, 0.3, 1.0, 2.75] {
+            points.push([d[0] as f32, d[1] as f32, d[2] as f32, lod]);
+        }
+    }
+    // The slope in the blend changes by about 6 / depth for each change of
+    // the land value, so a blend depth of a part of the range keeps the
+    // 32-bit error of the land field small.
+    let range = level(1.0) - level(0.0);
+    for (sea_lod, depth) in [(3.5, 0.15), (2.0, 0.0), (0.5, 0.3), (4.0, -1.0)] {
+        for t in [0.3, 0.5, 0.7] {
+            let sea = level(t) as f32;
+            let depth = if depth > 0.0 { depth * range } else { depth };
+            let params: Vec<u8> = [pyramid.face_size(), pyramid.max_level()]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .chain(
+                    [sea_lod as f32, sea, depth as f32, 0.0, 0.0, 0.0]
+                        .iter()
+                        .flat_map(|v| v.to_le_bytes()),
+                )
+                .collect();
+            let values = shader_values(gpu, &tiles, &pyramid, &points, SHOWN_TEST_WGSL, &params);
+            assert_values_match(&points, &values, &field, |d, lod| {
+                field.shown_slope(
+                    d,
+                    lod,
+                    f64::from(sea_lod as f32),
+                    f64::from(sea),
+                    f64::from(depth as f32),
+                )
+            });
         }
     }
 }

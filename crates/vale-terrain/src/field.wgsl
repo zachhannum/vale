@@ -7,6 +7,9 @@
 //
 // - `field(d, n, lod, max_level)`: the value at a world direction with a
 //   blend of levels, and its slope across one texel of level 0.
+// - `shown_field(d, n, land_lod, sea_lod, max_level, sea, depth)`: `field`
+//   at `land_lod` above sea level, with a blend to `field` at `sea_lod`
+//   below it.
 // - `height(d, n, level)`: the value at one level, and its slope across one
 //   texel of that level. The value is the uniform cubic B-spline of 4 by 4
 //   texels, so a band edge is a smooth curve across the texels.
@@ -211,4 +214,49 @@ fn field(d: vec3<f32>, n: u32, lod: f32, max_level: u32) -> vec3<f32> {
     let a = level_height(d, n, k);
     let b = level_height(d, n, k + 1u);
     return mix(a, b, l - f32(k));
+}
+
+// The value that the display of a height layer shows at a world direction,
+// and its slope across one texel of level 0. At or above the sea level
+// `sea`, it is `field` at `land_lod`. Below it, it goes from that field at
+// the coast to `field` at `sea_lod` at `depth` below sea level, along a
+// smoothstep of the depth. The sea field is held at least one value step
+// below sea level, so the result stays below sea level. A `depth` below 0
+// means no sea. `combine_sea` in `smooth.rs` is the same on the CPU.
+fn shown_field(
+    d: vec3<f32>,
+    n: u32,
+    land_lod: f32,
+    sea_lod: f32,
+    max_level: u32,
+    sea: f32,
+    depth: f32,
+) -> vec3<f32> {
+    let land = field(d, n, land_lod, max_level);
+    if depth < 0.0 || land_lod == sea_lod {
+        return land;
+    }
+    let below = land.x - sea;
+    if !(below < 0.0) {
+        return land;
+    }
+    // The blend `a` and its derivative `da` by the land value.
+    var a = 1.0;
+    var da = 0.0;
+    if depth > 0.0 {
+        let t = min(-below / depth, 1.0);
+        a = t * t * (3.0 - 2.0 * t);
+        da = -6.0 * t * (1.0 - t) / depth;
+    }
+    if !(a > 0.0) {
+        return land;
+    }
+    let c = field(d, n, sea_lod, max_level);
+    let step = 1.0 / 65535.0;
+    let deep = c.x - sea;
+    let clamped = deep < -step;
+    let m = select(-step, deep, clamped);
+    let sea_slope = select(vec2<f32>(0.0), c.yz, clamped);
+    let slope = (1.0 - a) * land.yz + a * sea_slope + da * (m - below) * land.yz;
+    return vec3<f32>(sea + (1.0 - a) * below + a * m, slope);
 }

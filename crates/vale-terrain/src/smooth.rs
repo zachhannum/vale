@@ -142,6 +142,19 @@ impl Pyramid {
     pub fn field_slope(&self, d: V3, lod: f64) -> [f64; 3] {
         Levels::field_slope(self, d, lod)
     }
+
+    /// The value that the display of a height layer shows, and its slope.
+    /// See `Levels::shown_slope`.
+    pub fn shown_slope(
+        &self,
+        d: V3,
+        land_lod: f64,
+        sea_lod: f64,
+        sea: f64,
+        depth: f64,
+    ) -> [f64; 3] {
+        Levels::shown_slope(self, d, land_lod, sea_lod, sea, depth)
+    }
 }
 
 impl Levels for Pyramid {
@@ -297,6 +310,62 @@ pub(crate) trait Levels {
         let b = self.level_spline(k + 1, d);
         std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
     }
+
+    /// The value that the display of a height layer shows at a direction,
+    /// and its slope, as `shown_field` in `field.wgsl`. Above sea level, it
+    /// is the field at `land_lod`. Below sea level, it blends to the field at
+    /// `sea_lod`. See `combine_sea`. A `depth` below 0 means no sea, and then
+    /// the value is the field at `land_lod`, as it is with equal levels.
+    fn shown_slope(&self, d: V3, land_lod: f64, sea_lod: f64, sea: f64, depth: f64) -> [f64; 3] {
+        let land = self.field_slope(d, land_lod);
+        if depth < 0.0 || land_lod == sea_lod {
+            return land;
+        }
+        combine_sea(land, || self.field_slope(d, sea_lod), sea, depth)
+    }
+}
+
+/// The smallest step of a value, from 0 to 1.
+const VALUE_STEP: f64 = 1.0 / 65535.0;
+
+/// The blend of the land field `land` and the sea field `sea_field` below
+/// sea level `sea`, with each value and its slope as `field_slope` gives
+/// them. At or above sea level, the result is `land`. Below it, the result
+/// goes from `land` at the coast to `sea_field` at `depth` below sea level,
+/// along a smoothstep of the depth of `land`. The sea field is held at least
+/// one value step below sea level, so the result stays below sea level. The
+/// value and the slope are continuous at the coast. `sea_field` runs only
+/// below sea level. All values are from 0 to 1.
+pub fn combine_sea(
+    land: [f64; 3],
+    sea_field: impl FnOnce() -> [f64; 3],
+    sea: f64,
+    depth: f64,
+) -> [f64; 3] {
+    let below = land[0] - sea;
+    if below.is_nan() || below >= 0.0 {
+        return land;
+    }
+    // The blend `a` and its derivative `da` by the land value.
+    let (a, da) = if depth > 0.0 {
+        let t = (-below / depth).min(1.0);
+        (t * t * (3.0 - 2.0 * t), -6.0 * t * (1.0 - t) / depth)
+    } else {
+        (1.0, 0.0)
+    };
+    if a.is_nan() || a <= 0.0 {
+        return land;
+    }
+    let c = sea_field();
+    let deep = c[0] - sea;
+    let clamped = deep < -VALUE_STEP;
+    let m = if clamped { deep } else { -VALUE_STEP };
+    let value = sea + (1.0 - a) * below + a * m;
+    let slope = |i: usize| {
+        let sea_slope = if clamped { c[i] } else { 0.0 };
+        (1.0 - a) * land[i] + a * sea_slope + da * (m - below) * land[i]
+    };
+    [value, slope(1), slope(2)]
 }
 
 /// The weights of the uniform cubic B-spline at `t` from 0 to 1, for the
@@ -370,6 +439,19 @@ impl LocalPyramid {
     /// `Levels::field`.
     pub fn field(&self, d: V3, lod: f64) -> f64 {
         Levels::field(self, d, lod)
+    }
+
+    /// The value that the display of a height layer shows, and its slope.
+    /// See `Levels::shown_slope`.
+    pub fn shown_slope(
+        &self,
+        d: V3,
+        land_lod: f64,
+        sea_lod: f64,
+        sea: f64,
+        depth: f64,
+    ) -> [f64; 3] {
+        Levels::shown_slope(self, d, land_lod, sea_lod, sea, depth)
     }
 
     pub fn face_size(&self) -> u32 {
@@ -757,5 +839,191 @@ mod tests {
             }
             assert!(local.filled() > 0);
         }
+    }
+
+    /// A random number from -1 to 1 for each call.
+    fn random(seed: u64) -> impl FnMut() -> f64 {
+        let mut seed = seed;
+        move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        }
+    }
+
+    /// A map of rough ground: random texels around the middle value.
+    fn rough(n: usize, seed: u64) -> Heightmap {
+        let mut map = Heightmap::new(n, 0);
+        let full = TexelRect {
+            x0: 0,
+            y0: 0,
+            x1: n,
+            y1: n,
+        };
+        let mut next = random(seed);
+        for face in 0..FACES {
+            let data: Vec<u16> = (0..n * n)
+                .map(|_| (32768.0 + 6000.0 * next()) as u16)
+                .collect();
+            map.store_rect(face, full, &data);
+        }
+        map
+    }
+
+    const SEA: f64 = 0.5;
+    const DEPTH: f64 = 0.04;
+
+    #[test]
+    fn equal_levels_show_the_land_field() {
+        let p = Pyramid::new(&waves(32));
+        let mut next = random(3);
+        for _ in 0..500 {
+            let d = normalize([next(), next(), next()]);
+            let lod = 2.0 * next() + 1.5;
+            let field = p.field_slope(d, lod);
+            assert_eq!(p.shown_slope(d, lod, lod, SEA, DEPTH), field);
+            // A layer with no sea keeps the land field.
+            assert_eq!(p.shown_slope(d, lod, lod + 1.3, SEA, -1.0), field);
+        }
+    }
+
+    #[test]
+    fn land_shows_the_land_field() {
+        let p = Pyramid::new(&waves(32));
+        let mut next = random(5);
+        let mut count = 0;
+        for _ in 0..1000 {
+            let d = normalize([next(), next(), next()]);
+            let field = p.field_slope(d, 0.5);
+            if field[0] >= SEA {
+                assert_eq!(p.shown_slope(d, 0.5, 3.0, SEA, DEPTH), field);
+                count += 1;
+            }
+        }
+        assert!(count > 100);
+    }
+
+    #[test]
+    fn the_shown_field_keeps_the_side_of_sea_level() {
+        let mut next = random(11);
+        let mut sea_points = 0;
+        for (i, map) in [waves(32), rough(16, 1), rough(32, 2)].iter().enumerate() {
+            let p = Pyramid::new(map);
+            for sea in [0.45, 0.5, 0.53] {
+                for _ in 0..400 {
+                    let d = normalize([next(), next(), next()]);
+                    let land_lod = 1.5 + 1.5 * next();
+                    let sea_lod = 1.5 + 1.5 * next();
+                    let depth = 0.03 + 0.03 * next();
+                    let field = p.field(d, land_lod);
+                    let shown = p.shown_slope(d, land_lod, sea_lod, sea, depth)[0];
+                    if field >= sea {
+                        assert!(shown >= sea, "{i} {sea} {d:?}");
+                    } else {
+                        assert!(shown < sea, "{i} {sea} {d:?}: {field} {shown}");
+                        sea_points += 1;
+                    }
+                }
+            }
+        }
+        assert!(sea_points > 500);
+    }
+
+    #[test]
+    fn the_shown_field_and_its_slope_are_continuous_at_the_coast() {
+        for map in [waves(32), rough(32, 4)] {
+            let p = Pyramid::new(&map);
+            let m = 32.0;
+            let flat = |x: f64| unwarp(((x + 0.5) / m) * 2.0 - 1.0);
+            let dir = |x: f64, y: f64| face_dir(2, flat(x), flat(y));
+            let (land_lod, sea_lod) = (0.5, 2.5);
+            let mut coasts = 0;
+            for y in [4.3, 11.7, 20.2, 27.9] {
+                let below = |x: f64| p.field(dir(x, y), land_lod) < SEA;
+                let mut x = 1.0;
+                while x < 30.0 {
+                    let (mut a, mut b) = (x, x + 0.05);
+                    x = b;
+                    if below(a) == below(b) {
+                        continue;
+                    }
+                    for _ in 0..60 {
+                        let mid = 0.5 * (a + b);
+                        if below(mid) == below(a) {
+                            a = mid;
+                        } else {
+                            b = mid;
+                        }
+                    }
+                    let ga = p.shown_slope(dir(a, y), land_lod, sea_lod, SEA, DEPTH);
+                    let gb = p.shown_slope(dir(b, y), land_lod, sea_lod, SEA, DEPTH);
+                    for i in 0..3 {
+                        assert!((ga[i] - gb[i]).abs() < 1e-9, "{y} {a}: {ga:?} {gb:?}");
+                    }
+                    coasts += 1;
+                }
+            }
+            assert!(coasts > 4);
+        }
+    }
+
+    #[test]
+    fn the_shown_slope_is_the_derivative_of_the_value() {
+        let p = Pyramid::new(&waves(32));
+        let m = 32.0;
+        let flat = |x: f64| unwarp(((x + 0.5) / m) * 2.0 - 1.0);
+        let at =
+            |x: f64, y: f64| p.shown_slope(face_dir(2, flat(x), flat(y)), 0.5, 2.5, SEA, DEPTH);
+        let e = 1e-5;
+        let mut next = random(9);
+        let mut blended = 0;
+        for _ in 0..400 {
+            let (x, y) = (16.0 + 13.0 * next(), 16.0 + 13.0 * next());
+            let [h, sx, sy] = at(x, y);
+            let field = p.field(face_dir(2, flat(x), flat(y)), 0.5);
+            if field < SEA && field > SEA - DEPTH && h < SEA - 2.0 * VALUE_STEP {
+                blended += 1;
+            }
+            let dx = (at(x + e, y)[0] - at(x - e, y)[0]) / (2.0 * e);
+            let dy = (at(x, y + e)[0] - at(x, y - e)[0]) / (2.0 * e);
+            // The clamp of the sea field one step below sea level has a kink.
+            let sea = p.field(face_dir(2, flat(x), flat(y)), 2.5);
+            if (sea - (SEA - VALUE_STEP)).abs() < 1e-6 {
+                continue;
+            }
+            assert!((sx - dx).abs() < 1e-5, "{x} {y}: {sx} {dx}");
+            assert!((sy - dy).abs() < 1e-5, "{x} {y}: {sy} {dy}");
+        }
+        assert!(blended > 20);
+    }
+
+    #[test]
+    fn the_deep_sea_shows_the_sea_field() {
+        let p = Pyramid::new(&rough(32, 6));
+        let mut next = random(13);
+        let mut count = 0;
+        for _ in 0..3000 {
+            let d = normalize([next(), next(), next()]);
+            let land = p.field(d, 0.0);
+            if land >= SEA - 0.01 {
+                continue;
+            }
+            count += 1;
+            let sea = p.field_slope(d, 3.0);
+            let shown = p.shown_slope(d, 0.0, 3.0, SEA, 0.01);
+            if sea[0] - SEA < -VALUE_STEP {
+                for i in 0..3 {
+                    assert!(
+                        (shown[i] - sea[i]).abs() < 1e-12,
+                        "{d:?}: {shown:?} {sea:?}"
+                    );
+                }
+            } else {
+                assert!((shown[0] - (SEA - VALUE_STEP)).abs() < 1e-12);
+                assert_eq!([shown[1], shown[2]], [0.0, 0.0]);
+            }
+        }
+        assert!(count > 100);
     }
 }
