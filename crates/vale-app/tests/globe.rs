@@ -35,7 +35,8 @@ use vale_store::{RasterDisplay, RasterId};
 use vale_style::{Color, Stroke, StrokeKind};
 use vale_terrain::{
     Bands, ChannelCut, ChannelMap, CoarseHeights, FlowMap, Limits, Mode, Rain, StopLine,
-    WindowHeights, channel_map, level_to_meters, meters_to_level, window_channels,
+    TrenchMargin, TrenchSide, WindowHeights, channel_map, level_to_meters, meters_to_level,
+    window_channels,
 };
 
 /// The sample world with its vector layers hidden, so that each place of the
@@ -6351,6 +6352,207 @@ fn the_brush_panel_has_the_ocean_ridge_mode_and_its_sliders() {
     assert!(age >= 10.0, "{age}");
     let line = format!("Edge age {age:.0} Myr");
     assert!(h.query_by_label(&line).is_some(), "{line}");
+}
+
+#[test]
+fn the_brush_panel_has_the_trench_mode_and_its_settings() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Accretionary").next().is_none());
+    h.get_by_label("Trench").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Trench);
+    // The size is the width of the trench, so the zoom does not change it.
+    assert!(brush.size_is_fixed());
+    assert_eq!(brush.trench_depth_m, 2000.0);
+    for name in [
+        "Draw the axis of the trench.",
+        "Radius",
+        "Flow",
+        "Depth",
+        "Side",
+        "Left",
+        "Right",
+        "Accretionary",
+        "Eroding",
+        "Seed",
+        "Floor",
+        "Ceiling",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Hardness", "Strength", "Erosion", "Shelf depth"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    h.get_by_label("Right").click();
+    h.get_by_label("Eroding").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(
+        (brush.trench_side, brush.trench_margin),
+        (TrenchSide::Right, TrenchMargin::Eroding)
+    );
+}
+
+/// A harness in the trench mode on the empty world.
+fn trench_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Trench;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_trench_stroke_gives_the_levels_of_the_cpu_trench() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, TrenchLine, sea_floor};
+    let _gpu = one_gpu_test();
+    let mut h = trench_harness(7);
+    let before = all_levels(&h);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let app = all_levels(&h);
+
+    // The same line on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let mut cpu = Heightmap::new(n, globe.map.base());
+    // The age of the floor comes from the ground at the first point.
+    let age = sea_floor(&cpu, stamps[0].center, 0.1).age_myr;
+    let spec = brush.trench_spec(0.1, globe.world_km, globe.world_seed, age);
+    let mut line = TrenchLine::new(spec, n);
+    for stamp in &stamps {
+        line.push(stamp.center, stamp.flow);
+    }
+    cpu.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        cpu.trench(&plan);
+        from = plan.end;
+    }
+    cpu.end_stroke();
+
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let changed = cpu.iter().zip(&before).filter(|(a, b)| a != b).count();
+    // The empty world is young floor, so the bend is narrow.
+    assert!(changed > 1000, "{changed}");
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    // The trench goes below the ground.
+    assert!(app.iter().min() < before.iter().min());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn two_equal_trench_strokes_with_the_same_seed_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = trench_harness(7);
+    let before = all_levels(&h);
+    let first = uplift_stroke(&mut h);
+    assert!(first != before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = trench_harness(7);
+    assert!(all_levels(&h) == before);
+    assert!(uplift_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = trench_harness(8);
+    let other = uplift_stroke(&mut h);
+    assert!(other != before && other != first);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_held_trench_follows_the_settings_until_it_is_applied() {
+    let _gpu = one_gpu_test();
+    let second = |h: &mut Harness<'static, AppState>| {
+        let brush = &mut h.state_mut().globe.brush;
+        brush.trench_depth_m = 3500.0;
+        brush.trench_side = TrenchSide::Right;
+        brush.trench_margin = TrenchMargin::Eroding;
+        brush.flow = 0.5;
+    };
+    // The trench of a stroke with the second settings.
+    let mut h = trench_harness(7);
+    second(&mut h);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    let direct = all_levels(&h);
+    drop(h);
+
+    let mut h = trench_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    let globe = &h.state().globe;
+    assert_eq!(globe.holding(), Some(Mode::Trench));
+    assert!(globe.ridge_preview().is_some_and(|line| line.len() > 10));
+    // The trench shows, and the heightmap of the document waits for it.
+    assert!(all_levels(&h) == before.0);
+    assert!(canvas_image(&mut h).as_raw() != before.1.as_raw());
+    // A change of the settings lays the trench again. The sea has one
+    // color, so the levels below show the change.
+    second(&mut h);
+    h.step();
+    assert!(h.state().globe.held_updating());
+    wait_held(&mut h);
+    assert!(!h.state().globe.held_updating());
+    // Apply puts the trench of the new settings into the heightmap.
+    h.state_mut().globe.apply_held();
+    run_until_idle(&mut h);
+    assert!(h.state().globe.holding().is_none());
+    let applied = all_levels(&h);
+    let worst = applied
+        .iter()
+        .zip(&direct)
+        .map(|(a, b)| a.abs_diff(*b))
+        .max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    // One undo puts back the ground from before the stroke.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn discarding_a_held_trench_puts_back_the_ground() {
+    let _gpu = one_gpu_test();
+    let mut h = trench_harness(7);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    pen_line(&mut h, |_| {});
+    wait_held(&mut h);
+    assert!(canvas_image(&mut h).as_raw() != before.1.as_raw());
+    h.state_mut().globe.discard_held();
+    run_until_idle(&mut h);
+    h.run_steps(2);
+    let globe = &h.state().globe;
+    assert!(globe.holding().is_none() && !globe.can_undo());
+    assert!(all_levels(&h) == before.0);
+    assert!(canvas_image(&mut h).as_raw() == before.1.as_raw());
 }
 
 #[test]
