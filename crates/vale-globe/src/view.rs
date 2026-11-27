@@ -2,7 +2,7 @@
 
 use eframe::egui::{Pos2, Rect, Vec2};
 
-use super::math::{Mat3, V3, cross, lonlat_to_dir, normalize};
+use crate::math::{Mat3, V3, cross, lonlat_to_dir, normalize};
 
 pub const ZOOM_MIN: f64 = 0.5;
 /// The shader finds the place of each pixel in 32-bit floats. Past this
@@ -96,7 +96,7 @@ impl Camera for GlobeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::globe::math::angle;
+    use crate::math::angle;
 
     fn rect() -> Rect {
         Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))

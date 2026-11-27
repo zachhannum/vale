@@ -24,9 +24,9 @@ use vale_terrain::{
     FACES, Heightmap, TILE_SIZE, TexelRect, face_dir, face_of, level_size, unwarp, warp,
 };
 
-use super::gpu::{LayerKey, Link, MapKey, MapKind, Op};
-use super::math::{V3, add, angle, lonlat_to_dir, normalize, scale};
-use super::{FrameDraw, FramePlace};
+use crate::frame::{FrameDraw, FramePlace};
+use crate::gpu::{LayerKey, Link, MapKey, MapKind, Op};
+use crate::math::{V3, add, angle, lonlat_to_dir, normalize, scale};
 
 /// The memory of the GPU for the detail maps, in bytes.
 pub const DETAIL_BUDGET: u64 = 256 << 20;
@@ -35,10 +35,10 @@ pub const DETAIL_BUDGET: u64 = 256 << 20;
 pub const DETAIL_IN_FLIGHT: usize = 32;
 
 /// A detail map that no frame used for this number of frames goes away.
-const IDLE_FRAMES: u64 = 60;
+pub const IDLE_FRAMES: u64 = 60;
 
 /// The number of the view of the globe or the flat map among the frames.
-pub(super) const VIEW: u32 = u32::MAX;
+pub const VIEW: u32 = u32::MAX;
 
 /// Pixels between two points of the grid of a frame.
 const GRID_PIXELS: u32 = 32;
@@ -178,7 +178,7 @@ fn map_bytes(face_size: u32, tiles: &[TileKey]) -> u64 {
 /// The places that a frame shows: a grid of pixels of its target, with the
 /// direction under each.
 #[derive(Debug)]
-pub(super) struct Grid {
+pub struct Grid {
     cols: usize,
     rows: usize,
     /// Pixels between two points along x and along y.
@@ -190,7 +190,7 @@ pub(super) struct Grid {
 
 impl Grid {
     /// The grid of a frame, with `projection` of radius 1.
-    pub(super) fn new(place: &FramePlace, size: [u32; 2], projection: &Projection) -> Grid {
+    pub fn new(place: &FramePlace, size: [u32; 2], projection: &Projection) -> Grid {
         let (sin, cos) = place.rotation.sin_cos();
         let units = f64::from(place.units_to_pixels);
         Grid::from_fn(size, |x, y| {
@@ -207,7 +207,7 @@ impl Grid {
 
     /// The grid of a target of `size` pixels. `dir_at` gives the direction
     /// under a pixel, or `None` off the world.
-    pub(super) fn from_fn(size: [u32; 2], dir_at: impl Fn(f64, f64) -> Option<V3>) -> Grid {
+    pub fn from_fn(size: [u32; 2], dir_at: impl Fn(f64, f64) -> Option<V3>) -> Grid {
         let count = |pixels: u32| ((pixels / GRID_PIXELS) as usize + 2).min(GRID_MAX);
         let (cols, rows) = (count(size[0]), count(size[1]));
         let step = [
@@ -259,7 +259,7 @@ impl Grid {
     /// cell, and points between them closer
     /// than half of `span` for that pixel. A cell at the edge of the world
     /// gives its points with the pixel of their side that shows.
-    pub(super) fn sample(&self, mut each: impl FnMut(V3, f64), span: impl Fn(f64) -> f64) {
+    pub fn sample(&self, mut each: impl FnMut(V3, f64), span: impl Fn(f64) -> f64) {
         for row in 0..self.rows - 1 {
             for col in 0..self.cols - 1 {
                 let corners = [
@@ -297,7 +297,7 @@ impl Grid {
     }
 
     /// The direction under the middle of the grid, if it shows the world.
-    pub(super) fn middle(&self) -> Option<V3> {
+    pub fn middle(&self) -> Option<V3> {
         self.at(self.cols / 2, self.rows / 2)
     }
 
@@ -378,7 +378,7 @@ fn around((face, col, row): TileKey, face_size: u32, tile: usize) -> impl Iterat
 }
 
 /// The tile of a detail map under a direction.
-fn tile_of(d: V3, face_size: u32, tile: usize) -> TileKey {
+pub fn tile_of(d: V3, face_size: u32, tile: usize) -> TileKey {
     let (face, a, b) = face_of(d);
     let n = face_size as usize;
     let texel = |s: f64| (((warp(s) + 1.0) / 2.0 * n as f64) as usize).min(n - 1);
@@ -388,7 +388,7 @@ fn tile_of(d: V3, face_size: u32, tile: usize) -> TileKey {
 /// One raster layer in one frame or in the view, for `Details::want_frames`
 /// and `Details::want_view`.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Shown {
+pub struct Shown {
     /// The number of the frame, or `VIEW`.
     pub frame: u32,
     pub raster: RasterId,
@@ -409,7 +409,7 @@ pub(super) struct Shown {
 /// to `coarsest`. `lod` is the level of the smooth field, and
 /// `radians_per_pixel` is the fewest radians of the world in one pixel.
 /// The level has one texel or more in each pixel.
-pub(super) fn frame_level(full_face: u32, coarsest: u32, lod: f64, radians_per_pixel: f64) -> u32 {
+pub fn frame_level(full_face: u32, coarsest: u32, lod: f64, radians_per_pixel: f64) -> u32 {
     let texels = radians_per_pixel * f64::from(full_face) / FRAC_PI_2;
     let level = lod.max(texels.log2()).floor();
     if level.is_nan() || level < 0.0 {
@@ -559,7 +559,7 @@ struct GridKey {
 /// The detail maps of the raster layers, and what the frames and the view
 /// need.
 #[derive(Default)]
-pub(super) struct Details {
+pub struct Details {
     maps: Vec<DetailMap>,
     needs: Vec<Need>,
     /// The frames of the last `want_frames`.
@@ -627,7 +627,7 @@ impl Details {
     /// over the budget. A tile that waits for the project file and that no
     /// frame needs is cancelled. `link`: the GPU gets the changes.
     /// `generations` counts the maps on the GPU.
-    pub(super) fn want_frames(
+    pub fn want_frames(
         &mut self,
         frames: &[FrameDraw],
         shown: &[Shown],
@@ -656,7 +656,7 @@ impl Details {
     /// Finds the tiles that the view needs for each raster layer in
     /// `shown`, as `want_frames` does for the frames. `grid` is the grid of
     /// the view. The needs of the frames stay.
-    pub(super) fn want_view(
+    pub fn want_view(
         &mut self,
         grid: Arc<Grid>,
         shown: &[Shown],
@@ -908,7 +908,7 @@ impl Details {
 
     /// Each tile that a frame needs and that the GPU does not have, and
     /// that does not wait for the project file.
-    pub(super) fn missing(&self) -> Vec<DetailRequest> {
+    pub fn missing(&self) -> Vec<DetailRequest> {
         let mut out = Vec::new();
         for need in &self.needs {
             let Some(map) = self.map_of(need) else {
@@ -928,23 +928,23 @@ impl Details {
     }
 
     /// Marks requests as waiting for the project file.
-    pub(super) fn start(&mut self, reqs: &[DetailRequest]) {
+    pub fn start(&mut self, reqs: &[DetailRequest]) {
         self.in_flight.extend_from_slice(reqs);
     }
 
     /// The number of requests that wait for the project file.
-    pub(super) fn in_flight(&self) -> usize {
+    pub fn in_flight(&self) -> usize {
         self.in_flight.len()
     }
 
     /// True if a request waits for the project file and a frame needs it.
-    pub(super) fn wants(&self, req: &DetailRequest) -> bool {
+    pub fn wants(&self, req: &DetailRequest) -> bool {
         self.in_flight.contains(req)
     }
 
     /// Takes a request from the list of the requests that wait for the
     /// project file. Returns `false` if it was not there.
-    pub(super) fn finish(&mut self, req: &DetailRequest) -> bool {
+    pub fn finish(&mut self, req: &DetailRequest) -> bool {
         let before = self.in_flight.len();
         self.in_flight.retain(|r| r != req);
         before != self.in_flight.len()
@@ -952,7 +952,7 @@ impl Details {
 
     /// Puts the texels of one tile into its detail map: level 0 and the
     /// block of level 1 under it. `None`: each texel has the base level.
-    pub(super) fn store(
+    pub fn store(
         &mut self,
         req: &DetailRequest,
         data: Option<(Vec<u16>, Vec<u16>)>,
@@ -1050,7 +1050,7 @@ impl Details {
     /// Counts one frame. With no `want_frames` for a time, the needs of the
     /// frames go away, and with no `want_view` for a time, the needs of the
     /// view go away. With neither, each map goes away.
-    pub(super) fn idle_frame(&mut self) {
+    pub fn idle_frame(&mut self) {
         self.idle += 1;
         self.view_idle += 1;
         let frames = self.idle > IDLE_FRAMES;
@@ -1070,7 +1070,7 @@ impl Details {
     }
 
     /// Takes each map and each need.
-    pub(super) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         self.maps.clear();
         self.needs.clear();
         self.in_flight.clear();
@@ -1091,13 +1091,13 @@ impl Details {
 
     /// True if a frame of the last `want_frames`, or the view for `VIEW`,
     /// reads each raster layer at the level that its pixels need.
-    pub(super) fn fits(&self, frame: u32) -> bool {
+    pub fn fits(&self, frame: u32) -> bool {
         self.has(frame) && !self.coarser.contains(&frame)
     }
 
     /// The detail map that a frame draws a raster layer from. `None`: the
     /// frame draws the copy.
-    pub(super) fn source(&self, frame: u32, raster: RasterId) -> Option<MapKey> {
+    pub fn source(&self, frame: u32, raster: RasterId) -> Option<MapKey> {
         let need = self
             .needs
             .iter()
@@ -1108,29 +1108,29 @@ impl Details {
     /// True if each tile that a frame of the last `want_frames`, or the view
     /// for `VIEW`, needs is on the GPU. `false` for a frame that the last
     /// `want_frames` did not have.
-    pub(super) fn ready(&self, frame: u32) -> bool {
+    pub fn ready(&self, frame: u32) -> bool {
         let mut needs = self.needs.iter().filter(|n| n.frame == frame);
         self.has(frame) && needs.all(|n| self.ready_key(n).is_some())
     }
 
     /// True while a frame waits for tiles.
-    pub(super) fn loading(&self) -> bool {
+    pub fn loading(&self) -> bool {
         self.needs.iter().any(|n| self.ready_key(n).is_none())
     }
 
     /// The key of each detail map on the GPU.
-    pub(super) fn keys(&self) -> Vec<MapKey> {
+    pub fn keys(&self) -> Vec<MapKey> {
         self.maps.iter().map(|map| map.key).collect()
     }
 
     /// The memory of the detail maps on the GPU, in bytes, by the estimate.
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.maps.iter().map(DetailMap::bytes).sum()
     }
 
     /// The level of the detail map that a frame needs for a raster layer.
     /// `None`: the frame reads the copy.
-    pub(super) fn level(&self, frame: u32, raster: RasterId) -> Option<u32> {
+    pub fn level(&self, frame: u32, raster: RasterId) -> Option<u32> {
         let need = self
             .needs
             .iter()
@@ -1139,7 +1139,7 @@ impl Details {
     }
 
     /// The tiles that a frame needs for a raster layer.
-    pub(super) fn tiles(&self, frame: u32, raster: RasterId) -> Vec<TileKey> {
+    pub fn tiles(&self, frame: u32, raster: RasterId) -> Vec<TileKey> {
         let need = self
             .needs
             .iter()
@@ -1150,137 +1150,11 @@ impl Details {
 
 #[cfg(test)]
 mod tests {
-    use vale_store::{BlendMode, Hillshade, RasterDisplay, Smoothing};
     use vale_terrain::next_level;
 
-    use super::super::flat::{DEFAULT_SPEC, FlatMesh};
-    use eframe::egui;
-
-    use super::super::view::GlobeView;
-    use super::super::{
-        FrameDraw, FrameItem, FramePlace, Globe, Look, RasterLook, StackItem, WorldView,
-    };
     use super::*;
 
     const RASTER: RasterId = RasterId(7);
-    const FACE: usize = 8192;
-
-    /// A globe with one visible raster layer of 8,192 texels in a face,
-    /// with no smoothing. `memory`: the whole heightmap is in the main
-    /// memory. Else the project file holds its tiles.
-    fn globe(memory: bool) -> Globe {
-        let mut globe = Globe::with_face_size(64);
-        let map = Heightmap::new(FACE, 1000);
-        if memory {
-            assert!(globe.add_raster(RASTER, map, true));
-        } else {
-            let reduced = super::super::reduce_map(&map);
-            assert!(globe.add_reduced(RASTER, reduced, FACE, true));
-        }
-        globe.set_stack(vec![StackItem::Raster {
-            id: RASTER,
-            opacity: 1.0,
-            display: RasterDisplay::Grey,
-            smoothing: Smoothing {
-                on: false,
-                ..Smoothing::default()
-            },
-            hillshade: Hillshade::default(),
-            rivers: false,
-            lines: false,
-            blend: BlendMode::Normal,
-        }]);
-        globe
-    }
-
-    /// The look of the raster layer, as the globe draws it.
-    fn raster_look() -> RasterLook {
-        RasterLook {
-            look: Look {
-                opacity: 1.0,
-                blend: BlendMode::Normal,
-                display: RasterDisplay::Grey,
-            },
-            lines: false,
-            smoothing: Smoothing {
-                on: false,
-                ..Smoothing::default()
-            },
-            hillshade: Hillshade::default(),
-            bands: None,
-        }
-    }
-
-    /// A frame of `size` pixels with `pixels_per_radian` pixels in one unit
-    /// of the projection, centered on the point `map_center` of the map.
-    fn frame(id: u32, size: u32, pixels_per_radian: f32, map_center: [f32; 2]) -> FrameDraw {
-        let projection = Projection::new(DEFAULT_SPEC, 1.0).unwrap();
-        FrameDraw {
-            id,
-            place: FramePlace {
-                center: [size as f32 / 2.0; 2],
-                map_center,
-                units_to_pixels: pixels_per_radian,
-                rotation: 0.0,
-                points_per_radian: f64::from(pixels_per_radian),
-                pixels_per_page_point: 1.0,
-            },
-            rect: [0, 0, size, size],
-            mesh: Arc::new(FlatMesh::new(&projection)),
-            mask: None,
-            layers: vec![FrameItem::Raster(RASTER, raster_look())],
-            mask_looks: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_zoomed_frame_needs_the_full_texels_under_it_only() {
-        let mut globe = globe(true);
-        globe.want_frames(&[frame(1, 500, 20000.0, [0.0, 0.0])]);
-        assert_eq!(globe.frame_detail_level(1, RASTER), Some(0));
-        let tiles = globe.frame_detail_tiles(1, RASTER);
-        // The middle of the map is the middle of face 0.
-        let middle = tile_of([1.0, 0.0, 0.0], FACE as u32, tile_size(FACE as u32));
-        assert!(tiles.contains(&middle), "{tiles:?}");
-        // The frame is on the corner of four tiles, and each side has one
-        // tile more.
-        assert!(tiles.len() <= 16, "{tiles:?}");
-        for (face, column, row) in tiles {
-            assert_eq!(face, middle.0);
-            assert!(column.abs_diff(middle.1) <= 2 && row.abs_diff(middle.2) <= 2);
-        }
-    }
-
-    #[test]
-    fn a_frame_of_the_whole_world_reads_the_copy() {
-        let mut globe = globe(true);
-        let world = frame(1, 1000, 160.0, [0.0, 0.0]);
-        globe.want_frames(std::slice::from_ref(&world));
-        assert_eq!(globe.frame_detail_level(1, RASTER), None);
-        assert!(globe.frame_detail_tiles(1, RASTER).is_empty());
-        assert_eq!(globe.detail_bytes(), 0);
-        assert!(globe.frame_ready(&world));
-    }
-
-    #[test]
-    fn a_frame_over_the_budget_takes_a_coarser_level() {
-        let mut globe = globe(true);
-        let big = frame(1, 1400, 3000.0, [0.0, 0.0]);
-        globe.want_frames(std::slice::from_ref(&big));
-        assert_eq!(globe.frame_detail_level(1, RASTER), Some(0));
-        assert!(globe.frame_fits(1));
-        let budget = 20 << 20;
-        let mut globe = super::tests::globe(true);
-        globe.set_detail_budget(Some(budget));
-        globe.want_frames(std::slice::from_ref(&big));
-        assert_eq!(globe.frame_detail_level(1, RASTER), Some(1));
-        assert!(!globe.frame_fits(1));
-        for _ in 0..10 {
-            globe.want_frames(std::slice::from_ref(&big));
-        }
-        assert!(globe.frame_ready(&big));
-        assert!(globe.detail_bytes() <= budget, "{}", globe.detail_bytes());
-    }
 
     #[test]
     fn a_tile_from_the_main_memory_has_the_reduced_texels_and_their_next_level() {
@@ -1338,200 +1212,6 @@ mod tests {
             .collect();
         assert_eq!(level1, want);
         assert_eq!(req.source_tiles(256), (2..4, 0..2));
-    }
-
-    #[test]
-    fn a_tile_that_no_frame_needs_any_more_is_cancelled() {
-        let mut globe = globe(false);
-        let here = frame(1, 500, 20000.0, [0.0, 0.0]);
-        globe.want_frames(std::slice::from_ref(&here));
-        let reqs = globe.detail_requests();
-        assert!(!reqs.is_empty() && reqs.len() <= DETAIL_IN_FLIGHT);
-        assert!(!globe.frame_ready(&here));
-        assert!(reqs.iter().all(|r| globe.wants_detail(r)));
-
-        // The frame moves far away.
-        let there = frame(1, 500, 20000.0, [1.0, 0.5]);
-        globe.want_frames(std::slice::from_ref(&there));
-        assert!(reqs.iter().all(|r| !globe.wants_detail(r)));
-        globe.give_detail_tile(reqs[0], None);
-        assert!(!globe.frame_ready(&there));
-
-        // The tiles of the frame arrive.
-        for _ in 0..10 {
-            for req in globe.detail_requests() {
-                globe.give_detail_tile(req, None);
-            }
-            globe.want_frames(std::slice::from_ref(&there));
-        }
-        assert!(globe.frame_ready(&there));
-        assert!(globe.detail_requests().is_empty());
-    }
-
-    /// Puts the view of `globe` on a canvas of 800 by 800 points, centered
-    /// on the middle of face 0, with `zoom`.
-    fn look(globe: &mut Globe, world_view: WorldView, zoom: f64, lon: f64) {
-        globe.rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(800.0));
-        globe.world_view = world_view;
-        globe.view = GlobeView::centered(lon, 0.0);
-        globe.view.zoom = zoom;
-        globe.flat.center = Point::new(lon.to_radians(), 0.0);
-        globe.flat.zoom = zoom;
-    }
-
-    /// Gives the globe each tile that the project file holds, until the
-    /// view has its tiles.
-    fn give_tiles(globe: &mut Globe) {
-        for _ in 0..20 {
-            for req in globe.detail_requests() {
-                globe.give_detail_tile(req, None);
-            }
-            globe.want_view(1.0);
-        }
-        assert!(globe.view_details_ready());
-    }
-
-    #[test]
-    fn a_zoomed_globe_needs_the_full_texels_under_the_view_only() {
-        let mut globe = globe(true);
-        look(&mut globe, WorldView::Globe, 40.0, 0.0);
-        globe.want_view(1.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-        assert!(globe.view_fits());
-        let tiles = globe.details.tiles(VIEW, RASTER);
-        let middle = tile_of([1.0, 0.0, 0.0], FACE as u32, tile_size(FACE as u32));
-        assert!(tiles.contains(&middle), "{tiles:?}");
-        for (face, column, row) in tiles {
-            assert_eq!(face, middle.0);
-            assert!(column.abs_diff(middle.1) <= 4 && row.abs_diff(middle.2) <= 4);
-        }
-        // The tiles come from the main memory.
-        assert!(globe.view_details_ready());
-    }
-
-    #[test]
-    fn a_zoomed_flat_view_needs_the_full_texels_under_the_view_only() {
-        let mut globe = globe(true);
-        look(&mut globe, WorldView::Flat, 40.0, 0.0);
-        globe.want_view(1.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-        let tiles = globe.details.tiles(VIEW, RASTER);
-        let middle = tile_of([1.0, 0.0, 0.0], FACE as u32, tile_size(FACE as u32));
-        assert!(tiles.contains(&middle), "{tiles:?}");
-        assert!(tiles.len() <= 81, "{tiles:?}");
-    }
-
-    #[test]
-    fn a_view_of_the_whole_world_reads_the_copy() {
-        for world_view in [WorldView::Globe, WorldView::Flat] {
-            let mut globe = globe(true);
-            look(&mut globe, world_view, 1.0, 0.0);
-            globe.want_view(1.0);
-            assert_eq!(globe.view_detail_level(RASTER), None);
-            assert_eq!(globe.detail_bytes(), 0);
-            assert!(globe.view_details_ready());
-        }
-    }
-
-    #[test]
-    fn a_view_with_more_pixels_needs_finer_texels() {
-        let mut globe = globe(true);
-        look(&mut globe, WorldView::Globe, 6.0, 0.0);
-        globe.want_view(1.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(1));
-        globe.want_view(2.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-    }
-
-    #[test]
-    fn a_view_over_the_budget_takes_a_coarser_level() {
-        let mut globe = globe(true);
-        look(&mut globe, WorldView::Globe, 6.0, 0.0);
-        globe.want_view(2.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-        assert!(globe.view_fits());
-        let budget = 12 << 20;
-        let mut globe = super::tests::globe(true);
-        globe.set_detail_budget(Some(budget));
-        look(&mut globe, WorldView::Globe, 6.0, 0.0);
-        globe.want_view(2.0);
-        assert_eq!(globe.view_detail_level(RASTER), Some(1));
-        assert!(!globe.view_fits());
-        assert!(globe.detail_bytes() <= budget, "{}", globe.detail_bytes());
-    }
-
-    #[test]
-    fn the_frames_and_the_view_keep_their_needs() {
-        let mut globe = globe(true);
-        look(&mut globe, WorldView::Globe, 40.0, 0.0);
-        let far = frame(1, 500, 20000.0, [1.0, 0.5]);
-        globe.want_frames(std::slice::from_ref(&far));
-        globe.want_view(1.0);
-        globe.want_frames(std::slice::from_ref(&far));
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-        assert_eq!(globe.frame_detail_level(1, RASTER), Some(0));
-        assert!(globe.view_details_ready());
-        assert!(globe.frame_ready(&far));
-
-        // The frames stop asking, and the view keeps its needs.
-        for _ in 0..=IDLE_FRAMES {
-            globe.details.idle_frame();
-            globe.want_view(1.0);
-        }
-        assert_eq!(globe.frame_detail_level(1, RASTER), None);
-        assert_eq!(globe.view_detail_level(RASTER), Some(0));
-        assert!(globe.view_details_ready());
-
-        // The view stops asking too, and each map goes away.
-        for _ in 0..=IDLE_FRAMES {
-            globe.details.idle_frame();
-        }
-        assert_eq!(globe.view_detail_level(RASTER), None);
-        assert_eq!(globe.detail_bytes(), 0);
-    }
-
-    #[test]
-    fn a_layer_below_an_opaque_layer_needs_no_tiles() {
-        let mut globe = globe(true);
-        let top = RasterId(8);
-        assert!(globe.add_raster(top, Heightmap::new(FACE, 2000), true));
-        let mut stack = globe.stack.clone().unwrap();
-        let mut item = stack[0];
-        if let StackItem::Raster { id, .. } = &mut item {
-            *id = top;
-        }
-        stack.push(item);
-        globe.set_stack(stack);
-        look(&mut globe, WorldView::Globe, 40.0, 0.0);
-        globe.want_view(1.0);
-        assert_eq!(globe.view_detail_level(top), Some(0));
-        assert_eq!(globe.view_detail_level(RASTER), None);
-    }
-
-    #[test]
-    fn a_small_move_keeps_the_tiles_of_the_view() {
-        let mut globe = globe(false);
-        look(&mut globe, WorldView::Globe, 40.0, 0.0);
-        globe.want_view(1.0);
-        assert!(!globe.view_details_ready());
-        assert_eq!(globe.details.source(VIEW, RASTER), None);
-        give_tiles(&mut globe);
-        let key = globe.details.source(VIEW, RASTER);
-        assert!(key.is_some());
-
-        // A move of less than one tile asks for new tiles of the margin,
-        // and the view keeps its map.
-        look(&mut globe, WorldView::Globe, 40.0, 2.0);
-        globe.want_view(1.0);
-        assert!(!globe.view_details_ready());
-        assert_eq!(globe.details.source(VIEW, RASTER), key);
-
-        // A long move draws the copy until the tiles are there.
-        look(&mut globe, WorldView::Globe, 40.0, 20.0);
-        globe.want_view(1.0);
-        assert_eq!(globe.details.source(VIEW, RASTER), None);
-        give_tiles(&mut globe);
-        assert!(globe.details.source(VIEW, RASTER).is_some());
     }
 
     #[test]

@@ -20,11 +20,11 @@ use vale_terrain::{
     tiles_layout,
 };
 
-use super::compile::{Compiled, render_pipeline};
-use super::edges::{self, EdgePipelines, Edges};
-use super::flat::{FlatMesh, Vertex};
-use super::preview::{BandUniform, LineUniform};
+use crate::compile::{Compiled, render_pipeline};
+use crate::edges::{self, EdgePipelines, Edges};
 use crate::extent::{GpuExtent, TABLE_HEIGHT, TABLE_WIDTH};
+use crate::flat::{FlatMesh, Vertex};
+use crate::preview::{BandUniform, LineUniform};
 
 /// The time between two polls of the device while GPU work is in flight.
 const POLL_STEP: Duration = Duration::from_micros(250);
@@ -204,7 +204,7 @@ pub struct ImageUpload {
 /// The pixels of one tile of a vector layer for a slot of the atlas.
 pub struct VTileUpload {
     pub slot: u32,
-    /// `vtiles::TILE_PX` squared premultiplied RGBA8 pixels.
+    /// `tiles::TILE_PX` squared premultiplied RGBA8 pixels.
     pub rgba: Vec<u8>,
 }
 
@@ -1120,7 +1120,7 @@ impl Resources {
         for key in &frame.details {
             self.details.entry(*key).or_insert_with(|| {
                 changed = true;
-                let tile = super::detail::tile_size(key.face_size);
+                let tile = crate::detail::tile_size(key.face_size);
                 GpuTiles::with_levels(device, key.face_size, tile, 0, 2)
             });
         }
@@ -1165,7 +1165,7 @@ impl Resources {
     /// Keeps the atlas while a layer draws from tiles, and a page table with
     /// no tiles for each new layer that does.
     fn sync_vtiles(&mut self, device: &wgpu::Device, frame: &Frame) {
-        use super::vtiles::{ATLAS, PAGE_SIZE};
+        use crate::tiles::{ATLAS, PAGE_SIZE};
         self.vtile_pages
             .retain(|id, _| frame.vector_tiles.contains(id));
         if frame.vector_tiles.is_empty() {
@@ -1223,7 +1223,7 @@ impl Resources {
 
     /// Writes the tiles and the entries of the page tables that wait.
     fn upload_vtiles(&self, queue: &wgpu::Queue, tiles: Vec<VTileUpload>, pages: Vec<VTilePage>) {
-        use super::vtiles::{PAGE_SIZE, SLOT_COLS, TILE_PX};
+        use crate::tiles::{PAGE_SIZE, SLOT_COLS, TILE_PX};
         if let Some((atlas, _)) = &self.vtile_atlas {
             for tile in tiles {
                 let side = TILE_PX as u32;

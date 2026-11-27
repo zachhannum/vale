@@ -24,23 +24,17 @@ pub mod backdrop;
 pub mod basin;
 pub mod brush;
 pub mod combine;
-pub mod compile;
-pub mod detail;
-pub mod edges;
+#[cfg(test)]
+mod detail_tests;
 pub mod erode;
 pub mod export;
 pub mod fit;
-pub mod flat;
-pub mod gpu;
 pub mod image;
 pub mod import;
 pub mod line;
 pub mod mask;
-pub mod math;
 pub mod merge;
-pub mod nav;
 pub mod polygon;
-pub mod preview;
 pub mod region;
 pub mod reshape;
 pub mod rivers;
@@ -57,9 +51,11 @@ pub mod symbol;
 pub mod thumbnail;
 pub mod vector;
 pub mod vertex;
-pub mod view;
 pub mod vtiles;
 pub mod zoom_test;
+
+pub use vale_globe::frame::{FrameDraw, FrameItem, FramePlace, Look, MAX_RUNS, RasterLook};
+pub use vale_globe::{compile, detail, edges, flat, gpu, math, nav, preview, view};
 
 use crate::extent::GpuExtent;
 use crate::pen::Pen;
@@ -75,7 +71,7 @@ use export::ExportResult;
 use flat::FlatView;
 use gpu::{
     Capture, Captured, Changes, Draw, Event, Frame, GlobeCallback, Group, ImageKey, Job as GpuJob,
-    LayerKey, LineOp, Link, MapKey, MapKind, Mask, Op, Pass, SeaOp, TargetId, Uniforms, Uploads,
+    LayerKey, LineOp, Link, MapKey, MapKind, Op, Pass, SeaOp, TargetId, Uniforms, Uploads,
     VectorShapes,
 };
 use import::{ImportResult, Job, Source, Step};
@@ -5881,23 +5877,6 @@ enum FrameLayer<'a> {
     Image(ImageDraw),
 }
 
-/// Where a map frame draws the flat map in its target of pixels.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FramePlace {
-    /// The pixel of the target that shows the center of the map.
-    pub center: [f32; 2],
-    /// The center of the map, in units of the projection of radius 1.
-    pub map_center: [f32; 2],
-    /// Pixels in one unit of the projection.
-    pub units_to_pixels: f32,
-    /// The turn of the map, in radians clockwise.
-    pub rotation: f64,
-    /// Points of the page in one radian of the world.
-    pub points_per_radian: f64,
-    /// Pixels in one point of the page.
-    pub pixels_per_page_point: f32,
-}
-
 /// Pixels in one point of a width, with `pixels_per_point` pixels in one
 /// point of the screen. A map frame draws a width in points of the page.
 fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>) -> f32 {
@@ -5908,10 +5887,6 @@ fn point_scale(pixels_per_point: f32, frame: Option<&FramePlace>) -> f32 {
 /// the groups of the canvas.
 pub const FRAME_TARGET: TargetId = 1 << 32;
 const CAPTURE_TARGET: TargetId = 1 << 48;
-/// The most runs of raster layers and image layers in a map frame. Each run
-/// has a target of its own.
-pub const MAX_RUNS: usize = 64;
-
 /// The target of run `run` of the frame `frame`, from the first number
 /// `base`. The run is in the bits from 33, below `MASK_TARGET`.
 fn run_target(base: TargetId, frame: u32, run: usize) -> TargetId {
@@ -5921,94 +5896,6 @@ fn run_target(base: TargetId, frame: u32, run: usize) -> TargetId {
 const MASK_CAPTURE_TARGET: TargetId = 1 << 52;
 /// The first target of the vector layers with a raster mask.
 const MASK_TARGET: TargetId = 1 << 40;
-
-/// A map frame to draw.
-#[derive(Clone)]
-pub struct FrameDraw {
-    pub id: u32,
-    pub place: FramePlace,
-    /// The left, the top, the width, and the height of the target on the
-    /// screen, in pixels.
-    pub rect: [u32; 4],
-    pub mesh: Arc<flat::FlatMesh>,
-    /// A shape that cuts the layers. The mask has the size of the target.
-    pub mask: Option<Arc<Mask>>,
-    /// The layers that the map draws, from the bottom.
-    pub layers: Vec<FrameItem>,
-    /// The looks in the map of raster layers that the map does not draw.
-    /// The raster masks read them.
-    pub mask_looks: Vec<(RasterId, RasterLook)>,
-}
-
-impl FrameDraw {
-    /// The raster layers that the frame draws, from the bottom, each with
-    /// its look.
-    pub fn rasters(&self) -> impl Iterator<Item = (RasterId, &RasterLook)> {
-        self.layers.iter().filter_map(|item| match item {
-            FrameItem::Raster(id, look) => Some((*id, look)),
-            _ => None,
-        })
-    }
-
-    /// The image layers that the frame draws, from the bottom.
-    pub fn images(&self) -> impl Iterator<Item = ImageId> {
-        self.layers.iter().filter_map(|item| match item {
-            FrameItem::Image(id, _) => Some(*id),
-            _ => None,
-        })
-    }
-
-    /// The runs of raster layers and image layers between the runs of
-    /// vector layers, from the bottom. The runs above the first `MAX_RUNS`
-    /// join the last run.
-    pub fn runs(&self) -> Vec<Vec<&FrameItem>> {
-        let mut runs: Vec<Vec<&FrameItem>> = Vec::new();
-        let split = self.layers.split(|item| *item == FrameItem::Cut);
-        for run in split.filter(|run| !run.is_empty()) {
-            match runs.len() {
-                MAX_RUNS => runs[MAX_RUNS - 1].extend(run),
-                _ => runs.push(run.iter().collect()),
-            }
-        }
-        runs
-    }
-
-    /// The look of a raster layer that the frame draws.
-    fn raster_look(&self, id: RasterId) -> Option<&RasterLook> {
-        self.rasters()
-            .find(|(of, _)| *of == id)
-            .map(|(_, look)| look)
-    }
-}
-
-/// One item of the layers of a map frame, with its look in the map.
-#[derive(Clone, Debug, PartialEq)]
-pub enum FrameItem {
-    Raster(RasterId, RasterLook),
-    Image(ImageId, Look),
-    /// The place of a run of vector layers.
-    Cut,
-}
-
-/// The look of a raster layer in a map.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RasterLook {
-    pub look: Look,
-    pub lines: bool,
-    pub smoothing: Smoothing,
-    pub hillshade: Hillshade,
-    /// The bands of the map. `None`: the bands of the layer.
-    pub bands: Option<Bands>,
-}
-
-/// The look of a raster layer or an image layer in a map. An image layer
-/// has no display.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Look {
-    pub opacity: f32,
-    pub blend: BlendMode,
-    pub display: RasterDisplay,
-}
 
 #[cfg(test)]
 mod tests {

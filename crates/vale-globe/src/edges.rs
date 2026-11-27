@@ -10,15 +10,15 @@ use std::collections::HashMap;
 
 use eframe::egui_wgpu::wgpu;
 
-use super::compile::render_pipeline;
-use super::gpu::{CANVAS, LayerKey, TargetId};
+use crate::compile::render_pipeline;
+use crate::gpu::{CANVAS, LayerKey, TargetId};
 
 /// A layer in one render target.
 pub type EdgeKey = (TargetId, LayerKey);
 
 /// The most sizes of render target that the passes keep scratch textures for.
 const SCRATCH_SIZES: usize = 6;
-use super::preview::LineUniform;
+use crate::preview::LineUniform;
 
 /// The largest half weight of a line in pixels. A larger weight is cut to it,
 /// so that the offset of a place fits in the payload.

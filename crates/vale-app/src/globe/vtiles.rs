@@ -25,19 +25,11 @@ use super::gpu::{Link, VTilePage, VTileUpload};
 use super::math::{V3, angle};
 use crate::vector_tiles::{Snapshot, TilePaints, render_tile};
 pub use crate::vector_tiles::{TILE, TILE_PX, TileKey};
+pub use vale_globe::tiles::{ATLAS, PAGE_SIZE, SLOT_COLS, SLOT_ROWS, SLOTS};
 
 /// The finest level: a face of 65,536 texels.
 pub const MAX_LEVEL: u8 = 8;
 pub const LEVELS: usize = MAX_LEVEL as usize + 1;
-/// The slots of the atlas along x and along y. 360 slots of 258 squared
-/// RGBA texels take 96 MB.
-pub const SLOT_COLS: u32 = 20;
-pub const SLOT_ROWS: u32 = 18;
-pub const SLOTS: u32 = SLOT_COLS * SLOT_ROWS;
-pub const ATLAS: [u32; 2] = [SLOT_COLS * TILE_PX as u32, SLOT_ROWS * TILE_PX as u32];
-/// The size of the page table of a layer: an entry for each tile of each
-/// level.
-pub const PAGE_SIZE: [u32; 2] = [1024, 512];
 /// The entry of the page table that holds the level of the view. No tile
 /// uses it.
 pub const LEVEL_INDEX: u32 = PAGE_SIZE[0] * PAGE_SIZE[1] - 1;
