@@ -149,6 +149,28 @@ Each GPU step has a CPU reference version in `isotherm-sim`. A test runs both on
 
 The Earth preset is the main test. It uses public data only: ETOPO 2022 for the terrain (public domain) and the Köppen-Geiger maps of Beck et al. (2023) for 1991 to 2020 (CC BY 4.0). A CI job runs the preset on a coarse grid and fails if the agreement of the land classes drops below its last value. The first target is 70 % of land cells. The later target is 80 %.
 
+The Köppen score alone is not sufficient. A class depends only on the monthly temperature and precipitation, so errors that cancel can give the right class, and wrong winds, currents, or clouds can still give plausible classes. Each output of the Earth preset therefore has its own check against observations, from the phase that adds the output.
+
+| Phase | Output | Observations | Check | First target |
+| --- | --- | --- | --- | --- |
+| 2 | Surface air temperature | ERA5 | RMS error of the zonal mean (the mean over each band of latitude), each month | 4 K |
+| 2 | Surface air temperature | ERA5 | Error of the seasonal range (warmest month minus coldest month), land and sea apart | 5 K |
+| 2 | Sea ice | ERA5 | Error of the extent of each hemisphere, in the month of the largest extent and in the month of the smallest extent | 30 % |
+| 3 | Precipitation | GPCP | RMS error of the zonal mean, each month | 1.5 mm per day |
+| 3 | Precipitation | GPCP | Latitude of the zonal-mean peak near the equator, in January and July | 5° |
+| 3 | Precipitation | GPCP | Pattern correlation of the yearly mean over land | 0.6 |
+| 3 | Sea-level pressure | ERA5 | Latitude of the subtropical highs in the zonal mean | 5° |
+| 3 | Surface wind | ERA5 | Latitude where the zonal-mean east-west wind changes sign, between the trade winds and the westerlies | 5° |
+| 3 | Surface wind | ERA5 | Pattern correlation of the vector wind, each month | 0.7 |
+| 3 | Cloud cover | ERA5 | RMS error of the zonal mean of the yearly cloud fraction | 0.15 |
+| 3 | Sea surface temperature | ERA5 | RMS error of the yearly mean | 2.5 K |
+| 3 | Ocean currents | Drifter climatology of Laurindo, Mariano, and Lumpkin (2017) | Pattern correlation of the yearly mean surface current | 0.5 |
+| 3 | Ocean currents | Drifter climatology of Laurindo, Mariano, and Lumpkin (2017) | Ratio of the mean speed of the western boundary currents to the mean speed of the interior of each basin, in the model and in the observations | Within a factor of 2 |
+
+The observations are the means of 1991 to 2020, the period of the Köppen maps. ERA5 is under CC BY, and GPCP is under CC0. A script downloads each data set and reduces it to reference values on the coarse grid of the CI job. The repository holds the reference values and their attribution, not the data sets. Before the reference values of a data set go into the repository, its task makes sure that the license allows it.
+
+The CI job of the Köppen score runs these checks too. A check fails if its result gets worse than its last value, or if it misses its first target. The first targets are a start. A later phase can make a target stricter, but not looser, and phase 8 makes each target stricter. `docs/isotherm/SCIENCE.md` gives the citation of each data set.
+
 ## Outputs
 
 Each output is a grid of the cube map, with twelve monthly values and a yearly value.
@@ -212,13 +234,13 @@ Each phase has a "done when" list in its GitHub issue, as in Vale. From phase 1 
 | --- | --- | --- |
 | 0 | Specification and skeleton | `docs/isotherm/DESIGN.md` and `docs/isotherm/SCIENCE.md` exist. `vale-globe` and `vale-shell` exist, and Vale builds and passes its tests with them. Isotherm shows a sample world on the globe on four platforms in CI, and each PR arrives on an iPad and an iPhone through TestFlight. |
 | 1 | World and globe | You import a heightmap, set the sea level, and see the world on the globe and the flat map, on desktop, iPad, and iPhone. The project file saves and opens. |
-| 2 | Energy balance | Tier 1 runs on the GPU with a CPU reference. You set the star, the orbit, the tilt, and the day length, and you see the temperature and the ice, month by month. |
-| 3 | Circulation and water | Tier 2 runs. Winds, rain, snow, currents, and clouds show. The Köppen classes show, and the Earth preset reaches 70 % agreement in CI. |
+| 2 | Energy balance | Tier 1 runs on the GPU with a CPU reference. You set the star, the orbit, the tilt, and the day length, and you see the temperature and the ice, month by month. The temperature and the sea ice of the Earth preset pass their checks against observations in CI. |
+| 3 | Circulation and water | Tier 2 runs. Winds, rain, snow, currents, and clouds show. The Köppen classes show, and the Earth preset reaches 70 % agreement in CI. The precipitation, the pressure, the winds, the clouds, the sea surface temperature, and the currents of the Earth preset pass their checks against observations in CI. |
 | 4 | Vector export | GeoJSON and GeoPackage export of all output kinds, from the app and from the command line. The Vale project export works, and Vale opens the file. |
 | 5 | Other worlds | Classes for slow rotators and tidally locked worlds, binary stars, moons and tidal heating, thick and thin atmospheres, and the habitability profile. |
 | 6 | Terrain editor | Brushes with Apple Pencil and a pen tablet, erosion, plate-based landmasses as a starter, masks, and the reference overlay. |
 | 7 | Presentation | The satellite view, posters with a title and a legend, and animations of a year. |
-| 8 | Tier 3 | Shallow-water winds, the deep ocean option, tides, and the runaway test. The Earth preset reaches 80 %. |
+| 8 | Tier 3 | Shallow-water winds, the deep ocean option, tides, and the runaway test. The Earth preset reaches 80 %, and each check against observations has a stricter target. |
 | 9 | Version 1 release | The App Store, a notarized macOS build, and Windows and Linux builds. |
 
 Phase 4 comes before phase 5 on purpose. The GeoJSON export then exists early, and the export of each later output is a small step.
@@ -241,7 +263,7 @@ The Vale repository holds both apps. These rules of the repository apply to Isot
 | --- | --- |
 | The model is too slow on an iPhone. | The grid scales from 32 to 256 cells per face. The live view uses a coarse grid, and a final run can take longer. Tier 1 and tier 2 are 2D, and they fit a phone GPU. |
 | iOS memory limits. | Keep each grid in f16 on the GPU where the precision allows. Keep only the monthly means, not each step. Measure on the oldest supported device in phase 2. |
-| The results are not plausible. | The Earth preset score in CI from phase 3, and a gallery of reference worlds (a desert world, an ocean world, a tidally locked world) with screenshot tests. |
+| The results are not plausible. | The checks of the Earth preset against observations in CI from phase 2, the Köppen score from phase 3, and a gallery of reference worlds (a desert world, an ocean world, a tidally locked world) with screenshot tests. |
 | The GPU results differ by vendor. | The CPU reference and the tolerance tests. The class maps compare by agreement, not by exact pixels. |
 | A slower CI for both apps. | Path filters, and the existing rule to test only the crates that a change touches. |
 | egui on a small phone screen. | Vale already has the sheet layout below 600 points. Test the iPhone layout with `--layout pad --size 390x844` screenshots from phase 1. |

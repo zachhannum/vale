@@ -296,7 +296,22 @@ The Earth preset compares its classes with the maps of Beck et al. (2023), on th
 
 Sources: Peel, Finlayson, and McMahon (2007), Beck et al. (2023), NOAA National Centers for Environmental Information (2022).
 
+## Observations for the checks
+
+The checks of the Earth preset compare its outputs with these data sets. `docs/isotherm/DESIGN.md` lists the checks under "Correctness". Each data set gives the means of 1991 to 2020.
+
+| Data set | License | Outputs |
+| --- | --- | --- |
+| ERA5 monthly averaged data on single levels (Copernicus Climate Change Service, 2019), described in Hersbach et al. (2020) | CC BY | Surface air temperature, sea ice, sea-level pressure, surface wind, cloud cover, sea surface temperature |
+| GPCP monthly precipitation, version 2.3 (Adler et al., 2017), described in Adler et al. (2018) | CC0 | Precipitation |
+| Drifter climatology of near-surface currents (Laurindo, Mariano, and Lumpkin, 2017) | Not clear, to be confirmed before use | Ocean currents |
+| Köppen-Geiger maps of Beck et al. (2023) | CC BY 4.0 | Climate classes |
+
 ## References
+
+Adler, R., Wang, J.-J., Sapiano, M., Huffman, G., Chiu, L., Xie, P.-P., Ferraro, R., Schneider, U., Becker, A., Bolvin, D., Nelkin, E., Gu, G., & NOAA CDR Program. (2017). Global Precipitation Climatology Project (GPCP) Climate Data Record (CDR), Version 2.3 (Monthly). NOAA National Centers for Environmental Information. https://doi.org/10.7289/V56971M6
+
+Adler, R. F., Sapiano, M. R. P., Huffman, G. J., Wang, J.-J., Gu, G., Bolvin, D., Chiu, L., Schneider, U., Becker, A., Nelkin, E., Xie, P., Ferraro, R., & Shin, D.-B. (2018). The Global Precipitation Climatology Project (GPCP) monthly analysis (new version 2.3) and a review of 2017 global precipitation. Atmosphere, 9(4), 138. https://doi.org/10.3390/atmos9040138
 
 Beck, H. E., McVicar, T. R., Vergopolan, N., Berg, A., Lutsko, N. J., Dufour, A., Zeng, Z., Jiang, X., van Dijk, A. I. J. M., & Miralles, D. G. (2023). High-resolution (1 km) Köppen-Geiger maps for 1901–2099 based on constrained CMIP6 projections. Scientific Data, 10, 724. https://doi.org/10.1038/s41597-023-02549-6
 
@@ -305,6 +320,8 @@ Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary cl
 Bolton, D. (1980). The computation of equivalent potential temperature. Monthly Weather Review, 108(7), 1046–1053. https://doi.org/10.1175/1520-0493(1980)108<1046:tcoept>2.0.co;2
 
 Budyko, M. I. (1969). The effect of solar radiation variations on the climate of the Earth. Tellus, 21(5), 611–619. https://doi.org/10.1111/j.2153-3490.1969.tb00466.x
+
+Copernicus Climate Change Service. (2019). ERA5 monthly averaged data on single levels from 1940 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). https://doi.org/10.24381/cds.f17050d7
 
 Ekman, V. W. (1905). On the influence of the earth's rotation on ocean-currents. Arkiv för Matematik, Astronomi och Fysik, 2(11), 1–52.
 
@@ -320,6 +337,8 @@ Hartmann, D. L. (2016). Global Physical Climatology (2nd ed.). Elsevier.
 
 Held, I. M., & Hou, A. Y. (1980). Nonlinear axially symmetric circulations in a nearly inviscid atmosphere. Journal of the Atmospheric Sciences, 37(3), 515–533. https://doi.org/10.1175/1520-0469(1980)037<0515:nascia>2.0.co;2
 
+Hersbach, H., Bell, B., Berrisford, P., Hirahara, S., Horányi, A., Muñoz-Sabater, J., Nicolas, J., Peubey, C., Radu, R., Schepers, D., Simmons, A., Soci, C., Abdalla, S., Abellan, X., Balsamo, G., Bechtold, P., Biavati, G., Bidlot, J., Bonavita, M., … Thépaut, J.-N. (2020). The ERA5 global reanalysis. Quarterly Journal of the Royal Meteorological Society, 146(730), 1999–2049. https://doi.org/10.1002/qj.3803
+
 Holton, J. R., & Hakim, G. J. (2013). An Introduction to Dynamic Meteorology (5th ed.). Academic Press.
 
 Hwang, Y.-T., & Frierson, D. M. W. (2010). Increasing atmospheric poleward energy transport with global warming. Geophysical Research Letters, 37(24), L24807. https://doi.org/10.1029/2010gl045440
@@ -327,6 +346,8 @@ Hwang, Y.-T., & Frierson, D. M. W. (2010). Increasing atmospheric poleward energ
 Jennings, K. S., Winchell, T. S., Livneh, B., & Molotch, N. P. (2018). Spatial variation of the rain–snow temperature threshold across the Northern Hemisphere. Nature Communications, 9, 1148. https://doi.org/10.1038/s41467-018-03629-7
 
 Joshi, M. M., & Haberle, R. M. (2012). Suppression of the water ice and snow albedo feedback on planets orbiting red dwarf stars and the subsequent widening of the habitable zone. Astrobiology, 12(1), 3–8. https://doi.org/10.1089/ast.2011.0668
+
+Laurindo, L. C., Mariano, A. J., & Lumpkin, R. (2017). An improved near-surface velocity climatology for the global ocean from drifter observations. Deep-Sea Research Part I: Oceanographic Research Papers, 124, 73–92. https://doi.org/10.1016/j.dsr.2017.04.009
 
 Lindzen, R. S., & Hou, A. Y. (1988). Hadley circulations for zonally averaged heating centered off the equator. Journal of the Atmospheric Sciences, 45(17), 2416–2427. https://doi.org/10.1175/1520-0469(1988)045<2416:hcfzah>2.0.co;2
 
