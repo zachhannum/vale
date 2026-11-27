@@ -324,7 +324,13 @@ impl HotspotLine {
             self.chain = Some(Arc::new(chain));
             return;
         }
-        let floor = sea_floor(map, line.at(length), r);
+        let end = line.at(length);
+        // The place of the hotspot goes into the seed, so each chain differs.
+        let spec = Hotspot {
+            seed: place_seed(spec.seed, end),
+            ..spec
+        };
+        let floor = sea_floor(map, end, r);
         chain.floor_age = floor.age_myr;
         chain.floor_depth = gdh1_depth(floor.age_myr);
         chain.reset_age = gdh1_age(chain.floor_depth - SWELL_M);
@@ -790,6 +796,13 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     erosion.drops_since_to(&lifted, &kept, &brushes)
 }
 
+/// The seed of a chain with its hotspot at `end`. The place is in steps of
+/// about 1 m on a world of the size of the Earth.
+fn place_seed(seed: u32, end: V3) -> u32 {
+    let q = |x: f64| (x * f64::from(1u32 << 23)).round() as i64 as u32;
+    hash(q(end[0]), q(end[1]), q(end[2]), seed)
+}
+
 /// The growth of a volcano at an age in millions of years.
 fn growth(age: f64) -> f64 {
     GROW_FROM + (1.0 - GROW_FROM) * smoothstep(0.0, GROW_MYR, age)
@@ -1081,6 +1094,21 @@ mod tests {
         lay(&mut other, N, FLOOR_M);
         let other = other.chain.clone().unwrap();
         assert_ne!(other.volcanoes[1].center(), chain.volcanoes[1].center());
+    }
+
+    #[test]
+    fn chains_in_other_places_differ_with_the_same_seed() {
+        let spec = spec();
+        let chain = |from: f64| {
+            let mut line = line(spec, N, from, from + 40.0, 1.0);
+            lay(&mut line, N, FLOOR_M);
+            line.chain.clone().unwrap()
+        };
+        let (a, b) = (chain(-20.0), chain(-60.0));
+        // The same stroke in the same place gives the same chain.
+        assert_eq!(a.heights_m, chain(-20.0).heights_m);
+        // The same stroke in another place gives another chain.
+        assert_ne!(a.heights_m, b.heights_m);
     }
 
     #[test]
