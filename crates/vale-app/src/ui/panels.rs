@@ -18,7 +18,7 @@ use super::{
     Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, polygonize,
     select,
 };
-use vale_terrain::Mode;
+use vale_terrain::{Mode, TrenchMargin, TrenchSide};
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
@@ -26,7 +26,7 @@ use crate::globe::brush::{
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    TALUS_DEG, TERRACE_STEP_M, TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -47,6 +47,20 @@ pub const SEAMOUNTS: &str = "Seamounts";
 pub const ABYSSAL_HILLS: &str = "Abyssal hills";
 /// The name of the margin mode of the brush.
 pub const MARGIN: &str = "Margin";
+/// The name of the trench mode of the brush.
+pub const TRENCH: &str = "Trench";
+/// The hint of the trench mode.
+pub const TRENCH_HINT: &str = "Draw the axis of the trench.";
+/// The settings of the trench mode: the side of the overriding plate and
+/// the kind of its margin, with the names of their choices.
+pub const TRENCH_SIDE: &str = "Side";
+pub const TRENCH_SIDES: [(TrenchSide, &str); 2] =
+    [(TrenchSide::Left, "Left"), (TrenchSide::Right, "Right")];
+pub const TRENCH_MARGIN: &str = "Margin";
+pub const TRENCH_MARGINS: [(TrenchMargin, &str); 2] = [
+    (TrenchMargin::Accretionary, "Accretionary"),
+    (TrenchMargin::Eroding, "Eroding"),
+];
 /// The hint of the margin mode.
 pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
 /// The name of the hotspot track mode of the brush.
@@ -1484,6 +1498,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::AbyssalHills, ABYSSAL_HILLS),
             (Mode::Margin, MARGIN),
             (Mode::Hotspot, HOTSPOT),
+            (Mode::Trench, TRENCH),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1542,6 +1557,7 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
         Mode::Range | Mode::Basin | Mode::Seamounts | Mode::Hotspot => "Height",
+        Mode::Trench => "Depth",
         _ => "Strength",
     }
 }
@@ -1554,6 +1570,7 @@ fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         Mode::Margin => ui.label(MARGIN_HINT),
         Mode::Hotspot => ui.label(HOTSPOT_HINT),
+        Mode::Trench => ui.label(TRENCH_HINT),
         _ => return,
     };
 }
@@ -1580,12 +1597,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     // The ocean ridge mode has no falloff and no strength, the range mode
-    // and the hotspot track mode have no falloff, and the basin mode has no
-    // falloff and no flow.
+    // the hotspot track mode, and the trench mode have no falloff, and the
+    // basin mode has no falloff and no flow.
     let ridge = globe.brush.mode == Mode::OceanRidge;
     if !matches!(
         globe.brush.mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot | Mode::Trench
     ) {
         number::slider("Hardness", &mut globe.brush.hardness, 0.0..=1.0).show(ui);
     }
@@ -1690,6 +1707,26 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .decimals(0)
             .suffix(" m")
             .show(ui);
+        seed(ui, state);
+    } else if globe.brush.mode == Mode::Trench {
+        let brush = &mut globe.brush;
+        number::slider("Depth", &mut brush.trench_depth_m, TRENCH_DEPTH_M)
+            .step(50.0)
+            .decimals(0)
+            .suffix(" m")
+            .show(ui);
+        ui.horizontal(|ui| {
+            ui.label(TRENCH_SIDE);
+            for (side, name) in TRENCH_SIDES {
+                ui.selectable_value(&mut brush.trench_side, side, name);
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(TRENCH_MARGIN);
+            for (margin, name) in TRENCH_MARGINS {
+                ui.selectable_value(&mut brush.trench_margin, margin, name);
+            }
+        });
         seed(ui, state);
     } else if globe.brush.mode == Mode::Flatten {
         number::slider("Rate", &mut globe.brush.flatten_rate, FLATTEN_RATE)

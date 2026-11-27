@@ -42,7 +42,7 @@ use vale_app::ui::world_form::{CREATE, FormMode, NAME, NEW_WORLD, RADIUS_SLIDER,
 use vale_app::ui::{Action, AppState, FontTarget, Layout, RampApply, Workspace, draw, panels};
 use vale_app::world::{radius_fraction, three_significant};
 use vale_store::{GeometryKind, Hillshade, LayerKind, RasterDisplay, RasterId, Units, World};
-use vale_terrain::{Mode, Rain, meters_to_level};
+use vale_terrain::{Mode, Rain, TrenchMargin, TrenchSide, meters_to_level};
 
 type Pad = Harness<'static, AppState>;
 
@@ -356,7 +356,8 @@ fn open_modes(h: &mut Pad) {
     open_group(h, group);
 }
 
-/// Chooses a brush mode in the flyout of its group.
+/// Chooses a brush mode in the flyout of its group. The flyout scrolls to
+/// a row below its bottom.
 fn choose_mode(h: &mut Pad, name: &str) {
     open_group(h, group_of(name));
     scroll_flyout_to(h, name);
@@ -3039,6 +3040,88 @@ fn the_hotspot_track_mode_fits_on_the_smallest_ipad() {
         check_controls(&h, &name);
         screenshot::save(&mut h, &format!("pad-hotspot-{}", board.1));
     }
+}
+
+#[test]
+fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    assert!(control(&h, "Brush margin eroding").is_none());
+    choose_mode(&mut h, "Trench");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Trench)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(brush.trench_depth_m, 2000.0);
+    assert_eq!(brush.trench_side, TrenchSide::Left);
+    assert_eq!(brush.trench_margin, TrenchMargin::Accretionary);
+    // The strip has Size and Depth.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip depth").is_some());
+    assert!(
+        h.query_by_label(vale_app::ui::panels::TRENCH_HINT)
+            .is_some()
+    );
+    for row in [
+        "Brush size",
+        "Brush flow",
+        "Brush strength",
+        "Brush side left",
+        "Brush side right",
+        "Brush margin accretionary",
+        "Brush margin eroding",
+        "Brush seed value",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in ["Brush hardness", "Brush shelf depth value", "Brush erosion"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // A typed depth past an end gives the end.
+    for (text, value) in [("10", 500.0), ("9000", 4000.0), ("3000", 3000.0)] {
+        type_value(&mut h, "Brush strength", text);
+        let got = h.state().globe.brush.trench_depth_m;
+        assert!((got - value).abs() < 1e-6, "{text}: {got}");
+    }
+    tap(&mut h, "Brush side right");
+    assert_eq!(h.state().globe.brush.trench_side, TrenchSide::Right);
+    tap(&mut h, "Brush margin eroding");
+    assert_eq!(h.state().globe.brush.trench_margin, TrenchMargin::Eroding);
+    check_controls(&h, "the Trench mode");
+    screenshot::save(&mut h, "pad-trench");
+}
+
+#[test]
+fn the_trench_mode_fits_on_the_smallest_ipad() {
+    let mut h = pad((1133.0, 744.0));
+    open_group(&mut h, ModeGroup::Terrain);
+    let menu = h.state().pad.flyouts.rect.unwrap();
+    let screen = h.state().pad.rects.unwrap().screen;
+    assert!(screen.contains_rect(menu), "{menu:?}");
+    // The flyout scrolls to its last row.
+    let from = menu.center();
+    drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+    let row = control(&h, "Trench").unwrap();
+    assert!(menu.contains_rect(row), "{row:?}");
+    tap(&mut h, "Trench");
+    assert_eq!(h.state().globe.brush.mode, Mode::Trench);
+    tap(&mut h, "Brush settings");
+    let (_, panel) = h.state().pad.panels[0];
+    assert!(screen.contains_rect(panel), "{panel:?}");
+    for row in [
+        "Brush strength",
+        "Brush side right",
+        "Brush margin eroding",
+        "Brush seed value",
+    ] {
+        let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+        assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+    }
+    check_controls(&h, "744 high with the Trench panel");
+    screenshot::save(&mut h, "pad-trench-744");
 }
 
 #[test]

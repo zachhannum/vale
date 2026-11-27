@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use vale_terrain::Mode;
+use vale_terrain::{Mode, TrenchMargin, TrenchSide};
 
 use crate::globe::Tool;
 use crate::globe::brush::{BrushSettings, FLOW, SIZE_POINTS, STRENGTH_M};
@@ -20,7 +20,7 @@ use crate::strip::{self, Pins};
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 23] = [
+const MODES: [(Mode, &str); 24] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -44,6 +44,17 @@ const MODES: [(Mode, &str); 23] = [
     (Mode::AbyssalHills, "abyssal_hills"),
     (Mode::Margin, "margin"),
     (Mode::Hotspot, "hotspot_track"),
+    (Mode::Trench, "trench"),
+];
+
+/// The sides of the trench mode, with their names in the file.
+const TRENCH_SIDES: [(TrenchSide, &str); 2] =
+    [(TrenchSide::Left, "left"), (TrenchSide::Right, "right")];
+
+/// The margins of the trench mode, with their names in the file.
+const TRENCH_MARGINS: [(TrenchMargin, &str); 2] = [
+    (TrenchMargin::Accretionary, "accretionary"),
+    (TrenchMargin::Eroding, "eroding"),
 ];
 
 /// The tools, with their names in the file.
@@ -70,7 +81,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 38] = [
+const FLOATS: [Field<f64>; 39] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -101,6 +112,7 @@ const FLOATS: [Field<f64>; 38] = [
     ("hotspot_speed_mm", |b| &mut b.hotspot_speed_mm),
     ("hotspot_height_m", |b| &mut b.hotspot_height_m),
     ("hotspot_age_myr", |b| &mut b.hotspot_age_myr),
+    ("trench_depth_m", |b| &mut b.trench_depth_m),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -386,6 +398,12 @@ impl Tools {
             .map_or("none".to_string(), |l| l.to_string());
         lines.push(format!("flatten_level {flatten_level}"));
         lines.push(format!("paint_level {}", brush.paint_level));
+        if let Some(side) = name(&TRENCH_SIDES, brush.trench_side) {
+            lines.push(format!("trench_side {side}"));
+        }
+        if let Some(margin) = name(&TRENCH_MARGINS, brush.trench_margin) {
+            lines.push(format!("trench_margin {margin}"));
+        }
         let smoothing = tools.smoothing.map(|s| s.unwrap_or(line.smoothing));
         lines.push(format!(
             "smoothing {} {} {}",
@@ -454,6 +472,14 @@ impl Tools {
             if let Some(v) = boolean(key) {
                 *field(brush) = v;
             }
+        }
+        let side = value("trench_side").and_then(|n| TRENCH_SIDES.iter().find(|s| s.1 == n));
+        if let Some(&(side, _)) = side {
+            brush.trench_side = side;
+        }
+        let margin = value("trench_margin").and_then(|n| TRENCH_MARGINS.iter().find(|m| m.1 == n));
+        if let Some(&(margin, _)) = margin {
+            brush.trench_margin = margin;
         }
         match value("flatten_level") {
             Some("none") => brush.flatten_level = None,
@@ -768,6 +794,9 @@ mod tests {
         globe.brush.seamount_age_myr = 120.0;
         globe.brush.hotspot_age_myr = 30.0;
         globe.brush.branching = 0.8;
+        globe.brush.trench_depth_m = 3200.0;
+        globe.brush.trench_side = TrenchSide::Right;
+        globe.brush.trench_margin = TrenchMargin::Eroding;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
         globe.line.fit = true;
@@ -816,6 +845,9 @@ mod tests {
         assert_eq!(next.brush.channel_km, 2.5);
         assert_eq!(next.brush.seamount_age_myr, 120.0);
         assert_eq!(next.brush.hotspot_age_myr, 30.0);
+        assert_eq!(next.brush.trench_depth_m, 3200.0);
+        assert_eq!(next.brush.trench_side, TrenchSide::Right);
+        assert_eq!(next.brush.trench_margin, TrenchMargin::Eroding);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);

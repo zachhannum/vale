@@ -648,6 +648,28 @@ pub fn small_segments(
     small_segments_named(ui, controls, rect, (labels, labels), active)
 }
 
+/// A row of a panel with a name at the left and a small segmented control
+/// at the right. `row` holds the name, the labels of the choices, and the
+/// control names of the choices. Returns the choice that the user tapped.
+pub fn segment_row(
+    ui: &mut egui::Ui,
+    controls: &mut Controls,
+    (label, labels, names): (&str, &[&str], &[&str]),
+    active: usize,
+) -> Option<usize> {
+    let size = vec2(ui.available_width(), PANEL_ROW);
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let at = pos2(rect.left(), rect.center().y);
+    ui.painter()
+        .text(at, Align2::LEFT_CENTER, label, theme::body(), theme::TEXT);
+    let w = small_segments_width(ui, labels);
+    let seg = Rect::from_min_size(
+        pos2(rect.right() - w, rect.center().y - 18.0),
+        vec2(w, 36.0),
+    );
+    small_segments_named(ui, controls, seg, (labels, names), active)
+}
+
 /// A small segmented control whose items have the control names `names`.
 pub fn small_segments_named(
     ui: &egui::Ui,

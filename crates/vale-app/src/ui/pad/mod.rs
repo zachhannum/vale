@@ -22,7 +22,7 @@ use crate::globe::brush::{
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
     RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
     SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
-    WARP_KM, needs_height, shape_text,
+    TRENCH_DEPTH_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -233,7 +233,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 15] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 16] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -253,6 +253,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 15] = [
     ),
     (panels::MARGIN, Icon::Margin, Mode::Margin),
     (panels::HOTSPOT, Icon::Hotspot, Mode::Hotspot),
+    (panels::TRENCH, Icon::Trench, Mode::Trench),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3186,6 +3187,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::Hotspot {
         hint_rows(ui, panels::HOTSPOT_HINT);
     }
+    if mode == Mode::Trench {
+        hint_rows(ui, panels::TRENCH_HINT);
+    }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
@@ -3268,6 +3272,26 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .step(10.0)
                 .unit("m");
             apply(number.stepper(ui, controls), &mut brush.margin_shelf_m);
+            seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+        }
+        Mode::Trench => {
+            row(ui, controls, state, Slider::Strength);
+            let brush = &mut state.globe.brush;
+            let (labels, names) = (TRENCH_SIDE_LABELS, TRENCH_SIDE_NAMES);
+            let active = panels::TRENCH_SIDES
+                .iter()
+                .position(|s| s.0 == brush.trench_side);
+            let choices = (panels::TRENCH_SIDE, &labels[..], &names[..]);
+            if let Some(i) = widgets::segment_row(ui, controls, choices, active.unwrap_or(0)) {
+                brush.trench_side = panels::TRENCH_SIDES[i].0;
+            }
+            let (labels, names) = (TRENCH_MARGIN_LABELS, TRENCH_MARGIN_NAMES);
+            let margins = panels::TRENCH_MARGINS.iter();
+            let active = margins.clone().position(|m| m.0 == brush.trench_margin);
+            let choices = (panels::TRENCH_MARGIN, &labels[..], &names[..]);
+            if let Some(i) = widgets::segment_row(ui, controls, choices, active.unwrap_or(0)) {
+                brush.trench_margin = panels::TRENCH_MARGINS[i].0;
+            }
             seed_stepper(ui, controls, &mut state.doc.project.world.seed);
         }
         Mode::Paint => {
@@ -3529,6 +3553,12 @@ pub(super) fn brush_slider(
                     .default(defaults.hotspot_height_m);
                 set(number, &mut brush.hotspot_height_m);
             }
+            Slider::Strength if mode == Mode::Trench => {
+                let number = meters(brush.trench_depth_m, TRENCH_DEPTH_M)
+                    .step(50.0)
+                    .default(defaults.trench_depth_m);
+                set(number, &mut brush.trench_depth_m);
+            }
             Slider::Strength if mode == Mode::Seamounts => {
                 let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
                     .log()
@@ -3784,6 +3814,13 @@ fn hint_rows(ui: &mut egui::Ui, hint: &str) {
     ui.add(egui::Label::new(text).selectable(false));
     ui.add_space(8.0);
 }
+
+/// The choices of the side and the margin of the trench mode, and the names
+/// of their controls.
+const TRENCH_SIDE_LABELS: [&str; 2] = [panels::TRENCH_SIDES[0].1, panels::TRENCH_SIDES[1].1];
+pub const TRENCH_SIDE_NAMES: [&str; 2] = ["Brush side left", "Brush side right"];
+const TRENCH_MARGIN_LABELS: [&str; 2] = [panels::TRENCH_MARGINS[0].1, panels::TRENCH_MARGINS[1].1];
+pub const TRENCH_MARGIN_NAMES: [&str; 2] = ["Brush margin accretionary", "Brush margin eroding"];
 
 /// The name of the shelf depth stepper of the margin mode.
 pub const MARGIN_SHELF: &str = "Brush shelf depth";

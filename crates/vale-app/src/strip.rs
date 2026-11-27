@@ -95,7 +95,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     }
     if !matches!(
         mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot | Mode::Trench
     ) {
         out.push(Hardness);
     }
@@ -104,6 +104,8 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
     }
     match mode {
         Mode::OceanRidge => out.extend([Magma, Hills, Scale]),
+        // The strength of a trench is its depth.
+        Mode::Trench => out.push(Strength),
         Mode::Warp => out.extend([Strength, Scale]),
         Mode::Flatten => out.push(Rate),
         Mode::AbyssalHills => out.extend([Rate, Hills, Scale]),
@@ -274,6 +276,7 @@ mod tests {
             (Mode::AbyssalHills, [Size, Hills]),
             (Mode::Margin, [Size, Flow]),
             (Mode::Hotspot, [Size, Strength]),
+            (Mode::Trench, [Size, Strength]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }
