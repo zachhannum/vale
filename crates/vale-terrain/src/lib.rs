@@ -18,6 +18,7 @@ mod flow;
 #[cfg(feature = "gpu")]
 mod gpu;
 mod heightmap;
+mod hotspot;
 mod lake;
 mod line;
 mod margin;
@@ -68,6 +69,11 @@ pub use heightmap::{
     Heightmap, Limits, MAX_BRUSH_RADIUS, Mode, NOISE_OCTAVES, NOISE_RELIEF_M, Stamp, StampPlan,
     TILE_SIZE, TexelRect, UNDO_MEMORY_LIMIT, talus_levels,
 };
+pub use hotspot::{
+    HOTSPOT_ERODE_RATE, HOTSPOT_ERODE_STEPS, HOTSPOT_HEIGHT_M, HOTSPOT_HEIGHT_RANGE,
+    HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot, HotspotLine, HotspotPlan,
+    erode_hotspot, hotspot_window,
+};
 pub use lake::LAKE_MIN_AREA;
 pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 pub use margin::{
@@ -80,8 +86,8 @@ pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use realism::{
-    ATLANTIC_RIDGE, EPR_RIDGE, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism, Reference,
-    SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
+    ATLANTIC_RIDGE, EPR_RIDGE, HAWAII, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism,
+    Reference, SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};

@@ -114,6 +114,7 @@ const PAINT = 16u;
 const SEAMOUNTS = 17u;
 const ABYSSAL = 18u;
 const MARGIN = 19u;
+const HOTSPOT = 20u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -1289,7 +1290,7 @@ fn lerp_table(table: array<vec2<f32>, 5>, x: f32) -> f32 {
     return t[4].y;
 }
 
-// `depth` in `ridge.rs`.
+// `gdh1_depth` in `seamount.rs`.
 fn ridge_depth(age: f32) -> f32 {
     if age < 20.0 {
         return 2600.0 + 365.0 * sqrt(age);
@@ -2722,12 +2723,47 @@ fn limited(old: f32, next: f32) -> f32 {
 }
 
 // The constants of `seamount.rs`, with the same names but for `CONE_FOOT`
-// for `FOOT` and `SLIDE_APRON` for `APRON`, and the places in
-// `Volcano`.
-const VOLCANO_FLOATS = 56u;
+// for `FOOT`, `SLIDE_APRON` for `APRON`, and a `CONE_` prefix for the
+// lumps, and the places in `Volcano`.
+const VOLCANO_FLOATS = 64u;
 const RIFT_WIDTH = 0.3;
 const CONE_FOOT = 0.35;
 const SLIDE_APRON = 1.9;
+const BREAK_SLOPES = 10.0;
+const BREAK_FOOT = 0.18;
+const CONE_LUMPS = 0.16;
+const CONE_LUMP_SIZE = 3.0;
+const CONE_FINE = 3.0;
+const PEDESTAL = 0.75;
+const PEDESTAL_SEA = 0.85;
+const PEDESTAL_ACROSS = 0.9;
+const PEDESTAL_FLAT = 0.35;
+const ARM_BLEND = 0.35;
+const LOBES = 0.22;
+const LOBE_SIZE = 2.5;
+const LOBE_GAIN = 0.7;
+const OCTAVES = 6u;
+const SUBMARINE = 2.0;
+const FLOWS = 0.01;
+const CINDER_SIZE = 0.03;
+const CINDER_HEIGHT = 0.05;
+const SCAR_WALL = 0.03;
+const SCAR_FLOOR = 0.03;
+const SCAR_FALL = 1.2;
+const SCAR_MOST = 0.2;
+const SCAR_END = 0.9;
+const SCAR_BEND = 0.03;
+const DEBRIS_FROM = 0.8;
+const DEBRIS = 0.06;
+const V_ARM_LENGTH = 15u;
+const V_ARM_WIDTH = 19u;
+const V_ARM_BEND = 49u;
+const V_CORE = 53u;
+const V_TEXEL = 54u;
+const V_CINDERS = 14u;
+const V_SLIDE_HEAD = 29u;
+const V_SLIDE_3 = 32u;
+const V_LOWER = 55u;
 const V_CENTER = 0u;
 const V_AXIS = 3u;
 const V_GROWTH = 6u;
@@ -2755,6 +2791,15 @@ const V_SEED = 43u;
 const V_FLEX = 44u;
 const V_FLEX_LENGTH = 45u;
 const V_REACH = 46u;
+const V_CAP = 56u;
+const V_RIM = 57u;
+const V_LAGOON = 58u;
+const V_EXTENT = 59u;
+const V_SHORE = 60u;
+const V_REEF = 61u;
+const V_CONVEX = 62u;
+const V_BREAK = 63u;
+const V_PEDESTAL_REACH = 47u;
 
 // Number `i` of volcano `v`.
 fn volcano(v: u32, i: u32) -> f32 {
@@ -2805,14 +2850,47 @@ fn wrap_angle(a: f32) -> f32 {
 }
 
 // The steps of `foot` of `seamount.rs`.
-fn volcano_foot(u: f32) -> f32 {
-    if u >= CONE_FOOT {
+fn volcano_foot(u: f32, w: f32) -> f32 {
+    if u >= w {
         return u;
     }
-    if u > -CONE_FOOT {
-        return (u + CONE_FOOT) * (u + CONE_FOOT) / (4.0 * CONE_FOOT);
+    if u > -w {
+        return (u + w) * (u + w) / (4.0 * w);
     }
     return 0.0;
+}
+
+// The steps of `broken` of `seamount.rs`.
+fn volcano_broken(x: f32, b: f32) -> f32 {
+    let at = b / (b + BREAK_SLOPES * (1.0 - b));
+    if x <= at || at >= 1.0 {
+        return b * min(x, 1.0) / at;
+    }
+    let t = (x - at) / (1.0 - at);
+    return b + (1.0 - b) * (t + 0.5 * t * (1.0 - t));
+}
+
+// The steps of `lumps` of `seamount.rs`.
+fn volcano_lumps(x: f32, y: f32, z: f32, seed: u32) -> f32 {
+    let f = CONE_FINE;
+    let a = noise3(vec3<f32>(x, y, z), seed).x;
+    let b = noise3(vec3<f32>(f * x, f * y, z + 2.0), seed).x;
+    let c = noise3(vec3<f32>(f * f * x, f * f * y, z + 4.0), seed).x;
+    return a + 0.8 * b + 0.5 * c;
+}
+
+// The steps of `Volcano::pedestal`.
+fn volcano_pedestal(v: u32, u: f32, w: f32, b: f32) -> f32 {
+    let seed = u32(volcano(v, V_SEED)) ^ 3u;
+    let lu = u * CONE_LUMP_SIZE;
+    let lw = w * CONE_LUMP_SIZE;
+    let n = noise3(vec3<f32>(lu, lw, 0.5), seed);
+    let du = u / volcano(v, V_PEDESTAL_REACH);
+    let dw = w / PEDESTAL_ACROSS;
+    let t = sqrt(du * du + dw * dw) * (1.0 + 0.15 * n.x);
+    let island = 1.0 - smooth_between(PEDESTAL_SEA, 1.0, b);
+    let top = PEDESTAL * b * island * (1.0 + CONE_LUMPS * volcano_lumps(lu, lw, 7.5, seed));
+    return top * (1.0 - smooth_between(PEDESTAL_FLAT, 1.0, t));
 }
 
 // The steps of `Volcano::profile`.
@@ -2837,9 +2915,24 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     let n = noise3(q, seed);
     let fade = 1.0 - smooth_between(1.0 - CONE_FOOT, 1.0 + CONE_FOOT, re);
     re = re * (1.0 + 0.05 * n.x * fade);
-    let x = volcano_foot(1.0 - re);
-    var f = x + (x * sqrt(x) - x) * shield;
+    let b = volcano(v, V_BREAK);
+    var f = 0.0;
+    if b > 0.0 {
+        f = volcano_broken(volcano_foot(1.0 - re, BREAK_FOOT), b);
+    } else {
+        let x = volcano_foot(1.0 - re, CONE_FOOT);
+        f = x + (x * sqrt(x) - x) * shield;
+        f += (x * (2.0 - x) - f) * volcano(v, V_CONVEX);
+    }
     f *= 1.0 + volcano(v, V_GULLY_SIZE) * n.y * 4.0 * min(re, 1.0) * max(1.0 - re, 0.0);
+    if b > 0.0 {
+        let k = r * CONE_LUMP_SIZE;
+        let s = sin_any(theta);
+        let c = cos_any(theta);
+        let lump = volcano_lumps(k * c, k * s, 2.5, seed ^ 2u);
+        let below = min(f / b, 1.0);
+        f += CONE_LUMPS * lump * 4.0 * below * (1.0 - below);
+    }
     let top = volcano(v, V_TOP);
     f = min(f, top) / top;
     let crater_radius = volcano(v, V_CRATER_RADIUS);
@@ -2869,12 +2962,108 @@ fn volcano_profile(v: u32, r: f32, theta: f32, index: u32) -> f32 {
     return max(f, 0.0) + apron;
 }
 
-// The steps of `Volcano::full_levels`: the change of the level at a unit
-// direction at full growth.
-fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
+// The steps of `octaves` of `seamount.rs`.
+fn volcano_octaves(u: f32, w: f32, seed: u32, texel: f32) -> f32 {
+    var size = LOBE_SIZE;
+    var gain = 1.0;
+    var sum = 0.0;
+    for (var i = 0u; i < OCTAVES; i++) {
+        let keep = 1.0 - smooth_between(0.25, 0.5, size * texel);
+        if keep <= 0.0 {
+            break;
+        }
+        sum += gain * keep * noise3(vec3<f32>(u * size, w * size, 1.5 * f32(i)), seed).x;
+        size *= 2.0;
+        gain *= LOBE_GAIN;
+    }
+    return sum;
+}
+
+// The steps of `Volcano::island`.
+fn volcano_island(v: u32, u: f32, w: f32, b: f32) -> f32 {
+    let seed = u32(volcano(v, V_SEED));
+    let texel = volcano(v, V_TEXEL);
+    let su = u / volcano(v, V_STRETCH);
+    var re = sqrt(su * su + w * w) / volcano(v, V_CORE);
+    let rifts = u32(volcano(v, V_RIFTS));
+    for (var k = 0u; k < rifts; k++) {
+        let angle = volcano(v, V_RIFT_ANGLE + k);
+        let s = sin_any(angle);
+        let c = cos_any(angle);
+        let along = su * c + w * s;
+        let t = along / volcano(v, V_ARM_LENGTH + k);
+        let width = volcano(v, V_ARM_WIDTH + k) * (1.0 - 0.45 * clamp(t, 0.0, 1.0));
+        let across = (w * c - su * s - volcano(v, V_ARM_BEND + k) * along * along) / width;
+        let behind = min(along, 0.0) / width;
+        let ahead = max(t, 0.0);
+        let arm = sqrt(ahead * ahead + behind * behind + across * across);
+        re = smooth_min(re, arm, ARM_BLEND);
+    }
+    let fade = 1.0 - smooth_between(0.8, 1.1, re);
+    re *= 1.0 + LOBES * volcano_octaves(su, w, seed ^ 5u, texel) * fade;
+    let at = b / (b + BREAK_SLOPES * (1.0 - b));
+    re = min(re, 1.0 - at) + max(re - 1.0 + at, 0.0) / SUBMARINE;
+    var f = volcano_broken(volcano_foot(1.0 - re, BREAK_FOOT), b);
+    let lu = su * CONE_LUMP_SIZE;
+    let lw = w * CONE_LUMP_SIZE;
+    let below = min(f / b, 1.0);
+    f += CONE_LUMPS * volcano_lumps(lu, lw, 2.5, seed ^ 2u) * 4.0 * below * (1.0 - below);
+    f += FLOWS * volcano_octaves(su, w, seed ^ 9u, texel) * smooth_between(0.5 * b, b, f);
+    let cinders = volcano(v, V_CINDERS);
+    if cinders > 0.0 && b < 1.0 {
+        let n = noise3(vec3<f32>(u / CINDER_SIZE, w / CINDER_SIZE, 3.5), seed ^ 11u).x;
+        let cone = max((n - 0.55) / 0.45, 0.0);
+        f += cinders * CINDER_HEIGHT * cone * cone * smooth_between(b, 1.0, f);
+    }
+    let lower = volcano(v, V_LOWER);
+    if lower > 0.0 {
+        f -= lower * smooth_between(b - 1.6 * lower, b, f);
+    }
+    let crater = volcano(v, V_CRATER_RADIUS);
+    if crater > 0.0 {
+        let k = sqrt(su * su + w * w) / crater;
+        f -= volcano(v, V_CRATER_DEPTH) * (1.0 - smooth_between(0.7, 1.0, k));
+    }
+    var debris = 0.0;
+    for (var s = 0u; s < 3u; s++) {
+        var at = V_SLIDE_3;
+        if s < 2u {
+            at = V_SLIDE + 3u * s;
+        }
+        let depth = volcano(v, at + 2u);
+        if depth <= 0.0 {
+            continue;
+        }
+        let angle = volcano(v, at);
+        let sn = sin_any(angle);
+        let cs = cos_any(angle);
+        let width = volcano(v, at + 1u);
+        let along = su * cs + w * sn;
+        let across = w * cs - su * sn;
+        let out = along - volcano(v, V_SLIDE_HEAD + s);
+        let wide = width * (1.0 + 0.6 * max(out, 0.0));
+        let side = 1.0 - smooth_between(0.6, 1.0, abs(across) / wide);
+        let bent = out - across * across / width
+            + SCAR_BEND * volcano_octaves(u, w, seed ^ 17u, texel);
+        let end = 1.0 - smooth_between(SCAR_END, SCAR_END + 0.3, along);
+        let scar = smooth_between(0.0, SCAR_WALL, bent) * side * end;
+        let floor = b + SCAR_FLOOR - SCAR_FALL * out;
+        f += max(min(f, floor) - f, -SCAR_MOST) * scar * depth;
+        let lobe = smooth_between(DEBRIS_FROM, 1.0, along)
+            * (1.0 - smooth_between(0.8 * SLIDE_APRON, SLIDE_APRON, along))
+            * (1.0 - smooth_between(0.7, 1.0, abs(across) / (1.3 * wide)));
+        let blocks = noise3(vec3<f32>(u * 10.0, w * 10.0, 6.5), seed ^ 13u).x;
+        debris += depth * DEBRIS * lobe * (0.3 + max(blocks - 0.2, 0.0));
+    }
+    return max(f, 0.0) + debris;
+}
+
+// The steps of `Volcano::edifice`: the edifice at a unit direction at full
+// growth.
+fn volcano_edifice(v: u32, p: vec3<f32>) -> f32 {
     let c = volcano_v3(v, V_CENTER);
     let reach = volcano(v, V_REACH);
-    if dot(p, c) <= cos_series(vec2<f32>(reach)).x {
+    if dot(p, c) <= cos_series(vec2<f32>(volcano(v, V_EXTENT))).x {
         return 0.0;
     }
     let a = volcano_v3(v, V_AXIS);
@@ -2886,19 +3075,38 @@ fn volcano_levels(v: u32, p: vec3<f32>) -> f32 {
     let u = x / radius;
     let w = y / radius;
     var edifice = 0.0;
-    let cones = u32(volcano(v, V_CONES));
-    for (var i = 0u; i < cones; i++) {
-        let du = (u - volcano(v, V_CONE_OFFSET + i)) / volcano(v, V_STRETCH);
-        let dw = w - volcano(v, V_CONE_SIDE + i);
-        let r = sqrt(du * du + dw * dw);
-        let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
-        edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
+    let brk = volcano(v, V_BREAK);
+    if brk > 0.0 {
+        edifice = max(volcano_island(v, u, w, brk), volcano_pedestal(v, u, w, brk));
+    } else {
+        let cones = u32(volcano(v, V_CONES));
+        for (var i = 0u; i < cones; i++) {
+            let du = (u - volcano(v, V_CONE_OFFSET + i)) / volcano(v, V_STRETCH);
+            let dw = w - volcano(v, V_CONE_SIDE + i);
+            let r = sqrt(du * du + dw * dw);
+            let theta = atan2_any(dw, du) + volcano(v, V_CONE_TURN + i);
+            edifice = max(edifice, volcano(v, V_CONE_HEIGHT + i) * volcano_profile(v, r, theta, i));
+        }
     }
-    edifice *= volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
+    return edifice * volcano(v, V_HEIGHT) * (1.0 - smooth_between(0.85 * reach, reach, d));
+}
+
+// The steps of `Volcano::moat`: the moat at a unit direction at full growth,
+// positive down.
+fn volcano_moat(v: u32, p: vec3<f32>) -> f32 {
+    let c = volcano_v3(v, V_CENTER);
+    let reach = volcano(v, V_REACH);
+    if dot(p, c) <= cos_series(vec2<f32>(reach)).x {
+        return 0.0;
+    }
+    let a = volcano_v3(v, V_AXIS);
+    let b = cross(c, a);
+    let x = dot(p, a);
+    let y = dot(p, b);
+    let d = sqrt(x * x + y * y);
     let xi = d / volcano(v, V_FLEX_LENGTH);
-    var moat = volcano(v, V_FLEX) * exp_precise(-xi) * (cos_any(xi) + sin_any(xi));
-    moat *= 1.0 - smooth_between(0.6 * reach, reach, d);
-    return edifice - moat;
+    let moat = volcano(v, V_FLEX) * exp_precise(-xi) * (cos_any(xi) + sin_any(xi));
+    return moat * (1.0 - smooth_between(0.6 * reach, reach, d));
 }
 
 // The level of a texel after a seamount pass, from its level from before
@@ -2908,9 +3116,89 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
     let p = normalize(texel_dir(group.face, at));
     var sum = 0.0;
     for (var v = 0u; v < group.count; v++) {
-        sum += volcano(v, V_GROWTH) * volcano_levels(v, p);
+        sum += volcano(v, V_GROWTH) * (volcano_edifice(v, p) - volcano_moat(v, p));
     }
     return limited(start, clamp(floor(start + sum + 0.5), 0.0, 65535.0));
+}
+
+// The constants of `hotspot.rs`, with a `HOTSPOT_` prefix.
+const HOTSPOT_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
+const HOTSPOT_JOIN_M = 800.0;
+const HOTSPOT_FREE_M = 100.0;
+const HOTSPOT_CAP_ROUND_M = 60.0;
+const HOTSPOT_WAVE_BASE_M = 20.0;
+const HOTSPOT_PLATFORM_M = 400.0;
+const HOTSPOT_PLATFORM_RELIEF = 0.15;
+const HOTSPOT_REEF_TOP_M = -1.0;
+const HOTSPOT_REEF_WALL = 2.0;
+
+// The steps of `shaped` in `hotspot.rs`: the height of volcano `v` with the
+// edifice `e` over the level `base`, with its top and its reef, and the part
+// of the rounding of the join that it takes.
+fn hotspot_shaped(v: u32, base: f32, e: f32) -> vec2<f32> {
+    let z = base + e;
+    let cap = volcano(v, V_CAP);
+    var s = z;
+    if cap < 65535.0 {
+        let k = HOTSPOT_PLATFORM_RELIEF;
+        let rise = (HOTSPOT_PLATFORM_M + HOTSPOT_WAVE_BASE_M) * HOTSPOT_LEVELS_PER_M;
+        let edge = cap - k / (1.0 - k) * rise;
+        s = smooth_min(z, edge + k * (z - edge), HOTSPOT_CAP_ROUND_M * HOTSPOT_LEVELS_PER_M);
+    }
+    let band = volcano(v, V_RIM);
+    if band > 0.0 {
+        let shore = volcano(v, V_SHORE);
+        let top = (HOTSPOT_REEF_TOP_M - ELEVATION_LOW) * HOTSPOT_LEVELS_PER_M;
+        let reef = min(top - HOTSPOT_REEF_WALL * (shore - band - z), top);
+        let outer = max(s, reef);
+        let lagoon = volcano(v, V_LAGOON);
+        var inner = 0.0;
+        if lagoon > 0.0 {
+            inner = smooth_between(0.0, 0.15, (z - shore) / band);
+        }
+        let reefed = outer + (lagoon - outer) * inner;
+        s += (reefed - s) * volcano(v, V_REEF);
+    }
+    var free = 0.0;
+    if cap >= 65535.0 {
+        free = max(1.0 - abs(s - z) / (HOTSPOT_FREE_M * HOTSPOT_LEVELS_PER_M), 0.0);
+    }
+    return vec2<f32>(max(s - base, 0.0), free);
+}
+
+// The steps of `join` in `hotspot.rs`.
+fn hotspot_join(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+    let free = min(a.y, b.y);
+    let k = min(min(HOTSPOT_JOIN_M * HOTSPOT_LEVELS_PER_M * free, a.x), b.x);
+    if k <= 0.0 {
+        return vec2<f32>(max(a.x, b.x), free);
+    }
+    let h = max(k - abs(a.x - b.x), 0.0) / k;
+    return vec2<f32>(max(a.x, b.x) + 0.25 * k * h * h, free);
+}
+
+// The level of a texel of a hotspot track, from its level from before the
+// stroke. The steps are those of `HotspotPlan::level_of`. The header has
+// the depth of the floor at the end of the line as `crest`, the reset age as
+// `offset`, and the plate speed as `spread`.
+fn hotspot_level(at: RidgePoint, p: vec3<f32>, start: f32) -> f32 {
+    let to_end = (ridge.length.x - at.cell) * ridge.segment + (ridge.length.y - at.rest);
+    let age = max(to_end, 0.0) / ridge.spread;
+    let d = sqrt(at.across * at.across + at.past2) / ridge.radius;
+    let swell = max(ridge.crest - ridge_depth(ridge.offset + age), 0.0);
+    var moat = 0.0;
+    for (var v = 0u; v < group.count; v++) {
+        moat += volcano(v, V_GROWTH) * volcano_moat(v, p);
+    }
+    let base = start + swell * HOTSPOT_LEVELS_PER_M * bump(d) - moat;
+    var top = vec2<f32>(0.0, 1.0);
+    for (var v = 0u; v < group.count; v++) {
+        let e = volcano(v, V_GROWTH) * volcano_edifice(v, p);
+        if e > 0.0 {
+            top = hotspot_join(top, hotspot_shaped(v, base, e));
+        }
+    }
+    return clamp(floor(base + top.x + 0.5), 0.0, 65535.0);
 }
 
 // The change of the level of a texel from one weather stamp. Each pair of
@@ -3002,6 +3290,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
         let p = normalize(texel_dir(group.face, at));
         value = limited(value, margin_level(p, start, value));
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == HOTSPOT {
+        let p = normalize(texel_dir(group.face, at));
+        let point = ridge_place(p);
+        if point.on {
+            value = limited(value, hotspot_level(point, p, value));
+        }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
     if group.mode == RANGE {

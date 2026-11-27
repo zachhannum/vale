@@ -749,6 +749,11 @@ impl Erosion {
         }
     }
 
+    /// The rain of each later step.
+    pub(crate) fn rain(&self) -> Rain {
+        self.rain
+    }
+
     /// The rain of each cell of a window, in row order.
     pub(crate) fn cell_rain(&self) -> Vec<f32> {
         self.rain_of(0, 0, self.side, self.side)

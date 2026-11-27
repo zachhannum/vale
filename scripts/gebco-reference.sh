@@ -55,6 +55,16 @@ us-east-margin)
 	# Peninsula, N40E.
 	fabric_deg=40
 	;;
+hawaii)
+	title="Hawaiian Islands, 20.6 N"
+	lon=-157.3
+	lat=20.6
+	size=1024
+	cell_m=920
+	band_max_m=225000
+	# The trend of the chain from Hawaii to Kauai, N60W.
+	fabric_deg=-60
+	;;
 *)
 	echo "unknown region: $region" >&2
 	exit 2

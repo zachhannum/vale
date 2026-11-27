@@ -14,9 +14,10 @@ use vale_store::{
 };
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
-    FACES, Heightmap, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain, RangeLine, Ridge,
-    RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window, WindowHeights, margin_window,
-    max_level, meters_to_level, reduced_cap, reduced_face_size, smoothing_level,
+    FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
+    RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
+    WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
+    reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -314,10 +315,11 @@ struct Uplifting {
     window: Option<Window>,
 }
 
-/// The line of an ocean ridge stroke or of a range stroke.
+/// The line of an ocean ridge, range, or hotspot track stroke.
 enum BrushLine {
     Ridge(RidgeLine),
     Range(RangeLine),
+    Hotspot(HotspotLine),
 }
 
 impl BrushLine {
@@ -325,6 +327,7 @@ impl BrushLine {
         match self {
             BrushLine::Ridge(line) => line.len(),
             BrushLine::Range(line) => line.len(),
+            BrushLine::Hotspot(line) => line.len(),
         }
     }
 
@@ -342,12 +345,17 @@ impl BrushLine {
                 let end = plan.end;
                 (LineOp::Range(Box::new(plan)), end)
             }
+            BrushLine::Hotspot(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Hotspot(Box::new(plan)), end)
+            }
         }
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke. The stamps of
-/// the stroke are the points of the line, and they do not go to the GPU.
+/// The line of an ocean ridge, range, or hotspot track stroke. The stamps
+/// of the stroke are the points of the line, and they do not go to the GPU.
 struct Ridging {
     line: BrushLine,
     /// The place and the flow of each point of the line.
@@ -358,6 +366,8 @@ struct Ridging {
     pieces: VecDeque<LineOp>,
     /// `Some`: the stroke is a range stroke with erosion.
     range: Option<Ranging>,
+    /// `Some`: the stroke is a hotspot track stroke.
+    hotspot: Option<HotspotErosion>,
     /// `Some`: the pen draws a fracture zone of the held ocean ridge. The
     /// places of the stroke so far.
     guide: Option<Vec<V3>>,
@@ -367,6 +377,12 @@ impl Ridging {
     /// True if each plan of the line and each piece went to the GPU.
     fn all_sent(&self) -> bool {
         self.sent == self.line.len() && self.pieces.is_empty()
+    }
+
+    /// True if each plan went to the GPU, and the erosion of a hotspot
+    /// track after them.
+    fn finished(&self) -> bool {
+        self.all_sent() && self.hotspot.is_none_or(|h| h.done)
     }
 
     fn extend(&mut self, stamps: &[Stamp]) {
@@ -379,6 +395,7 @@ impl Ridging {
             match &mut self.line {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
+                BrushLine::Hotspot(line) => line.push(stamp.center, stamp.flow),
             }
         }
     }
@@ -412,19 +429,54 @@ impl Ridging {
     }
 }
 
-/// The line of an ocean ridge stroke or of a range stroke with a brush of
-/// this radius, in radians, on a world of `km` kilometers with a heightmap
-/// of face size `n`. Other modes have no line.
+/// The erosion of a hotspot track. After the last plan of the line went to
+/// the GPU, the worker erodes the islands of the chain one time, and the
+/// step goes to the GPU.
+#[derive(Clone, Copy)]
+struct HotspotErosion {
+    /// The erosion setting and the branching setting at the start of the
+    /// stroke.
+    amount: f64,
+    branching: f64,
+    /// The line went to the worker.
+    asked: bool,
+    /// The step went to the GPU, or the line has no step.
+    done: bool,
+}
+
+impl HotspotErosion {
+    fn new(brush: &BrushSettings) -> HotspotErosion {
+        HotspotErosion {
+            amount: brush.erosion.clamp(0.0, 1.0),
+            branching: brush.branching,
+            asked: false,
+            done: false,
+        }
+    }
+}
+
+/// The line of an ocean ridge, range, or hotspot track stroke with a brush
+/// of this radius, in radians, on a world of `km` kilometers with a
+/// heightmap of face size `n`. Other modes have no line.
 fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
-    let (line, range) = match brush.mode {
+    let (line, range, hotspot) = match brush.mode {
         Mode::OceanRidge => {
             let spec = brush.ridge_spec(radius, km, seed);
-            (BrushLine::Ridge(RidgeLine::new(spec, n)), None)
+            (BrushLine::Ridge(RidgeLine::new(spec, n)), None, None)
         }
         Mode::Range => {
             let spec = brush.range_spec(radius, km, seed);
             let range = (brush.erosion > 0.0).then(Ranging::default);
-            (BrushLine::Range(RangeLine::new(spec, n)), range)
+            (BrushLine::Range(RangeLine::new(spec, n)), range, None)
+        }
+        Mode::Hotspot => {
+            let spec = brush.hotspot_spec(radius, km, seed);
+            let erosion = HotspotErosion::new(brush);
+            (
+                BrushLine::Hotspot(HotspotLine::new(spec, n)),
+                None,
+                Some(erosion),
+            )
         }
         _ => return None,
     };
@@ -434,6 +486,7 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
         sent: 0,
         pieces: VecDeque::new(),
         range,
+        hotspot,
         guide: None,
     })
 }
@@ -597,7 +650,7 @@ struct Active {
     erode: Option<Eroding>,
     /// `Some`: the stroke is an uplift stroke with erosion.
     uplift: Option<Uplifting>,
-    /// `Some`: the stroke is an ocean ridge stroke or a range stroke.
+    /// `Some`: the stroke is an ocean ridge, range, or hotspot track stroke.
     ridge: Option<Ridging>,
     /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
@@ -2723,14 +2776,15 @@ impl Globe {
     }
 
     /// The center line of an ocean ridge in screen points, while the pen
-    /// draws it and while it is held.
+    /// draws it and while it is held, or the line of a hotspot track while
+    /// the pen draws it.
     pub fn ridge_preview(&self) -> Option<Vec<Pos2>> {
         let active = self
             .stroke
             .as_ref()
             .filter(|a| !a.ended || a.held.is_some())?;
         let ridge = active.ridge.as_ref()?;
-        if !matches!(ridge.line, BrushLine::Ridge(_)) {
+        if matches!(ridge.line, BrushLine::Range(_)) {
             return None;
         }
         let mut points: Vec<Pos2> = Vec::new();
@@ -3522,6 +3576,7 @@ impl Globe {
         self.hold(now, in_flight);
         self.ridge(now, in_flight);
         self.range();
+        self.hotspot();
         self.margin();
         self.basin();
         self.send_stamps(now);
@@ -3756,14 +3811,15 @@ impl Globe {
                             }
                             if self.brush.mode == Mode::OceanRidge {
                                 let spec = self.brush.ridge_spec(sample.radius, km, seed);
+                                let spec = HeldSpec::Ridge(spec);
                                 active.held = Some(Held {
                                     mode: Mode::OceanRidge,
                                     size: (self.brush.size_points, self.brush.lock),
                                     radius: sample.radius,
                                     drawn_flow: self.brush.flow,
                                     flow: self.brush.flow,
-                                    spec: HeldSpec::Ridge(spec),
-                                    wanted: (HeldSpec::Ridge(spec), self.brush.flow),
+                                    spec,
+                                    wanted: (spec, self.brush.flow),
                                     changed: time,
                                     apply: false,
                                 });
@@ -3836,6 +3892,11 @@ impl Globe {
                                 && line.add_guide(&guide)
                             {
                                 ridge.resend();
+                            }
+                            // The heightmap holds the ground from before
+                            // the stroke.
+                            if let BrushLine::Hotspot(line) = &mut ridge.line {
+                                line.finish(map);
                             }
                         }
                         if let Some(basin) = &mut active.basin {
@@ -4064,7 +4125,7 @@ impl Globe {
             return;
         };
         // A line that changes no texel holds nothing.
-        let sent = active.ridge.as_ref().is_none_or(Ridging::all_sent);
+        let sent = active.ridge.as_ref().is_none_or(Ridging::finished);
         let done = active.basin.as_ref().is_none_or(|b| b.done);
         if sent && done && active.touched.iter().all(Option::is_none) {
             active.held = None;
@@ -4150,7 +4211,7 @@ impl Globe {
         let Some(held) = &active.held else {
             return false;
         };
-        let sent = active.ridge.as_ref().is_none_or(Ridging::all_sent);
+        let sent = active.ridge.as_ref().is_none_or(Ridging::finished);
         let done = active.basin.as_ref().is_none_or(|b| b.done);
         let current = held.wanted == (held.spec, held.flow);
         current && sent && done && self.inputs.is_empty() && self.backlog.is_empty()
@@ -4221,7 +4282,8 @@ impl Globe {
     ///
     /// The plans of a frame go after the GPU did the plans before them, and
     /// they hold at most `LINE_TEXELS_PER_FRAME` texels after the first
-    /// one. An ocean ridge goes to the GPU after the pen goes up.
+    /// one. An ocean ridge and a hotspot track go to the GPU after the pen
+    /// goes up.
     fn ridge(&mut self, now: Instant, in_flight: bool) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
@@ -4230,7 +4292,8 @@ impl Globe {
         let Some(ridge) = &mut active.ridge else {
             return;
         };
-        if in_flight || (active.held.is_some() && !active.ended) {
+        let later = active.held.is_some() || ridge.hotspot.is_some();
+        if in_flight || (later && !active.ended) {
             return;
         }
         let time = active.sampled.unwrap_or(now);
@@ -4245,6 +4308,11 @@ impl Globe {
                         LineOp::Ridge(plan) => {
                             let pieces = line_pieces(&*plan, |p| &mut p.line);
                             ridge.pieces.extend(pieces.map(LineOp::Ridge));
+                            continue;
+                        }
+                        LineOp::Hotspot(plan) => {
+                            let pieces = line_pieces(&*plan, |p| &mut p.line);
+                            ridge.pieces.extend(pieces.map(LineOp::Hotspot));
                             continue;
                         }
                         plan => plan,
@@ -4353,6 +4421,63 @@ impl Globe {
             }
             range.done = true;
         }
+    }
+
+    /// After the last plan of a hotspot track went to the GPU, asks the
+    /// worker to erode the islands of the chain. When the step arrives,
+    /// sends it to the GPU.
+    fn hotspot(&mut self) {
+        let tag = self.tag();
+        let Some(active) = self.stroke.as_mut().filter(|a| a.ended) else {
+            return;
+        };
+        let Some(ridge) = active.ridge.as_mut() else {
+            return;
+        };
+        let ready = ridge.all_sent();
+        let (BrushLine::Hotspot(line), Some(erosion)) = (&ridge.line, &mut ridge.hotspot) else {
+            return;
+        };
+        if !ready || erosion.done {
+            return;
+        }
+        if !erosion.asked {
+            if erosion.amount <= 0.0 || !line.is_finished() {
+                erosion.done = true;
+                return;
+            }
+            // The heightmap holds the ground from before the stroke.
+            let window = hotspot_window(line, self.map.face_size());
+            let heights = WindowHeights::new(&self.map, window);
+            self.eroder.begin(Ground::Alone(heights));
+            self.eroder.set_rain(self.world_rain);
+            self.eroder
+                .set_branching(self.world_seed, erosion.branching);
+            self.eroder
+                .set_channel(self.brush.channel_shape(self.world_km));
+            let limits = line.spec().limits;
+            let lift = Lift::Hotspot(Arc::new(line.clone()));
+            self.eroder
+                .request(Vec::new(), erosion.amount, lift, limits);
+            erosion.asked = true;
+        }
+        let Some(step) = self.eroder.poll() else {
+            if !self.eroder.pending() {
+                // A reset of the heightmap canceled the request.
+                erosion.done = true;
+            }
+            return;
+        };
+        if !step.is_empty() {
+            for (touched, rect) in active.touched.iter_mut().zip(step.rects()) {
+                if let Some(rect) = rect {
+                    *touched = Some(union(*touched, rect));
+                }
+            }
+            let stroke = active.id;
+            self.link.push(tag, Op::Erode { stroke, step });
+        }
+        erosion.done = true;
     }
 
     /// After the last plan of a margin stroke went to the GPU, asks the
@@ -4518,7 +4643,7 @@ impl Globe {
         // The readback of a range stroke follows its held steps, so one undo
         // step has the whole stroke.
         if let Some(ridge) = &active.ridge
-            && (!ridge.all_sent() || ridge.range.as_ref().is_some_and(|r| !r.done))
+            && (!ridge.finished() || ridge.range.as_ref().is_some_and(|r| !r.done))
         {
             return;
         }

@@ -6,11 +6,12 @@ use vale_terrain::math::{V3, add, angle, arc_motion, cross, dot, lonlat_to_dir, 
 use vale_terrain::{
     AbyssalHills, AbyssalStroke, CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow,
     CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS,
-    GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan,
-    Margin, MarginStroke, Mode, OuterFlow, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec,
-    Readback, Ridge, RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts,
-    Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights,
-    channel_map, pyramid_layout, tiles_layout, window_channels,
+    GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Hotspot, HotspotLine, HotspotPlan,
+    LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Margin, MarginStroke, Mode, OuterFlow, Pyramid,
+    RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
+    SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan, TILE_SIZE,
+    TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout,
+    tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -3546,6 +3547,9 @@ trait LineSpec: Copy {
     fn plan(line: &Self::Line, from: usize) -> Self::Plan;
     fn margin(line: &Self::Line, p: V3) -> f64;
     fn lay(map: &mut Heightmap, plan: &Self::Plan);
+    /// Ends the line after its last point, on the ground from before the
+    /// stroke.
+    fn finish(_line: &mut Self::Line, _map: &Heightmap) {}
     fn pass(
         map: &GpuHeightmap,
         queue: &wgpu::Queue,
@@ -3619,6 +3623,43 @@ impl LineSpec for RangeSpec {
         plan: &RangePlan,
     ) -> bool {
         map.range(queue, enc, plan)
+    }
+}
+
+impl LineSpec for Hotspot {
+    type Line = HotspotLine;
+    type Plan = HotspotPlan;
+    fn line(self, n: usize) -> HotspotLine {
+        HotspotLine::new(self, n)
+    }
+    fn radius(line: &HotspotLine) -> f64 {
+        line.spec().radius
+    }
+    fn push(line: &mut HotspotLine, dir: V3, flow: f64) {
+        line.push(dir, flow);
+    }
+    fn len(line: &HotspotLine) -> usize {
+        line.len()
+    }
+    fn plan(line: &HotspotLine, from: usize) -> HotspotPlan {
+        line.plan(from)
+    }
+    fn margin(line: &HotspotLine, p: V3) -> f64 {
+        line.margin(p)
+    }
+    fn lay(map: &mut Heightmap, plan: &HotspotPlan) {
+        map.hotspot(plan);
+    }
+    fn finish(line: &mut HotspotLine, map: &Heightmap) {
+        line.finish(map);
+    }
+    fn pass(
+        map: &GpuHeightmap,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &HotspotPlan,
+    ) -> bool {
+        map.hotspot(queue, enc, plan)
     }
 }
 
@@ -3699,7 +3740,8 @@ fn ridge_run<S: LineSpec>(
 ) -> RidgeRun {
     let gpu = gpu();
     let n = start.face_size();
-    let line = ridge_line(spec, n, places);
+    let mut line = ridge_line(spec, n, places);
+    S::finish(&mut line, start);
     let mut plans = vec![S::plan(&line, 0)];
     while plans[plans.len() - 1].end < S::len(&line) {
         plans.push(S::plan(&line, plans[plans.len() - 1].end));
@@ -4528,4 +4570,64 @@ fn gpu_abyssal_hills_match_cpu_across_a_face_edge() {
         run.changed
     );
     assert!(run.difference <= ABYSSAL_TOLERANCE, "{}", run.difference);
+}
+
+/// The largest difference between a GPU level and a CPU level of a hotspot
+/// track.
+const HOTSPOT_TOLERANCE: u16 = 2;
+
+/// The settings of a hotspot track on a world of the size of the Earth,
+/// with a slow plate, so the chain has islands, guyots, and atolls.
+fn hotspot_spec() -> Hotspot {
+    Hotspot {
+        radius: 500.0 / 6371.0,
+        height_m: 9000.0,
+        speed_mm: 40.0,
+        reefs: true,
+        world_km: 6371.0,
+        seed: 7,
+        limits: Limits::default(),
+    }
+}
+
+/// Deep sea floor near 5,000 m with low hills.
+fn deep_floor(n: usize) -> Heightmap {
+    ground(n, |d| {
+        let hill = 300.0 * (3.0 * d[0] + 1.0).sin() * (2.0 * d[1]).cos();
+        (5500.0 + hill + 200.0 * (4.0 * d[2] + d[0]).sin()).round() as u16
+    })
+}
+
+fn assert_hotspot(name: &str, run: &RidgeRun, faces: &[usize]) {
+    eprintln!(
+        "hotspot, {name}: largest difference {}, changed {:?}, skipped {}, plans {}",
+        run.difference, run.changed, run.skipped, run.plans
+    );
+    for &face in faces {
+        assert!(run.changed[face] > 200, "{name}: {:?}", run.changed);
+    }
+    assert!(
+        run.difference <= HOTSPOT_TOLERANCE,
+        "{name}: the difference is {}",
+        run.difference
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_hotspot_matches_cpu_for_a_stroke() {
+    let start = deep_floor(1024);
+    let places = [(-25.0, 10.0), (-5.0, -2.0), (10.0, 4.0)];
+    let run = ridge_run(&start, hotspot_spec(), &places, false, true);
+    assert_hotspot("stroke", &run, &[0]);
+    assert!(run.plans > 1, "{}", run.plans);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_hotspot_matches_cpu_past_a_face_edge() {
+    let start = deep_floor(512);
+    let places = [(20.0, -10.0), (40.0, 2.0), (56.0, 8.0)];
+    let run = ridge_run(&start, hotspot_spec(), &places, false, true);
+    assert_hotspot("past a face edge", &run, &[0, 2]);
 }

@@ -34,6 +34,10 @@ pub const EPR_RIDGE: &str = include_str!("../data/gebco/epr-ridge.txt");
 /// with its shelf, slope, and rise, from GEBCO.
 pub const US_EAST_MARGIN: &str = include_str!("../data/gebco/us-east-margin.txt");
 
+/// The reference text of the Hawaiian Islands, from Hawaii to Kauai, with
+/// their moat, from GEBCO.
+pub const HAWAII: &str = include_str!("../data/gebco/hawaii.txt");
+
 /// A square grid of heights in meters on a plane. Row 0 is the south edge,
 /// and each row runs from west to east. `size` is a power of two.
 #[derive(Clone, Debug, PartialEq)]

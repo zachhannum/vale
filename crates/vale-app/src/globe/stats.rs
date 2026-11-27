@@ -91,6 +91,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Seamounts => "seamounts",
         Mode::AbyssalHills => "abyssal hills",
         Mode::Margin => "margin",
+        Mode::Hotspot => "hotspot track",
     }
 }
 

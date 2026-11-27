@@ -22,11 +22,11 @@ use vale_terrain::Mode;
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
-    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, MARGIN_SHELF_M, NOISE_GRAIN,
-    NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA,
-    RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
-    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
-    shape_text,
+    EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
+    MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -49,6 +49,10 @@ pub const ABYSSAL_HILLS: &str = "Abyssal hills";
 pub const MARGIN: &str = "Margin";
 /// The hint of the margin mode.
 pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
+/// The name of the hotspot track mode of the brush.
+pub const HOTSPOT: &str = "Hotspot track";
+/// The hint of the hotspot track mode.
+pub const HOTSPOT_HINT: &str = "Draw the track toward the hotspot.";
 /// The hint of the basin mode before the outline.
 pub const BASIN_OUTLINE_HINT: &str = "Draw the outline of the basin.";
 /// The hint of the basin mode after the outline.
@@ -1479,6 +1483,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Seamounts, SEAMOUNTS),
             (Mode::AbyssalHills, ABYSSAL_HILLS),
             (Mode::Margin, MARGIN),
+            (Mode::Hotspot, HOTSPOT),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1513,6 +1518,18 @@ pub(super) fn edge_age_text(brush: &crate::globe::brush::BrushSettings, radius_k
     format!("Edge age {age} Myr")
 }
 
+/// The age of a hotspot track for each 1,000 km, for example "11 Myr for
+/// each 1,000 km".
+pub(super) fn hotspot_age_text(brush: &crate::globe::brush::BrushSettings) -> String {
+    let age = brush.hotspot_age_per_1000_km();
+    let age = if age >= 10.0 {
+        format!("{age:.0}")
+    } else {
+        three_significant(age)
+    };
+    format!("{age} Myr for each 1,000 km")
+}
+
 /// The text of a density of the seamounts mode.
 fn density_text(density: f64) -> String {
     format!("{density:.0} per 10,000 km²")
@@ -1524,18 +1541,19 @@ fn density_text(density: f64) -> String {
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range | Mode::Basin | Mode::Seamounts => "Height",
+        Mode::Range | Mode::Basin | Mode::Seamounts | Mode::Hotspot => "Height",
         _ => "Strength",
     }
 }
 
-/// The hint of the ocean ridge mode, the basin mode, and the margin mode.
+/// The hint of the ocean ridge, basin, margin, and hotspot track modes.
 fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     match globe.brush.mode {
         Mode::Basin => ui.label(basin_hint(globe)),
         Mode::OceanRidge if globe.holding().is_some() => ui.label(HELD_HINT),
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         Mode::Margin => ui.label(MARGIN_HINT),
+        Mode::Hotspot => ui.label(HOTSPOT_HINT),
         _ => return,
     };
 }
@@ -1562,11 +1580,12 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
     // The ocean ridge mode has no falloff and no strength, the range mode
-    // has no falloff, and the basin mode has no falloff and no flow.
+    // and the hotspot track mode have no falloff, and the basin mode has no
+    // falloff and no flow.
     let ridge = globe.brush.mode == Mode::OceanRidge;
     if !matches!(
         globe.brush.mode,
-        Mode::OceanRidge | Mode::Range | Mode::Basin
+        Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Hotspot
     ) {
         number::slider("Hardness", &mut globe.brush.hardness, 0.0..=1.0).show(ui);
     }
@@ -1642,6 +1661,23 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .percent()
             .show(ui);
         ui.checkbox(&mut brush.abyssal_fit, "Fit to map");
+        seed(ui, state);
+    } else if globe.brush.mode == Mode::Hotspot {
+        let brush = &mut globe.brush;
+        number::stepper("Height", &mut brush.hotspot_height_m)
+            .range(HOTSPOT_HEIGHT)
+            .step(100.0)
+            .decimals(0)
+            .suffix(" m")
+            .show(ui);
+        number::stepper("Plate speed", &mut brush.hotspot_speed_mm)
+            .range(HOTSPOT_SPEED)
+            .step(1.0)
+            .decimals(0)
+            .suffix(" mm/yr")
+            .show(ui);
+        ui.label(hotspot_age_text(brush));
+        ui.checkbox(&mut brush.hotspot_reefs, "Reefs");
         seed(ui, state);
     } else if globe.brush.mode == Mode::Margin {
         let brush = &mut globe.brush;
@@ -1800,11 +1836,14 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
     }
     if matches!(
         globe.brush.mode,
-        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin
+        Mode::Uplift | Mode::Range | Mode::Basin | Mode::Margin | Mode::Hotspot
     ) {
         number::slider("Erosion", &mut globe.brush.erosion, EROSION).show(ui);
     }
-    if matches!(globe.brush.mode, Mode::Erode | Mode::Uplift | Mode::Margin) {
+    if matches!(
+        globe.brush.mode,
+        Mode::Erode | Mode::Uplift | Mode::Margin | Mode::Hotspot
+    ) {
         number::slider("Branching", &mut globe.brush.branching, BRANCHING)
             .percent()
             .show(ui);

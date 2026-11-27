@@ -5193,6 +5193,215 @@ fn two_equal_margin_strokes_with_the_same_seed_give_equal_results() {
     assert!(other != before && other != first);
 }
 
+/// A harness in the hotspot track mode on the empty world.
+fn hotspot_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Hotspot;
+    h.run_steps(2);
+    h
+}
+
+/// The levels after the stroke of `pen_line`, with the track applied.
+fn hotspot_stroke(h: &mut Harness<'static, AppState>) -> Vec<u16> {
+    pen_line(h, |_| {});
+    settle(h);
+    all_levels(h)
+}
+
+/// The levels of the stroke of `pen_line` with the settings of the brush,
+/// on the CPU: the track, and the track after its erosion.
+fn cpu_hotspot(h: &Harness<'static, AppState>) -> (Vec<u16>, Vec<u16>) {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Erosion, Heightmap, HotspotLine, erode_hotspot, hotspot_window};
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for sample in ridge_samples() {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.hotspot_spec(0.1, globe.world_km, globe.world_seed);
+    let mut line = HotspotLine::new(spec, n);
+    for stamp in &stamps {
+        line.push(stamp.center, stamp.flow);
+    }
+    let start = Heightmap::new(n, globe.map.base());
+    line.finish(&start);
+    assert!(!line.volcanoes().is_empty());
+    let mut track = start.snapshot();
+    track.begin_stroke();
+    let mut from = 0;
+    while from < line.len() {
+        let plan = line.plan(from);
+        track.hotspot(&plan);
+        from = plan.end;
+    }
+    track.end_stroke();
+    let window = hotspot_window(&line, n);
+    let mut erosion = Erosion::window_alone(&WindowHeights::new(&start, window));
+    erosion.set_limits(brush.limits());
+    erosion.set_rain(globe.world_rain);
+    erosion.set_channel(brush.channel_shape(globe.world_km));
+    erosion.set_branching(globe.world_seed, brush.branching);
+    let step = erode_hotspot(&mut erosion, &line, brush.erosion);
+    let mut eroded = track.snapshot();
+    eroded.begin_stroke();
+    eroded.erode(&step);
+    eroded.end_stroke();
+    (levels_of_map(&track), levels_of_map(&eroded))
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_hotspot_track_goes_into_the_heightmap_at_pen_up_as_one_undo_step() {
+    let _gpu = one_gpu_test();
+    let mut h = hotspot_harness(7);
+    assert_eq!(h.state().globe.brush.erosion, 0.5);
+    let before = (all_levels(&h), canvas_image(&mut h));
+    // While the pen draws, only the line shows.
+    pen_line(&mut h, |h| {
+        let globe = &h.state().globe;
+        assert!(globe.holding().is_none());
+        assert!(globe.ridge_preview().is_some());
+    });
+    let globe = &h.state().globe;
+    assert!(globe.holding().is_none() && globe.ridge_preview().is_none());
+    run_until_idle(&mut h);
+    // No card asks for Apply.
+    assert!(h.query_all_by_label("Apply").next().is_none());
+    assert!(h.query_all_by_label("Discard").next().is_none());
+    let after = (all_levels(&h), canvas_image(&mut h));
+    assert!(after.1.as_raw() != before.1.as_raw());
+
+    // The track of the CPU, with the erosion of its islands.
+    let (track, cpu) = cpu_hotspot(&h);
+    let changed = cpu.iter().zip(&before.0).filter(|(a, b)| a != b).count();
+    assert!(changed > 2000, "{changed}");
+    let worst = after.0.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+    let eroded = track.iter().zip(&cpu).filter(|(t, c)| c < t).count();
+    assert!(eroded > 10, "{eroded}");
+
+    // One undo puts back the ground from before the stroke.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before.0);
+    assert!(!h.state().globe.can_undo());
+    assert!(canvas_image(&mut h).as_raw() == before.1.as_raw());
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == after.0);
+    assert!(canvas_image(&mut h).as_raw() == after.1.as_raw());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn two_equal_hotspot_strokes_give_equal_results() {
+    let _gpu = one_gpu_test();
+    let mut h = hotspot_harness(7);
+    let before = all_levels(&h);
+    let first = hotspot_stroke(&mut h);
+    assert!(first != before);
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(hotspot_stroke(&mut h) == first);
+    // Without erosion, the stroke differs.
+    assert!(h.state_mut().globe.undo());
+    h.state_mut().globe.brush.erosion = 0.0;
+    let plain = hotspot_stroke(&mut h);
+    assert!(plain != first && plain != before);
+
+    // A second harness starts from the same ground.
+    drop(h);
+    let mut h = hotspot_harness(7);
+    assert!(hotspot_stroke(&mut h) == first);
+
+    // Another seed gives another result.
+    drop(h);
+    let mut h = hotspot_harness(8);
+    let other = hotspot_stroke(&mut h);
+    assert!(other != before && other != first);
+}
+
+/// Writes an image of the globe after a hotspot track stroke in the iPad
+/// layout, near the islands, for a person to look at.
+#[test]
+#[ignore]
+fn manual_screenshots_of_a_hotspot_track() {
+    use vale_app::ui::Layout;
+    let _gpu = one_gpu_test();
+    let mut state = state();
+    state.globe.set_face_size(BRUSH_FACE_SIZE);
+    state.add_height();
+    state.set_layout(Layout::Pad);
+    state.globe.tool = Tool::Brush;
+    state.globe.brush.mode = Mode::Hotspot;
+    state.globe.preview.graticule = false;
+    let size = (1194.0, 834.0);
+    let mut h = headless::ui_harness_on(state, size, 1.0, render_state());
+    h.set_render_every_step(true);
+    h.run_steps(3);
+    pen_line(&mut h, |_| {});
+    settle(&mut h);
+    // The end of the line is the hotspot, at 80° east.
+    let globe = &mut h.state_mut().globe;
+    globe.view = GlobeView::centered(77.0, 3.0);
+    globe.view.zoom = 9.0;
+    h.run_steps(3);
+    save(&h.render().unwrap(), "hotspot-pad-islands");
+}
+
+#[test]
+fn the_brush_panel_has_the_hotspot_track_mode_and_its_settings() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Plate speed").next().is_none());
+    h.get_by_label("Hotspot track").click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Hotspot);
+    assert!(brush.size_is_fixed());
+    assert_eq!(
+        (
+            brush.hotspot_height_m,
+            brush.hotspot_speed_mm,
+            brush.hotspot_reefs
+        ),
+        (9000.0, 90.0, false)
+    );
+    for name in [
+        "Draw the track toward the hotspot.",
+        "Radius",
+        "Flow",
+        "Height",
+        "Plate speed",
+        "11 Myr for each 1,000 km",
+        "Reefs",
+        "Seed",
+        "Erosion",
+        "Branching",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in [
+        "Hardness",
+        "Strength",
+        "Lock size",
+        "Crest",
+        "Apply",
+        "Discard",
+        "Wind",
+        "Rain shadow",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+}
+
 #[test]
 #[ignore = "gpu"]
 fn a_range_stroke_gives_the_levels_of_the_cpu_range() {

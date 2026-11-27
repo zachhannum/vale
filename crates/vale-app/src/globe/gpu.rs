@@ -15,8 +15,9 @@ use std::collections::HashMap;
 use vale_store::{ImageId, LayerId, RasterId};
 use vale_terrain::{
     AbyssalPlan, ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid,
-    GpuTiles, Heightmap, MAX_BANDS, MarginPlan, PyramidPipelines, RangePlan, Readback, RidgePlan,
-    SeamountPlan, StampPipeline, StampPlan, TILES_WGSL, TexelRect, pyramid_layout, tiles_layout,
+    GpuTiles, Heightmap, HotspotPlan, MAX_BANDS, MarginPlan, PyramidPipelines, RangePlan, Readback,
+    RidgePlan, SeamountPlan, StampPipeline, StampPlan, TILES_WGSL, TexelRect, pyramid_layout,
+    tiles_layout,
 };
 
 use super::compile::{Compiled, render_pipeline};
@@ -2945,10 +2946,11 @@ impl Resources {
 /// The most meshes of projections on the GPU.
 const MESHES: usize = 8;
 
-/// The plan of a line of an ocean ridge stroke or of a range stroke.
+/// The plan of a line of an ocean ridge, range, or hotspot track stroke.
 pub enum LineOp {
     Ridge(Box<RidgePlan>),
     Range(Box<RangePlan>),
+    Hotspot(Box<HotspotPlan>),
 }
 
 impl LineOp {
@@ -2957,6 +2959,7 @@ impl LineOp {
         match self {
             LineOp::Ridge(plan) => &plan.rects,
             LineOp::Range(plan) => &plan.rects,
+            LineOp::Hotspot(plan) => &plan.rects,
         }
     }
 }
@@ -3649,6 +3652,7 @@ impl Batch<'_> {
                 let added = match &plan {
                     LineOp::Ridge(plan) => heights.ridge(queue, self.encoder(), plan),
                     LineOp::Range(plan) => heights.range(queue, self.encoder(), plan),
+                    LineOp::Hotspot(plan) => heights.hotspot(queue, self.encoder(), plan),
                 };
                 debug_assert!(added, "an empty batch takes one plan");
                 let rects = plan.rects();
