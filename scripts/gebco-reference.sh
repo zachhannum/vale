@@ -65,6 +65,18 @@ hawaii)
 	# The trend of the chain from Hawaii to Kauai, N60W.
 	fabric_deg=-60
 	;;
+aleutian-trench)
+	title="Aleutian Trench, 172 W"
+	lon=-172.0
+	lat=50.4
+	size=512
+	cell_m=920
+	# The band stops at 60 km, so the trench and the outer rise do not
+	# fill the spectrum.
+	band_max_m=60000
+	# The trend of the trench axis from 176 W to 168 W, N76E.
+	fabric_deg=76
+	;;
 *)
 	echo "unknown region: $region" >&2
 	exit 2
