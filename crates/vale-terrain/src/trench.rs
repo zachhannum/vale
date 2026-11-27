@@ -35,6 +35,9 @@ pub const MAX_TRENCH_RADIUS: f64 = 0.08;
 /// The 16-bit steps of one meter.
 const LEVELS_PER_M: f64 = 65535.0 / (ELEV_MAX - ELEV_MIN);
 
+/// The highest level of the sea after a stroke, in meters.
+const TOP_M: f64 = -0.5;
+
 /// The wavelengths in kilometers and the parts of the depth of the two
 /// octaves of the field of the depth along the axis.
 const DEEPS: [(f64, f64); 2] = [(400.0, 0.25), (100.0, 0.12)];
@@ -715,10 +718,15 @@ impl TrenchPlan {
 
     /// The new level of a texel with the level `start` from before the
     /// stroke, at a place on the line.
+    /// Land does not change, and the sea does not rise above `TOP_M`.
     pub(crate) fn level(&self, start: u16, at: LinePoint) -> u16 {
-        let change = self.change_m(at) * LEVELS_PER_M;
         let old = f64::from(start);
-        let new = (old + (change + 0.5).floor()).clamp(0.0, 65535.0);
+        if old >= (-ELEV_MIN * LEVELS_PER_M).ceil() {
+            return start;
+        }
+        let change = self.change_m(at) * LEVELS_PER_M;
+        let top = ((TOP_M - ELEV_MIN) * LEVELS_PER_M).floor();
+        let new = (old + (change + 0.5).floor()).clamp(0.0, top.max(old));
         self.trench.limits.apply(old, new) as u16
     }
 }
@@ -920,6 +928,27 @@ mod tests {
             (x - told).abs() < 15.0,
             "the rise at {x} km, told {told} km"
         );
+    }
+
+    #[test]
+    fn land_does_not_change_and_the_sea_does_not_rise_above_half_a_meter_down() {
+        let n = 512;
+        let line = straight(spec(TrenchMargin::Accretionary), n, -20.0, 20.0);
+        // On land, nothing changes.
+        let land = meters_to_level(100.0);
+        let mut map = Heightmap::new(n, land);
+        lay(&mut map, &line);
+        assert!(levels(&map).iter().all(|&l| l == land));
+        // On a shallow sea, the outer rise and the inner wall stop below
+        // the sea level, and the axis goes down.
+        let shallow = meters_to_level(-100.0);
+        let mut map = Heightmap::new(n, shallow);
+        lay(&mut map, &line);
+        let all = levels(&map);
+        let top = meters_to_level(-0.5);
+        assert!(all.iter().all(|&l| l <= top.max(shallow)));
+        assert!(all.iter().any(|&l| l > shallow), "the rise");
+        assert!(*all.iter().min().unwrap() < meters_to_level(-2000.0));
     }
 
     /// The RMS of the fault relief over the line in a band of the profile

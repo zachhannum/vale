@@ -2712,6 +2712,10 @@ fn range_level(at: RidgePoint, old: f32) -> f32 {
 
 // The numbers of `trench.rs`, with a `TRENCH_` prefix.
 const TRENCH_LEVELS_PER_M = 5.46125;
+// The lowest level of land, and the highest level of the sea after a
+// stroke: -0.5 m.
+const TRENCH_SEA = 32768.0;
+const TRENCH_TOP = 32764.0;
 const TRENCH_DEEP_WIDE_KM = 400.0;
 const TRENCH_DEEP_WIDE = 0.25;
 const TRENCH_DEEP_FINE_KM = 100.0;
@@ -3082,7 +3086,8 @@ fn trench_level(at: RidgePoint, old: f32) -> f32 {
     let window = 1.0 - smooth_between(r, RIDGE_REACH * r, sqrt(at.across * at.across + at.past2));
     let taper = smooth_between(0.0, TAPER * r, at.end);
     let amp = at.flow * taper * window;
-    if amp <= 0.0 {
+    // Land does not change.
+    if amp <= 0.0 || old >= TRENCH_SEA {
         return old;
     }
     let u_km = at.cell * ridge.segment_km + at.rest * km;
@@ -3096,7 +3101,7 @@ fn trench_level(at: RidgePoint, old: f32) -> f32 {
     } else {
         change = trench_overriding(u_km, max(floor_at.x - x - floor_at.z, 0.0), s);
     }
-    return clamp(old + floor(change * TRENCH_LEVELS_PER_M + 0.5), 0.0, 65535.0);
+    return clamp(old + floor(change * TRENCH_LEVELS_PER_M + 0.5), 0.0, max(TRENCH_TOP, old));
 }
 
 // The level of a texel after a change from `old` to `next`. The steps are

@@ -2356,6 +2356,15 @@ fn smooth_ground(n: usize) -> Heightmap {
     })
 }
 
+/// Ground with the shape of `smooth_ground` below the sea level, from
+/// -5,200 m to -2,400 m.
+fn sea_ground(n: usize) -> Heightmap {
+    ground(n, |d| {
+        let hill = 4500.0 * (3.0 * d[0] + 1.0).sin() * (2.0 * d[1]).cos();
+        (12000.0 + hill + 3000.0 * (4.0 * d[2] + d[0]).sin()).round() as u16
+    })
+}
+
 /// Ground with a level for each texel that has no relation to the levels of
 /// the texels around it.
 fn rough_ground(n: usize) -> Heightmap {
@@ -4332,6 +4341,7 @@ fn gpu_trench_matches_cpu_for_a_straight_stroke() {
 #[test]
 #[ignore = "gpu"]
 fn gpu_trench_matches_cpu_across_a_face_edge() {
+    // The ground has land and sea, and the land does not change.
     let start = smooth_ground(256);
     let spec = trench_spec(0.06, TrenchSide::Left, TrenchMargin::Eroding);
     let run = ridge_run(&start, spec, &RIDGE_BEND, false, true);
@@ -4344,7 +4354,7 @@ fn gpu_trench_matches_cpu_across_a_face_edge() {
 #[test]
 #[ignore = "gpu"]
 fn gpu_trench_matches_cpu_on_a_large_face() {
-    let start = smooth_ground(2048);
+    let start = sea_ground(2048);
     let places = [
         (-40.0, -20.0),
         (-10.0, 12.0),
@@ -4363,7 +4373,7 @@ fn gpu_trench_matches_cpu_on_a_large_face() {
 #[test]
 #[ignore = "gpu"]
 fn gpu_trench_in_steps_matches_one_plan_on_the_cpu() {
-    let start = smooth_ground(256);
+    let start = sea_ground(256);
     let spec = trench_spec(0.06, TrenchSide::Right, TrenchMargin::Accretionary);
     let run = ridge_run(&start, spec, &RIDGE_BEND, true, true);
     assert_ridge("trench, S-bend in steps", &run, &[0, 2]);
