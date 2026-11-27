@@ -70,7 +70,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 37] = [
+const FLOATS: [Field<f64>; 38] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -100,6 +100,7 @@ const FLOATS: [Field<f64>; 37] = [
     ("margin_shelf_m", |b| &mut b.margin_shelf_m),
     ("hotspot_speed_mm", |b| &mut b.hotspot_speed_mm),
     ("hotspot_height_m", |b| &mut b.hotspot_height_m),
+    ("hotspot_age_myr", |b| &mut b.hotspot_age_myr),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -765,6 +766,7 @@ mod tests {
         globe.brush.noise_ridged = true;
         globe.brush.channel_km = 2.5;
         globe.brush.seamount_age_myr = 120.0;
+        globe.brush.hotspot_age_myr = 30.0;
         globe.brush.branching = 0.8;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
@@ -813,6 +815,7 @@ mod tests {
         assert!(next.brush.noise_ridged);
         assert_eq!(next.brush.channel_km, 2.5);
         assert_eq!(next.brush.seamount_age_myr, 120.0);
+        assert_eq!(next.brush.hotspot_age_myr, 30.0);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);

@@ -2928,9 +2928,10 @@ fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
         (
             brush.hotspot_speed_mm,
             brush.hotspot_height_m,
-            brush.hotspot_reefs
+            brush.hotspot_reefs,
+            brush.hotspot_age_myr
         ),
-        (90.0, 9000.0, false)
+        (90.0, 9000.0, false, 90.0)
     );
     // The strip has Size and Height.
     assert!(control(&h, "Strip size").is_some());
@@ -2949,6 +2950,7 @@ fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
         "Brush strength",
         "Brush plate speed value",
         "Brush reefs",
+        "Brush age",
         "Brush seed value",
         "Brush erosion",
         "Brush branching",
@@ -2972,11 +2974,14 @@ fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
         ("Brush plate speed", "50", 50.0),
         ("Brush strength", "10", 500.0),
         ("Brush strength", "90000", 12000.0),
+        ("Brush age", "900", 200.0),
+        ("Brush age", "30", 30.0),
     ] {
         type_value(&mut h, row, text);
         let brush = h.state().globe.brush;
         let got = match row {
             "Brush plate speed" => brush.hotspot_speed_mm,
+            "Brush age" => brush.hotspot_age_myr,
             _ => brush.hotspot_height_m,
         };
         assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
@@ -2986,6 +2991,8 @@ fn the_terrain_cell_has_the_hotspot_track_mode_and_its_settings() {
     // The height does not change the strength of the other modes.
     let strength = vale_app::globe::brush::BrushSettings::default().strength_m;
     assert_eq!(h.state().globe.brush.strength_m, strength);
+    // The age of the floor of the track does not change the seamounts mode.
+    assert_eq!(h.state().globe.brush.seamount_age_myr, 60.0);
     // The age follows the plate speed.
     h.run_steps(2);
     assert!(h.query_by_label("20 Myr for each 1,000 km").is_some());
