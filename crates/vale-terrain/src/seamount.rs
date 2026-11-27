@@ -29,6 +29,9 @@ pub struct Seamounts {
     /// The characteristic height in meters. The number of seamounts above a
     /// height falls by a factor of e for each step of this height.
     pub height_m: f64,
+    /// The age of the floor in millions of years. It sets the elastic
+    /// thickness of the plate, and thus the moat of each volcano.
+    pub age_myr: f64,
     /// The radius of the world, in kilometers.
     pub world_km: f64,
     /// The seed of the field.
@@ -39,8 +42,6 @@ pub struct Seamounts {
 /// The sea floor under a stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SeaFloor {
-    /// The age of the floor in millions of years.
-    pub age_myr: f64,
     /// The direction of the abyssal hills, a unit vector square to the
     /// center of the window.
     pub fabric: V3,
@@ -771,18 +772,15 @@ impl SeamountStroke {
     }
 }
 
-/// The age and the fabric of the sea floor in a window with a radius in
-/// radians around a unit direction. The depth gives the age by the inverse
-/// of the GDH1 curve (Stein and Stein 1992). The structure tensor of the
-/// slopes gives the fabric: the hills run square to the main direction of
-/// the slopes.
+/// The fabric of the sea floor in a window with a radius in radians around
+/// a unit direction. The structure tensor of the slopes gives the fabric:
+/// the hills run square to the main direction of the slopes.
 pub fn sea_floor(map: &Heightmap, center: V3, radius: f64) -> SeaFloor {
     let step = FRAC_PI_2 / map.face_size() as f64;
     let spacing = (2.0 * step).max(radius / 32.0);
     let half = (radius / spacing).ceil().min(32.0) as i64;
     let (east, north) = tangent_frame(center);
     let side = (2 * half + 1) as usize;
-    let mut depths = Vec::with_capacity(side * side);
     let mut grid = vec![0.0; side * side];
     for j in -half..=half {
         for i in -half..=half {
@@ -794,11 +792,8 @@ pub fn sea_floor(map: &Heightmap, center: V3, radius: f64) -> SeaFloor {
             ]);
             let m = ELEV_MIN + map.level_at(p) / LEVELS_PER_M;
             grid[(j + half) as usize * side + (i + half) as usize] = m;
-            depths.push(-m);
         }
     }
-    depths.sort_by(f64::total_cmp);
-    let age_myr = gdh1_age(depths[depths.len() / 2]);
     let (mut jxx, mut jxy, mut jyy) = (0.0, 0.0, 0.0);
     for y in 1..side - 1 {
         for x in 1..side - 1 {
@@ -827,17 +822,23 @@ pub fn sea_floor(map: &Heightmap, center: V3, radius: f64) -> SeaFloor {
             east[2] * c + north[2] * s,
         ])
     };
-    SeaFloor {
-        age_myr,
-        fabric,
-        coherence,
+    SeaFloor { fabric, coherence }
+}
+
+/// The depth of the sea floor at an age in millions of years, in meters, by
+/// the GDH1 curve (Stein and Stein 1992).
+pub(crate) fn gdh1_depth(age: f64) -> f64 {
+    if age < 20.0 {
+        2600.0 + 365.0 * age.sqrt()
+    } else {
+        5651.0 - 2473.0 * (-0.0278 * age).exp()
     }
 }
 
 /// The age in millions of years of sea floor at a depth in meters, by the
 /// inverse of the GDH1 curve. Floor shallower than the curve at age 0 is
 /// new, and floor deeper than its limit is 200 million years old.
-pub fn gdh1_age(depth_m: f64) -> f64 {
+pub(crate) fn gdh1_age(depth_m: f64) -> f64 {
     let young = 2600.0 + 365.0 * 20f64.sqrt();
     let age = if depth_m <= 2600.0 {
         0.0
@@ -849,16 +850,6 @@ pub fn gdh1_age(depth_m: f64) -> f64 {
         200.0
     };
     age.min(200.0)
-}
-
-/// The depth of the sea floor at an age in millions of years, in meters, by
-/// the GDH1 curve (Stein and Stein 1992).
-pub(crate) fn gdh1_depth(age: f64) -> f64 {
-    if age < 20.0 {
-        2600.0 + 365.0 * age.sqrt()
-    } else {
-        5651.0 - 2473.0 * (-0.0278 * age).exp()
-    }
 }
 
 /// The elastic thickness of the plate in kilometers at an age in millions
@@ -1143,7 +1134,7 @@ fn volcano(
     let fill = 1.0 / 3.0 + (0.229 - 1.0 / 3.0) * shield;
     let volume: f64 =
         heights[..cones].iter().sum::<f64>() * PI * radius_m * radius_m * stretch * height_m * fill;
-    let (moat_m, flex_m) = flexure(floor.age_myr, MANTLE - WATER, volume, radius_m, height_m);
+    let (moat_m, flex_m) = flexure(spec.age_myr, MANTLE - WATER, volume, radius_m, height_m);
     let put = |v: &mut [f32; VOLCANO_FLOATS], i: usize, x: f64| v[i] = x as f32;
     for k in 0..3 {
         put(&mut v, CENTER + k, center[k]);
@@ -1365,28 +1356,25 @@ mod tests {
         Seamounts {
             density: 50.0,
             height_m: 400.0,
+            age_myr: 60.0,
             world_km: WORLD_KM,
             seed: 7,
             limits: Limits::default(),
         }
     }
 
-    fn floor(age_myr: f64) -> SeaFloor {
-        SeaFloor {
-            age_myr,
-            fabric: [0.0, 0.0, 1.0],
-            coherence: 1.0,
-        }
-    }
+    const FLOOR: SeaFloor = SeaFloor {
+        fabric: [0.0, 0.0, 1.0],
+        coherence: 1.0,
+    };
 
     /// The volcano of each point of the field near a place.
     fn volcanoes(spec: &Seamounts, reach: f64) -> Vec<Volcano> {
         let center = lonlat_to_dir(10.0, 5.0);
         let field = field(spec, N, center, 0.3);
-        let floor = floor(60.0);
         field
             .into_iter()
-            .filter_map(|(key, p, h)| volcano(spec, &floor, key, p, h, reach, N))
+            .filter_map(|(key, p, h)| volcano(spec, &FLOOR, key, p, h, reach, N))
             .collect()
     }
 
@@ -1684,25 +1672,46 @@ mod tests {
         assert!(arch > 0.0, "an arch at {arch}");
         assert!(arch < -0.2 * moat);
         // An older plate is stiffer, so its moat is wider and shallower.
-        let older = volcano(&spec, &floor(150.0), 1, v.center(), 6000.0, 0.25, N).unwrap();
-        let young = volcano(&spec, &floor(5.0), 1, v.center(), 6000.0, 0.25, N).unwrap();
+        let aged = |age_myr| {
+            let spec = Seamounts { age_myr, ..spec };
+            volcano(&spec, &FLOOR, 1, v.center(), 6000.0, 0.25, N).unwrap()
+        };
+        let (older, young) = (aged(150.0), aged(5.0));
         assert!(older.get(FLEX_LENGTH) > 2.0 * young.get(FLEX_LENGTH));
         assert!(older.get(FLEX) < young.get(FLEX));
         assert!(elastic_km(100.0) > 25.0 && elastic_km(100.0) < 30.0);
     }
 
     #[test]
-    fn the_age_comes_from_the_depth() {
-        for age in [0.5, 4.0, 15.0, 30.0, 80.0, 150.0] {
-            let depth = if age < 20.0 {
-                2600.0 + 365.0 * f64::sqrt(age)
-            } else {
-                5651.0 - 2473.0 * (-0.0278 * age).exp()
+    fn the_age_sets_the_moat_and_the_depth_does_not() {
+        // The change of the level at points along the stroke, on flat
+        // floor at a depth.
+        let centers = line((8.0, 4.0), (12.0, 6.0), 30);
+        let probes: Vec<V3> = line((7.0, 3.0), (13.0, 7.0), 400);
+        let change = |depth_m: f64, age_myr: f64| -> Vec<f64> {
+            let base = meters_to_level(-depth_m);
+            let mut map = Heightmap::new(N, base);
+            let spec = Seamounts {
+                height_m: 2000.0,
+                age_myr,
+                ..spec()
             };
-            assert!((gdh1_age(depth) - age).abs() < 1e-6 * age.max(1.0));
-        }
-        assert_eq!(gdh1_age(1000.0), 0.0);
-        assert_eq!(gdh1_age(6000.0), 200.0);
+            paint(&mut map, spec, &centers, 0.02);
+            probes
+                .iter()
+                .map(|&p| map.level_at(p) - f64::from(base))
+                .collect()
+        };
+        let most = |a: &[f64], b: &[f64]| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0, f64::max)
+        };
+        let shallow = change(3000.0, 60.0);
+        assert!(shallow.iter().any(|&d| d < -1.0), "a moat");
+        assert!(most(&shallow, &change(5500.0, 60.0)) < 1e-6);
+        assert!(most(&shallow, &change(3000.0, 5.0)) > 1.0);
     }
 
     /// A heightmap with abyssal hills at a depth, along a direction at an
@@ -1748,7 +1757,6 @@ mod tests {
                 east[2] * s + north[2] * c,
             ];
             assert!(dot(floor.fabric, along).abs() > 0.99);
-            assert!((floor.age_myr - gdh1_age(4500.0)).abs() < 5.0);
         }
         // Flat ground has no main direction, so the fabric points north.
         let flat = Heightmap::new(256, meters_to_level(-3000.0));
