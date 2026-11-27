@@ -19,10 +19,10 @@ use crate::globe::Tool;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
     FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
-    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M,
-    RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM,
-    SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
-    WARP_KM, needs_height, shape_text,
+    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, PLATEAU_HEIGHT, RANGE_SPACING_KM,
+    RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
+    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
+    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -233,7 +233,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 15] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 16] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -253,6 +253,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 15] = [
     ),
     (panels::MARGIN, Icon::Margin, Mode::Margin),
     (panels::HOTSPOT, Icon::Hotspot, Mode::Hotspot),
+    (panels::PLATEAU, Icon::Plateau, Mode::Plateau),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3308,6 +3309,10 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         row(ui, controls, state, Slider::Age);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
+    if mode == Mode::Plateau {
+        row(ui, controls, state, Slider::Age);
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
     if mode == Mode::Basin {
         for slider in [Slider::Density, Slider::Age, Slider::Lakes] {
             row(ui, controls, state, slider);
@@ -3529,6 +3534,12 @@ pub(super) fn brush_slider(
                     .default(defaults.hotspot_height_m);
                 set(number, &mut brush.hotspot_height_m);
             }
+            Slider::Strength if mode == Mode::Plateau => {
+                let number = meters(brush.plateau_height_m, PLATEAU_HEIGHT)
+                    .log()
+                    .default(defaults.plateau_height_m);
+                set(number, &mut brush.plateau_height_m);
+            }
             Slider::Strength if mode == Mode::Seamounts => {
                 let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
                     .log()
@@ -3634,11 +3645,11 @@ pub(super) fn brush_slider(
                     .default(defaults.basin_density_km);
                 set(number, &mut brush.basin_density_km);
             }
-            Slider::Age if matches!(mode, Mode::Seamounts | Mode::Hotspot) => {
-                let (age, default) = if mode == Mode::Hotspot {
-                    (&mut brush.hotspot_age_myr, defaults.hotspot_age_myr)
-                } else {
-                    (&mut brush.seamount_age_myr, defaults.seamount_age_myr)
+            Slider::Age if matches!(mode, Mode::Seamounts | Mode::Hotspot | Mode::Plateau) => {
+                let (age, default) = match mode {
+                    Mode::Hotspot => (&mut brush.hotspot_age_myr, defaults.hotspot_age_myr),
+                    Mode::Plateau => (&mut brush.plateau_age_myr, defaults.plateau_age_myr),
+                    _ => (&mut brush.seamount_age_myr, defaults.seamount_age_myr),
                 };
                 let number = Number::new(name, *age, FLOOR_AGE_MYR)
                     .label(label)

@@ -14,9 +14,9 @@ use vale_store::{
 };
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
-    FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
-    RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
-    WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
+    FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, PlateauStroke,
+    Pyramid, Rain, RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect,
+    Window, WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
     reduced_face_size, smoothing_level,
 };
 
@@ -528,10 +528,11 @@ enum SeaBrush {
     Seamounts(SeamountStroke),
     Abyssal(AbyssalStroke),
     Margin(MarginStroke),
+    Plateau(PlateauStroke),
 }
 
-/// A seamounts stroke, an abyssal hills stroke, or a margin stroke. Its
-/// stamps make plans of their own, and they do not go to the backlog.
+/// A seamounts, abyssal hills, margin, or plateau stroke. Its stamps make
+/// plans of their own, and they do not go to the backlog.
 struct SeaStroke {
     brush: SeaBrush,
     /// The plans that wait for the GPU, each with the time of its pen
@@ -567,6 +568,7 @@ impl SeaStroke {
                 SeaBrush::Abyssal(AbyssalStroke::new(brush.abyssal_spec(km, seed), n))
             }
             Mode::Margin => SeaBrush::Margin(MarginStroke::new(brush.margin_spec(km, seed), n)),
+            Mode::Plateau => SeaBrush::Plateau(PlateauStroke::new(brush.plateau_spec(km, seed), n)),
             _ => return None,
         };
         let eroding = matches!(brush, SeaBrush::Margin(_)) && erosion > 0.0;
@@ -590,6 +592,10 @@ impl SeaStroke {
                 SeaBrush::Abyssal(stroke) => {
                     let plan = stroke.stamp(center, radius, hardness, flow);
                     (!plan.is_empty()).then(|| SeaOp::Abyssal(Box::new(plan)))
+                }
+                SeaBrush::Plateau(stroke) => {
+                    let plan = stroke.stamp(map, center, radius, hardness, flow);
+                    (!plan.is_empty()).then(|| SeaOp::Plateau(Box::new(plan)))
                 }
                 SeaBrush::Margin(stroke) => {
                     // The field of a margin builds on a worker thread, so
@@ -650,7 +656,8 @@ struct Active {
     ridge: Option<Ridging>,
     /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
-    /// `Some`: the stroke is a seamounts, abyssal hills, or margin stroke.
+    /// `Some`: the stroke is a seamounts, abyssal hills, margin, or plateau
+    /// stroke.
     sea: Option<SeaStroke>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
@@ -3732,7 +3739,11 @@ impl Globe {
                     self.map.begin_stroke();
                     if matches!(
                         self.brush.mode,
-                        Mode::Paint | Mode::Seamounts | Mode::AbyssalHills | Mode::Margin
+                        Mode::Paint
+                            | Mode::Seamounts
+                            | Mode::AbyssalHills
+                            | Mode::Margin
+                            | Mode::Plateau
                     ) {
                         // The stamps of the last stroke are in the queue
                         // before this change.

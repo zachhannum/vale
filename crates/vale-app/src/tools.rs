@@ -20,7 +20,7 @@ use crate::strip::{self, Pins};
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 23] = [
+const MODES: [(Mode, &str); 24] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -44,6 +44,7 @@ const MODES: [(Mode, &str); 23] = [
     (Mode::AbyssalHills, "abyssal_hills"),
     (Mode::Margin, "margin"),
     (Mode::Hotspot, "hotspot_track"),
+    (Mode::Plateau, "plateau"),
 ];
 
 /// The tools, with their names in the file.
@@ -70,7 +71,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 38] = [
+const FLOATS: [Field<f64>; 40] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -101,6 +102,8 @@ const FLOATS: [Field<f64>; 38] = [
     ("hotspot_speed_mm", |b| &mut b.hotspot_speed_mm),
     ("hotspot_height_m", |b| &mut b.hotspot_height_m),
     ("hotspot_age_myr", |b| &mut b.hotspot_age_myr),
+    ("plateau_height_m", |b| &mut b.plateau_height_m),
+    ("plateau_age_myr", |b| &mut b.plateau_age_myr),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -767,6 +770,8 @@ mod tests {
         globe.brush.channel_km = 2.5;
         globe.brush.seamount_age_myr = 120.0;
         globe.brush.hotspot_age_myr = 30.0;
+        globe.brush.plateau_height_m = 2500.0;
+        globe.brush.plateau_age_myr = 40.0;
         globe.brush.branching = 0.8;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
@@ -816,6 +821,8 @@ mod tests {
         assert_eq!(next.brush.channel_km, 2.5);
         assert_eq!(next.brush.seamount_age_myr, 120.0);
         assert_eq!(next.brush.hotspot_age_myr, 30.0);
+        assert_eq!(next.brush.plateau_height_m, 2500.0);
+        assert_eq!(next.brush.plateau_age_myr, 40.0);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);

@@ -23,7 +23,7 @@ use vale_terrain::Mode;
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
     EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
-    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY,
+    HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, PLATEAU_HEIGHT,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
     RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
     TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
@@ -51,6 +51,8 @@ pub const MARGIN: &str = "Margin";
 pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
 /// The name of the hotspot track mode of the brush.
 pub const HOTSPOT: &str = "Hotspot track";
+/// The name of the plateau mode of the brush.
+pub const PLATEAU: &str = "Plateau";
 /// The hint of the hotspot track mode.
 pub const HOTSPOT_HINT: &str = "Draw the track toward the hotspot.";
 /// The hint of the basin mode before the outline.
@@ -1484,6 +1486,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::AbyssalHills, ABYSSAL_HILLS),
             (Mode::Margin, MARGIN),
             (Mode::Hotspot, HOTSPOT),
+            (Mode::Plateau, PLATEAU),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1541,7 +1544,7 @@ fn density_text(density: f64) -> String {
 pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
-        Mode::Range | Mode::Basin | Mode::Seamounts | Mode::Hotspot => "Height",
+        Mode::Range | Mode::Basin | Mode::Seamounts | Mode::Hotspot | Mode::Plateau => "Height",
         _ => "Strength",
     }
 }
@@ -1756,6 +1759,16 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Age", &mut brush.seamount_age_myr, FLOOR_AGE_MYR)
                 .suffix(" Myr")
                 .show(ui);
+        } else if brush.mode == Mode::Plateau {
+            number::slider("Height", &mut brush.plateau_height_m, PLATEAU_HEIGHT)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
+            number::slider("Age", &mut brush.plateau_age_myr, FLOOR_AGE_MYR)
+                .suffix(" Myr")
+                .show(ui);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {
             let name = strength_name(brush.mode);
@@ -1810,7 +1823,7 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .show(ui);
         seed(ui, state);
     }
-    if state.globe.brush.mode == Mode::Seamounts {
+    if matches!(state.globe.brush.mode, Mode::Seamounts | Mode::Plateau) {
         seed(ui, state);
     }
     let globe = &mut state.globe;

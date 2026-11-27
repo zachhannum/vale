@@ -4260,6 +4260,137 @@ fn a_seamounts_stroke_gives_the_levels_of_the_cpu_stroke() {
     assert!(worst.unwrap() <= 2, "{worst:?}");
 }
 
+/// A harness in the plateau mode on the empty world.
+fn plateau_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Plateau;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn the_brush_panel_has_the_plateau_mode_and_its_settings() {
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label("Age").next().is_none());
+    h.get_by_label(vale_app::ui::panels::PLATEAU).click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Plateau);
+    assert_eq!(
+        (brush.plateau_height_m, brush.plateau_age_myr),
+        (4000.0, 120.0)
+    );
+    for name in ["Radius", "Hardness", "Flow", "Height", "Age", "Seed"] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Strength", "Density", "Erosion", "Apply", "Discard"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_plateau_shows_while_you_paint_and_one_undo_puts_back_the_ground() {
+    let _gpu = one_gpu_test();
+    let mut h = plateau_harness(7);
+    let before = all_levels(&h);
+    // The same part of a stroke with a ceiling below the ground, which
+    // changes nothing.
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.ceiling_on, brush.ceiling_m) = (true, vale_terrain::ELEV_MIN);
+    uplift_part(&mut h, 12);
+    let flat = canvas_with_pointer(&mut h);
+    assert!(uplift_stroke_end(&mut h) == before);
+    assert!(!h.state().globe.can_undo());
+    let before_image = canvas_image(&mut h);
+
+    // While the button is down, the plateau shows.
+    h.state_mut().globe.brush.ceiling_on = false;
+    uplift_part(&mut h, 12);
+    assert!(h.state().globe.busy());
+    let part = canvas_with_pointer(&mut h);
+    let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
+    let changed = changed.count();
+    assert!(changed > 100, "{changed}");
+    let after = uplift_stroke_end(&mut h);
+    let raised = after.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(raised > 100, "{raised}");
+    // The plateau does not lower the ground.
+    assert!(after.iter().zip(&before).all(|(a, b)| a >= b));
+    let after_image = canvas_image(&mut h);
+    assert!(after_image.as_raw() != before_image.as_raw());
+
+    // One undo step puts back the ground from before the stroke.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before_image.as_raw(), "the render");
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == after);
+    assert!(
+        canvas_image(&mut h).as_raw() == after_image.as_raw(),
+        "the render"
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_plateau_stroke_gives_the_levels_of_the_cpu_stroke() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, PlateauStroke};
+    let _gpu = one_gpu_test();
+    let mut h = plateau_harness(7);
+    let before = all_levels(&h);
+    let samples = ridge_samples_of(0.08);
+    h.state_mut().globe.pen_down();
+    for &sample in &samples {
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(&mut h);
+    let app = all_levels(&h);
+
+    // The same stroke on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for &sample in &samples {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.plateau_spec(globe.world_km, globe.world_seed);
+    assert_eq!(spec.seed, 7);
+    let mut cpu = Heightmap::new(n, globe.map.base());
+    let start = Heightmap::new(n, globe.map.base());
+    let mut plateau = PlateauStroke::new(spec, n);
+    cpu.begin_stroke();
+    for s in &stamps {
+        let plan = plateau.stamp(&start, s.center, s.radius, s.hardness, s.flow);
+        cpu.plateau(&plan);
+    }
+    cpu.end_stroke();
+
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let raised = cpu.iter().zip(&before).filter(|(a, b)| a > b).count();
+    assert!(raised > 100, "{raised}");
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+}
+
 /// A harness in the abyssal hills mode on the empty world. The hillshade
 /// shows the hills, which are too low for the colors.
 fn abyssal_harness(seed: u32) -> Harness<'static, AppState> {

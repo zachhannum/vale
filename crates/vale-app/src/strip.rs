@@ -119,7 +119,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::Range => out.push(Spacing),
         Mode::Basin => out.extend([Density, Age, Lakes]),
         Mode::Seamounts => out.extend([Density, Age]),
-        Mode::Hotspot => out.push(Age),
+        Mode::Hotspot | Mode::Plateau => out.push(Age),
         _ => {}
     }
     if matches!(
@@ -274,6 +274,7 @@ mod tests {
             (Mode::AbyssalHills, [Size, Hills]),
             (Mode::Margin, [Size, Flow]),
             (Mode::Hotspot, [Size, Strength]),
+            (Mode::Plateau, [Size, Strength]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }
