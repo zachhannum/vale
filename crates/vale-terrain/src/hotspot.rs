@@ -28,8 +28,8 @@ use crate::seamount::{
 /// kilometers. The swell is this wide on each side of the line.
 pub const HOTSPOT_RADIUS_KM: f64 = 500.0;
 
-/// The default height of the largest volcano in meters, and the range of the
-/// setting.
+/// The default height of the largest volcano of the group at the hotspot in
+/// meters, and the range of the setting.
 pub const HOTSPOT_HEIGHT_M: f64 = 9000.0;
 pub const HOTSPOT_HEIGHT_RANGE: (f64, f64) = (500.0, 12000.0);
 
@@ -69,22 +69,37 @@ const DOUBLE_HEIGHT: f64 = 0.85;
 const SINGLE_ACROSS: f64 = 0.08;
 
 /// The supply of the hotspot changes along the line with this size in mean
-/// distances, from this part of the most.
+/// distances, from this part of the most. The change starts at the end of
+/// the group at the hotspot and grows to its full size over `FLUX_FADE`
+/// mean distances.
 const FLUX_SIZE: f64 = 6.0;
-const FLUX_LOW: f64 = 0.35;
+const FLUX_LOW: f64 = 0.7;
+const FLUX_FADE: f64 = 3.0;
 
 /// The supply of the hotspot pulses, so the volcanoes form in groups of
-/// 1 to `GROUP_MOST`. Between two groups is a gap of 1 to 2 mean distances
-/// with no volcano. The volcanoes of a group have a common size, from
-/// `GROUP_LOW` of the most. The group over the hotspot has the most.
+/// 1 to `GROUP_MOST`. The group over the hotspot has at least 2. Between two
+/// groups is a gap of 1 to 2 mean distances with no volcano. The volcanoes
+/// of a group have a common size, from `GROUP_LOW` of the most. The group
+/// over the hotspot has the most.
 const GROUP_MOST: f64 = 4.0;
 const GROUP_GAP: (f64, f64) = (1.0, 2.0);
-const GROUP_LOW: f64 = 0.7;
+const GROUP_LOW: f64 = 0.85;
 
-/// The supply grows toward the end of the line: it is lower by this part at
-/// `OLDER_SIZE` mean distances from the end and past it.
-const OLDER: f64 = 0.35;
+/// No volcano is taller than the setting times an envelope. The envelope is
+/// 1 in the group at the hotspot. Past it, the envelope falls by `OLDER`
+/// over `OLDER_SIZE` mean distances, and then by up to `OLDEST` more with a
+/// size of `OLDEST_SIZE` mean distances.
+const OLDER: f64 = 0.05;
 const OLDER_SIZE: f64 = 8.0;
+const OLDEST: f64 = 0.2;
+const OLDEST_SIZE: f64 = 40.0;
+
+/// The volcano over the hotspot grows to at most this part of the tallest
+/// other volcano of its group.
+const HOTSPOT_PART: f64 = 0.8;
+
+/// The tallest volcano in meters.
+const HEIGHT_MOST_M: f64 = 13000.0;
 
 /// The part of the volcanoes off the line, their distance from it in base
 /// radii of the largest volcano, and their height.
@@ -342,7 +357,9 @@ impl HotspotLine {
             s: f64,
             across: f64,
             raw: f64,
+            env: f64,
             flow: f64,
+            group: u32,
         }
         let mut sites: Vec<Site> = Vec::new();
         let mut s = 0.0;
@@ -351,10 +368,18 @@ impl HotspotLine {
         let mut group = 0u32;
         let mut group_size = 1.0;
         let mut left = 0u32;
+        // The start of the second group, where the change of the supply
+        // starts.
+        let mut second = f64::INFINITY;
         while s <= length && k < 4096 {
-            if left == 0 {
+            // The group at the hotspot goes on until it has a volcano past
+            // the hotspot.
+            if left == 0 && (group == 0 || sites.last().is_some_and(|t| t.s > 0.0)) {
                 let g = |i: u32| draw(hash(group, spec.seed, SALT_GROUP, 0), i);
                 left = 1 + (g(0) * GROUP_MOST) as u32;
+                if group == 0 {
+                    left = left.max(2);
+                }
                 // The group over the hotspot is the largest.
                 group_size = if group == 0 {
                     1.0
@@ -366,6 +391,7 @@ impl HotspotLine {
                     if s > length {
                         break;
                     }
+                    second = second.min(s);
                 }
                 group += 1;
             }
@@ -384,9 +410,19 @@ impl HotspotLine {
             };
             let flux = noise1(s / (FLUX_SIZE * spacing), SALT_FLUX, 0, spec.seed).0;
             let flux = FLUX_LOW + (1.0 - FLUX_LOW) * (0.5 + 0.5 * flux);
-            let older = 1.0 - OLDER * (s / (OLDER_SIZE * spacing)).min(1.0);
+            let fade = if second.is_finite() {
+                smoothstep(second, second + FLUX_FADE * spacing, s)
+            } else {
+                0.0
+            };
+            let flux = 1.0 - (1.0 - flux) * fade;
+            let env = if second.is_finite() {
+                envelope((s - second) / spacing)
+            } else {
+                1.0
+            };
             let flow = line.frame(length - s).2;
-            let size = 0.45 + 0.55 * d(1).powf(0.6);
+            let size = 0.65 + 0.35 * d(1).powf(0.6);
             let part = if off {
                 OFF_HEIGHT
             } else if double {
@@ -397,23 +433,31 @@ impl HotspotLine {
             sites.push(Site {
                 s,
                 across,
-                raw: flow * size * flux * group_size * older * part,
+                raw: size * flux * group_size * part,
+                env,
                 flow,
+                group,
             });
-            left -= 1;
+            left = left.saturating_sub(1);
             if !off {
                 let part = if double { 0.5 } else { 1.0 };
                 s += spacing * (STEP.0 + (STEP.1 - STEP.0) * d(2)) * part;
             }
             k += 1;
         }
-        // The tallest grown volcano has the height of the setting times its
-        // flow.
-        let grown = |t: &Site| t.raw * growth(t.s / speed);
-        let tallest = sites.iter().max_by(|a, b| grown(a).total_cmp(&grown(b)));
-        let factor = match tallest {
-            Some(t) if t.raw > 0.0 => spec.height_m * t.flow / grown(t),
-            _ => 0.0,
+        // The tallest volcano of the group at the hotspot past the hotspot,
+        // at its full height, has the height of the setting times its flow.
+        // No volcano is taller than the setting times its envelope and its
+        // flow. The volcanoes over the hotspot are still growing, so they
+        // are smaller.
+        let most = (sites.iter())
+            .filter(|t| t.group == 1 && t.s > 0.0)
+            .map(|t| t.raw)
+            .fold(0.0, f64::max);
+        let height_of = |t: &Site| {
+            let part = if most > 0.0 { t.raw / most } else { 0.0 };
+            let part = part.min(if t.s > 0.0 { 1.0 } else { HOTSPOT_PART });
+            (spec.height_m * t.flow * t.env * part).min(HEIGHT_MOST_M)
         };
         for (k, site) in sites.iter().enumerate() {
             let (dir, tangent, _) = line.frame(length - site.s);
@@ -425,7 +469,7 @@ impl HotspotLine {
             let reach = REACH * r - a.abs() - 2.0 * step;
             let seed = hash(k as u32, spec.seed, SALT_SHAPE, 0);
             let load_age = (chain.floor_age - age).max(0.0);
-            let height = site.raw * factor;
+            let height = height_of(site);
             let Some(mut v) = shield_volcano(
                 seed,
                 center,
@@ -496,9 +540,10 @@ impl HotspotLine {
             let c = v.center();
             let start_m = ELEV_MIN + map.level_at(c) / LEVELS_PER_M;
             let base_m = start_m + swell_full - moat / LEVELS_PER_M;
-            // The flank breaks at the sea of the time of its growth.
+            // The flank breaks at the sea of the time of its growth. A
+            // volcano that still grows breaks at the sea of now.
             let height_m = v.height() / LEVELS_PER_M;
-            v.0[BREAK] = (-base_m / height_m).clamp(0.05, 1.0) as f32;
+            v.0[BREAK] = (-base_m / (height_m * v.growth())).clamp(0.05, 1.0) as f32;
             let edifice_m = v.edifice(c) / LEVELS_PER_M;
             let peak = base_m + edifice_m;
             let swell = |t: f64| chain.floor_depth - gdh1_depth(chain.reset_age + t);
@@ -794,6 +839,14 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     })
     .collect();
     erosion.drops_since_to(&lifted, &kept, &brushes)
+}
+
+/// The envelope of the heights of the volcanoes `x` mean distances past the
+/// group at the hotspot.
+fn envelope(x: f64) -> f64 {
+    let x = x.max(0.0);
+    1.0 - OLDER * (x / OLDER_SIZE).min(1.0)
+        - OLDEST * (1.0 - (-(x - OLDER_SIZE).max(0.0) / OLDEST_SIZE).exp())
 }
 
 /// The seed of a chain with its hotspot at `end`. The place is in steps of

@@ -209,7 +209,7 @@ const LINE_FLEX: f64 = 1.3;
 /// A volcano of a line with a break grows past the sea: its lava flows
 /// spread on land and stop in the sea. Its submarine flank is this many
 /// times as steep as its flank on land.
-const BREAK_SLOPES: f64 = 5.0;
+const BREAK_SLOPES: f64 = 10.0;
 
 /// The foot of a volcano with a break curves into the floor over this part
 /// of the base radius on each side of the base.
@@ -1249,7 +1249,7 @@ pub(crate) fn shield_volcano(
         first + PI + side(9) * (0.5 + 0.7 * r(31)),
         first + side(10) * (1.3 + 0.8 * r(32)),
     ];
-    let lengths = [0.9 + 0.3 * r(50), 0.8 + 0.25 * r(51), 0.62 + 0.22 * r(52)];
+    let lengths = [1.0 + 0.2 * r(50), 0.8 + 0.25 * r(51), 0.62 + 0.22 * r(52)];
     // The foot of a rift zone reaches up to twice its length, with a break
     // at the top.
     let reach_most = lengths.iter().fold(APRON, |a, &b| a.max(2.0 * b)) * 1.05;
