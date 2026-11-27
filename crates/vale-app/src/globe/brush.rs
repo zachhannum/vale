@@ -8,8 +8,9 @@ use vale_terrain::{
     AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
     ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, HOTSPOT_HEIGHT_M,
     HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot,
-    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge,
-    SHELF_DEPTH_RANGE, Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
+    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, MAX_TRENCH_RADIUS, Margin, Mode,
+    Rain, RangeSpec, Ridge, SHELF_DEPTH_RANGE, Seamounts, Stamp, StampPlan, Trench, TrenchMargin,
+    TrenchSide, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -71,8 +72,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
-/// The limits of the age of the floor of the seamounts mode and of the
-/// hotspot track mode, in millions of years.
+/// The limits of the age of the floor of the seamounts mode, of the
+/// hotspot track mode, and of the incoming plate of the trench mode, in
+/// millions of years.
 pub const FLOOR_AGE_MYR: std::ops::RangeInclusive<f64> = 0.0..=200.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
@@ -88,6 +90,8 @@ pub const HOTSPOT_SPEED: std::ops::RangeInclusive<f64> =
 /// mode, in meters.
 pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
     HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
+/// The limits of the depth of the trench mode, in meters.
+pub const TRENCH_DEPTH_M: std::ops::RangeInclusive<f64> = 500.0..=4000.0;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -236,6 +240,16 @@ pub struct BrushSettings {
     /// The age of the floor at the hotspot of the hotspot track mode, in
     /// millions of years.
     pub hotspot_age_myr: f64,
+    /// The depth of the axis of the trench mode below the floor at full
+    /// flow, in meters.
+    pub trench_depth_m: f64,
+    /// The age of the incoming plate of the trench mode, in millions of
+    /// years. It sets the width of the bend.
+    pub trench_age_myr: f64,
+    /// The side of the overriding plate of the trench mode, seen along the
+    /// stroke.
+    pub trench_side: TrenchSide,
+    pub trench_margin: TrenchMargin,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -305,6 +319,10 @@ impl Default for BrushSettings {
             hotspot_height_m: HOTSPOT_HEIGHT_M,
             hotspot_reefs: false,
             hotspot_age_myr: 90.0,
+            trench_depth_m: 2000.0,
+            trench_age_myr: 100.0,
+            trench_side: TrenchSide::Left,
+            trench_margin: TrenchMargin::Accretionary,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -350,6 +368,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | AbyssalHills
             | Margin
             | Hotspot
+            | Trench
     )
 }
 
@@ -358,9 +377,9 @@ const MIN_LOCK_RADIUS: f64 = 1e-4;
 
 impl BrushSettings {
     /// The zoom does not change the size of the mode, because the size sets
-    /// the width of the ridge or of the swell.
+    /// the width of the ridge, of the swell, or of the trench.
     pub fn size_is_fixed(&self) -> bool {
-        matches!(self.mode, Mode::OceanRidge | Mode::Hotspot)
+        matches!(self.mode, Mode::OceanRidge | Mode::Hotspot | Mode::Trench)
     }
 
     /// The radius of a fixed size before you change it, in radians. The
@@ -454,6 +473,34 @@ impl BrushSettings {
             hills: self.ridge_hills.clamp(0.0, 2.0),
             fit: self.ridge_fit,
             scale: self.ridge_scale.clamp(1.0, 10.0),
+        }
+    }
+
+    /// Moves the overriding plate of the trench mode to the other side of
+    /// the line.
+    pub fn flip_trench_side(&mut self) {
+        self.trench_side = match self.trench_side {
+            TrenchSide::Left => TrenchSide::Right,
+            TrenchSide::Right => TrenchSide::Left,
+        };
+    }
+
+    /// The settings of a trench stroke with this brush radius, in radians.
+    /// `world_km` is the radius of the world.
+    pub fn trench_spec(&self, radius: f64, world_km: f64, seed: u32) -> Trench {
+        Trench {
+            radius,
+            depth_m: self
+                .trench_depth_m
+                .clamp(*TRENCH_DEPTH_M.start(), *TRENCH_DEPTH_M.end()),
+            age_myr: self
+                .trench_age_myr
+                .clamp(*FLOOR_AGE_MYR.start(), *FLOOR_AGE_MYR.end()),
+            side: self.trench_side,
+            margin: self.trench_margin,
+            world_km,
+            seed,
+            limits: self.limits(),
         }
     }
 
@@ -584,6 +631,7 @@ impl BrushSettings {
     fn max_radius(&self) -> f64 {
         match self.mode {
             Mode::OceanRidge | Mode::Hotspot => MAX_RIDGE_RADIUS,
+            Mode::Trench => MAX_TRENCH_RADIUS,
             _ => MAX_BRUSH_RADIUS,
         }
     }
@@ -742,11 +790,15 @@ impl Tip<'_> {
                 | Mode::Seamounts
                 | Mode::AbyssalHills
                 | Mode::Margin => flow,
-                // The flow of a mouse gives the full height of the ridge, and
-                // the full change of the paint mode.
-                Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint | Mode::Hotspot => {
-                    (input / FIXED_FLOW).min(1.0) * self.brush.flow
-                }
+                // The flow of a mouse gives the full height of the ridge, the
+                // full depth of the trench, and the full change of the paint
+                // mode.
+                Mode::OceanRidge
+                | Mode::Range
+                | Mode::Basin
+                | Mode::Paint
+                | Mode::Hotspot
+                | Mode::Trench => (input / FIXED_FLOW).min(1.0) * self.brush.flow,
                 // These modes move toward a target, so each stamp does less.
                 Mode::Flatten => flow * self.brush.flatten_rate,
                 Mode::Smooth | Mode::Terrace | Mode::Deposit => flow * 0.3,
@@ -818,11 +870,11 @@ pub fn set_world(
 pub const BASIN_SPACING_TEXELS: f64 = 1.5;
 
 /// The distance between the stamps of a mode, as a part of the brush radius.
-/// The stamps of the ocean ridge, range, and hotspot track modes are the
-/// points of the line of the stroke.
+/// The stamps of the ocean ridge, range, hotspot track, and trench modes
+/// are the points of the line of the stroke.
 fn stamp_spacing(mode: Mode) -> f64 {
     match mode {
-        Mode::OceanRidge | Mode::Range | Mode::Hotspot => LINE_SPACING,
+        Mode::OceanRidge | Mode::Range | Mode::Hotspot | Mode::Trench => LINE_SPACING,
         _ => STAMP_SPACING,
     }
 }
@@ -933,11 +985,11 @@ impl Stroke {
         if let (Some(last), Some(level)) = (self.last, self.level) {
             let tip = self.tip(brush, face_size, level);
             self.line_to(&tip, last, out);
-            // The line of a ridge, a range, a hotspot track, or a basin ends
-            // at the last sample.
+            // The line of a ridge, a range, a hotspot track, a trench, or a
+            // basin ends at the last sample.
             let line = matches!(
                 brush.mode,
-                Mode::OceanRidge | Mode::Range | Mode::Hotspot | Mode::Basin
+                Mode::OceanRidge | Mode::Range | Mode::Hotspot | Mode::Trench | Mode::Basin
             );
             if line && self.end.is_some() {
                 self.put(&tip, last.0, last.1, out);
@@ -975,6 +1027,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::AbyssalHills
         | Mode::Margin
         | Mode::Hotspot
+        | Mode::Trench
         | Mode::Noise => 1,
     }
 }

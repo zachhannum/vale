@@ -35,6 +35,9 @@ pub enum Icon {
     Margin,
     /// A row of volcanoes that shrink away from the hotspot.
     Hotspot,
+    /// The profile of a trench under the sea: the floor, the deep axis, and
+    /// the inner wall up to the overriding plate.
+    Trench,
     More,
     Move,
     /// An open hand, for the Pan tool.
@@ -188,6 +191,7 @@ impl Icon {
                  M4.5 16.8c0 -0.94 0.76 -1.7 1.7 -1.7s1.7 0.76 1.7 1.7s-0.76 1.7 -1.7 1.7s-1.7 -0.76 -1.7 -1.7\
                  M2 20c0 -0.55 0.45 -1 1 -1s1 0.45 1 1s-0.45 1 -1 1s-1 -0.45 -1 -1"
             }
+            Icon::Trench => "M3 5c3-2 6 2 9 0s6-2 9 0M2 13h6l3 7 3-9 7-2",
             Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
@@ -613,6 +617,7 @@ mod tests {
             Icon::AbyssalHills,
             Icon::Margin,
             Icon::Hotspot,
+            Icon::Trench,
             Icon::More,
             Icon::Move,
             Icon::Hand,

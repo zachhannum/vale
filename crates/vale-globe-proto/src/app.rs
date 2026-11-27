@@ -306,7 +306,8 @@ impl ProtoApp {
                 | Mode::Seamounts
                 | Mode::AbyssalHills
                 | Mode::Margin
-                | Mode::Hotspot => flow,
+                | Mode::Hotspot
+                | Mode::Trench => flow,
                 // These modes move toward a target, so each stamp does less.
                 Mode::Smooth
                 | Mode::Flatten

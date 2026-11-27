@@ -20,6 +20,7 @@ use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
 use crate::seamount::{SeamountPlan, Volcano};
+use crate::trench::TrenchPlan;
 
 /// The side of a tile, in texels.
 pub const TILE_SIZE: usize = 256;
@@ -118,6 +119,9 @@ pub enum Mode {
     /// The mode of the hotspot track brush. A stamp of this mode changes
     /// nothing. `Heightmap::hotspot` makes the change.
     Hotspot,
+    /// The mode of the trench brush. A stamp of this mode changes nothing.
+    /// `Heightmap::trench` makes the change.
+    Trench,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1178,6 +1182,7 @@ impl Heightmap {
                 | Mode::AbyssalHills
                 | Mode::Margin
                 | Mode::Hotspot
+                | Mode::Trench
         ) {
             return 0;
         }
@@ -1333,7 +1338,8 @@ impl Heightmap {
                             | Mode::Seamounts
                             | Mode::AbyssalHills
                             | Mode::Margin
-                            | Mode::Hotspot => continue,
+                            | Mode::Hotspot
+                            | Mode::Trench => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1605,6 +1611,13 @@ impl Heightmap {
     /// stroke, as `ridge` lays an ocean ridge. Returns the number of texels
     /// that changed.
     pub fn range(&mut self, plan: &RangePlan) -> usize {
+        self.lay(&plan.line, |start, at, _| plan.level(start, at))
+    }
+
+    /// Lays the trench of a plan on the ground from before the stroke, as
+    /// `ridge` lays an ocean ridge. Returns the number of texels that
+    /// changed.
+    pub fn trench(&mut self, plan: &TrenchPlan) -> usize {
         self.lay(&plan.line, |start, at, _| plan.level(start, at))
     }
 

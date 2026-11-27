@@ -1995,7 +1995,7 @@ fn map_card(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
 /// hint of its first river and the Clear button there.
 fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
     use super::panels::{
-        APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, READY, UNDO_RIVER, UPDATING,
+        APPLY, BASIN_RIVER_HINT, CLEAR_OUTLINE, DISCARD, FLIP_SIDE, READY, UNDO_RIVER, UPDATING,
     };
     let globe = &mut state.globe;
     let outline = globe.brushing() && globe.brush.mode == Mode::Basin;
@@ -2030,6 +2030,9 @@ fn held_buttons(ui: &egui::Ui, state: &mut AppState, rect: egui::Rect) {
                     }
                     if globe.basin_rivers() >= 2 && ui.button(UNDO_RIVER).clicked() {
                         globe.undo_river();
+                    }
+                    if globe.holding() == Some(Mode::Trench) && ui.button(FLIP_SIDE).clicked() {
+                        globe.flip_trench();
                     }
                     if ui.button(APPLY).clicked() {
                         globe.apply_held();
@@ -2427,8 +2430,11 @@ pub(super) fn paint_canvas(
         }
     }
     // A basin takes its size from its outline, and the pen draws the center
-    // line of an ocean ridge, so they have no brush circle.
-    let line = matches!(globe.brush.mode, Mode::Basin | Mode::OceanRidge);
+    // line of an ocean ridge or a trench, so they have no brush circle.
+    let line = matches!(
+        globe.brush.mode,
+        Mode::Basin | Mode::OceanRidge | Mode::Trench
+    );
     let circle = globe.brushing() && !line;
     if let Some(pos) = globe.input.pos.filter(|_| circle) {
         let globe_radius = globe.radius();
@@ -2477,6 +2483,11 @@ pub(super) fn paint_canvas(
         let line = egui::Stroke::new(1.5, egui::Color32::from_white_alpha(220));
         painter.line(axis.clone(), shade);
         painter.line(axis, line);
+    }
+    for tooth in globe.trench_teeth() {
+        let shade = egui::Stroke::new(1.0, egui::Color32::from_black_alpha(90));
+        let fill = egui::Color32::from_white_alpha(220);
+        painter.add(egui::Shape::convex_polygon(tooth.to_vec(), fill, shade));
     }
     for zone in globe.fracture_preview().into_iter().filter(|z| z.len() > 1) {
         let shade = egui::Stroke::new(3.5, egui::Color32::from_black_alpha(90));

@@ -15,9 +15,9 @@ use vale_store::{
 use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
     FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
-    RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
-    WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
-    reduced_face_size, smoothing_level,
+    RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Trench, TrenchLine,
+    TrenchSide, Window, WindowHeights, hotspot_window, margin_window, max_level, meters_to_level,
+    reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -155,9 +155,9 @@ const HOLD_SETTLE: std::time::Duration = std::time::Duration::from_millis(250);
 /// large face size has many plans, and each plan holds megabytes.
 const LINE_TEXELS_PER_FRAME: usize = 1 << 20;
 
-/// An ocean ridge plan goes to the GPU in strips of at most this number of
-/// texels. A texel of a ridge depends only on its ground, so a strip gives
-/// the texels of the whole plan. Thus the GPU work of one frame is small,
+/// An ocean ridge plan or a trench plan goes to the GPU in strips of at most
+/// this number of texels. A texel of a ridge or a trench depends only on its
+/// ground, so a strip gives the texels of the whole plan. Thus the GPU work of one frame is small,
 /// and the frames of the UI do not wait for a large plan.
 const RIDGE_PIECE_TEXELS: usize = 1 << 20;
 
@@ -315,11 +315,12 @@ struct Uplifting {
     window: Option<Window>,
 }
 
-/// The line of an ocean ridge, range, or hotspot track stroke.
+/// The line of an ocean ridge, range, hotspot track, or trench stroke.
 enum BrushLine {
     Ridge(RidgeLine),
     Range(RangeLine),
     Hotspot(HotspotLine),
+    Trench(TrenchLine),
 }
 
 impl BrushLine {
@@ -328,6 +329,7 @@ impl BrushLine {
             BrushLine::Ridge(line) => line.len(),
             BrushLine::Range(line) => line.len(),
             BrushLine::Hotspot(line) => line.len(),
+            BrushLine::Trench(line) => line.len(),
         }
     }
 
@@ -350,12 +352,18 @@ impl BrushLine {
                 let end = plan.end;
                 (LineOp::Hotspot(Box::new(plan)), end)
             }
+            BrushLine::Trench(line) => {
+                let plan = line.plan(from);
+                let end = plan.end;
+                (LineOp::Trench(Box::new(plan)), end)
+            }
         }
     }
 }
 
-/// The line of an ocean ridge, range, or hotspot track stroke. The stamps
-/// of the stroke are the points of the line, and they do not go to the GPU.
+/// The line of an ocean ridge, range, hotspot track, or trench stroke. The
+/// stamps of the stroke are the points of the line, and they do not go to
+/// the GPU.
 struct Ridging {
     line: BrushLine,
     /// The place and the flow of each point of the line.
@@ -396,6 +404,7 @@ impl Ridging {
                 BrushLine::Ridge(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Range(line) => line.push(stamp.center, stamp.flow),
                 BrushLine::Hotspot(line) => line.push(stamp.center, stamp.flow),
+                BrushLine::Trench(line) => line.push(stamp.center, stamp.flow),
             }
         }
     }
@@ -455,8 +464,8 @@ impl HotspotErosion {
     }
 }
 
-/// The line of an ocean ridge, range, or hotspot track stroke with a brush
-/// of this radius, in radians, on a world of `km` kilometers with a
+/// The line of an ocean ridge, range, hotspot track, or trench stroke with
+/// a brush of this radius, in radians, on a world of `km` kilometers with a
 /// heightmap of face size `n`. Other modes have no line.
 fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> Option<Ridging> {
     let (line, range, hotspot) = match brush.mode {
@@ -477,6 +486,10 @@ fn line_of(brush: &BrushSettings, km: f64, seed: u32, n: usize, radius: f64) -> 
                 None,
                 Some(erosion),
             )
+        }
+        Mode::Trench => {
+            let spec = brush.trench_spec(radius, km, seed);
+            (BrushLine::Trench(TrenchLine::new(spec, n)), None, None)
         }
         _ => return None,
     };
@@ -650,7 +663,8 @@ struct Active {
     erode: Option<Eroding>,
     /// `Some`: the stroke is an uplift stroke with erosion.
     uplift: Option<Uplifting>,
-    /// `Some`: the stroke is an ocean ridge, range, or hotspot track stroke.
+    /// `Some`: the stroke is an ocean ridge, range, hotspot track, or trench
+    /// stroke.
     ridge: Option<Ridging>,
     /// `Some`: the stroke draws the rivers of a basin.
     basin: Option<Basining>,
@@ -658,8 +672,8 @@ struct Active {
     sea: Option<SeaStroke>,
     /// `Some`: the stroke draws the outline of a basin. It changes no texels.
     outline: Option<Vec<V3>>,
-    /// `Some`: the stroke is an ocean ridge stroke or the rivers of a
-    /// basin. Its texels wait for `apply_held`.
+    /// `Some`: the stroke is an ocean ridge stroke, a trench stroke, or the
+    /// rivers of a basin. Its texels wait for `apply_held`.
     held: Option<Held>,
     /// The pen is up. Stamps of the stroke can still wait in the backlog.
     ended: bool,
@@ -668,16 +682,17 @@ struct Active {
     reading: Option<usize>,
 }
 
-/// An ocean ridge or a basin that shows on the GPU. After the pen goes up,
+/// An ocean ridge, a trench, or a basin that shows on the GPU. After the pen goes up,
 /// it follows the settings of the brush until it is applied or discarded.
 struct Held {
     mode: Mode,
     /// The size and the size lock of the brush that gave `radius`.
     size: (f32, Option<f64>),
-    /// The radius of an ocean ridge, in radians.
+    /// The radius of an ocean ridge or a trench, in radians.
     radius: f64,
     /// The flow of the brush while the pen drew the line, and the flow of
-    /// the texels on the GPU. The flow scales the height of an ocean ridge.
+    /// the texels on the GPU. The flow scales the height of an ocean ridge
+    /// and the depth of a trench.
     drawn_flow: f64,
     flow: f64,
     /// The settings of the texels on the GPU.
@@ -695,6 +710,18 @@ struct Held {
 enum HeldSpec {
     Ridge(Ridge),
     Basin(BasinSpec),
+    Trench(Trench),
+}
+
+impl HeldSpec {
+    /// The radius of the line, in radians. A basin has no radius.
+    fn radius(&self) -> Option<f64> {
+        match self {
+            HeldSpec::Ridge(spec) => Some(spec.radius),
+            HeldSpec::Trench(spec) => Some(spec.radius),
+            HeldSpec::Basin(_) => None,
+        }
+    }
 }
 
 /// The strips of each rectangle of `plan`, with `RIDGE_PIECE_TEXELS` texels
@@ -733,6 +760,44 @@ fn restore(map: &Heightmap, link: &Link, tag: MapKey, touched: &mut [Option<Texe
         let face = face as u32;
         link.push(tag, Op::Upload { face, rect, data });
     }
+}
+
+/// The distance between two teeth of the axis of a trench, and the width
+/// and the height of a tooth, in screen points.
+const TOOTH_SPACING: f32 = 28.0;
+const TOOTH_WIDTH: f32 = 11.0;
+const TOOTH_HEIGHT: f32 = 8.0;
+
+/// The teeth along a line in screen points, on its left side seen along
+/// the line, or on its right side.
+fn teeth(line: &[Pos2], left: bool) -> Vec<[Pos2; 3]> {
+    let mut out = Vec::new();
+    // The distance along the line to the next tooth.
+    let mut next = TOOTH_SPACING / 2.0;
+    let mut walked = 0.0;
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let length = a.distance(b);
+        if length < 1e-3 {
+            continue;
+        }
+        let d = (b - a) / length;
+        // The y axis of the screen points down, so the left side of a
+        // direction is a turn against the clock.
+        let side = if left {
+            Vec2::new(d.y, -d.x)
+        } else {
+            Vec2::new(-d.y, d.x)
+        };
+        while next <= walked + length {
+            let c = a + d * (next - walked);
+            let half = d * (TOOTH_WIDTH / 2.0);
+            out.push([c - half, c + half, c + side * TOOTH_HEIGHT]);
+            next += TOOTH_SPACING;
+        }
+        walked += length;
+    }
+    out
 }
 
 fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
@@ -2775,9 +2840,9 @@ impl Globe {
         Some((screen(outline), Vec::new()))
     }
 
-    /// The center line of an ocean ridge in screen points, while the pen
-    /// draws it and while it is held, or the line of a hotspot track while
-    /// the pen draws it.
+    /// The center line of an ocean ridge or a trench in screen points, while
+    /// the pen draws it and while it is held, or the line of a hotspot track
+    /// while the pen draws it.
     pub fn ridge_preview(&self) -> Option<Vec<Pos2>> {
         let active = self
             .stroke
@@ -2804,6 +2869,27 @@ impl Globe {
             }
         }
         Some(points)
+    }
+
+    /// The teeth of the axis of a trench in screen points, while the pen
+    /// draws it and while it is held: triangles on the side of the
+    /// overriding plate, as on a map of a subduction zone.
+    pub fn trench_teeth(&self) -> Vec<[Pos2; 3]> {
+        let trench = self.stroke.as_ref().and_then(|a| a.ridge.as_ref());
+        if !trench.is_some_and(|r| matches!(r.line, BrushLine::Trench(_))) {
+            return Vec::new();
+        }
+        let Some(axis) = self.ridge_preview() else {
+            return Vec::new();
+        };
+        let left = self.brush.trench_side == TrenchSide::Left;
+        teeth(&axis, left)
+    }
+
+    /// Moves the overriding plate of the trench mode to the other side of
+    /// the line. A held trench follows.
+    pub fn flip_trench(&mut self) {
+        self.brush.flip_trench_side();
     }
 
     /// The drawn fracture zones of a held ocean ridge in screen points, and
@@ -3809,11 +3895,20 @@ impl Globe {
                                     None => active.outline = Some(Vec::new()),
                                 }
                             }
-                            if self.brush.mode == Mode::OceanRidge {
-                                let spec = self.brush.ridge_spec(sample.radius, km, seed);
-                                let spec = HeldSpec::Ridge(spec);
+                            let spec = match &active.ridge {
+                                Some(Ridging {
+                                    line: BrushLine::Ridge(line),
+                                    ..
+                                }) => Some(HeldSpec::Ridge(line.spec())),
+                                Some(Ridging {
+                                    line: BrushLine::Trench(line),
+                                    ..
+                                }) => Some(HeldSpec::Trench(line.spec())),
+                                _ => None,
+                            };
+                            if let Some(spec) = spec {
                                 active.held = Some(Held {
-                                    mode: Mode::OceanRidge,
+                                    mode: self.brush.mode,
                                     size: (self.brush.size_points, self.brush.lock),
                                     radius: sample.radius,
                                     drawn_flow: self.brush.flow,
@@ -4139,6 +4234,7 @@ impl Globe {
         let spec = match held.spec {
             HeldSpec::Ridge(_) => HeldSpec::Ridge(self.brush.ridge_spec(held.radius, km, seed)),
             HeldSpec::Basin(_) => HeldSpec::Basin(self.brush.basin_spec(km, seed, self.world_rain)),
+            HeldSpec::Trench(_) => HeldSpec::Trench(self.brush.trench_spec(held.radius, km, seed)),
         };
         let wanted = (spec, self.brush.flow);
         if wanted != held.wanted {
@@ -4155,26 +4251,34 @@ impl Globe {
             return;
         }
         match (spec, &mut active.ridge, &mut active.basin) {
-            (HeldSpec::Ridge(spec), Some(ridge), _) => {
+            (HeldSpec::Ridge(_) | HeldSpec::Trench(_), Some(ridge), _) => {
                 if in_flight {
                     return;
                 }
-                let smaller = match held.spec {
-                    HeldSpec::Ridge(old) => spec.radius < old.radius,
-                    HeldSpec::Basin(_) => false,
+                let smaller = match (spec.radius(), held.spec.radius()) {
+                    (Some(new), Some(old)) => new < old,
+                    _ => false,
                 };
                 (held.spec, held.flow) = wanted;
                 let scale = held.flow / held.drawn_flow.max(1e-6);
-                let mut line = RidgeLine::new(spec, n);
-                for &(dir, flow) in &ridge.points {
-                    line.push(dir, (flow * scale).min(1.0));
-                }
-                if let BrushLine::Ridge(old) = &ridge.line {
-                    for guide in old.guide_strokes() {
-                        line.add_guide(guide);
+                let points = ridge.points.iter();
+                let points = points.map(|&(dir, flow)| (dir, (flow * scale).min(1.0)));
+                ridge.line = match (spec, &ridge.line) {
+                    (HeldSpec::Ridge(spec), BrushLine::Ridge(old)) => {
+                        let mut line = RidgeLine::new(spec, n);
+                        points.for_each(|(dir, flow)| line.push(dir, flow));
+                        for guide in old.guide_strokes() {
+                            line.add_guide(guide);
+                        }
+                        BrushLine::Ridge(line)
                     }
-                }
-                ridge.line = BrushLine::Ridge(line);
+                    (HeldSpec::Trench(spec), BrushLine::Trench(_)) => {
+                        let mut line = TrenchLine::new(spec, n);
+                        points.for_each(|(dir, flow)| line.push(dir, flow));
+                        BrushLine::Trench(line)
+                    }
+                    _ => return,
+                };
                 ridge.resend();
                 // Each plan writes the ground from before the stroke and
                 // then the ridge into its rectangles, and with the same
@@ -4222,9 +4326,9 @@ impl Globe {
         self.holding().is_some() && !self.held_idle()
     }
 
-    /// The mode of the held stroke. After the pen goes up, an ocean ridge
-    /// or a basin shows and follows the settings, and the heightmap waits
-    /// for `apply_held`.
+    /// The mode of the held stroke. After the pen goes up, an ocean ridge, a
+    /// trench, or a basin shows and follows the settings, and the heightmap
+    /// waits for `apply_held`.
     pub fn holding(&self) -> Option<Mode> {
         let active = self.stroke.as_ref().filter(|a| a.ended)?;
         Some(active.held.as_ref()?.mode)
@@ -4276,14 +4380,15 @@ impl Globe {
         self.stroke = None;
     }
 
-    /// Sends the ocean ridge or the range of the new points of the line to
-    /// the GPU. Each plan goes with the ground from before the stroke, which
-    /// the heightmap holds until the texels of the stroke come back.
+    /// Sends the ocean ridge, the range, or the trench of the new points of
+    /// the line to the GPU. Each plan goes with the ground from before the
+    /// stroke, which the heightmap holds until the texels of the stroke come
+    /// back.
     ///
     /// The plans of a frame go after the GPU did the plans before them, and
     /// they hold at most `LINE_TEXELS_PER_FRAME` texels after the first
-    /// one. An ocean ridge and a hotspot track go to the GPU after the pen
-    /// goes up.
+    /// one. An ocean ridge, a trench, and a hotspot track go to the GPU after
+    /// the pen goes up.
     fn ridge(&mut self, now: Instant, in_flight: bool) {
         let tag = self.tag();
         let Some(active) = &mut self.stroke else {
@@ -4313,6 +4418,11 @@ impl Globe {
                         LineOp::Hotspot(plan) => {
                             let pieces = line_pieces(&*plan, |p| &mut p.line);
                             ridge.pieces.extend(pieces.map(LineOp::Hotspot));
+                            continue;
+                        }
+                        LineOp::Trench(plan) => {
+                            let pieces = line_pieces(&*plan, |p| &mut p.line);
+                            ridge.pieces.extend(pieces.map(LineOp::Trench));
                             continue;
                         }
                         plan => plan,
@@ -6017,6 +6127,28 @@ mod tests {
 
     use super::*;
     use math::lonlat_to_dir;
+
+    #[test]
+    fn the_teeth_of_a_trench_are_on_the_side_of_the_overriding_plate() {
+        // A line to the right of the screen and then down.
+        let line = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(100.0, 0.0),
+            Pos2::new(100.0, 100.0),
+        ];
+        let left = teeth(&line, true);
+        assert_eq!(left.len(), 7);
+        // The spacing is even around the corner.
+        assert_eq!(left[0][0].lerp(left[0][1], 0.5), Pos2::new(14.0, 0.0));
+        assert_eq!(left[4][0].lerp(left[4][1], 0.5), Pos2::new(100.0, 26.0));
+        // Left of a line to the right is up, and left of a line down is to
+        // the right of the screen.
+        assert_eq!(left[0][2], Pos2::new(14.0, -TOOTH_HEIGHT));
+        assert_eq!(left[4][2], Pos2::new(100.0 + TOOTH_HEIGHT, 26.0));
+        let right = teeth(&line, false);
+        assert_eq!(right[0][2], Pos2::new(14.0, TOOTH_HEIGHT));
+        assert_eq!(right[4][2], Pos2::new(100.0 - TOOTH_HEIGHT, 26.0));
+    }
 
     #[test]
     fn the_pieces_of_a_ridge_plan_cover_its_rectangles_once() {

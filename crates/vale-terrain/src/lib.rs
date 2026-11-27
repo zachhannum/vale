@@ -37,6 +37,7 @@ mod smooth;
 mod swatch;
 #[cfg(feature = "gpu")]
 mod tiles;
+mod trench;
 mod zonal;
 
 pub use abyssal::{AbyssalHills, AbyssalPlan, AbyssalStroke};
@@ -86,8 +87,8 @@ pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use realism::{
-    ATLANTIC_RIDGE, EPR_RIDGE, HAWAII, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism,
-    Reference, SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
+    ALEUTIAN_TRENCH, ATLANTIC_RIDGE, EPR_RIDGE, HAWAII, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch,
+    Realism, Reference, SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
@@ -102,6 +103,9 @@ pub use smooth::{
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
 pub use tiles::{GpuTiles, TILES_WGSL, tiles_layout};
+pub use trench::{
+    MAX_TRENCH_RADIUS, Trench, TrenchLine, TrenchMargin, TrenchPlan, TrenchSide, outer_rise_km,
+};
 pub use zonal::{Zonal, level_areas, line_zonal, polygon_zonal, rects_meet};
 
 // A worker thread makes the pipelines, and the main thread uses them.
