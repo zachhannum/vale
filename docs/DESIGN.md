@@ -124,7 +124,7 @@ An unpublished ninth crate, `vale-labeler-demo`, holds the command-line tool for
 
 An unpublished tenth crate, `vale-globe-proto`, is a prototype that tests pen drawing on the globe. The section "Globe prototype" describes it.
 
-The published crate names take a `vale-` prefix, for example `vale-labeler` and `vale-sphere`. The plain name `vale` is taken on crates.io by an unrelated validation library.
+The published crate names take a `vale-` prefix, for example `vale-labeler` and `vale-sphere`. The crates of Isotherm, the climate simulator in the same workspace, take an `isotherm-` prefix. `docs/isotherm/DESIGN.md` describes them. The plain name `vale` is taken on crates.io by an unrelated validation library.
 
 Each map frame runs the same pipeline, on screen and at export.
 

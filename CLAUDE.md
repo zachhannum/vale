@@ -1,8 +1,13 @@
-# Vale
+# Vale and Isotherm
 
-Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. You draw the world in the app, on a globe. The design is in `docs/DESIGN.md`. Read it before you plan or write code.
+This repository holds two apps in one Rust workspace.
 
-## Current phase
+- Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. You draw the world in the app, on a globe. The design is in `docs/DESIGN.md`.
+- Isotherm is a climate simulator for invented planets, for the same platforms. The design is in `docs/isotherm/DESIGN.md`, and the sources of its climate model are in `docs/isotherm/SCIENCE.md`.
+
+Read the design of the app that a task changes before you plan or write code. The rules below apply to both apps, unless a rule names one app.
+
+## Current phase of Vale
 
 The labeling prototype is done. The `vale-labeler` library labels points and lines from Natural Earth data, and the demo writes a PNG. This command makes the PNG:
 
@@ -53,22 +58,28 @@ The current phase is phase 0, the iPad test loop and CI. When each PR arrives on
 
 The phase table in `docs/DESIGN.md` gives the order of the work after that. When a phase is done, update this section.
 
+## Current phase of Isotherm
+
+Isotherm is in its phase 0, the specification and the skeleton. The phase table in `docs/isotherm/DESIGN.md` gives the order of the work. The GitHub issues of Isotherm have the label `isotherm`. When a phase is done, update this section.
+
 ## Rules
 
-- The project is one Rust workspace. Put each crate in `crates/`, and give each crate a `vale-` prefix. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
+- The project is one Rust workspace. Put each crate in `crates/`. Give each crate of Vale and each crate that both apps share a `vale-` prefix, and give each crate of Isotherm an `isotherm-` prefix. A `vale-` crate must not depend on an `isotherm-` crate, except that `isotherm-export` can use `vale-store`. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
 - `vale-labeler` must not depend on any other Vale crate. It takes page-space geometry and returns placed text.
 - The labeling engine is a clean-room design. Use published research and the public Esri documentation only. Do not read or decompile Esri code.
+- You can use public information about other apps, for example a store page or a manual. Do not copy the code, the text, the names, or the art of another app.
+- The climate model of Isotherm comes from published papers and textbooks. Add the equations and the sources of each part to `docs/isotherm/SCIENCE.md`. Do not copy code from PlaSim, ExoPlaSim, or Isca.
 - The license is `MIT OR Apache-2.0` for all crates.
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
-- Wholesale procedural world generation is a permanent non-goal.
+- Wholesale procedural world generation is a permanent non-goal of Vale. The plate-based starter landmasses of the Isotherm terrain editor are a small tool, not wholesale generation.
 - All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI follows the desktop mockups in `docs/mockups` and the section "Desktop layout" of `docs/DESIGN.md`. If no mockup shows a screen, use the patterns of the nearest desktop mockup. Until the app has the desktop layout, a plain desktop version is sufficient.
-- If a change contradicts `docs/DESIGN.md`, update the document in the same change.
+- If a change contradicts `docs/DESIGN.md` or `docs/isotherm/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
 
 ## Work tracking
 
-- GitHub issues track the work. Issue #1 is the epic for version 1. Each phase is an issue, and its tasks are its sub-issues.
+- GitHub issues track the work. Issue #1 is the epic for version 1 of Vale, and Isotherm has its own epic. Each phase is an issue, and its tasks are its sub-issues.
 - Each issue has a list that starts with "This task is done when" or "This phase is done when". That list is the definition of done.
 
 ## Implementing changes
