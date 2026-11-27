@@ -23,6 +23,7 @@ mod lake;
 mod line;
 mod margin;
 pub mod math;
+mod plateau;
 mod polygonize;
 #[cfg(feature = "gpu")]
 mod pyramid;
@@ -79,6 +80,10 @@ pub use line::{LINE_SEGMENTS, LINE_SPACING, LinePlan, LineSegment, StrokeLine};
 pub use margin::{
     FIELD_CELLS, FIELD_FLOATS, Margin, MarginField, MarginInputs, MarginPlan, MarginStroke,
     SHELF_DEPTH_RANGE, erode_margin, margin_window,
+};
+pub use plateau::{
+    PLAN_STAMPS, PLATEAU_AGE_MYR, PLATEAU_HEADER, PLATEAU_HEIGHT_M, PLATEAU_HEIGHT_RANGE,
+    PLATEAU_STAMP_FLOATS, Plateau, PlateauPlan, PlateauStroke, plateau_floor, plateau_top_m,
 };
 pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]

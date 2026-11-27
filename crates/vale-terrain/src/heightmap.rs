@@ -118,6 +118,9 @@ pub enum Mode {
     /// The mode of the hotspot track brush. A stamp of this mode changes
     /// nothing. `Heightmap::hotspot` makes the change.
     Hotspot,
+    /// The mode of the plateau brush. A stamp of this mode changes nothing.
+    /// `Heightmap::plateau` makes the change.
+    Plateau,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -759,7 +762,7 @@ impl Heightmap {
         texel_index(self.n, s)
     }
 
-    fn texel(&self, face: usize, x: usize, y: usize) -> u16 {
+    pub(crate) fn texel(&self, face: usize, x: usize, y: usize) -> u16 {
         match &self.tiles[self.tile_index(face, x, y)] {
             Some(tile) => tile[self.offset(x, y)],
             None => self.base,
@@ -1178,6 +1181,7 @@ impl Heightmap {
                 | Mode::AbyssalHills
                 | Mode::Margin
                 | Mode::Hotspot
+                | Mode::Plateau
         ) {
             return 0;
         }
@@ -1333,7 +1337,8 @@ impl Heightmap {
                             | Mode::Seamounts
                             | Mode::AbyssalHills
                             | Mode::Margin
-                            | Mode::Hotspot => continue,
+                            | Mode::Hotspot
+                            | Mode::Plateau => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
