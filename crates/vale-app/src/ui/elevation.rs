@@ -627,7 +627,8 @@ fn lake_size(ui: &mut egui::Ui, preview: &mut Preview, enabled: bool) {
 }
 
 /// The switch of the smoothing of a raster layer and its minimum feature
-/// size.
+/// size. A height layer has a size for the land, a size for the sea floor,
+/// and the blend depth between them.
 fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     let mut smoothing = raster.smoothing;
     if ui
@@ -636,18 +637,35 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, raster: &Raster) {
     {
         state.set_raster_smoothing(raster.id, smoothing.on);
     }
-    let size = &mut smoothing.feature_size;
-    let size = number::slider(
-        pad::raster::FEATURE_SIZE,
-        size,
-        0.0..=Smoothing::FEATURE_SIZE_MAX,
-    )
-    .step(0.25)
-    .suffix(" pt")
-    .enabled(smoothing.on)
-    .show(ui);
-    if size.changed() {
+    let range = 0.0..=Smoothing::FEATURE_SIZE_MAX;
+    let size = |name, size: &mut f32, ui: &mut egui::Ui| {
+        number::slider(name, size, range.clone())
+            .step(0.25)
+            .suffix(" pt")
+            .enabled(smoothing.on)
+            .show(ui)
+            .changed()
+    };
+    if !crate::ui::is_height(raster) {
+        if size(pad::raster::FEATURE_SIZE, &mut smoothing.feature_size, ui) {
+            state.set_raster_feature_size(raster.id, smoothing.feature_size);
+        }
+        return;
+    }
+    if size(pad::raster::LAND_SIZE, &mut smoothing.feature_size, ui) {
         state.set_raster_feature_size(raster.id, smoothing.feature_size);
+    }
+    if size(pad::raster::SEA_SIZE, &mut smoothing.sea_feature_size, ui) {
+        state.set_raster_sea_feature_size(raster.id, smoothing.sea_feature_size);
+    }
+    let depth = number::stepper(pad::raster::BLEND_DEPTH, &mut smoothing.blend_depth)
+        .range(0.0..=Smoothing::BLEND_DEPTH_MAX)
+        .step(pad::raster::BLEND_DEPTH_STEP)
+        .suffix(format!(" {}", raster.unit))
+        .enabled(smoothing.on)
+        .show(ui);
+    if depth.changed() {
+        state.set_raster_blend_depth(raster.id, smoothing.blend_depth);
     }
 }
 

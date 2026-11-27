@@ -94,6 +94,13 @@ pub const UNIT: &str = "Unit";
 /// The switch of the smoothing and the slider of the minimum feature size.
 pub const SMOOTHING: &str = "Smoothing";
 pub const FEATURE_SIZE: &str = "Feature size";
+/// The sliders of the feature size of a height layer above and below sea
+/// level, and the stepper of the blend depth between them.
+pub const LAND_SIZE: &str = "Land";
+pub const SEA_SIZE: &str = "Sea floor";
+pub const BLEND_DEPTH: &str = "Blend depth";
+/// The step of the blend depth, in the unit of the layer.
+pub const BLEND_DEPTH_STEP: f64 = 10.0;
 /// The row of the panel of a raster layer that opens the page of the blend
 /// mode, and the title of the page.
 pub const BLEND: &str = "Blend mode";
@@ -684,11 +691,14 @@ fn remove_ramps(state: &mut AppState, user: RampUser, indices: &[usize]) {
 }
 
 /// The switch of the smoothing, and the minimum feature size while the
-/// switch is on.
+/// switch is on. A height layer has a size for the land, a size for the sea
+/// floor, and the blend depth between them.
 fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, id: RasterId) {
-    let Some(mut smoothing) = state.doc.project.raster(id).map(|r| r.smoothing) else {
+    let Some(raster) = state.doc.project.raster(id) else {
         return;
     };
+    let (mut smoothing, height) = (raster.smoothing, crate::ui::is_height(raster));
+    let unit = raster.unit.clone();
     if widgets::switch_row(ui, controls, SMOOTHING, SMOOTHING, &mut smoothing.on) {
         state.set_raster_smoothing(id, smoothing.on);
     }
@@ -696,13 +706,34 @@ fn smoothing(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls, i
         return;
     }
     let max = f64::from(Smoothing::FEATURE_SIZE_MAX);
-    let size = Number::new(FEATURE_SIZE, f64::from(smoothing.feature_size), 0.0..=max)
-        .label("Min. feature")
-        .step(f64::from(WEIGHT_STEP))
-        .unit("pt")
-        .slider(ui, controls);
-    if let Some(size) = size {
+    let size = |name: &'static str, label: &'static str, value: f32| {
+        Number::new(name, f64::from(value), 0.0..=max)
+            .label(label)
+            .step(f64::from(WEIGHT_STEP))
+            .unit("pt")
+    };
+    if !height {
+        let land = size(FEATURE_SIZE, "Min. feature", smoothing.feature_size);
+        if let Some(size) = land.slider(ui, controls) {
+            state.set_raster_feature_size(id, size as f32);
+        }
+        return;
+    }
+    let land = size(LAND_SIZE, LAND_SIZE, smoothing.feature_size);
+    if let Some(size) = land.slider(ui, controls) {
         state.set_raster_feature_size(id, size as f32);
+    }
+    let sea = size(SEA_SIZE, SEA_SIZE, smoothing.sea_feature_size);
+    if let Some(size) = sea.slider(ui, controls) {
+        state.set_raster_sea_feature_size(id, size as f32);
+    }
+    let range = 0.0..=f64::from(Smoothing::BLEND_DEPTH_MAX);
+    let depth = Number::new(BLEND_DEPTH, f64::from(smoothing.blend_depth), range)
+        .step(BLEND_DEPTH_STEP)
+        .unit(&unit)
+        .stepper(ui, controls);
+    if let Some(depth) = depth {
+        state.set_raster_blend_depth(id, depth as f32);
     }
 }
 

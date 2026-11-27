@@ -9089,31 +9089,73 @@ fn a_polygon_stroke_is_one_feature_that_undo_removes() {
 
 #[test]
 fn the_style_section_has_the_smoothing_and_the_minimum_feature_size() {
-    use vale_app::ui::pad::raster::{FEATURE_SIZE, SMOOTHING};
+    use vale_app::ui::pad::raster::{BLEND_DEPTH, FEATURE_SIZE, LAND_SIZE, SEA_SIZE, SMOOTHING};
     for size in BOARDS {
         let what = format!("{size:?}");
         let mut h = painted_pad(size);
         let height = open_height(&mut h);
         let smoothing = |h: &Pad| h.state().doc.project.raster(height).unwrap().smoothing;
         assert!(smoothing(&h).on, "{what}");
-        scroll_to(&mut h, FEATURE_SIZE);
-        let card = panel(&h, Panel::Layers).unwrap();
-        for name in [SMOOTHING, FEATURE_SIZE] {
+        let stepper = format!("Increase {BLEND_DEPTH}");
+        for name in [SMOOTHING, LAND_SIZE, SEA_SIZE, &stepper] {
+            scroll_to(&mut h, name);
+            let card = panel(&h, Panel::Layers).unwrap();
             let rect = control(&h, name).unwrap_or_else(|| panic!("{what}: no {name}"));
             assert!(card.contains_rect(rect), "{what}: {name} is {rect:?}");
         }
+        assert!(control(&h, FEATURE_SIZE).is_none(), "{what}");
         check_controls(&h, &format!("{what} with the smoothing"));
         screenshot::save(&mut h, &format!("pad-smoothing-{}", size.0));
 
-        set_number(&mut h, FEATURE_SIZE, "0");
+        set_number(&mut h, LAND_SIZE, "0");
         assert_eq!(smoothing(&h).feature_size, 0.0, "{what}");
+        set_number(&mut h, SEA_SIZE, "6");
+        assert_eq!(smoothing(&h).sea_feature_size, 6.0, "{what}");
+        assert_eq!(smoothing(&h).feature_size, 0.0, "{what}");
+        scrolled_step(&mut h, BLEND_DEPTH, true);
+        assert_eq!(smoothing(&h).blend_depth, 210.0, "{what}");
+        set_number(&mut h, BLEND_DEPTH, "1500");
+        assert_eq!(smoothing(&h).blend_depth, 1500.0, "{what}");
         scroll_to_control(&mut h, SMOOTHING);
 
         tap(&mut h, SMOOTHING);
         assert!(!smoothing(&h).on, "{what}");
-        assert!(control(&h, FEATURE_SIZE).is_none(), "{what}");
+        for name in [LAND_SIZE, SEA_SIZE, &stepper] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
         tap(&mut h, SMOOTHING);
         assert!(smoothing(&h).on, "{what}");
+    }
+}
+
+#[test]
+fn the_style_section_of_another_raster_layer_has_one_feature_size() {
+    use vale_app::ui::pad::raster::{BLEND_DEPTH, FEATURE_SIZE, LAND_SIZE, SEA_SIZE};
+    for size in BOARDS {
+        let what = format!("{size:?}");
+        let mut h = painted_pad(size);
+        let spec = vale_app::ui::RasterSpec {
+            name: "Rain".to_string(),
+            unit: "mm".to_string(),
+            min: 0.0,
+            max: 4000.0,
+            face_size: 128,
+        };
+        let rain = h.state_mut().add_raster(spec).unwrap();
+        h.run_steps(2);
+        open_panel(&mut h, "Layers");
+        tap(&mut h, "Open Rain");
+        scroll_to(&mut h, FEATURE_SIZE);
+        let card = panel(&h, Panel::Layers).unwrap();
+        let rect = control(&h, FEATURE_SIZE).unwrap_or_else(|| panic!("{what}: no slider"));
+        assert!(card.contains_rect(rect), "{what}: {rect:?}");
+        let stepper = format!("Increase {BLEND_DEPTH}");
+        for name in [LAND_SIZE, SEA_SIZE, &stepper] {
+            assert!(control(&h, name).is_none(), "{what}: {name}");
+        }
+        set_number(&mut h, FEATURE_SIZE, "3");
+        let smoothing = h.state().doc.project.raster(rain).unwrap().smoothing;
+        assert_eq!(smoothing.feature_size, 3.0, "{what}");
     }
 }
 

@@ -146,7 +146,7 @@ A project is one GeoPackage file. Features live in standard GeoPackage tables, a
 | --- | --- |
 | World | Radius, name, display units, seed, wind, rain shadow |
 | Source | Name of the imported file, extents, and the pixels of an imported image |
-| Raster | Face size, unit, value range, base level, smoothing, river switch, band line switch, and a copy of the colors and the band names of the style of its layer |
+| Raster | Face size, unit, value range, base level, smoothing with its sizes and blend depth, river switch, band line switch, and a copy of the colors and the band names of the style of its layer |
 | Raster tile | Raster, level, face, column, row, and the pixels of one tile |
 | Image | Width and height in pixels, number of levels, and a copy of the opacity and the blend mode of the style of its layer |
 | Image tile | Image, level, column, row, and the RGBA pixels of one tile as a PNG |
@@ -328,7 +328,7 @@ A heightmap is a raster layer of values with meters as its unit. A world can hav
 
 The world does not mark one raster layer as its height. Each raster layer with the unit `m` is a height layer. Sea level, the rivers, and the brush modes that move ground work on a height layer only. An operation that needs a height takes a layer as its input. Nothing else in the app needs a height layer.
 
-A raster layer is a layer in the one draw order, with the vector layers. It has an opacity. The globe and the flat view draw each visible raster layer in that order, and a layer shows the layers below it through itself as its opacity says. Each raster layer has a blend mode, one of the 12 W3C modes, and the default is Normal. A layer with another mode draws in an offscreen group, which the view blends with the layers below. The flat view, the globe, and the map frames use the same modes. A map frame draws each raster layer that the map of the frame shows, in the projection of the frame and clipped to the shape of the frame. It smooths the layer by the minimum feature size at the scale of the frame, where 1 pt is 1/72 inch. Below the lowest layer is a ground of one plain color. A new raster layer goes above the top raster layer.
+A raster layer is a layer in the one draw order, with the vector layers. It has an opacity. The globe and the flat view draw each visible raster layer in that order, and a layer shows the layers below it through itself as its opacity says. Each raster layer has a blend mode, one of the 12 W3C modes, and the default is Normal. A layer with another mode draws in an offscreen group, which the view blends with the layers below. The flat view, the globe, and the map frames use the same modes. A map frame draws each raster layer that the map of the frame shows, in the projection of the frame and clipped to the shape of the frame. It smooths the layer by the minimum feature sizes at the scale of the frame, where 1 pt is 1/72 inch. Below the lowest layer is a ground of one plain color. A new raster layer goes above the top raster layer.
 
 A raster layer holds a value that changes smoothly from place to place. A layer of classes, such as a number for each biome, is not in version 1.
 
@@ -383,9 +383,11 @@ Each color stop can also have a line, with a weight in points and a color. The c
 
 The display smooths the field of a raster layer by the scale, so the detail follows the zoom. Each raster layer has a minimum feature size in points, from 0 to 8, and the default is 2. The app turns the size into a distance on the ground at the current zoom, and it smooths the field over that distance. A size of 0 shows the full detail. The fills, the lines at the color stops, and the snap target of a color stop all come from the same smoothed field, so they always agree. An exception is a raster layer that is not active, where the view shows detail tiles. There, the snap target comes from the copy, and it can be one texel of the copy away from the line.
 
+A height layer has two sizes: "Land" for the ground above sea level, and "Sea floor" for the ground below it. It also has the blend depth, from 0 to 20,000 m. The default is 200 m. A new height layer has a sea floor size equal to its land size. The coast comes from the field at the land size, so a change of the sea floor size does not move the coast. Below sea level, the field blends along a smooth curve from the land field at the coast to the field at the sea floor size at the blend depth. The value and the slope have no step at the coast. The blend keeps each place on its side of sea level, so the sea never shows as land. The fills, the lines, the hillshade, the raster masks, and the snap target all come from the blended field. The globe, the flat view, and the map frames use both sizes. The detail tiles come at the finer size. Each other raster layer has one size.
+
 The GPU keeps a pyramid of the field. A pyramid is a stack of levels, and each texel of a level is the mean of 2 by 2 texels of the level below. The shader reads the two levels that are nearest to the distance and blends them, so the detail changes with no jump while you zoom. In a level, the value at a place is a cubic B-spline of the 4 by 4 texels around it. A B-spline is a smooth curve that does not go above or below its texels, so a band edge and a line bend smoothly across the texels, and a peak or a pit of one texel shows less high or deep. The line widths and the hillshade use the slope of the same curve. The hillshade reads a level where a texel is at least one pixel. A read near a face edge takes the texels past the edge from the next face, so the field has no seam. A brush stroke updates the levels under its texels in the same frame. For the snap target, the CPU makes the same levels with the same integer math, only for the blocks of texels near the pen.
 
-The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch and the size of each layer. A map, a map frame, and an export always use the smoothing.
+The heightmap does not change, and the readout and the brush use the full detail. Each raster layer has a switch that turns its smoothing on and off on the globe and in the flat view, so you can paint one layer with the full detail in view. The project keeps the switch, the sizes, and the blend depth of each layer. A map, a map frame, and an export always use the smoothing.
 
 A height layer can show a hillshade over its colors. A hillshade is a shade of the slopes, with a light from one direction. North is the north of the world at each place, so the shade stays on the ground while you turn the globe. The shade blends with the colors in the soft-light mode. Flat ground keeps its color, slopes toward the light get lighter, and slopes away from the light get darker. The hillshade comes from the same smoothed field as the fills, in each display, on the globe and in the flat view. The rivers and the lines at the stops go over it. When you zoom out, the app makes the slopes steeper, so the relief shows at each zoom.
 
@@ -947,7 +949,7 @@ The symbolizers must give enough artistic range that the output does not look li
 | Marker | Circle, square, diamond, triangle, or star, with a solid or hatched fill |
 | Point symbol | SVG symbol with size and rotation from attributes |
 | Scatter | Symbols spread inside a polygon, for forests and mountain ranges |
-| Raster | Color ramp, smooth or stepped, opacity, blend mode, band lines, smoothing, hillshade |
+| Raster | Color ramp, smooth or stepped, opacity, blend mode, band lines, smoothing with its sizes and blend depth, hillshade |
 | Image | Opacity, blend mode |
 
 Textures and blend modes become raster images in PDF and SVG output. All other symbolizers stay vector.

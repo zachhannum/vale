@@ -1443,14 +1443,18 @@ fn each_raster_layer_keeps_its_own_smoothing() {
     };
     let rain = state.add_raster(rain).unwrap();
     assert!(state.set_raster_smoothing(height, false));
+    assert!(state.set_raster_sea_feature_size(height, 6.0));
+    assert!(state.set_raster_blend_depth(height, 500.0));
     assert!(state.set_raster_feature_size(rain, 5.0));
     let off = Smoothing {
         on: false,
-        feature_size: Smoothing::FEATURE_SIZE_DEFAULT,
+        sea_feature_size: 6.0,
+        blend_depth: 500.0,
+        ..Smoothing::default()
     };
     let five = Smoothing {
-        on: true,
         feature_size: 5.0,
+        ..Smoothing::default()
     };
     let smoothing = |project: &Project, id| project.raster(id).unwrap().smoothing;
     let check = |project: &Project, step: &str| {

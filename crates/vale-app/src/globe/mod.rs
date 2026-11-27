@@ -17,7 +17,7 @@ use vale_terrain::{
     FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
     RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Window,
     WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
-    reduced_face_size, smoothing_level,
+    reduced_face_size,
 };
 
 pub mod backdrop;
@@ -86,7 +86,7 @@ use preview::{Preview, band_uniforms, line_uniforms};
 use rivers::{Rivers, choose_window};
 use snap::{Highlight, Run, SnapSettings, Targets, Tracer};
 use stats::Stats;
-use stops::StopTargets;
+use stops::{Lod, StopTargets, sea_of};
 use stroke_test::StrokeTest;
 use view::{Camera, GlobeView};
 use zoom_test::ZoomTest;
@@ -1358,6 +1358,7 @@ struct StopKey {
     edits: u64,
     levels: Vec<u16>,
     smoothing: Smoothing,
+    sea: Option<(f64, f64)>,
 }
 
 impl Default for Globe {
@@ -2557,6 +2558,7 @@ impl Globe {
                 edits: self.edits,
                 levels: bands.stops().iter().map(|s| bands.level(s.value)).collect(),
                 smoothing,
+                sea: sea_of(bands, smoothing),
             });
         }
         if keys.len() == self.stops.len() && keys.iter().zip(&self.stops).all(|(k, s)| *k == s.0) {
@@ -2574,8 +2576,9 @@ impl Globe {
                     let levels = key.levels.iter().map(|&l| f64::from(l) / 65535.0);
                     let face_size = key.key.face_size;
                     let snapshot = map.snapshot();
+                    let (smoothing, sea) = (key.smoothing, key.sea);
                     let built =
-                        StopTargets::new(key.id, snapshot, face_size, key.smoothing, levels);
+                        StopTargets::new(key.id, snapshot, face_size, smoothing, sea, levels);
                     built.map(Arc::new)
                 }
             };
@@ -2944,36 +2947,49 @@ impl Globe {
         found.unwrap_or_default()
     }
 
-    /// The level of the smooth field for a source of `face_size` texels at
-    /// the zoom of the view. 0 is the full detail.
-    fn level_of(&self, smoothing: Smoothing, face_size: u32) -> f64 {
-        if !smoothing.on {
-            return 0.0;
-        }
-        smoothing_level(f64::from(smoothing.feature_size), self.radius(), face_size)
+    /// The levels of the smooth field for a source of `face_size` texels
+    /// with `bands` at the zoom of the view.
+    fn lod_of(&self, smoothing: Smoothing, bands: &Bands, face_size: u32) -> Lod {
+        let sea = sea_of(bands, smoothing);
+        Lod::of(smoothing, sea, self.radius(), face_size)
     }
 
-    /// The level of the smooth field that the globe shows for a raster
-    /// layer at the zoom of the view. 0 is the full detail, and so is a
-    /// layer that the globe does not draw.
-    pub fn smoothing_level(&self, id: RasterId) -> f64 {
-        let Some(key) = self.source(id) else {
-            return 0.0;
+    /// The levels of the smooth field that the globe shows for a raster
+    /// layer at the zoom of the view. A layer that the globe does not draw
+    /// has the full detail.
+    fn shown_lod(&self, id: RasterId) -> Lod {
+        let Some((key, map)) = self.source(id).zip(self.display_map(id)) else {
+            return Lod::FULL;
         };
-        self.level_of(self.smoothing(id), key.face_size)
+        self.lod_of(self.smoothing(id), &map.bands, key.face_size)
+    }
+
+    /// The level of the smooth field that the globe shows above sea level
+    /// for a raster layer at the zoom of the view. 0 is the full detail, and
+    /// so is a layer that the globe does not draw.
+    pub fn smoothing_level(&self, id: RasterId) -> f64 {
+        self.shown_lod(id).land
+    }
+
+    /// The level of the smooth field that the globe shows far below sea
+    /// level for a raster layer, as `smoothing_level`. A layer with no sea
+    /// level has the level of `smoothing_level`.
+    pub fn sea_smoothing_level(&self, id: RasterId) -> f64 {
+        self.shown_lod(id).sea_lod
     }
 
     /// The value that the globe shows for a raster layer at a direction,
     /// from 0 to 1 as a level of the heightmap over 65,535. It is the field
-    /// of `smoothing_level`, from the same heightmap as the GPU. `None`:
-    /// the globe does not draw the layer.
+    /// of `smoothing_level`, with the blend to the field of
+    /// `sea_smoothing_level` below sea level, from the same heightmap as the
+    /// GPU. `None`: the globe does not draw the layer.
     pub fn shown_field(&self, id: RasterId, dir: V3) -> Option<f64> {
         let key = self.source(id)?;
         let map = match self.draws_full(id) {
             true => &self.map,
             false => self.display_map(id)?,
         };
-        let level = self.level_of(self.smoothing(id), key.face_size);
+        let lod = self.lod_of(self.smoothing(id), &map.bands, key.face_size);
         let mut fields = self.fields.lock().expect("no panic holds the lock");
         let found = fields
             .iter()
@@ -2985,7 +3001,8 @@ impl Globe {
             fields.push((key, pyramid.clone()));
             pyramid
         });
-        Some(pyramid.field(dir, level))
+        let shown = pyramid.shown_slope(dir, lod.land, lod.sea_lod, lod.sea, lod.depth);
+        Some(shown[0])
     }
 
     fn forget_fields(&mut self) {
@@ -4792,27 +4809,25 @@ impl Globe {
             detail: match layer {
                 Some(layer) => {
                     let size = layer.key.face_size;
-                    let level = match frame {
+                    let lod = match frame {
                         // A map frame smooths by the scale of the page, so
                         // the zoom of the screen does not change it.
-                        Some(frame) if layer.smoothing.on => smoothing_level(
-                            f64::from(layer.smoothing.feature_size),
-                            frame.points_per_radian,
-                            size,
-                        ),
-                        Some(_) => 0.0,
-                        None => self.level_of(layer.smoothing, size),
-                    } as f32;
-                    match layer.key.kind {
-                        // A detail map has levels 0 and 1 only.
-                        MapKind::Detail { .. } => {
-                            let max = max_level(size).min(1);
-                            [level.min(max as f32), max as f32, 0.0, 0.0]
+                        Some(frame) => {
+                            let sea = sea_of(layer.bands, layer.smoothing);
+                            Lod::of(layer.smoothing, sea, frame.points_per_radian, size)
                         }
-                        _ => [level, max_level(size) as f32, 0.0, 0.0],
-                    }
+                        None => self.lod_of(layer.smoothing, layer.bands, size),
+                    };
+                    let max = match layer.key.kind {
+                        // A detail map has levels 0 and 1 only.
+                        MapKind::Detail { .. } => max_level(size).min(1),
+                        _ => max_level(size),
+                    };
+                    let lod = lod.min(f64::from(max));
+                    let [land, sea_lod, depth] = [lod.land, lod.sea_lod, lod.depth];
+                    [land as f32, max as f32, sea_lod as f32, depth as f32]
                 }
-                None => [0.0; 4],
+                None => [0.0, 0.0, 0.0, -1.0],
             },
             edges: [0.0; 4],
             turn: {
@@ -5214,16 +5229,13 @@ impl Globe {
                 let Some(layer) = self.layer(id).filter(|_| self.copied(id)) else {
                     continue;
                 };
-                let smoothing = look.smoothing;
                 let full_face = layer.face_size as u32;
-                let lod = match smoothing.on {
-                    true => smoothing_level(
-                        f64::from(smoothing.feature_size),
-                        frame.place.points_per_radian,
-                        full_face,
-                    ),
-                    false => 0.0,
-                };
+                let map = layer.display(&self.map);
+                let bands = look.bands.as_ref().unwrap_or(&map.bands);
+                let sea = sea_of(bands, look.smoothing);
+                let ppr = frame.place.points_per_radian;
+                // The tiles are for the finer of the two levels.
+                let lod = Lod::of(look.smoothing, sea, ppr, full_face).finest();
                 shown.push(detail::Shown {
                     frame: frame.id,
                     raster: id,
@@ -5270,6 +5282,8 @@ impl Globe {
                 continue;
             };
             let full_face = layer.face_size as u32;
+            let bands = &layer.display(&self.map).bands;
+            let lod = self.lod_of(smoothing, bands, full_face).finest();
             shown.push(detail::Shown {
                 frame: detail::VIEW,
                 raster: id,
@@ -5277,7 +5291,7 @@ impl Globe {
                 copy_face: self.copy_face(id),
                 base: layer.display(&self.map).base(),
                 edits: layer.edits,
-                lod: self.level_of(smoothing, full_face),
+                lod,
             });
         }
         let grid = self.view_grid(pixels_per_point);

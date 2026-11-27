@@ -32,11 +32,11 @@ use crate::{
     BlendMode, Collection, CollectionId, Feature, Field, FieldType, Geometry, GeometryKind,
     Hillshade, Image, ImageId, Layer, LayerId, LayerKind, LonLat, Project, Raster, RasterDisplay,
     RasterId, Rgb, Rgba, Smoothing, SnapTypes, Stop, StopLine, SymbolRecord, Units, Uuid, Value,
-    World, clamp_feature_size, clamp_opacity,
+    World, clamp_blend_depth, clamp_feature_size, clamp_opacity,
 };
 
 /// The version of the `vale_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 43;
+pub const FORMAT_VERSION: u32 = 44;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
@@ -84,6 +84,7 @@ const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[
     v41,
     v42,
     v43,
+    v44,
 ];
 
 /// `GPKG` in ASCII.
@@ -923,6 +924,22 @@ fn v43(tx: &Transaction) -> rusqlite::Result<()> {
         return Ok(());
     }
     tx.execute_batch("ALTER TABLE vale_collection ADD COLUMN collapsed INTEGER NOT NULL DEFAULT 0")
+}
+
+/// The smoothing of a raster below sea level. The rasters of an older file
+/// get the land size below sea level and the default blend depth. A file of
+/// an older version can already have the columns.
+fn v44(tx: &Transaction) -> rusqlite::Result<()> {
+    let sql =
+        "SELECT count(*) FROM pragma_table_info('vale_raster') WHERE name = 'sea_feature_size'";
+    if tx.query_row(sql, [], |r| r.get::<_, i64>(0))? > 0 {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "ALTER TABLE vale_raster ADD COLUMN sea_feature_size REAL NOT NULL DEFAULT 2;
+         ALTER TABLE vale_raster ADD COLUMN blend_depth REAL NOT NULL DEFAULT 200;
+         UPDATE vale_raster SET sea_feature_size = feature_size;",
+    )
 }
 
 /// Adds the seed of the world.
@@ -2847,9 +2864,9 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                opacity, display, stops, colors, smooth, feature_size, hillshade,
                hillshade_opacity, hillshade_highlights, hillshade_azimuth,
                hillshade_altitude, hillshade_exaggeration, hillshade_color, rivers, lines, blend,
-               names)
+               names, sea_feature_size, blend_depth)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15,
-               ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+               ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
              ON CONFLICT (id) DO UPDATE SET
                face_size = excluded.face_size, unit = excluded.unit,
                value_min = excluded.value_min, value_max = excluded.value_max,
@@ -2866,7 +2883,9 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                hillshade_exaggeration = excluded.hillshade_exaggeration,
                hillshade_color = excluded.hillshade_color,
                rivers = excluded.rivers, lines = excluded.lines,
-               blend = excluded.blend, names = excluded.names",
+               blend = excluded.blend, names = excluded.names,
+               sea_feature_size = excluded.sea_feature_size,
+               blend_depth = excluded.blend_depth",
             params![
                 r.id.0,
                 r.face_size,
@@ -2891,6 +2910,8 @@ fn write_rasters(tx: &Transaction, project: &Project) -> Result<(), StoreError> 
                 r.lines,
                 r.blend.id(),
                 names_text(&r.names),
+                f64::from(clamp_feature_size(r.smoothing.sea_feature_size)),
+                f64::from(clamp_blend_depth(r.smoothing.blend_depth)),
             ],
         )?;
     }
@@ -3021,7 +3042,8 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
         "SELECT id, face_size, unit, value_min, value_max, base, opacity, display, stops,
            colors, smooth, feature_size, hillshade, hillshade_opacity,
            hillshade_highlights, hillshade_azimuth, hillshade_altitude,
-           hillshade_exaggeration, hillshade_color, rivers, lines, blend, names
+           hillshade_exaggeration, hillshade_color, rivers, lines, blend, names,
+           sea_feature_size, blend_depth
          FROM vale_raster ORDER BY id",
     )?;
     let mut rows = rows.query([])?;
@@ -3051,6 +3073,8 @@ fn load_rasters(conn: &Connection) -> Result<Vec<Raster>, StoreError> {
             smoothing: Smoothing {
                 on: r.get::<_, i64>(10)? != 0,
                 feature_size: clamp_feature_size(r.get::<_, f64>(11)? as f32),
+                sea_feature_size: clamp_feature_size(r.get::<_, f64>(23)? as f32),
+                blend_depth: clamp_blend_depth(r.get::<_, f64>(24)? as f32),
             },
             hillshade: Hillshade {
                 on: r.get::<_, i64>(12)? != 0,
@@ -6003,7 +6027,9 @@ mod tests {
                 "rivers",
                 "lines",
                 "blend",
-                "names"
+                "names",
+                "sea_feature_size",
+                "blend_depth"
             ]
         );
 
@@ -6601,10 +6627,12 @@ mod tests {
         let off = Smoothing {
             on: false,
             feature_size: 0.75,
+            ..Smoothing::default()
         };
         let big = Smoothing {
             on: true,
             feature_size: 6.5,
+            ..Smoothing::default()
         };
         assert_eq!(smoothing(&loaded, height), off);
         assert_eq!(smoothing(&loaded, rain), big);
@@ -6641,6 +6669,72 @@ mod tests {
         );
         // The undo images of version 13 stay valid.
         assert!(file.can_undo());
+    }
+
+    #[test]
+    fn the_file_keeps_the_smoothing_below_sea_level() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        assert!(project.set_raster_sea_feature_size(height, 5.5));
+        file.save(&project).unwrap();
+        assert!(project.set_raster_blend_depth(height, 1200.0));
+        file.save(&project).unwrap();
+        drop(file);
+
+        let smoothing = |p: &Project, id| p.raster(id).unwrap().smoothing;
+        let (mut file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let sea = Smoothing {
+            sea_feature_size: 5.5,
+            blend_depth: 1200.0,
+            ..Smoothing::default()
+        };
+        assert_eq!(smoothing(&loaded, height), sea);
+        assert_eq!(smoothing(&loaded, rain), Smoothing::default());
+
+        // An undo puts back the old depth, and then the old size.
+        file.undo().unwrap();
+        let shallow = Smoothing {
+            blend_depth: Smoothing::BLEND_DEPTH_DEFAULT,
+            ..sea
+        };
+        assert_eq!(smoothing(file.project(), height), shallow);
+        file.undo().unwrap();
+        assert_eq!(smoothing(file.project(), height), Smoothing::default());
+        file.redo().unwrap();
+        file.redo().unwrap();
+        assert_eq!(file.project(), &project);
+    }
+
+    #[test]
+    fn a_file_before_version_44_smooths_the_sea_as_the_land() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut project, height, rain) = rasters();
+        assert!(project.set_raster_feature_size(height, 0.75));
+        assert!(project.set_raster_sea_feature_size(height, 5.5));
+        assert!(project.set_raster_blend_depth(height, 1200.0));
+        assert!(project.set_raster_feature_size(rain, 6.5));
+        ProjectFile::create(&path(&dir), &project).unwrap();
+
+        let conn = Connection::open(path(&dir)).unwrap();
+        conn.execute_batch(
+            "ALTER TABLE vale_raster DROP COLUMN sea_feature_size;
+             ALTER TABLE vale_raster DROP COLUMN blend_depth;",
+        )
+        .unwrap();
+        drop(conn);
+        set_format_version(&dir, 44 - 1);
+        let (file, loaded) = ProjectFile::open(&path(&dir)).unwrap();
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+        let smoothing = |id| loaded.raster(id).unwrap().smoothing;
+        let land = |size| Smoothing {
+            feature_size: size,
+            sea_feature_size: size,
+            ..Smoothing::default()
+        };
+        assert_eq!(smoothing(height), land(0.75));
+        assert_eq!(smoothing(rain), land(6.5));
     }
 
     /// The band limits and the ramps of a raster before format version 11.

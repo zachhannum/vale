@@ -97,7 +97,8 @@ pub use seamount::{
     VOLCANO_FLOATS, Volcano, elastic_km, sea_floor,
 };
 pub use smooth::{
-    LocalPyramid, Pyramid, level_size, max_level, next_level, pyramid_bytes, smoothing_level,
+    LocalPyramid, Pyramid, combine_sea, level_size, max_level, next_level, pyramid_bytes,
+    smoothing_level,
 };
 pub use swatch::swatches;
 #[cfg(feature = "gpu")]
