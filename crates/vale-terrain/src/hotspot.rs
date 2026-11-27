@@ -99,18 +99,21 @@ const GROW_MYR: f64 = 0.5;
 
 /// The deepest sum of the moats under the chain, as a part of the height of
 /// the largest volcano.
-const LINE_MOAT: f64 = 0.17;
+const LINE_MOAT: f64 = 0.15;
 
 /// The middle of the gap between two volcanoes is at this part of the reach
 /// of their pedestals.
 const PEDESTAL_MIDDLE: f64 = 0.5;
 
-/// The rounding of the join of two volcanoes, in meters.
+/// The rounding of the join of two islands, in meters, so lava fills the
+/// saddle between them. A volcano with a wave-cut top does not round, and
+/// a reef rounds less where it changes the height by up to `FREE_M`.
 const JOIN_M: f64 = 800.0;
+const FREE_M: f64 = 100.0;
 
 /// The summit of an island goes down by this many meters in each million
 /// years.
-const ISLAND_EROSION_M: f64 = 500.0;
+const ISLAND_EROSION_M: f64 = 600.0;
 
 /// The waves cut the top of a volcano flat at this depth in meters when it
 /// goes under the sea, with a rounding of `CAP_ROUND_M`.
@@ -769,8 +772,8 @@ fn level_of_m(m: f64) -> f64 {
 
 /// The height of a volcano with the edifice `e` over the level `base`, with
 /// its wave-cut top and its reef, and the part of the rounding of `join`
-/// that it takes: 1 where the top and the reef do not change it, and 0
-/// where they change it by `JOIN_M` or more.
+/// that it takes: 0 with a wave-cut top, else 1 where the reef does not
+/// change it, and 0 where the reef changes it by `FREE_M` or more.
 fn shaped(v: &Volcano, base: f64, e: f64) -> (f64, f64) {
     let z = base + e;
     let cap = v.get(CAP);
@@ -796,7 +799,11 @@ fn shaped(v: &Volcano, base: f64, e: f64) -> (f64, f64) {
         let reefed = outer + (lagoon - outer) * inner;
         s += (reefed - s) * v.get(REEF);
     }
-    let free = (1.0 - (s - z).abs() / (JOIN_M * LEVELS_PER_M)).max(0.0);
+    let free = if cap < f64::from(NO_CAP) {
+        0.0
+    } else {
+        (1.0 - (s - z).abs() / (FREE_M * LEVELS_PER_M)).max(0.0)
+    };
     ((s - base).max(0.0), free)
 }
 
@@ -1273,7 +1280,9 @@ mod tests {
                 // No island is near.
                 let alone = (0..chain.volcanoes.len()).all(|j| {
                     let apart = angle(chain.volcanoes[i].center(), chain.volcanoes[j].center());
-                    chain.ages[j] > chain.drowned[j] || apart > chain.volcanoes[i].base_radius()
+                    let far =
+                        chain.volcanoes[i].base_radius() + 1.2 * chain.volcanoes[j].base_radius();
+                    chain.ages[j] > chain.drowned[j] || apart > far
                 });
                 since > 2.0 && since < REEF_MYR - REEF_FADE_MYR && chain.drowned[i] > 5.0 && alone
             })
@@ -1368,9 +1377,10 @@ mod tests {
         lay(&mut line, N, FLOOR_M);
         // The edifice on rings around the summit of each island, above its
         // break. Rays down the slope are waves of many cycles around a ring.
+        // The walls of a landslide scar are not rays.
         let count = 720;
         let (mut rays, mut rings) = (0.0, 0);
-        let islands = line.volcanoes().iter().filter(|v| v.get(BREAK) < 0.7);
+        let islands = (line.volcanoes().iter()).filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0);
         for v in islands {
             let c = v.center();
             let (east, north) = frame(c);
@@ -1435,19 +1445,31 @@ mod tests {
         }
         eprintln!("deepest channel {deepest:.0} m");
         assert!(deepest > -2500.0, "{deepest}");
-        // Across the youngest island, the flank on land is gentle, and the
-        // flank under the sea is steep.
-        let c = chain.volcanoes[0].center();
-        let (_, north) = frame(c);
-        let height = |km: f64| meters(map.level_at(normalize(add(c, scale(north, km / KM)))));
+        // Across the largest young island, the flank on land is gentle,
+        // and the flank under the sea is steep. Along the chain, the ridge
+        // is gentle.
+        let largest = (0..chain.volcanoes.len())
+            .filter(|&i| chain.ages[i] < 1.0)
+            .max_by(|&a, &b| {
+                let size = |i: usize| chain.volcanoes[i].height() * chain.volcanoes[i].growth();
+                size(a).total_cmp(&size(b))
+            })
+            .unwrap();
+        let c = chain.volcanoes[largest].center();
+        let (east, north) = frame(c);
         let (mut land, mut sea) = (Vec::new(), Vec::new());
-        for k in 0..250 {
-            let km = f64::from(k);
-            let (h, slope) = (height(km), (height(km) - height(km + 1.0)).abs() / 1000.0);
-            if h > 200.0 {
-                land.push(slope);
-            } else if h < -500.0 && h > -3000.0 {
-                sea.push(slope);
+        for turn in (2..=6).chain(10..=14) {
+            let (s, co) = (TAU * f64::from(turn) / 16.0).sin_cos();
+            let dir = add(scale(east, co), scale(north, s));
+            let height = |km: f64| meters(map.level_at(normalize(add(c, scale(dir, km / KM)))));
+            for k in 0..250 {
+                let km = f64::from(k);
+                let (h, slope) = (height(km), (height(km) - height(km + 1.0)).abs() / 1000.0);
+                if h > 200.0 {
+                    land.push(slope);
+                } else if h < -500.0 && h > -3000.0 {
+                    sea.push(slope);
+                }
             }
         }
         let mean = |d: &[f64]| d.iter().sum::<f64>() / d.len() as f64;

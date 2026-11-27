@@ -2729,7 +2729,7 @@ const VOLCANO_FLOATS = 64u;
 const RIFT_WIDTH = 0.3;
 const CONE_FOOT = 0.35;
 const SLIDE_APRON = 1.9;
-const BREAK_SLOPES = 3.0;
+const BREAK_SLOPES = 5.0;
 const BREAK_FOOT = 0.18;
 const CONE_LUMPS = 0.16;
 const CONE_LUMP_SIZE = 3.0;
@@ -2742,6 +2742,7 @@ const LOBES = 0.22;
 const LOBE_SIZE = 2.5;
 const LOBE_GAIN = 0.7;
 const OCTAVES = 6u;
+const SUBMARINE = 2.0;
 const FLOWS = 0.01;
 const CINDER_SIZE = 0.03;
 const CINDER_HEIGHT = 0.05;
@@ -2996,6 +2997,8 @@ fn volcano_island(v: u32, u: f32, w: f32, b: f32) -> f32 {
     }
     let fade = 1.0 - smooth_between(0.8, 1.1, re);
     re *= 1.0 + LOBES * volcano_octaves(su, w, seed ^ 5u, texel) * fade;
+    let at = b / (b + BREAK_SLOPES * (1.0 - b));
+    re = min(re, 1.0 - at) + max(re - 1.0 + at, 0.0) / SUBMARINE;
     var f = volcano_broken(volcano_foot(1.0 - re, BREAK_FOOT), b);
     let lu = su * CONE_LUMP_SIZE;
     let lw = w * CONE_LUMP_SIZE;
@@ -3116,6 +3119,7 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
 // The constants of `hotspot.rs`, with a `HOTSPOT_` prefix.
 const HOTSPOT_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
 const HOTSPOT_JOIN_M = 800.0;
+const HOTSPOT_FREE_M = 100.0;
 const HOTSPOT_CAP_ROUND_M = 30.0;
 const HOTSPOT_REEF_TOP_M = -1.0;
 const HOTSPOT_REEF_WALL = 2.0;
@@ -3144,7 +3148,10 @@ fn hotspot_shaped(v: u32, base: f32, e: f32) -> vec2<f32> {
         let reefed = outer + (lagoon - outer) * inner;
         s += (reefed - s) * volcano(v, V_REEF);
     }
-    let free = max(1.0 - abs(s - z) / (HOTSPOT_JOIN_M * HOTSPOT_LEVELS_PER_M), 0.0);
+    var free = 0.0;
+    if cap >= 65535.0 {
+        free = max(1.0 - abs(s - z) / (HOTSPOT_FREE_M * HOTSPOT_LEVELS_PER_M), 0.0);
+    }
     return vec2<f32>(max(s - base, 0.0), free);
 }
 

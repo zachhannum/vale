@@ -209,7 +209,7 @@ const LINE_FLEX: f64 = 1.3;
 /// A volcano of a line with a break grows past the sea: its lava flows
 /// spread on land and stop in the sea. Its submarine flank is this many
 /// times as steep as its flank on land.
-const BREAK_SLOPES: f64 = 3.0;
+const BREAK_SLOPES: f64 = 5.0;
 
 /// The foot of a volcano with a break curves into the floor over this part
 /// of the base radius on each side of the base.
@@ -244,6 +244,10 @@ const LOBES: f64 = 0.22;
 const LOBE_SIZE: f64 = 2.5;
 const LOBE_GAIN: f64 = 0.7;
 const OCTAVES: u32 = 6;
+
+/// The submarine flank of an island is this many times as long as the
+/// submarine flank of `broken`.
+const SUBMARINE: f64 = 2.0;
 
 /// The relief of the lava flows on an island, as a part of the height.
 const FLOWS: f64 = 0.01;
@@ -318,6 +322,12 @@ impl Volcano {
     /// The number of rift zones.
     pub fn rifts(&self) -> usize {
         self.get(RIFTS) as usize
+    }
+
+    /// The number of landslide scars of an island.
+    pub(crate) fn slides(&self) -> usize {
+        let at = [SLIDE, SLIDE + 3, SLIDE_3];
+        (self.get(BREAK) > 0.0) as usize * at.iter().filter(|&&i| self.get(i + 2) > 0.0).count()
     }
 
     /// The number of cones of a ridge, 1 for a single volcano.
@@ -432,6 +442,10 @@ impl Volcano {
         }
         let fade = 1.0 - smoothstep(0.8, 1.1, re);
         re *= 1.0 + LOBES * octaves(su, v, seed ^ 5, texel) * fade;
+        // The submarine flank reaches `SUBMARINE` times as far as the
+        // shape of `broken` reaches.
+        let at = b / (b + BREAK_SLOPES * (1.0 - b));
+        let re = re.min(1.0 - at) + (re - 1.0 + at).max(0.0) / SUBMARINE;
         let mut f = broken(foot(1.0 - re, BREAK_FOOT), b);
         // The submarine flank has slumps and debris. The land has lava
         // flows and cinder cones.
@@ -1202,7 +1216,7 @@ pub(crate) fn shield_volcano(
         first + PI + side(9) * (0.5 + 0.7 * r(31)),
         first + side(10) * (1.3 + 0.8 * r(32)),
     ];
-    let lengths = [1.0 + 0.35 * r(50), 0.9 + 0.3 * r(51), 0.7 + 0.25 * r(52)];
+    let lengths = [0.9 + 0.3 * r(50), 0.8 + 0.25 * r(51), 0.62 + 0.22 * r(52)];
     let reach_most = lengths.iter().fold(APRON, |a, &b| a.max(b)) * 1.05;
     let mut extent = stretch * reach_most * radius;
     if extent > 0.85 * reach {
@@ -1232,7 +1246,7 @@ pub(crate) fn shield_volcano(
     put(&mut v, CONES, 1.0);
     put(&mut v, CONE_HEIGHT, 1.0);
     put(&mut v, STRETCH, stretch);
-    put(&mut v, CORE, 0.45 + 0.15 * r(53));
+    put(&mut v, CORE, 0.4 + 0.12 * r(53));
     put(&mut v, TEXEL, step / radius);
     put(&mut v, RIFTS, rifts as f64);
     for k in 0..rifts {
