@@ -998,6 +998,14 @@ mod tests {
         }
     }
 
+    /// The seeds of the tests that measure the volcanoes of a kind. One
+    /// chain has few of a kind, so these tests look at many chains.
+    const SEEDS: std::ops::Range<u32> = 0..8;
+
+    fn seeded(seed: u32) -> Hotspot {
+        Hotspot { seed, ..spec() }
+    }
+
     /// A line along the equator from longitude `from` to `to` in degrees,
     /// with the point spacing of the app and a flow.
     fn line(spec: Hotspot, n: usize, from: f64, to: f64, flow: f64) -> HotspotLine {
@@ -1166,24 +1174,42 @@ mod tests {
 
     #[test]
     fn volcanoes_are_shields_and_the_largest_has_the_setting() {
-        let spec = Hotspot {
-            height_m: 6000.0,
-            ..spec()
-        };
-        let mut line = line(spec, N, -10.0, 10.0, 1.0);
-        lay(&mut line, N, FLOOR_M);
-        let chain = line.chain.clone().unwrap();
-        let grown = chain.heights_m.iter().zip(&chain.ages);
-        let tallest = grown.map(|(h, &age)| h * growth(age)).fold(0.0, f64::max);
-        assert!((tallest - 6000.0).abs() < 1.0, "{tallest}");
-        for (v, &h) in chain.volcanoes.iter().zip(&chain.heights_m) {
-            assert!(v.shield() && v.cones() == 1 && v.rifts() >= 2);
-            let radius_m = v.base_radius() * KM * 1000.0;
-            assert!((h / radius_m - HOTSPOT_RATIO).abs() < 1e-3);
+        for seed in SEEDS {
+            let spec = Hotspot {
+                height_m: 6000.0,
+                ..seeded(seed)
+            };
+            let mut line = line(spec, N, -10.0, 10.0, 1.0);
+            lay(&mut line, N, FLOOR_M);
+            let chain = line.chain.clone().unwrap();
+            let spacing = SPACING * spec.height_m / PLACE_RATIO / 1000.0;
+            let distance = |i: usize| chain.ages[i] * spec.speed_mm / spacing;
+            // The tallest volcano at its full height is in the group at the
+            // hotspot, past the hotspot.
+            let tallest = (0..chain.volcanoes.len())
+                .max_by(|&a, &b| chain.heights_m[a].total_cmp(&chain.heights_m[b]))
+                .unwrap();
+            let h = chain.heights_m[tallest];
+            assert!((h - 6000.0).abs() < 1.0, "{seed}: {h}");
+            assert!(chain.ages[tallest] > 0.0, "{seed}");
+            assert!(distance(tallest) < GROUP_MOST * STEP.1, "{seed}");
+            for (i, (v, &h)) in chain.volcanoes.iter().zip(&chain.heights_m).enumerate() {
+                assert!(v.shield() && v.cones() == 1 && v.rifts() >= 2);
+                let radius_m = v.base_radius() * KM * 1000.0;
+                assert!((h / radius_m - HOTSPOT_RATIO).abs() < 1e-3);
+                // The volcanoes over the hotspot still grow, and they are
+                // smaller.
+                if chain.ages[i] == 0.0 {
+                    assert!(h < HOTSPOT_PART * 6000.0 + 1.0, "{seed}: {h}");
+                }
+                // The old volcanoes are under the envelope.
+                let past = distance(i) - GROUP_MOST * STEP.1 - GROUP_GAP.1;
+                assert!(h < 6000.0 * envelope(past) + 1.0, "{seed}: {h}");
+            }
+            // Lower volcanoes vary in height.
+            let lowest = chain.heights_m.iter().copied().fold(f64::MAX, f64::min);
+            assert!(lowest < 0.7 * h, "{seed}: {lowest}");
         }
-        // Lower volcanoes vary in height.
-        let lowest = chain.heights_m.iter().copied().fold(f64::MAX, f64::min);
-        assert!(lowest < 0.7 * tallest);
     }
 
     #[test]
@@ -1225,42 +1251,41 @@ mod tests {
         }
         // The flat tops of the guyots sink in the same way, and by the load
         // of the younger volcanoes.
-        let mut line = self::line(
-            Hotspot {
+        let mut pairs = 0;
+        for seed in SEEDS {
+            let spec = Hotspot {
                 speed_mm: 30.0,
-                height_m: 5000.0,
-                ..spec()
-            },
-            N,
-            -12.0,
-            12.0,
-            1.0,
-        );
-        lay(&mut line, N, FLOOR_M);
-        let chain = line.chain.clone().unwrap();
-        let guyots: Vec<usize> = (0..chain.volcanoes.len())
-            .filter(|&i| chain.ages[i] > chain.drowned[i])
-            .collect();
-        assert!(guyots.len() > 3);
-        for w in guyots.windows(2) {
-            let (i, j) = (w[0], w[1]);
-            let cap = |i: usize| meters(chain.volcanoes[i].get(CAP));
-            let sunk = cap(i) - cap(j);
-            let drop = |i: usize| {
-                let since = chain.ages[i] - chain.drowned[i];
-                let load = SINK_M * (1.0 - (-since / SINK_MYR).exp());
-                chain.swell_m(chain.drowned[i]) - chain.swell_m(chain.ages[i]) + load
+                ..seeded(seed)
             };
-            assert!((sunk - (drop(j) - drop(i))).abs() < 0.5, "{sunk}");
+            let mut line = self::line(spec, N, -12.0, 12.0, 1.0);
+            lay(&mut line, N, FLOOR_M);
+            let chain = line.chain.clone().unwrap();
+            let guyots: Vec<usize> = (0..chain.volcanoes.len())
+                .filter(|&i| chain.ages[i] > chain.drowned[i])
+                .collect();
+            for w in guyots.windows(2) {
+                let (i, j) = (w[0], w[1]);
+                let cap = |i: usize| meters(chain.volcanoes[i].get(CAP));
+                let sunk = cap(i) - cap(j);
+                let drop = |i: usize| {
+                    let since = chain.ages[i] - chain.drowned[i];
+                    let load = SINK_M * (1.0 - (-since / SINK_MYR).exp());
+                    chain.swell_m(chain.drowned[i]) - chain.swell_m(chain.ages[i]) + load
+                };
+                assert!((sunk - (drop(j) - drop(i))).abs() < 0.5, "{seed}: {sunk}");
+                pairs += 1;
+            }
         }
+        eprintln!("{pairs} pairs of guyots");
+        assert!(pairs > 8 * SEEDS.len(), "{pairs}");
     }
 
     /// A chain of large volcanoes on a slow plate, so it has guyots.
-    fn slow(reefs: bool, n: usize) -> (Heightmap, HotspotLine) {
+    fn slow(seed: u32, reefs: bool, n: usize) -> (Heightmap, HotspotLine) {
         let spec = Hotspot {
             speed_mm: 30.0,
             reefs,
-            ..spec()
+            ..seeded(seed)
         };
         let mut line = line(spec, n, -12.0, 12.0, 1.0);
         let (map, _) = lay(&mut line, n, FLOOR_M);
@@ -1354,9 +1379,29 @@ mod tests {
 
     #[test]
     fn wave_cut_tops_make_deeper_guyots_on_older_volcanoes() {
-        let (map, line) = slow(false, N);
-        let chain = line.chain.clone().unwrap();
+        // The ages and the tops of the guyots of all chains.
         let mut tops = Vec::new();
+        for seed in SEEDS {
+            wave_cut_tops(seed, &mut tops);
+        }
+        tops.sort_by(|a: &(f64, f64), b| a.0.total_cmp(&b.0));
+        let tops: Vec<f64> = tops.into_iter().map(|t| t.1).collect();
+        // The tops of the older guyots are deeper.
+        let count = tops.len();
+        eprintln!("{count} guyots");
+        assert!(count > 3 * SEEDS.len(), "{count}");
+        let mean = |t: &[f64]| t.iter().sum::<f64>() / t.len() as f64;
+        let (young, old) = tops.split_at(count / 2);
+        assert!(mean(old) < mean(young) - 50.0);
+        let fifth = count / 5;
+        assert!(mean(&tops[count - fifth..]) < mean(&tops[..fifth]) - 100.0);
+    }
+
+    /// Checks the wave-cut tops of the guyots of a chain, and adds their
+    /// ages and tops to `tops`.
+    fn wave_cut_tops(seed: u32, tops: &mut Vec<(f64, f64)>) {
+        let (map, line) = slow(seed, false, N);
+        let chain = line.chain.clone().unwrap();
         for i in 0..chain.volcanoes.len() {
             let v = &chain.volcanoes[i];
             let (age, drowned) = (chain.ages[i], chain.drowned[i]);
@@ -1366,10 +1411,12 @@ mod tests {
                 continue;
             }
             // The levels near the center, and the part of them within 100 m
-            // of the cap. The platform slopes down to its edge.
+            // of the cap. The platform slopes down to its edge. An island
+            // that barely rose above the sea leaves a platform of about 0.1
+            // base radii.
             let c = v.center();
             let (east, north) = frame(c);
-            let r = 0.1 * v.base_radius();
+            let r = 0.05 * v.base_radius();
             let mut levels = Vec::new();
             for j in -4..=4 {
                 for k in -4..=4 {
@@ -1384,38 +1431,49 @@ mod tests {
             let cap = meters(v.get(CAP));
             let flat = levels.iter().filter(|&&m| m > cap - 100.0).count();
             eprintln!("age {age:.1}: top {top:.0} m, cap {cap:.0} m, flat {flat}");
-            assert!(top < -WAVE_BASE_M + 5.0);
-            assert!(flat > levels.len() * 3 / 4, "{flat}");
-            tops.push(top);
+            assert!(top < -WAVE_BASE_M + 5.0, "{seed}: {top}");
+            assert!(flat > levels.len() * 3 / 4, "{seed}: {flat}");
+            tops.push((age, top));
         }
-        // The tops of the older guyots are deeper.
-        let count = tops.len();
-        assert!(count > 3);
-        let mean = |t: &[f64]| t.iter().sum::<f64>() / t.len() as f64;
-        let (young, old) = tops.split_at(count / 2);
-        assert!(mean(old) < mean(young) - 50.0);
-        assert!(tops[count - 1] < tops[0] - 100.0);
     }
 
     #[test]
     fn reefs_make_an_atoll_rim_at_sea_level() {
+        let atolls: usize = SEEDS.map(atolls).sum();
+        eprintln!("{atolls} atolls");
+        assert!(atolls >= 2 * SEEDS.len(), "{atolls}");
+    }
+
+    /// Checks the atolls of a chain with reefs, and returns their count.
+    fn atolls(seed: u32) -> usize {
         // The rim of a reef is narrow, so the texels are smaller.
-        let (map, line) = slow(true, 2 * N);
+        let (map, line) = slow(seed, true, 2 * N);
+        let (bare, _) = slow(seed, false, N);
         let chain = line.chain.clone().unwrap();
-        let i = (0..chain.volcanoes.len())
-            .find(|&i| {
+        let atolls: Vec<usize> = (0..chain.volcanoes.len())
+            .filter(|&i| {
                 let since = chain.ages[i] - chain.drowned[i];
-                // No island is near.
-                let alone = (0..chain.volcanoes.len()).all(|j| {
-                    let apart = angle(chain.volcanoes[i].center(), chain.volcanoes[j].center());
-                    let far =
-                        chain.volcanoes[i].base_radius() + 1.2 * chain.volcanoes[j].base_radius();
-                    chain.ages[j] > chain.drowned[j] || apart > far
+                // No island is near, and the reef of no other volcano
+                // crosses the platform.
+                let alone = (0..chain.volcanoes.len()).filter(|&j| j != i).all(|j| {
+                    let (a, b) = (&chain.volcanoes[i], &chain.volcanoes[j]);
+                    let apart = angle(a.center(), b.center());
+                    let far = a.base_radius() + 1.2 * b.base_radius();
+                    let reef = 0.25 * a.base_radius();
+                    (chain.ages[j] > chain.drowned[j] && apart > reef) || apart > far
                 });
                 since > 2.0 && since < REEF_MYR - REEF_FADE_MYR && chain.drowned[i] > 5.0 && alone
             })
-            .expect("an atoll");
-        let v = &chain.volcanoes[i];
+            .collect();
+        for &i in &atolls {
+            atoll(&map, &bare, &chain.volcanoes[i]);
+        }
+        atolls.len()
+    }
+
+    /// Checks the lagoon and the rim of an atoll, and that it is a guyot on
+    /// the map without reefs.
+    fn atoll(map: &Heightmap, bare: &Heightmap, v: &Volcano) {
         let c = v.center();
         // The lagoon: the middle level near the center. A landslide scar
         // can cut into the platform.
@@ -1457,7 +1515,6 @@ mod tests {
             .count();
         assert!(at_rim >= 14, "{rims:?}");
         // Without reefs, it is a guyot.
-        let (bare, _) = slow(false, N);
         assert!(meters(bare.level_at(c)) < -WAVE_BASE_M + 1.0);
     }
 
@@ -1504,15 +1561,20 @@ mod tests {
 
     #[test]
     fn the_flanks_have_no_rays() {
-        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
-        lay(&mut line, N, FLOOR_M);
+        let mut islands = Vec::new();
+        for seed in SEEDS {
+            let mut line = line(seeded(seed), N, -10.0, 10.0, 1.0);
+            lay(&mut line, N, FLOOR_M);
+            let unscarred =
+                (line.volcanoes().iter()).filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0);
+            islands.extend(unscarred.copied());
+        }
         // The edifice on rings around the summit of each island, above its
         // break. Rays down the slope are waves of many cycles around a ring.
         // The walls of a landslide scar are not rays.
         let count = 720;
         let (mut rays, mut rings) = (0.0, 0);
-        let islands = (line.volcanoes().iter()).filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0);
-        for v in islands {
+        for v in &islands {
             let c = v.center();
             let (east, north) = frame(c);
             for i in 0..6 {
@@ -1540,15 +1602,29 @@ mod tests {
                 rings += 1;
             }
         }
-        assert!(rings >= 18, "{rings}");
-        let rays = rays / f64::from(rings);
+        assert!(rings >= 6 * SEEDS.len(), "{rings}");
+        let rays = rays / f64::from(rings as u32);
         eprintln!("rays {rays:.4} of the height");
         assert!(rays < 0.0025, "{rays}");
     }
 
     #[test]
     fn islands_are_broad_and_stand_on_a_ridge() {
-        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        let (mut islands, mut channels) = (0, 0);
+        for seed in SEEDS {
+            let (i, c) = broad_islands(seed);
+            islands += i;
+            channels += c;
+        }
+        eprintln!("{islands} islands, {channels} channels");
+        assert!(islands > 3 * SEEDS.len(), "{islands}");
+        assert!(channels > SEEDS.len(), "{channels}");
+    }
+
+    /// Checks the channels and the slopes of the islands of a chain.
+    /// Returns the count of the islands and of the channels.
+    fn broad_islands(seed: u32) -> (usize, usize) {
+        let mut line = line(seeded(seed), N, -10.0, 10.0, 1.0);
         let (map, _) = lay(&mut line, N, FLOOR_M);
         let chain = line.chain.clone().unwrap();
         // The crest of the chain: the highest ground across the line.
@@ -1563,11 +1639,12 @@ mod tests {
             .map(lon)
             .collect();
         islands.sort_by(f64::total_cmp);
-        assert!(islands.len() > 3);
         // The channels between islands less than 350 km apart are shallow:
         // the floor beside them is deeper than 4,000 m.
         let mut deepest = 0.0f64;
+        let mut channels = 0;
         for w in islands.windows(2).filter(|w| w[1] - w[0] < degrees(350.0)) {
+            channels += 1;
             let steps = ((w[1] - w[0]) / 0.02).ceil() as usize;
             let low = (0..=steps)
                 .map(|k| crest(w[0] + (w[1] - w[0]) * k as f64 / steps as f64))
@@ -1575,10 +1652,11 @@ mod tests {
             deepest = deepest.min(low);
         }
         eprintln!("deepest channel {deepest:.0} m");
-        assert!(deepest > -2500.0, "{deepest}");
+        assert!(deepest > -2500.0, "{seed}: {deepest}");
         // Across the largest young island, the flank on land is gentle,
         // and the flank under the sea is steep. Along the chain, the ridge
-        // is gentle.
+        // is gentle. A ray toward a near volcano, as in a double line, runs
+        // onto its flank, so it does not count.
         let largest = (0..chain.volcanoes.len())
             .filter(|&i| chain.ages[i] < 1.0)
             .max_by(|&a, &b| {
@@ -1586,27 +1664,53 @@ mod tests {
                 size(a).total_cmp(&size(b))
             })
             .unwrap();
-        let c = chain.volcanoes[largest].center();
+        let v = &chain.volcanoes[largest];
+        let c = v.center();
         let (east, north) = frame(c);
         let (mut land, mut sea) = (Vec::new(), Vec::new());
+        let mut rays = 0;
         for turn in (2..=6).chain(10..=14) {
             let (s, co) = (TAU * f64::from(turn) / 16.0).sin_cos();
             let dir = add(scale(east, co), scale(north, s));
+            let blocked = chain.volcanoes.iter().any(|w| {
+                let d = add(w.center(), scale(c, -1.0));
+                let apart = angle(w.center(), c);
+                apart > 0.0
+                    && apart < 1.5 * v.base_radius()
+                    && dot(d, dir) > 40f64.to_radians().cos() * crate::math::length(d)
+            });
+            if blocked {
+                continue;
+            }
             let height = |km: f64| meters(map.level_at(normalize(add(c, scale(dir, km / KM)))));
+            // The flank of the island ends where the ray first reaches
+            // 3,000 m below the sea. A ray that does not reach it within a
+            // base radius runs along the ridge of the chain.
+            let (mut on_land, mut flank) = (Vec::new(), Vec::new());
+            let radius_km = v.base_radius() * KM;
             for k in 0..250 {
                 let km = f64::from(k);
                 let (h, slope) = (height(km), (height(km) - height(km + 1.0)).abs() / 1000.0);
                 if h > 200.0 {
-                    land.push(slope);
-                } else if h < -500.0 && h > -3000.0 {
-                    sea.push(slope);
+                    on_land.push(slope);
+                } else if h < -3000.0 {
+                    if km < radius_km {
+                        land.append(&mut on_land);
+                        sea.append(&mut flank);
+                        rays += 1;
+                    }
+                    break;
+                } else if h < -500.0 {
+                    flank.push(slope);
                 }
             }
         }
         let mean = |d: &[f64]| d.iter().sum::<f64>() / d.len() as f64;
         let (land, sea) = (mean(&land), mean(&sea));
-        eprintln!("slopes: land {land:.3}, sea {sea:.3}");
-        assert!(land < 0.1 && sea > 2.0 * land, "{land} {sea}");
+        eprintln!("slopes on {rays} rays: land {land:.3}, sea {sea:.3}");
+        assert!(rays >= 4, "{seed}: {rays}");
+        assert!(land < 0.1 && sea > 2.0 * land, "{seed}: {land} {sea}");
+        (islands.len(), channels)
     }
 
     #[test]
@@ -1675,13 +1779,16 @@ mod tests {
 
     #[test]
     fn rift_zones_give_the_islands_arms_and_points() {
-        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
-        lay(&mut line, N, FLOOR_M);
-        let islands: Vec<&Volcano> = (line.volcanoes().iter())
-            .filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0)
-            .collect();
-        assert!(islands.len() >= 3, "{}", islands.len());
-        for v in islands {
+        let mut islands = Vec::new();
+        for seed in SEEDS {
+            let mut line = line(seeded(seed), N, -10.0, 10.0, 1.0);
+            lay(&mut line, N, FLOOR_M);
+            let unscarred =
+                (line.volcanoes().iter()).filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0);
+            islands.extend(unscarred.copied());
+        }
+        assert!(islands.len() >= SEEDS.len(), "{}", islands.len());
+        for v in &islands {
             assert!((2..=3).contains(&v.rifts()), "{}", v.rifts());
             // The coast reaches far out along the rift zones and stays near
             // the summit between them.
@@ -1695,7 +1802,15 @@ mod tests {
 
     #[test]
     fn volcanoes_keep_their_own_summits() {
-        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        let pairs: usize = SEEDS.map(own_summits).sum();
+        eprintln!("{pairs} pairs");
+        assert!(pairs >= SEEDS.len(), "{pairs}");
+    }
+
+    /// Checks that each two joined volcanoes of a chain have a saddle
+    /// between their summits. Returns the count of the pairs.
+    fn own_summits(seed: u32) -> usize {
+        let mut line = line(seeded(seed), N, -10.0, 10.0, 1.0);
         let (map, _) = lay(&mut line, N, FLOOR_M);
         let chain = line.chain.clone().unwrap();
         let height = |p: V3| meters(map.level_at(p));
@@ -1714,11 +1829,22 @@ mod tests {
                 })
                 .fold(f64::MIN, f64::max)
         };
+        // Two neighbors on one island, each with a summit above 1,000 m.
+        // A volcano nearer than 0.6 base radii stands on the flank of the
+        // other, as Kilauea stands on Mauna Loa.
+        let vs = &chain.volcanoes;
         let mut pairs = 0;
-        for (i, a) in chain.volcanoes.iter().enumerate() {
-            for b in &chain.volcanoes[i + 1..] {
+        for (i, a) in vs.iter().enumerate() {
+            for b in &vs[i + 1..] {
+                let apart = angle(a.center(), b.center());
+                let between = vs.iter().any(|w| {
+                    angle(w.center(), a.center()) < apart && angle(w.center(), b.center()) < apart
+                });
+                if between || apart < 0.6 * a.base_radius().max(b.base_radius()) {
+                    continue;
+                }
                 let (sa, sb) = (summit(a), summit(b));
-                if sa < 500.0 || sb < 500.0 {
+                if sa < 1000.0 || sb < 1000.0 {
                     continue;
                 }
                 // The saddle: the lowest ground on the way between them.
@@ -1735,11 +1861,11 @@ mod tests {
                     continue;
                 }
                 eprintln!("summits {sa:.0} m and {sb:.0} m, saddle {saddle:.0} m");
-                assert!(sa.min(sb) - saddle > 300.0, "{sa} {sb} {saddle}");
+                assert!(sa.min(sb) - saddle > 300.0, "{seed}: {sa} {sb} {saddle}");
                 pairs += 1;
             }
         }
-        assert!(pairs > 0);
+        pairs
     }
 
     #[test]
@@ -1821,11 +1947,51 @@ mod tests {
 
     #[test]
     fn land_shrinks_with_age() {
-        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        // The land and the mean of the highest ground of each span of 2
+        // million years from the end of the line, over all chains. The
+        // supply of one chain changes, so one chain can have more land in an
+        // older span.
+        let mut land = [0usize; 4];
+        let mut top = [0.0; 4];
+        for seed in SEEDS {
+            let (l, t) = land_by_age(seed);
+            for span in 0..4 {
+                land[span] += l[span];
+                top[span] += t[span] / SEEDS.len() as f64;
+            }
+        }
+        eprintln!("land {land:?}, tops {top:.0?}");
+        assert!(land[0] > 2 * land[1] && land[1] > land[3], "{land:?}");
+        assert!(top[0] > top[1] && top[1] > top[3], "{top:?}");
+    }
+
+    #[test]
+    fn every_chain_makes_land_at_the_hotspot() {
+        // At the default settings on a floor at -5,448 m, the group at the
+        // hotspot is an island.
+        let n = N / 4;
+        for seed in SEEDS {
+            let mut line = line(seeded(seed), n, -10.0, 10.0, 1.0);
+            let (map, _) = lay(&mut line, n, FLOOR_M);
+            let young = degrees(2.0 * spec().speed_mm);
+            let top = (0..=100)
+                .flat_map(|i| (-20..=20).map(move |j| (i, j)))
+                .map(|(i, j)| {
+                    let lon = 10.0 - young * f64::from(i) / 100.0;
+                    at(&map, lon, 0.05 * f64::from(j))
+                })
+                .fold(f64::MIN, f64::max);
+            eprintln!("{seed}: top {top:.0} m");
+            assert!(top > 1000.0, "{seed}: {top}");
+        }
+    }
+
+    /// The land and the highest ground of each span of 2 million years of a
+    /// chain.
+    fn land_by_age(seed: u32) -> ([usize; 4], [f64; 4]) {
+        let mut line = line(seeded(seed), N, -10.0, 10.0, 1.0);
         let (map, _) = lay(&mut line, N, FLOOR_M);
         let chain = line.chain.clone().unwrap();
-        // The land and the highest ground of each span of 2 million years
-        // from the end of the line.
         let mut land = [0usize; 4];
         let mut top = [f64::MIN; 4];
         for i in 0..=800 {
@@ -1843,9 +2009,10 @@ mod tests {
                 top[span] = top[span].max(h);
             }
         }
-        eprintln!("land {land:?}, tops {top:.0?}");
+        eprintln!("{seed}: land {land:?}, tops {top:.0?}");
         assert!(!chain.volcanoes.is_empty());
-        assert!(land[0] > 2 * land[1] && land[1] > land[3], "{land:?}");
-        assert!(top[0] > top[1] && top[1] > top[3], "{top:?}");
+        // The young span has the most land.
+        assert!(land[1..].iter().all(|&l| l < land[0]), "{seed}: {land:?}");
+        (land, top)
     }
 }
