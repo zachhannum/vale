@@ -265,7 +265,7 @@ const SCAR_FLOOR: f64 = 0.03;
 const SCAR_FALL: f64 = 1.2;
 
 /// The headwall of a landslide scar bends by up to this many base radii.
-const SCAR_BEND: f64 = 0.05;
+const SCAR_BEND: f64 = 0.03;
 
 /// The debris of a landslide reaches from this many base radii out from
 /// the summit to `APRON`, and its blocks are this part of the height.
@@ -275,8 +275,8 @@ const DEBRIS: f64 = 0.06;
 /// A volcano younger than this many millions of years has a summit
 /// caldera, and landslides cut scars into a volcano older than
 /// `SLIDE_MYR`.
-const CALDERA_MYR: f64 = 1.0;
-const SLIDE_MYR: f64 = 1.2;
+pub(crate) const CALDERA_MYR: f64 = 1.0;
+pub(crate) const SLIDE_MYR: f64 = 1.2;
 
 /// Below this coherence, the slopes have no main direction.
 pub const FABRIC_COHERENCE: f64 = 0.25;
@@ -328,6 +328,30 @@ impl Volcano {
     pub(crate) fn slides(&self) -> usize {
         let at = [SLIDE, SLIDE + 3, SLIDE_3];
         (self.get(BREAK) > 0.0) as usize * at.iter().filter(|&&i| self.get(i + 2) > 0.0).count()
+    }
+
+    /// The direction of landslide scar `s` of an island from the axis, and
+    /// the distance of its head from the summit in base radii.
+    #[cfg(test)]
+    pub(crate) fn slide(&self, s: usize) -> (f64, f64) {
+        let at = if s < 2 { SLIDE + 3 * s } else { SLIDE_3 };
+        (self.get(at), self.get(SLIDE_HEAD + s))
+    }
+
+    /// The part of the height that erosion took from the top of an island.
+    #[cfg(test)]
+    pub(crate) fn lower(&self) -> f64 {
+        self.get(LOWER)
+    }
+
+    /// The volcano with no landslide scars.
+    #[cfg(test)]
+    pub(crate) fn without_slides(&self) -> Volcano {
+        let mut v = *self;
+        for at in [SLIDE, SLIDE + 3, SLIDE_3] {
+            v.0[at + 2] = 0.0;
+        }
+        v
     }
 
     /// The number of cones of a ridge, 1 for a single volcano.
@@ -1246,7 +1270,8 @@ pub(crate) fn shield_volcano(
     put(&mut v, CONES, 1.0);
     put(&mut v, CONE_HEIGHT, 1.0);
     put(&mut v, STRETCH, stretch);
-    put(&mut v, CORE, 0.4 + 0.12 * r(53));
+    let core = 0.4 + 0.12 * r(53);
+    put(&mut v, CORE, core);
     put(&mut v, TEXEL, step / radius);
     put(&mut v, RIFTS, rifts as f64);
     for k in 0..rifts {
@@ -1281,7 +1306,11 @@ pub(crate) fn shield_volcano(
         );
         put(&mut v, at + 1, 0.15 + 0.15 * r(65 + i));
         put(&mut v, at + 2, 0.7 + 0.3 * r(66 + i));
-        put(&mut v, SLIDE_HEAD + s, 0.1 + 0.2 * r(73 + s as u32));
+        put(
+            &mut v,
+            SLIDE_HEAD + s,
+            core * (0.15 + 0.35 * r(73 + s as u32)),
+        );
     }
     put(&mut v, PEDESTAL_REACH, PEDESTAL_ALONG);
     put(&mut v, SEED, f64::from(hash(seed, 7, 7, 7) & 0xff_ffff));

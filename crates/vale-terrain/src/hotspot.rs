@@ -878,6 +878,8 @@ mod tests {
     use crate::flow::WindowHeights;
     use crate::line::LINE_SPACING;
     use crate::math::lonlat_to_dir;
+    use crate::rain::Rain;
+    use crate::seamount::{CALDERA_MYR, SLIDE_MYR};
     use std::f64::consts::TAU;
 
     const KM: f64 = 6371.0;
@@ -928,11 +930,17 @@ mod tests {
 
     /// Lays a finished line on flat floor with its erosion at `amount`.
     fn lay_eroded(line: &mut HotspotLine, n: usize, amount: f64) -> Heightmap {
+        lay_eroded_in(line, n, amount, Rain::default())
+    }
+
+    /// `lay_eroded` with a rain.
+    fn lay_eroded_in(line: &mut HotspotLine, n: usize, amount: f64, rain: Rain) -> Heightmap {
         let mut map = Heightmap::new(n, meters_to_level(FLOOR_M));
         line.finish(&map);
         let window = hotspot_window(line, n);
         let mut erosion = Erosion::window_alone(&WindowHeights::new(&map, window));
         erosion.set_branching(line.spec().seed, 0.5);
+        erosion.set_rain(rain);
         let step = erode_hotspot(&mut erosion, line, amount);
         map.begin_stroke();
         let mut from = 0;
@@ -1520,5 +1528,201 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The distance from the center of a volcano to its coast at the sea of
+    /// its growth on each of `count` rays, in base radii.
+    fn coast(v: &Volcano, count: usize) -> Vec<f64> {
+        let c = v.center();
+        let (east, north) = frame(c);
+        (0..count)
+            .map(|k| {
+                let (s, co) = (TAU * k as f64 / count as f64).sin_cos();
+                let dir = add(scale(east, co), scale(north, s));
+                (1..400)
+                    .map(|j| f64::from(j) / 200.0)
+                    .filter(|&d| {
+                        let p = normalize(add(c, scale(dir, d * v.base_radius())));
+                        v.edifice(p) / v.height() > v.get(BREAK)
+                    })
+                    .fold(0.0, f64::max)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rift_zones_give_the_islands_arms_and_points() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        lay(&mut line, N, FLOOR_M);
+        let islands: Vec<&Volcano> = (line.volcanoes().iter())
+            .filter(|v| v.get(BREAK) < 0.7 && v.slides() == 0)
+            .collect();
+        assert!(islands.len() >= 3, "{}", islands.len());
+        for v in islands {
+            assert!((2..=3).contains(&v.rifts()), "{}", v.rifts());
+            // The coast reaches far out along the rift zones and stays near
+            // the summit between them.
+            let coast = coast(v, 72);
+            let far = coast.iter().copied().fold(0.0, f64::max);
+            let near = coast.iter().copied().fold(f64::MAX, f64::min);
+            eprintln!("coast from {near:.2} to {far:.2} base radii");
+            assert!(far > 1.8 * near, "{near} {far}");
+        }
+    }
+
+    #[test]
+    fn volcanoes_keep_their_own_summits() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        let (map, _) = lay(&mut line, N, FLOOR_M);
+        let chain = line.chain.clone().unwrap();
+        let height = |p: V3| meters(map.level_at(p));
+        // The summit near the center of each volcano on land.
+        let summit = |v: &Volcano| {
+            let c = v.center();
+            let (east, north) = frame(c);
+            let r = 0.1 * v.base_radius();
+            (0..121)
+                .map(|k| {
+                    let (x, y) = (f64::from(k % 11) / 5.0 - 1.0, f64::from(k / 11) / 5.0 - 1.0);
+                    height(normalize(add(
+                        add(c, scale(east, r * x)),
+                        scale(north, r * y),
+                    )))
+                })
+                .fold(f64::MIN, f64::max)
+        };
+        let mut pairs = 0;
+        for (i, a) in chain.volcanoes.iter().enumerate() {
+            for b in &chain.volcanoes[i + 1..] {
+                let (sa, sb) = (summit(a), summit(b));
+                if sa < 500.0 || sb < 500.0 {
+                    continue;
+                }
+                // The saddle: the lowest ground on the way between them.
+                let saddle = (0..=100)
+                    .map(|k| {
+                        let t = f64::from(k) / 100.0;
+                        height(normalize(add(
+                            scale(a.center(), 1.0 - t),
+                            scale(b.center(), t),
+                        )))
+                    })
+                    .fold(f64::MAX, f64::min);
+                if saddle <= 0.0 {
+                    continue;
+                }
+                eprintln!("summits {sa:.0} m and {sb:.0} m, saddle {saddle:.0} m");
+                assert!(sa.min(sb) - saddle > 300.0, "{sa} {sb} {saddle}");
+                pairs += 1;
+            }
+        }
+        assert!(pairs > 0);
+    }
+
+    #[test]
+    fn landslides_cut_scars_into_old_volcanoes() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        lay(&mut line, N, FLOOR_M);
+        let chain = line.chain.clone().unwrap();
+        let (mut young, mut old) = (0, 0);
+        for (v, &age) in chain.volcanoes.iter().zip(&chain.ages) {
+            if age < CALDERA_MYR {
+                // A young volcano has a caldera and no scars.
+                assert_eq!(v.slides(), 0);
+                assert!(v.crater());
+                young += 1;
+            } else if age > SLIDE_MYR && v.get(BREAK) < 0.7 {
+                assert!((1..=3).contains(&v.slides()), "{}", v.slides());
+                assert!(!v.crater());
+                // Each scar cuts deep into the volcano out from its head.
+                let (c, axis) = (v.center(), [3, 4, 5].map(|i| f64::from(v.0[i])));
+                let side = cross(c, axis);
+                let bare = v.without_slides();
+                for s in 0..v.slides() {
+                    let (angle, head) = v.slide(s);
+                    let dir = add(scale(axis, angle.cos()), scale(side, angle.sin()));
+                    let cut = (0..40)
+                        .map(|k| {
+                            let d = (head + 0.01 * f64::from(k)) * v.base_radius();
+                            let p = normalize(add(c, scale(dir, d)));
+                            (bare.edifice(p) - v.edifice(p)) / v.height()
+                        })
+                        .fold(0.0, f64::max);
+                    // An island that erosion lowered near the sea has
+                    // less to lose.
+                    let rise = 1.0 - v.get(BREAK) - v.lower();
+                    assert!(cut > 0.05f64.min(0.5 * rise), "{cut} {rise}");
+                }
+                old += 1;
+            }
+        }
+        assert!(young > 0 && old > 0, "{young} {old}");
+    }
+
+    #[test]
+    fn windward_valleys_are_deeper_than_leeward() {
+        let n = 2 * N;
+        let mut line = line(spec(), n, -6.0, 6.0, 1.0);
+        let (plain, _) = lay(&mut line, n, FLOOR_M);
+        // The wind comes from the north.
+        let rain = Rain {
+            wind: 0.0,
+            shadow: 0.6,
+        };
+        let eroded = lay_eroded_in(&mut line, n, 0.5, rain);
+        let chain = line.chain.clone().unwrap();
+        let (mut north_drop, mut south_drop) = (0.0, 0.0);
+        for (v, &age) in chain.volcanoes.iter().zip(&chain.ages) {
+            if age < 2.0 {
+                continue;
+            }
+            let c = v.center();
+            let (east, north) = frame(c);
+            let r = 0.8 * v.base_radius();
+            for j in -30..=30 {
+                for k in -30..=30 {
+                    let (x, y) = (r * f64::from(j) / 30.0, r * f64::from(k) / 30.0);
+                    let p = normalize(add(add(c, scale(east, x)), scale(north, y)));
+                    let (a, b) = (meters(plain.level_at(p)), meters(eroded.level_at(p)));
+                    if a > 0.0 && k > 3 {
+                        north_drop += a - b;
+                    } else if a > 0.0 && k < -3 {
+                        south_drop += a - b;
+                    }
+                }
+            }
+        }
+        eprintln!("drops: north {north_drop:.0}, south {south_drop:.0}");
+        assert!(north_drop > 1.5 * south_drop, "{north_drop} {south_drop}");
+    }
+
+    #[test]
+    fn land_shrinks_with_age() {
+        let mut line = line(spec(), N, -10.0, 10.0, 1.0);
+        let (map, _) = lay(&mut line, N, FLOOR_M);
+        let chain = line.chain.clone().unwrap();
+        // The land and the highest ground of each span of 2 million years
+        // from the end of the line.
+        let mut land = [0usize; 4];
+        let mut top = [f64::MIN; 4];
+        for i in 0..=800 {
+            let lon = -10.0 + 0.025 * f64::from(i);
+            let age = (10.0 - lon).to_radians() * KM / spec().speed_mm;
+            let span = (age / 2.0) as usize;
+            if span >= 4 {
+                continue;
+            }
+            for j in -60..=60 {
+                let h = at(&map, lon, 0.025 * f64::from(j));
+                if h > 0.0 {
+                    land[span] += 1;
+                }
+                top[span] = top[span].max(h);
+            }
+        }
+        eprintln!("land {land:?}, tops {top:.0?}");
+        assert!(!chain.volcanoes.is_empty());
+        assert!(land[0] > 2 * land[1] && land[1] > land[3], "{land:?}");
+        assert!(top[0] > top[1] && top[1] > top[3], "{top:?}");
     }
 }
