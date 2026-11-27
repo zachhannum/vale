@@ -71,6 +71,9 @@ pub const BASIN_DENSITY: std::ops::RangeInclusive<f64> = BASIN_DENSITY_KM.0..=BA
 pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
+/// The limits of the age of the floor of the seamounts mode, in millions of
+/// years.
+pub const SEAMOUNT_AGE_MYR: std::ops::RangeInclusive<f64> = 0.0..=200.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
 pub const HILL_SCALE: std::ops::RangeInclusive<f64> = 1.0..=10.0;
@@ -208,6 +211,8 @@ pub struct BrushSettings {
     pub seamount_density: f64,
     /// The characteristic height of the seamounts mode, in meters.
     pub seamount_height_m: f64,
+    /// The age of the floor of the seamounts mode, in millions of years.
+    pub seamount_age_myr: f64,
     /// The full spreading rate of the abyssal hills mode, in millimeters
     /// per year.
     pub abyssal_rate_mm: f64,
@@ -287,6 +292,7 @@ impl Default for BrushSettings {
             basin_lakes: 0.0,
             seamount_density: 50.0,
             seamount_height_m: 400.0,
+            seamount_age_myr: 60.0,
             abyssal_rate_mm: 60.0,
             abyssal_hills: 1.0,
             abyssal_scale: 1.0,
@@ -531,6 +537,7 @@ impl BrushSettings {
         Seamounts {
             density: self.seamount_density,
             height_m: self.seamount_height_m,
+            age_myr: self.seamount_age_myr,
             world_km,
             seed,
             limits: self.limits(),

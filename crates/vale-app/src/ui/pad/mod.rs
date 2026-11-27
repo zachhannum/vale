@@ -20,9 +20,9 @@ use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_KM, EROSION,
     FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
     MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS,
-    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY,
-    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
-    shape_text,
+    RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_AGE_MYR,
+    SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M,
+    WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -3304,6 +3304,7 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::Seamounts {
         row(ui, controls, state, Slider::Density);
         raster::note(ui, SEAMOUNT_DENSITY_NOTE);
+        row(ui, controls, state, Slider::Age);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
     if mode == Mode::Basin {
@@ -3631,6 +3632,14 @@ pub(super) fn brush_slider(
                     .log()
                     .default(defaults.basin_density_km);
                 set(number, &mut brush.basin_density_km);
+            }
+            Slider::Age if mode == Mode::Seamounts => {
+                let number = Number::new(name, brush.seamount_age_myr, SEAMOUNT_AGE_MYR)
+                    .label(label)
+                    .unit("Myr")
+                    .text(|age| format!("{age:.0} Myr"))
+                    .default(defaults.seamount_age_myr);
+                set(number, &mut brush.seamount_age_myr);
             }
             Slider::Age => {
                 let number = fraction(brush.basin_age, BASIN_AGE).default(defaults.basin_age);

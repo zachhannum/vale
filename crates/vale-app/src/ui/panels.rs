@@ -25,8 +25,8 @@ use crate::globe::brush::{
     EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOW, HILL_SCALE, HOTSPOT_HEIGHT, HOTSPOT_SPEED,
     MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, RANGE_SPACING_KM,
     RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    SCALE_KM, SEAMOUNT_AGE_MYR, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
+    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -1749,6 +1749,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Density", &mut brush.seamount_density, SEAMOUNT_DENSITY)
                 .log()
                 .format(density_text)
+                .show(ui);
+            number::slider("Age", &mut brush.seamount_age_myr, SEAMOUNT_AGE_MYR)
+                .suffix(" Myr")
                 .show(ui);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {

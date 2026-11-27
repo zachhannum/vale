@@ -8,7 +8,7 @@ use eframe::egui::{self, Pos2, Rect, pos2, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use vale_app::document::Document;
-use vale_app::globe::brush::STRENGTH_M;
+use vale_app::globe::brush::{BrushSettings, STRENGTH_M};
 use vale_app::globe::select::FeatureRef;
 use vale_app::globe::view::GlobeView;
 use vale_app::globe::{StackItem, Tool, WorldView};
@@ -2735,21 +2735,26 @@ fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     assert_eq!(toggled(&h, TERRAIN), Some(true));
     let brush = s.globe.brush;
     assert_eq!(
-        (brush.seamount_density, brush.seamount_height_m),
-        (50.0, 400.0)
+        (
+            brush.seamount_density,
+            brush.seamount_height_m,
+            brush.seamount_age_myr
+        ),
+        (50.0, 400.0, 60.0)
     );
     // The strip has Size and Density.
     assert!(control(&h, "Strip size").is_some());
     assert!(control(&h, "Strip density").is_some());
     assert!(control(&h, "Strip height").is_none());
     // The panel has the size, the hardness, the flow, the height, the
-    // density, and the seed.
+    // density, the age, and the seed.
     for row in [
         "Brush size",
         "Brush hardness",
         "Brush flow",
         "Brush strength",
         "Brush density",
+        "Brush age",
     ] {
         assert!(control(&h, row).is_some(), "{row}");
     }
@@ -2763,17 +2768,25 @@ fn the_seamounts_mode_is_in_the_terrain_cell_and_has_its_sliders() {
         ("Brush density", "9000", 500.0),
         ("Brush strength", "10", 50.0),
         ("Brush strength", "9000", 3000.0),
+        ("Brush age", "-5", 0.0),
+        ("Brush age", "120", 120.0),
+        ("Brush age", "900", 200.0),
     ] {
         type_value(&mut h, row, text);
         let brush = h.state().globe.brush;
         let got = match row {
             "Brush density" => brush.seamount_density,
+            "Brush age" => brush.seamount_age_myr,
             _ => brush.seamount_height_m,
         };
         assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
     }
-    // The height does not change the strength of the other modes.
+    // The height and the age do not change the other modes.
     assert_eq!(h.state().globe.brush.strength_m, 1500.0);
+    assert_eq!(
+        h.state().globe.brush.basin_age,
+        BrushSettings::default().basin_age
+    );
     // The seed stepper sets the seed of the world.
     let seed = h.state().doc.project.world.seed;
     step(&mut h, "Brush seed", true);
