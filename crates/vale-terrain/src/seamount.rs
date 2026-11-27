@@ -325,6 +325,7 @@ impl Volcano {
     }
 
     /// The number of landslide scars of an island.
+    #[cfg(test)]
     pub(crate) fn slides(&self) -> usize {
         let at = [SLIDE, SLIDE + 3, SLIDE_3];
         (self.get(BREAK) > 0.0) as usize * at.iter().filter(|&&i| self.get(i + 2) > 0.0).count()
