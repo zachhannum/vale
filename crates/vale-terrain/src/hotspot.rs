@@ -599,10 +599,7 @@ pub const HOTSPOT_ERODE_RATE: f64 = 24.0;
 /// The radius of the erode brush of an island, in base radii.
 const ISLAND_BRUSH: f64 = 1.2;
 
-/// An eroded cell keeps all of its drop from this height above the sea in
-/// meters, and from this age in millions of years. Below the sea, it keeps
-/// none.
-const KEEP_ABOVE_M: f64 = 20.0;
+/// An eroded cell keeps all of its drop from this age in millions of years.
 const KEEP_MYR: f64 = 4.0;
 
 impl HotspotLine {
@@ -646,8 +643,9 @@ pub fn hotspot_window(line: &HotspotLine, face_size: usize) -> Window {
 /// Erodes the islands of a finished hotspot track with stream power, as the
 /// Erode brush erodes land. `erosion` holds the cells of the ground from
 /// before the stroke. The cells under the islands get the levels of the
-/// line, and then `HOTSPOT_ERODE_STEPS` steps erode them. A cell keeps a
-/// part of its drop that grows with its height above the sea and with its
+/// line, and then `HOTSPOT_ERODE_STEPS` steps erode them. The sea is the
+/// base level: the sea floor does not change, and the land goes down to the
+/// sea and no lower. A cell keeps a part of its drop that grows with its
 /// age, so the old islands have deep valleys and the young ones have few.
 /// `amount` from 0 to 1 sets the rate. Returns the drops: the levels of the
 /// line minus the eroded levels. Lay each plan of the line before the step.
@@ -656,7 +654,12 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     if brushes.is_empty() {
         return erosion.drops_since(erosion.levels(), &brushes);
     }
-    erosion.set_limits(line.spec.limits);
+    let limits = line.spec.limits;
+    let sea = level_of_m(0.0).ceil() as u16;
+    erosion.set_limits(Limits {
+        floor: limits.floor.max(sea),
+        ..limits
+    });
     let plan = line.plan_all();
     let speed = plan.chain.as_ref().map_or(1.0, |chain| chain.speed);
     let ages: Vec<Cell<f64>> = erosion.levels().iter().map(|_| Cell::new(0.0)).collect();
@@ -671,11 +674,9 @@ pub fn erode_hotspot(erosion: &mut Erosion, line: &HotspotLine, amount: f64) -> 
     let radius = brushes.iter().map(|b| b.radius).fold(0.0, f64::max);
     let rate = amount * HOTSPOT_ERODE_RATE * (radius / erosion.cell_angle() / 16.0).sqrt();
     erosion.steps(&brushes, rate, HOTSPOT_ERODE_STEPS);
-    let sea = level_of_m(0.0);
     let kept: Vec<u16> = (lifted.iter().zip(erosion.levels()).zip(&ages))
         .map(|((&before, &now), age)| {
-            let above = smoothstep(0.0, KEEP_ABOVE_M * LEVELS_PER_M, f64::from(before) - sea);
-            let part = above * (age.get() / KEEP_MYR).min(1.0);
+            let part = (age.get() / KEEP_MYR).min(1.0);
             let drop = f64::from(before.saturating_sub(now));
             before - (drop * part).round() as u16
         })
@@ -1110,6 +1111,36 @@ mod tests {
         // The sea floor does not erode.
         let p = lonlat_to_dir(0.0, degrees(300.0));
         assert_eq!(eroded.level_at(p), plain.level_at(p));
+    }
+
+    #[test]
+    fn erosion_grades_the_islands_to_the_sea() {
+        let n = 2 * N;
+        let mut line = line(spec(), n, -6.0, 6.0, 1.0);
+        let eroded = lay_eroded(&mut line, n, 1.0);
+        let (plain, _) = lay(&mut line, n, FLOOR_M);
+        let sea = meters_to_level(0.0);
+        let (mut land, mut lowered, mut drowned) = (0, 0, 0);
+        // The texels of face 0 within 8 degrees of the middle of the line.
+        let half = (n as f64 * 8.0 / 90.0) as i64;
+        let middle = n as i64 / 2;
+        for y in middle - half..middle + half {
+            for x in middle - half..middle + half {
+                let (a, b) = (plain.get(0, x, y), eroded.get(0, x, y));
+                if a > sea {
+                    land += 1;
+                    lowered += usize::from(b < a);
+                    drowned += usize::from(b < sea);
+                } else {
+                    // The sea floor does not erode.
+                    assert_eq!(a, b, "{x} {y}");
+                }
+            }
+        }
+        // The land goes down to the sea and no lower, so no island is a
+        // ring around a drowned basin.
+        assert!(lowered > land / 4, "{lowered} of {land}");
+        assert_eq!(drowned, 0);
     }
 
     #[test]
