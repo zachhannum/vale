@@ -3070,8 +3070,7 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
         "Brush size",
         "Brush flow",
         "Brush strength",
-        "Brush side left",
-        "Brush side right",
+        "Flip side",
         "Brush margin accretionary",
         "Brush margin eroding",
         "Brush age value",
@@ -3099,7 +3098,7 @@ fn the_trench_mode_is_in_the_terrain_cell_and_has_its_settings() {
     step(&mut h, "Brush age", true);
     assert_eq!(h.state().globe.brush.trench_age_myr, 50.0);
     assert!(h.query_by_label("Outer rise 118 km").is_none());
-    tap(&mut h, "Brush side right");
+    tap(&mut h, "Flip side");
     assert_eq!(h.state().globe.brush.trench_side, TrenchSide::Right);
     tap(&mut h, "Brush margin eroding");
     assert_eq!(h.state().globe.brush.trench_margin, TrenchMargin::Eroding);
@@ -3126,7 +3125,7 @@ fn the_trench_mode_fits_on_the_smallest_ipad() {
     assert!(screen.contains_rect(panel), "{panel:?}");
     for row in [
         "Brush strength",
-        "Brush side right",
+        "Flip side",
         "Brush margin eroding",
         "Brush age value",
         "Brush seed value",

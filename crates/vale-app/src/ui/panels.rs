@@ -18,7 +18,7 @@ use super::{
     Action, AppState, LayerRef, SaveMark, Workspace, atlas, elevation, orient, pad, polygonize,
     select,
 };
-use vale_terrain::{Mode, TrenchMargin, TrenchSide};
+use vale_terrain::{Mode, TrenchMargin};
 
 use crate::globe::brush::{
     ABYSSAL_RATE_MM, BASIN_AGE, BASIN_DENSITY, BASIN_LAKES, BRANCHING, CHANNEL_HELP, CHANNEL_KM,
@@ -51,11 +51,10 @@ pub const MARGIN: &str = "Margin";
 pub const TRENCH: &str = "Trench";
 /// The hint of the trench mode.
 pub const TRENCH_HINT: &str = "Draw the axis of the trench.";
-/// The settings of the trench mode: the side of the overriding plate and
-/// the kind of its margin, with the names of their choices.
-pub const TRENCH_SIDE: &str = "Side";
-pub const TRENCH_SIDES: [(TrenchSide, &str); 2] =
-    [(TrenchSide::Left, "Left"), (TrenchSide::Right, "Right")];
+/// The button that moves the overriding plate of the trench mode to the
+/// other side of the line, and the setting of the kind of its margin, with
+/// the names of its choices.
+pub const FLIP_SIDE: &str = "Flip side";
 pub const TRENCH_MARGIN: &str = "Margin";
 pub const TRENCH_MARGINS: [(TrenchMargin, &str); 2] = [
     (TrenchMargin::Accretionary, "Accretionary"),
@@ -1727,12 +1726,9 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .suffix(" Myr")
             .show(ui);
         ui.label(outer_rise_text(brush.trench_age_myr));
-        ui.horizontal(|ui| {
-            ui.label(TRENCH_SIDE);
-            for (side, name) in TRENCH_SIDES {
-                ui.selectable_value(&mut brush.trench_side, side, name);
-            }
-        });
+        if ui.button(FLIP_SIDE).clicked() {
+            brush.flip_trench_side();
+        }
         ui.horizontal(|ui| {
             ui.label(TRENCH_MARGIN);
             for (margin, name) in TRENCH_MARGINS {

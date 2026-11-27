@@ -478,6 +478,15 @@ impl BrushSettings {
         }
     }
 
+    /// Moves the overriding plate of the trench mode to the other side of
+    /// the line.
+    pub fn flip_trench_side(&mut self) {
+        self.trench_side = match self.trench_side {
+            TrenchSide::Left => TrenchSide::Right,
+            TrenchSide::Right => TrenchSide::Left,
+        };
+    }
+
     /// The settings of a trench stroke with this brush radius, in radians.
     /// `world_km` is the radius of the world.
     pub fn trench_spec(&self, radius: f64, world_km: f64, seed: u32) -> Trench {

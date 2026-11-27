@@ -3283,13 +3283,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
                 .unit("Myr");
             apply(number.stepper(ui, controls), &mut brush.trench_age_myr);
             raster::note(ui, &panels::outer_rise_text(brush.trench_age_myr));
-            let (labels, names) = (TRENCH_SIDE_LABELS, TRENCH_SIDE_NAMES);
-            let active = panels::TRENCH_SIDES
-                .iter()
-                .position(|s| s.0 == brush.trench_side);
-            let choices = (panels::TRENCH_SIDE, &labels[..], &names[..]);
-            if let Some(i) = widgets::segment_row(ui, controls, choices, active.unwrap_or(0)) {
-                brush.trench_side = panels::TRENCH_SIDES[i].0;
+            let flip = [(panels::FLIP_SIDE, panels::FLIP_SIDE)];
+            if widgets::plain_cells(ui, controls, &flip).is_some() {
+                brush.flip_trench_side();
             }
             let (labels, names) = (TRENCH_MARGIN_LABELS, TRENCH_MARGIN_NAMES);
             let margins = panels::TRENCH_MARGINS.iter();
@@ -3821,10 +3817,8 @@ fn hint_rows(ui: &mut egui::Ui, hint: &str) {
     ui.add_space(8.0);
 }
 
-/// The choices of the side and the margin of the trench mode, and the names
-/// of their controls.
-const TRENCH_SIDE_LABELS: [&str; 2] = [panels::TRENCH_SIDES[0].1, panels::TRENCH_SIDES[1].1];
-pub const TRENCH_SIDE_NAMES: [&str; 2] = ["Brush side left", "Brush side right"];
+/// The choices of the margin of the trench mode, and the names of their
+/// controls.
 const TRENCH_MARGIN_LABELS: [&str; 2] = [panels::TRENCH_MARGINS[0].1, panels::TRENCH_MARGINS[1].1];
 pub const TRENCH_MARGIN_NAMES: [&str; 2] = ["Brush margin accretionary", "Brush margin eroding"];
 
@@ -4413,6 +4407,9 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
     if globe.basin_rivers() >= 2 {
         buttons.push((panels::UNDO_RIVER, theme::ACCENT));
     }
+    if globe.holding() == Some(Mode::Trench) {
+        buttons.push((panels::FLIP_SIDE, theme::ACCENT));
+    }
     buttons.push((panels::APPLY, theme::ACCENT));
     let text = match card {
         HeldCard::Outline => {
@@ -4499,6 +4496,7 @@ fn held_card(ctx: &egui::Context, state: &mut AppState, controls: &mut Controls,
         Some(panels::DISCARD) => globe.discard_held(),
         Some(panels::APPLY) => globe.apply_held(),
         Some(panels::UNDO_RIVER) => globe.undo_river(),
+        Some(panels::FLIP_SIDE) => globe.flip_trench(),
         _ => {}
     }
 }

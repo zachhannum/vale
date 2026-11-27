@@ -16,8 +16,8 @@ use vale_terrain::{
     AbyssalStroke, Bands, BasinLine, BasinSpec, ChannelMap, ChannelWindow, ErodeBrush, ErodeStep,
     FACES, Heightmap, HotspotLine, LinePlan, MarginPlan, MarginStroke, Mode, Pyramid, Rain,
     RangeLine, Ridge, RidgeLine, SEA_LEVEL, SeamountStroke, Stamp, TexelRect, Trench, TrenchLine,
-    Window, WindowHeights, hotspot_window, margin_window, max_level, meters_to_level, reduced_cap,
-    reduced_face_size, smoothing_level,
+    TrenchSide, Window, WindowHeights, hotspot_window, margin_window, max_level, meters_to_level,
+    reduced_cap, reduced_face_size, smoothing_level,
 };
 
 pub mod backdrop;
@@ -760,6 +760,44 @@ fn restore(map: &Heightmap, link: &Link, tag: MapKey, touched: &mut [Option<Texe
         let face = face as u32;
         link.push(tag, Op::Upload { face, rect, data });
     }
+}
+
+/// The distance between two teeth of the axis of a trench, and the width
+/// and the height of a tooth, in screen points.
+const TOOTH_SPACING: f32 = 28.0;
+const TOOTH_WIDTH: f32 = 11.0;
+const TOOTH_HEIGHT: f32 = 8.0;
+
+/// The teeth along a line in screen points, on its left side seen along
+/// the line, or on its right side.
+fn teeth(line: &[Pos2], left: bool) -> Vec<[Pos2; 3]> {
+    let mut out = Vec::new();
+    // The distance along the line to the next tooth.
+    let mut next = TOOTH_SPACING / 2.0;
+    let mut walked = 0.0;
+    for w in line.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let length = a.distance(b);
+        if length < 1e-3 {
+            continue;
+        }
+        let d = (b - a) / length;
+        // The y axis of the screen points down, so the left side of a
+        // direction is a turn against the clock.
+        let side = if left {
+            Vec2::new(d.y, -d.x)
+        } else {
+            Vec2::new(-d.y, d.x)
+        };
+        while next <= walked + length {
+            let c = a + d * (next - walked);
+            let half = d * (TOOTH_WIDTH / 2.0);
+            out.push([c - half, c + half, c + side * TOOTH_HEIGHT]);
+            next += TOOTH_SPACING;
+        }
+        walked += length;
+    }
+    out
 }
 
 fn union(a: Option<TexelRect>, b: TexelRect) -> TexelRect {
@@ -2831,6 +2869,27 @@ impl Globe {
             }
         }
         Some(points)
+    }
+
+    /// The teeth of the axis of a trench in screen points, while the pen
+    /// draws it and while it is held: triangles on the side of the
+    /// overriding plate, as on a map of a subduction zone.
+    pub fn trench_teeth(&self) -> Vec<[Pos2; 3]> {
+        let trench = self.stroke.as_ref().and_then(|a| a.ridge.as_ref());
+        if !trench.is_some_and(|r| matches!(r.line, BrushLine::Trench(_))) {
+            return Vec::new();
+        }
+        let Some(axis) = self.ridge_preview() else {
+            return Vec::new();
+        };
+        let left = self.brush.trench_side == TrenchSide::Left;
+        teeth(&axis, left)
+    }
+
+    /// Moves the overriding plate of the trench mode to the other side of
+    /// the line. A held trench follows.
+    pub fn flip_trench(&mut self) {
+        self.brush.flip_trench_side();
     }
 
     /// The drawn fracture zones of a held ocean ridge in screen points, and
@@ -6068,6 +6127,28 @@ mod tests {
 
     use super::*;
     use math::lonlat_to_dir;
+
+    #[test]
+    fn the_teeth_of_a_trench_are_on_the_side_of_the_overriding_plate() {
+        // A line to the right of the screen and then down.
+        let line = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(100.0, 0.0),
+            Pos2::new(100.0, 100.0),
+        ];
+        let left = teeth(&line, true);
+        assert_eq!(left.len(), 7);
+        // The spacing is even around the corner.
+        assert_eq!(left[0][0].lerp(left[0][1], 0.5), Pos2::new(14.0, 0.0));
+        assert_eq!(left[4][0].lerp(left[4][1], 0.5), Pos2::new(100.0, 26.0));
+        // Left of a line to the right is up, and left of a line down is to
+        // the right of the screen.
+        assert_eq!(left[0][2], Pos2::new(14.0, -TOOTH_HEIGHT));
+        assert_eq!(left[4][2], Pos2::new(100.0 + TOOTH_HEIGHT, 26.0));
+        let right = teeth(&line, false);
+        assert_eq!(right[0][2], Pos2::new(14.0, TOOTH_HEIGHT));
+        assert_eq!(right[4][2], Pos2::new(100.0 - TOOTH_HEIGHT, 26.0));
+    }
 
     #[test]
     fn the_pieces_of_a_ridge_plan_cover_its_rectangles_once() {

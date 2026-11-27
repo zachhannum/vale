@@ -6377,9 +6377,7 @@ fn the_brush_panel_has_the_trench_mode_and_its_settings() {
         "Radius",
         "Flow",
         "Depth",
-        "Side",
-        "Left",
-        "Right",
+        "Flip side",
         "Accretionary",
         "Eroding",
         "Seed",
@@ -6391,7 +6389,7 @@ fn the_brush_panel_has_the_trench_mode_and_its_settings() {
     for name in ["Hardness", "Strength", "Erosion", "Shelf depth"] {
         assert!(h.query_all_by_label(name).next().is_none(), "{name}");
     }
-    h.get_by_label("Right").click();
+    h.get_by_label("Flip side").click();
     h.get_by_label("Eroding").click();
     h.run_steps(2);
     let brush = &h.state().globe.brush;
@@ -6539,6 +6537,61 @@ fn a_held_trench_follows_the_settings_until_it_is_applied() {
     h.run_steps(2);
     assert!(all_levels(&h) == before.0);
     assert!(!h.state().globe.can_undo());
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_axis_of_a_trench_has_teeth_on_the_side_of_the_overriding_plate() {
+    let _gpu = one_gpu_test();
+    let mut h = trench_harness(7);
+    assert!(h.state().globe.trench_teeth().is_empty());
+    // The line goes east, and the overriding plate is on its left: north,
+    // which is up on the screen.
+    let from = h.state().globe.project(lonlat_to_dir(-10.0, 0.0)).unwrap();
+    let to = h.state().globe.project(lonlat_to_dir(10.0, 0.0)).unwrap();
+    assert!(to.x > from.x);
+    h.state_mut().globe.pen_down();
+    for i in 0..=20 {
+        let lon = -10.0 + f64::from(i);
+        let sample = vale_app::globe::brush::Sample {
+            dir: Some(lonlat_to_dir(lon, 0.0)),
+            flow: 0.5,
+            radius: 0.05,
+        };
+        h.state_mut()
+            .globe
+            .pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    // The teeth show while the pen draws.
+    assert!(!h.state().globe.trench_teeth().is_empty());
+    h.state_mut().globe.pen_up();
+    wait_held(&mut h);
+    let up = |h: &Harness<'static, AppState>| {
+        let teeth = h.state().globe.trench_teeth();
+        assert!(!teeth.is_empty());
+        teeth.iter().all(|t| t[2].y < t[0].y.min(t[1].y))
+    };
+    assert!(up(&h));
+    // Flip side moves the teeth and the overriding plate to the south.
+    tap_flip(&mut h);
+    assert_eq!(h.state().globe.brush.trench_side, TrenchSide::Right);
+    let teeth = h.state().globe.trench_teeth();
+    assert!(teeth.iter().all(|t| t[2].y > t[0].y.max(t[1].y)));
+    wait_held(&mut h);
+    assert!(!up(&h));
+    h.state_mut().globe.apply_held();
+    run_until_idle(&mut h);
+    assert!(h.state().globe.trench_teeth().is_empty());
+}
+
+/// Clicks a Flip side button. The brush panel and the card of a held
+/// trench each have one.
+fn tap_flip(h: &mut Harness<'static, AppState>) {
+    let buttons = h.query_all_by_label("Flip side").count();
+    assert_eq!(buttons, 2);
+    h.query_all_by_label("Flip side").next().unwrap().click();
+    h.run_steps(2);
 }
 
 #[test]
