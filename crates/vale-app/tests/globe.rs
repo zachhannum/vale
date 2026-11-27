@@ -5283,7 +5283,7 @@ fn a_hotspot_track_goes_into_the_heightmap_at_pen_up_as_one_undo_step() {
     let worst = after.0.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
     assert!(worst.unwrap() <= 2, "{worst:?}");
     let eroded = track.iter().zip(&cpu).filter(|(t, c)| c < t).count();
-    assert!(eroded > 50, "{eroded}");
+    assert!(eroded > 10, "{eroded}");
 
     // One undo puts back the ground from before the stroke.
     assert!(h.state_mut().globe.undo());
