@@ -12,9 +12,9 @@ The project must not copy code from these climate models. Their licenses are GPL
 
 | Model | Paper |
 | --- | --- |
-| PlaSim | Fraedrich, K., Jansen, H., Kirk, E., Luksch, U., & Lunkeit, F. (2005). The Planet Simulator: Towards a user friendly model. Meteorologische Zeitschrift, 14(3), 299–304. |
-| ExoPlaSim | Paradise, A., Macdonald, E., Menou, K., Lee, C., & Fan, B. (2022). ExoPlaSim: Extending the Planet Simulator for exoplanets. Monthly Notices of the Royal Astronomical Society, 511(3), 3272–3303. |
-| Isca | Vallis, G. K., Colyer, G., Geen, R., Gerber, E., Jucker, M., Maher, P., Paterson, A., Pietschnig, M., Penn, J., & Thomson, S. I. (2018). Isca, v1.0: A framework for the global modelling of the atmospheres of Earth and other planets at varying levels of complexity. Geoscientific Model Development, 11(3), 843–859. |
+| PlaSim | Fraedrich, K., Jansen, H., Kirk, E., Luksch, U., & Lunkeit, F. (2005). The Planet Simulator: Towards a user friendly model. Meteorologische Zeitschrift, 14(3), 299–304. https://doi.org/10.1127/0941-2948/2005/0043 |
+| ExoPlaSim | Paradise, A., Macdonald, E., Menou, K., Lee, C., & Fan, B. (2022). ExoPlaSim: Extending the Planet Simulator for exoplanets. Monthly Notices of the Royal Astronomical Society, 511(3), 3272–3303. https://doi.org/10.1093/mnras/stac172 |
+| Isca | Vallis, G. K., Colyer, G., Geen, R., Gerber, E., Jucker, M., Maher, P., Paterson, A., Pietschnig, M., Penn, J., & Thomson, S. I. (2018). Isca, v1.0: A framework for the global modelling of the atmospheres of Earth and other planets at varying levels of complexity. Geoscientific Model Development, 11(3), 843–859. https://doi.org/10.5194/gmd-11-843-2018 |
 
 ## Tier 1: energy balance
 
@@ -68,7 +68,7 @@ Sources: Joshi and Haberle (2012), Shields et al. (2013).
 
 Each star of a binary gives its own `S`, from its own position and its own spectrum. The cell adds the two values, and each band adds the two shares.
 
-Source: Forgan (2012).
+Source: Forgan (2014).
 
 ### Gray atmosphere
 
@@ -298,82 +298,82 @@ Sources: Peel, Finlayson, and McMahon (2007), Beck et al. (2023), NOAA National 
 
 ## References
 
-Beck, H. E., McVicar, T. R., Vergopolan, N., Berg, A., Lutsko, N. J., Dufour, A., Zeng, Z., Jiang, X., van Dijk, A. I. J. M., & Miralles, D. G. (2023). High-resolution (1 km) Köppen-Geiger maps for 1901–2099 based on constrained CMIP6 projections. Scientific Data, 10, 724.
+Beck, H. E., McVicar, T. R., Vergopolan, N., Berg, A., Lutsko, N. J., Dufour, A., Zeng, Z., Jiang, X., van Dijk, A. I. J. M., & Miralles, D. G. (2023). High-resolution (1 km) Köppen-Geiger maps for 1901–2099 based on constrained CMIP6 projections. Scientific Data, 10, 724. https://doi.org/10.1038/s41597-023-02549-6
 
-Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary climatic changes. Journal of the Atmospheric Sciences, 35(12), 2362–2367.
+Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary climatic changes. Journal of the Atmospheric Sciences, 35(12), 2362–2367. https://doi.org/10.1175/1520-0469(1978)035<2362:ltvodi>2.0.co;2
 
-Bolton, D. (1980). The computation of equivalent potential temperature. Monthly Weather Review, 108(7), 1046–1053.
+Bolton, D. (1980). The computation of equivalent potential temperature. Monthly Weather Review, 108(7), 1046–1053. https://doi.org/10.1175/1520-0493(1980)108<1046:tcoept>2.0.co;2
 
-Budyko, M. I. (1969). The effect of solar radiation variations on the climate of the Earth. Tellus, 21(5), 611–619.
+Budyko, M. I. (1969). The effect of solar radiation variations on the climate of the Earth. Tellus, 21(5), 611–619. https://doi.org/10.1111/j.2153-3490.1969.tb00466.x
 
 Ekman, V. W. (1905). On the influence of the earth's rotation on ocean-currents. Arkiv för Matematik, Astronomi och Fysik, 2(11), 1–52.
 
-Forgan, D. (2012). Assessing circumbinary habitable zones using latitudinal energy balance modelling. Monthly Notices of the Royal Astronomical Society, 422(2), 1241–1252.
+Forgan, D. (2014). Assessing circumbinary habitable zones using latitudinal energy balance modelling. Monthly Notices of the Royal Astronomical Society, 437(2), 1352–1361. https://doi.org/10.1093/mnras/stt1964
 
-Frierson, D. M. W., Held, I. M., & Zurita-Gotor, P. (2006). A gray-radiation aquaplanet moist GCM. Part I: Static stability and eddy scale. Journal of the Atmospheric Sciences, 63(10), 2548–2566.
+Frierson, D. M. W., Held, I. M., & Zurita-Gotor, P. (2006). A gray-radiation aquaplanet moist GCM. Part I: Static stability and eddy scale. Journal of the Atmospheric Sciences, 63(10), 2548–2566. https://doi.org/10.1175/jas3753.1
 
-Frierson, D. M. W., Held, I. M., & Zurita-Gotor, P. (2007). A gray-radiation aquaplanet moist GCM. Part II: Energy transports in altered climates. Journal of the Atmospheric Sciences, 64(5), 1680–1693.
+Frierson, D. M. W., Held, I. M., & Zurita-Gotor, P. (2007). A gray-radiation aquaplanet moist GCM. Part II: Energy transports in altered climates. Journal of the Atmospheric Sciences, 64(5), 1680–1693. https://doi.org/10.1175/jas3913.1
 
-Frierson, D. M. W., Lu, J., & Chen, G. (2007). Width of the Hadley cell in simple and comprehensive general circulation models. Geophysical Research Letters, 34(18), L18804.
+Frierson, D. M. W., Lu, J., & Chen, G. (2007). Width of the Hadley cell in simple and comprehensive general circulation models. Geophysical Research Letters, 34(18), L18804. https://doi.org/10.1029/2007gl031115
 
 Hartmann, D. L. (2016). Global Physical Climatology (2nd ed.). Elsevier.
 
-Held, I. M., & Hou, A. Y. (1980). Nonlinear axially symmetric circulations in a nearly inviscid atmosphere. Journal of the Atmospheric Sciences, 37(3), 515–533.
+Held, I. M., & Hou, A. Y. (1980). Nonlinear axially symmetric circulations in a nearly inviscid atmosphere. Journal of the Atmospheric Sciences, 37(3), 515–533. https://doi.org/10.1175/1520-0469(1980)037<0515:nascia>2.0.co;2
 
 Holton, J. R., & Hakim, G. J. (2013). An Introduction to Dynamic Meteorology (5th ed.). Academic Press.
 
-Hwang, Y.-T., & Frierson, D. M. W. (2010). Increasing atmospheric poleward energy transport with global warming. Geophysical Research Letters, 37(24), L24807.
+Hwang, Y.-T., & Frierson, D. M. W. (2010). Increasing atmospheric poleward energy transport with global warming. Geophysical Research Letters, 37(24), L24807. https://doi.org/10.1029/2010gl045440
 
-Jennings, K. S., Winchell, T. S., Livneh, B., & Molotch, N. P. (2018). Spatial variation of the rain–snow temperature threshold across the Northern Hemisphere. Nature Communications, 9, 1148.
+Jennings, K. S., Winchell, T. S., Livneh, B., & Molotch, N. P. (2018). Spatial variation of the rain–snow temperature threshold across the Northern Hemisphere. Nature Communications, 9, 1148. https://doi.org/10.1038/s41467-018-03629-7
 
-Joshi, M. M., & Haberle, R. M. (2012). Suppression of the water ice and snow albedo feedback on planets orbiting red dwarf stars and the subsequent widening of the habitable zone. Astrobiology, 12(1), 3–8.
+Joshi, M. M., & Haberle, R. M. (2012). Suppression of the water ice and snow albedo feedback on planets orbiting red dwarf stars and the subsequent widening of the habitable zone. Astrobiology, 12(1), 3–8. https://doi.org/10.1089/ast.2011.0668
 
-Lindzen, R. S., & Hou, A. Y. (1988). Hadley circulations for zonally averaged heating centered off the equator. Journal of the Atmospheric Sciences, 45(17), 2416–2427.
+Lindzen, R. S., & Hou, A. Y. (1988). Hadley circulations for zonally averaged heating centered off the equator. Journal of the Atmospheric Sciences, 45(17), 2416–2427. https://doi.org/10.1175/1520-0469(1988)045<2416:hcfzah>2.0.co;2
 
-Lindzen, R. S., & Nigam, S. (1987). On the role of sea surface temperature gradients in forcing low-level winds and convergence in the tropics. Journal of the Atmospheric Sciences, 44(17), 2418–2436.
+Lindzen, R. S., & Nigam, S. (1987). On the role of sea surface temperature gradients in forcing low-level winds and convergence in the tropics. Journal of the Atmospheric Sciences, 44(17), 2418–2436. https://doi.org/10.1175/1520-0469(1987)044<2418:otross>2.0.co;2
 
-Manabe, S. (1969). Climate and the ocean circulation: I. The atmospheric circulation and the hydrology of the earth's surface. Monthly Weather Review, 97(11), 739–774.
+Manabe, S. (1969). Climate and the ocean circulation: I. The atmospheric circulation and the hydrology of the earth's surface. Monthly Weather Review, 97(11), 739–774. https://doi.org/10.1175/1520-0493(1969)097<0739:catoc>2.3.co;2
 
-Merlis, T. M., & Schneider, T. (2010). Atmospheric dynamics of Earth-like tidally locked aquaplanets. Journal of Advances in Modeling Earth Systems, 2, 13.
+Merlis, T. M., & Schneider, T. (2010). Atmospheric dynamics of Earth-like tidally locked aquaplanets. Journal of Advances in Modeling Earth Systems, 2(4), 13. https://doi.org/10.3894/james.2010.2.13
 
-Murray, C. D., & Dermott, S. F. (1999). Solar System Dynamics. Cambridge University Press.
+Murray, C. D., & Dermott, S. F. (1999). Solar System Dynamics. Cambridge University Press. https://doi.org/10.1017/cbo9781139174817
 
-Myhre, G., Highwood, E. J., Shine, K. P., & Stordal, F. (1998). New estimates of radiative forcing due to well mixed greenhouse gases. Geophysical Research Letters, 25(14), 2715–2718.
+Myhre, G., Highwood, E. J., Shine, K. P., & Stordal, F. (1998). New estimates of radiative forcing due to well mixed greenhouse gases. Geophysical Research Letters, 25(14), 2715–2718. https://doi.org/10.1029/98gl01908
 
-NOAA National Centers for Environmental Information. (2022). ETOPO 2022 15 Arc-Second Global Relief Model. NOAA National Centers for Environmental Information.
+NOAA National Centers for Environmental Information. (2022). ETOPO 2022 15 Arc-Second Global Relief Model. NOAA National Centers for Environmental Information. https://doi.org/10.25921/fd45-gt74
 
-North, G. R. (1975). Theory of energy-balance climate models. Journal of the Atmospheric Sciences, 32(11), 2033–2043.
+North, G. R. (1975). Theory of energy-balance climate models. Journal of the Atmospheric Sciences, 32(11), 2033–2043. https://doi.org/10.1175/1520-0469(1975)032<2033:toebcm>2.0.co;2
 
-North, G. R., Cahalan, R. F., & Coakley, J. A. (1981). Energy balance climate models. Reviews of Geophysics and Space Physics, 19(1), 91–121.
+North, G. R., Cahalan, R. F., & Coakley, J. A. (1981). Energy balance climate models. Reviews of Geophysics and Space Physics, 19(1), 91–121. https://doi.org/10.1029/rg019i001p00091
 
-Peel, M. C., Finlayson, B. L., & McMahon, T. A. (2007). Updated world map of the Köppen-Geiger climate classification. Hydrology and Earth System Sciences, 11(5), 1633–1644.
+Peel, M. C., Finlayson, B. L., & McMahon, T. A. (2007). Updated world map of the Köppen-Geiger climate classification. Hydrology and Earth System Sciences, 11(5), 1633–1644. https://doi.org/10.5194/hess-11-1633-2007
 
-Pierrehumbert, R. T. (2010). Principles of Planetary Climate. Cambridge University Press.
+Pierrehumbert, R. T. (2010). Principles of Planetary Climate. Cambridge University Press. https://doi.org/10.1017/cbo9780511780783
 
-Pierrehumbert, R. T. (2011). A palette of climates for Gliese 581g. The Astrophysical Journal Letters, 726(1), L8.
+Pierrehumbert, R. T. (2011). A palette of climates for Gliese 581g. The Astrophysical Journal Letters, 726(1), L8. https://doi.org/10.1088/2041-8205/726/1/l8
 
-Roe, G. H. (2005). Orographic precipitation. Annual Review of Earth and Planetary Sciences, 33, 645–671.
+Roe, G. H. (2005). Orographic precipitation. Annual Review of Earth and Planetary Sciences, 33, 645–671. https://doi.org/10.1146/annurev.earth.33.092203.122541
 
-Sellers, W. D. (1969). A global climatic model based on the energy balance of the earth-atmosphere system. Journal of Applied Meteorology, 8(3), 392–400.
+Sellers, W. D. (1969). A global climatic model based on the energy balance of the earth-atmosphere system. Journal of Applied Meteorology, 8(3), 392–400. https://doi.org/10.1175/1520-0450(1969)008<0392:agcmbo>2.0.co;2
 
-Semtner, A. J. (1976). A model for the thermodynamic growth of sea ice in numerical investigations of climate. Journal of Physical Oceanography, 6(3), 379–389.
+Semtner, A. J. (1976). A model for the thermodynamic growth of sea ice in numerical investigations of climate. Journal of Physical Oceanography, 6(3), 379–389. https://doi.org/10.1175/1520-0485(1976)006<0379:amfttg>2.0.co;2
 
-Shields, A. L., Meadows, V. S., Bitz, C. M., Pierrehumbert, R. T., Joshi, M. M., & Robinson, T. D. (2013). The effect of host star spectral energy distribution and ice-albedo feedback on the climate of extrasolar planets. Astrobiology, 13(8), 715–739.
+Shields, A. L., Meadows, V. S., Bitz, C. M., Pierrehumbert, R. T., Joshi, M. M., & Robinson, T. D. (2013). The effect of host star spectral energy distribution and ice-albedo feedback on the climate of extrasolar planets. Astrobiology, 13(8), 715–739. https://doi.org/10.1089/ast.2012.0961
 
-Showman, A. P., Wordsworth, R. D., Merlis, T. M., & Kaspi, Y. (2013). Atmospheric circulation of terrestrial exoplanets. In S. J. Mackwell, A. A. Simon-Miller, J. W. Harder, & M. A. Bullock (Eds.), Comparative Climatology of Terrestrial Planets (pp. 277–326). University of Arizona Press.
+Showman, A. P., Wordsworth, R. D., Merlis, T. M., & Kaspi, Y. (2013). Atmospheric circulation of terrestrial exoplanets. In S. J. Mackwell, A. A. Simon-Miller, J. W. Harder, & M. A. Bullock (Eds.), Comparative Climatology of Terrestrial Planets (pp. 277–326). University of Arizona Press. https://doi.org/10.2458/azu_uapress_9780816530595-ch12
 
-Slingo, J. M. (1987). The development and verification of a cloud prediction scheme for the ECMWF model. Quarterly Journal of the Royal Meteorological Society, 113(477), 899–927.
+Slingo, J. M. (1987). The development and verification of a cloud prediction scheme for the ECMWF model. Quarterly Journal of the Royal Meteorological Society, 113(477), 899–927. https://doi.org/10.1002/qj.49711347710
 
-Smith, R. B., & Barstad, I. (2004). A linear theory of orographic precipitation. Journal of the Atmospheric Sciences, 61(12), 1377–1391.
+Smith, R. B., & Barstad, I. (2004). A linear theory of orographic precipitation. Journal of the Atmospheric Sciences, 61(12), 1377–1391. https://doi.org/10.1175/1520-0469(2004)061<1377:altoop>2.0.co;2
 
-Spiegel, D. S., Menou, K., & Scharf, C. A. (2008). Habitable climates. The Astrophysical Journal, 681(2), 1609–1623.
+Spiegel, D. S., Menou, K., & Scharf, C. A. (2008). Habitable climates. The Astrophysical Journal, 681(2), 1609–1623. https://doi.org/10.1086/588089
 
-Stommel, H. (1948). The westward intensification of wind-driven ocean currents. Transactions, American Geophysical Union, 29(2), 202–206.
+Stommel, H. (1948). The westward intensification of wind-driven ocean currents. Transactions, American Geophysical Union, 29(2), 202–206. https://doi.org/10.1029/tr029i002p00202
 
-Sverdrup, H. U. (1947). Wind-driven currents in a baroclinic ocean, with application to the equatorial currents of the eastern Pacific. Proceedings of the National Academy of Sciences, 33(11), 318–326.
+Sverdrup, H. U. (1947). Wind-driven currents in a baroclinic ocean; with application to the equatorial currents of the eastern Pacific. Proceedings of the National Academy of Sciences, 33(11), 318–326. https://doi.org/10.1073/pnas.33.11.318
 
-Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press.
+Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press. https://doi.org/10.1017/9781107588417
 
-Williams, D. M., & Kasting, J. F. (1997). Habitable planets with high obliquities. Icarus, 129(1), 254–267.
+Williams, D. M., & Kasting, J. F. (1997). Habitable planets with high obliquities. Icarus, 129(1), 254–267. https://doi.org/10.1006/icar.1997.5759
 
-Yang, J., Cowan, N. B., & Abbot, D. S. (2013). Stabilizing cloud feedback dramatically expands the habitable zone of tidally locked planets. The Astrophysical Journal Letters, 771(2), L45.
+Yang, J., Cowan, N. B., & Abbot, D. S. (2013). Stabilizing cloud feedback dramatically expands the habitable zone of tidally locked planets. The Astrophysical Journal Letters, 771(2), L45. https://doi.org/10.1088/2041-8205/771/2/l45
