@@ -190,7 +190,7 @@ pub fn meters_text(m: f64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut grouped = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(c);
@@ -255,7 +255,7 @@ impl IsothermApp {
         self.status = None;
         self.pending = None;
         match document::read_import(path) {
-            Ok(Read::Terrain { name, terrain }) => self.finish_import(&name, terrain),
+            Ok(Read::Terrain { name, terrain }) => self.finish_import(&name, *terrain),
             Ok(Read::Scale { name, samples }) => {
                 let scale = Scale::default();
                 self.pending = Some(Pending::Scale {
@@ -790,9 +790,7 @@ impl IsothermApp {
             vec2(ui.available_width(), TOUCH + 2.0 * PAD),
             Sense::hover(),
         );
-        let names: Vec<&str> = items.iter().map(|i| i.0).collect();
-        let width = widgets::segments_width(ui, &names).max(row.width());
-        let track = Rect::from_min_size(row.min, vec2(width.min(row.width()), row.height()));
+        let track = row;
         ui.painter()
             .rect_filled(track, theme::capsule(track), theme::track());
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(track));

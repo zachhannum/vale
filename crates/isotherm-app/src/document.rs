@@ -30,7 +30,7 @@ pub struct Document {
 /// What the read of an import file gives.
 pub enum Read {
     /// A terrain that is ready.
-    Terrain { name: String, terrain: Terrain },
+    Terrain { name: String, terrain: Box<Terrain> },
     /// An image with no units. The import needs the heights of black and
     /// white.
     Scale { name: String, samples: Samples },
@@ -197,7 +197,7 @@ pub fn read_import(path: &Path) -> Result<Read, String> {
         return match layers.as_slice() {
             [] => Err(format!("{file} has no height layers.")),
             [layer] => Ok(Read::Terrain {
-                terrain: layer_terrain(path, layer.id)?,
+                terrain: Box::new(layer_terrain(path, layer.id)?),
                 name,
             }),
             _ => Ok(Read::Layers {
@@ -212,7 +212,10 @@ pub fn read_import(path: &Path) -> Result<Read, String> {
         .map_err(|e| format!("Could not read {file}: {e}."))?;
     if samples.has_units() {
         let terrain = scale_terrain(&samples, Scale::default())?;
-        return Ok(Read::Terrain { name, terrain });
+        return Ok(Read::Terrain {
+            name,
+            terrain: Box::new(terrain),
+        });
     }
     Ok(Read::Scale { name, samples })
 }

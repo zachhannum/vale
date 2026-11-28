@@ -165,3 +165,392 @@ fn the_globe_fills_the_bands_outside_the_safe_area() {
     let menu = h.get_by_label(WORKSPACE_MENU).rect();
     assert!(menu.right() <= screen.right() - 84.0);
 }
+
+// The import, the sea level, the views, and the layouts.
+
+use isotherm_app::app::{
+    BLACK, IMPORT, IsothermApp, LAYERS_HINT, Layout, PROJECTION, SCALE_HINT, SEA_LEVEL, UNDO,
+};
+use isotherm_app::globe::WorldView;
+use isotherm_app::headless::harness_with;
+use vale_shell::pad::metrics::TOUCH;
+use vale_shell::pad::number::plus_name;
+
+const PAD: (f32, f32) = (1194.0, 834.0);
+const DESKTOP: (f32, f32) = (1440.0, 900.0);
+const PHONE: (f32, f32) = (390.0, 844.0);
+
+/// The safe area of an iPhone in portrait.
+fn phone_safe_area() -> egui::SafeAreaInsets {
+    egui::SafeAreaInsets(egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 59.0,
+        bottom: 34.0,
+    })
+}
+
+/// The sample world in the pad layout, with `dir` as the folder of the
+/// worlds.
+fn app_in(dir: &std::path::Path, workspace: Workspace) -> IsothermApp {
+    let mut app = IsothermApp::sample(Layout::Pad).unwrap();
+    app.data_dir = Some(dir.to_path_buf());
+    app.workspace = workspace;
+    app
+}
+
+/// Writes an 8-bit grey PNG: black in the west half, white in the east half.
+fn write_png(path: &std::path::Path) {
+    let (w, h) = (64u32, 32u32);
+    let pixels: Vec<u8> = (0..w * h)
+        .map(|i| if i % w < w / 2 { 0 } else { 255 })
+        .collect();
+    let file = std::fs::File::create(path).unwrap();
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), w, h);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder
+        .write_header()
+        .unwrap()
+        .write_image_data(&pixels)
+        .unwrap();
+}
+
+/// Writes a Vale project with `count` height layers.
+fn write_project(path: &std::path::Path, count: usize) {
+    use vale_store::{HEIGHT_UNIT, Project, ProjectFile, World};
+    let mut project = Project::new(World::default());
+    for i in 0..count {
+        let name = format!("Height {}", i + 1);
+        project.add_raster(name, 256, HEIGHT_UNIT.into(), -6000.0, 6000.0);
+    }
+    ProjectFile::create(path, &project).unwrap();
+}
+
+/// Drags the mouse from `from` by `by`.
+fn mouse_drag(h: &mut H, from: egui::Pos2, by: egui::Vec2) {
+    h.event(egui::Event::PointerMoved(from));
+    h.event(egui::Event::PointerButton {
+        pos: from,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.step();
+    for i in 1..=6 {
+        h.event(egui::Event::PointerMoved(from + by * (i as f32 / 6.0)));
+        h.step();
+    }
+    h.event(egui::Event::PointerButton {
+        pos: from + by,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    h.run_steps(2);
+}
+
+/// Drags the sea level slider to the right.
+fn drag_sea(h: &mut H) {
+    let rect = h.get_by_label(SEA_LEVEL).rect();
+    mouse_drag(h, rect.center(), egui::vec2(rect.width() / 4.0, 0.0));
+}
+
+#[test]
+fn a_drag_of_the_sea_slider_moves_the_sea_and_uploads_no_texels() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness_with(PAD, app_in(dir.path(), Workspace::Terrain));
+    h.run_steps(3);
+    let uploads = h.state().globe.uploads();
+    let before = h.state().doc.world.terrain.sea_level_m;
+    drag_sea(&mut h);
+    let after = h.state().doc.world.terrain.sea_level_m;
+    assert!(after > before + 100.0, "{before} -> {after}");
+    assert_eq!(h.state().globe.uploads(), uploads);
+}
+
+#[test]
+fn an_8_bit_png_asks_for_black_and_white_and_makes_a_world_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("Pangaea.png");
+    write_png(&png);
+    let mut h = harness_with(PAD, app_in(dir.path(), Workspace::Terrain));
+    h.run_steps(2);
+    h.state_mut().import_path(&png);
+    h.run_steps(3);
+    h.get_by_label(SCALE_HINT);
+    // Black goes up from −8,000 m to −7,900 m.
+    h.get_by_label(&plus_name(BLACK)).click();
+    h.run_steps(2);
+    h.get_by_label("Import").click();
+    h.run_steps(2);
+    let app = h.state();
+    assert!(app.pending.is_none(), "{:?}", app.status);
+    let path = app.doc.path.clone().expect("a world file");
+    assert_eq!(path, dir.path().join("Pangaea.gpkg"));
+    assert!(path.is_file());
+    assert_eq!(app.doc.world.terrain.low_m, -7900.0);
+    assert_eq!(app.doc.world.terrain.high_m, 8000.0);
+    assert_eq!(app.globe.uploads(), 2);
+    // The next start opens this world.
+    assert_eq!(isotherm_app::worlds::last_world(dir.path()), Some(path));
+    h.get_by_label(IMPORT);
+}
+
+#[test]
+fn undo_puts_back_the_sea_level_of_before_the_drag() {
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("Pangaea.png");
+    write_png(&png);
+    let mut h = harness_with(PAD, app_in(dir.path(), Workspace::Terrain));
+    h.run_steps(2);
+    h.state_mut().import_path(&png);
+    h.run_steps(2);
+    h.get_by_label("Import").click();
+    h.run_steps(3);
+    let before = h.state().doc.world.terrain.sea_level_m;
+    drag_sea(&mut h);
+    let after = h.state().doc.world.terrain.sea_level_m;
+    assert_ne!(before, after);
+    h.get_by_label(UNDO).click();
+    h.run_steps(2);
+    assert_eq!(h.state().doc.world.terrain.sea_level_m, before);
+    // The file has the old sea level too.
+    let path = h.state().doc.path.clone().unwrap();
+    let (_, world) = isotherm_store::WorldFile::open(&path).unwrap();
+    assert_eq!(world.terrain.sea_level_m, before);
+}
+
+#[test]
+fn a_higher_sea_covers_more_of_the_world() {
+    let app = IsothermApp::sample(Layout::Pad).unwrap();
+    let mut terrain = app.doc.world.terrain;
+    let sea = terrain.sea_fraction();
+    terrain.sea_level_m = terrain.clamp_sea(7000.0);
+    assert_eq!(terrain.sea_level_m, 7000.0);
+    assert!(terrain.sea_fraction() > sea + 0.2, "{sea}");
+}
+
+#[test]
+fn a_vale_project_with_two_height_layers_shows_a_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("Vale world.gpkg");
+    write_project(&project, 2);
+    let worlds = dir.path().join("worlds");
+    let mut h = harness_with(PAD, app_in(&worlds, Workspace::Terrain));
+    h.run_steps(2);
+    h.state_mut().import_path(&project);
+    h.run_steps(3);
+    h.get_by_label(LAYERS_HINT);
+    h.get_by_label("Layer Height 1");
+    h.get_by_label("Layer Height 2").click();
+    h.run_steps(2);
+    let app = h.state();
+    assert!(app.pending.is_none(), "{:?}", app.status);
+    assert_eq!(app.doc.path, Some(worlds.join("Vale world.gpkg")));
+    assert_eq!(app.doc.world.terrain.low_m, -6000.0);
+}
+
+#[test]
+fn a_vale_project_with_one_height_layer_imports_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("Vale world.gpkg");
+    write_project(&project, 1);
+    let worlds = dir.path().join("worlds");
+    let mut h = harness_with(PAD, app_in(&worlds, Workspace::Terrain));
+    h.run_steps(2);
+    h.state_mut().import_path(&project);
+    h.run_steps(2);
+    assert!(h.query_by_label(LAYERS_HINT).is_none());
+    let app = h.state();
+    assert!(app.pending.is_none(), "{:?}", app.status);
+    assert_eq!(app.doc.path, Some(worlds.join("Vale world.gpkg")));
+    // A second import replaces the terrain of the open world, as one undo
+    // step.
+    h.state_mut().import_path(&project);
+    h.run_steps(2);
+    assert_eq!(h.state().doc.path, Some(worlds.join("Vale world.gpkg")));
+    assert!(h.state().doc.can_undo());
+    assert_eq!(h.state().globe.uploads(), 3);
+    h.get_by_label(UNDO).click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.uploads(), 4);
+}
+
+#[test]
+fn a_file_that_is_not_a_heightmap_shows_an_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let bad = dir.path().join("notes.png");
+    std::fs::write(&bad, b"not an image").unwrap();
+    let mut h = harness_with(PAD, app_in(dir.path(), Workspace::Terrain));
+    h.run_steps(2);
+    h.state_mut().import_path(&bad);
+    h.run_steps(2);
+    let status = h.state().status.clone().expect("an error");
+    assert!(status.starts_with("Could not read notes.png"), "{status}");
+    h.get_by_label(&status);
+}
+
+#[test]
+fn two_fingers_zoom_the_globe() {
+    let mut h = harness(PAD);
+    h.run_steps(2);
+    let before = h.state().globe.view.zoom;
+    let c = h.state().globe.rect.center();
+    let finger = |h: &mut H, id: u64, phase: egui::TouchPhase, pos: egui::Pos2| {
+        h.event(egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(id),
+            phase,
+            pos,
+            force: None,
+        });
+    };
+    let at = |d: f32| (c - egui::vec2(d, 0.0), c + egui::vec2(d, 0.0));
+    let (a, b) = at(50.0);
+    finger(&mut h, 1, egui::TouchPhase::Start, a);
+    finger(&mut h, 2, egui::TouchPhase::Start, b);
+    h.step();
+    for i in 1..=6 {
+        let (a, b) = at(50.0 + 15.0 * i as f32);
+        finger(&mut h, 1, egui::TouchPhase::Move, a);
+        finger(&mut h, 2, egui::TouchPhase::Move, b);
+        h.step();
+    }
+    let (a, b) = at(140.0);
+    finger(&mut h, 1, egui::TouchPhase::End, a);
+    finger(&mut h, 2, egui::TouchPhase::End, b);
+    h.run_steps(2);
+    let after = h.state().globe.view.zoom;
+    assert!(after > before * 1.5, "{before} -> {after}");
+}
+
+#[test]
+fn the_mouse_wheel_zooms_the_globe() {
+    let mut h = harness(PAD);
+    h.run_steps(2);
+    let before = h.state().globe.view.zoom;
+    let c = h.state().globe.rect.center();
+    h.event(egui::Event::PointerMoved(c));
+    h.step();
+    for _ in 0..4 {
+        h.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: egui::vec2(0.0, 2.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run_steps(20);
+    let after = h.state().globe.view.zoom;
+    assert!(after > before, "{before} -> {after}");
+}
+
+#[test]
+fn the_flat_switch_and_the_projection_list_change_the_view() {
+    let mut app = IsothermApp::sample(Layout::Pad).unwrap();
+    app.workspace = Workspace::Explore;
+    let mut h = harness_with(PAD, app);
+    h.run_steps(2);
+    assert!(h.query_by_label(PROJECTION).is_none());
+    h.get_by_label("Flat").click();
+    h.run_steps(2);
+    assert_eq!(h.state().globe.world_view, WorldView::Flat);
+    h.get_by_label(PROJECTION).click();
+    h.run_steps(2);
+    assert!(h.state().projections);
+    h.get_by_label("Mercator").click();
+    h.run_steps(2);
+    let kind = h.state().globe.flat.spec().kind;
+    assert_eq!(kind, vale_sphere::ProjectionKind::Mercator);
+    assert!(!h.state().projections);
+    // A drag pans the map.
+    let center = h.state().globe.flat.center;
+    let from = h.state().globe.rect.center();
+    mouse_drag(&mut h, from, egui::vec2(120.0, 0.0));
+    assert_ne!(h.state().globe.flat.center, center);
+}
+
+/// Opens `workspace` in a layout and checks its cards and its controls.
+fn check_layout(
+    size: (f32, f32),
+    layout: Layout,
+    safe_area: Option<egui::SafeAreaInsets>,
+    workspace: Workspace,
+) {
+    let mut app = IsothermApp::sample(layout).unwrap();
+    app.workspace = workspace;
+    app.safe_area = safe_area;
+    let mut h = harness_with(size, app);
+    h.run_steps(4);
+    let what = format!("{workspace:?} at {size:?} in {layout:?}");
+    let screen = h.ctx.viewport_rect();
+    let safe = match safe_area {
+        Some(insets) => screen - insets.0,
+        None => screen,
+    };
+    let app = h.state();
+    for (name, rect) in &app.cards {
+        assert!(
+            safe.expand(0.5).contains_rect(*rect),
+            "{what}: {name} {rect:?} is not in {safe:?}"
+        );
+    }
+    if let Some(hint) = workspace.hint() {
+        h.get_by_label(hint);
+    }
+    if workspace == Workspace::Terrain {
+        h.get_by_label(IMPORT);
+        h.get_by_label(SEA_LEVEL);
+    }
+    if workspace.has_view() {
+        h.get_by_label("Globe");
+        h.get_by_label("Flat");
+    }
+    let sheet = app.cards.iter().any(|(name, _)| *name == "sheet");
+    assert_eq!(
+        sheet,
+        layout == Layout::Pad && size.0 < 600.0 && workspace.has_view(),
+        "{what}"
+    );
+    if layout == Layout::Pad {
+        for control in &app.controls {
+            let r = control.rect;
+            assert!(
+                r.width() >= TOUCH - 0.01 && r.height() >= TOUCH - 0.01,
+                "{what}: {} is {:?}",
+                control.name,
+                r.size()
+            );
+        }
+    }
+}
+
+#[test]
+fn each_workspace_draws_in_the_desktop_layout() {
+    for workspace in Workspace::ALL {
+        check_layout(DESKTOP, Layout::Desktop, None, workspace);
+    }
+}
+
+#[test]
+fn each_workspace_draws_in_the_ipad_layout() {
+    for workspace in Workspace::ALL {
+        check_layout(PAD, Layout::Pad, None, workspace);
+    }
+}
+
+#[test]
+fn each_workspace_draws_in_the_iphone_layout() {
+    for workspace in Workspace::ALL {
+        check_layout(PHONE, Layout::Pad, Some(phone_safe_area()), workspace);
+    }
+}
+
+#[test]
+fn each_workspace_draws_in_split_view_on_the_ipad() {
+    for workspace in Workspace::ALL {
+        check_layout((678.0, 834.0), Layout::Pad, None, workspace);
+    }
+}
