@@ -42,6 +42,13 @@ pub struct Args {
     /// has 59,0,34,0.
     #[arg(long, value_name = "T,R,B,L", value_parser = parse_safe_area)]
     pub safe_area: Option<egui::SafeAreaInsets>,
+    /// Run the model for this many years with no window, save the run to
+    /// the world file of `--project`, and print the yearly means.
+    #[arg(long, value_name = "N")]
+    pub run_years: Option<u64>,
+    /// The cells on each face of the grid of `--run-years`.
+    #[arg(long, value_name = "N", default_value_t = 32, value_parser = parse_grid)]
+    pub grid: usize,
 }
 
 impl Args {
@@ -64,6 +71,16 @@ fn parse_projection(text: &str) -> Result<ProjectionKind, String> {
         let ids: Vec<&str> = ProjectionKind::ALL.iter().map(|k| k.id()).collect();
         format!("unknown projection; use one of {}", ids.join(", "))
     })
+}
+
+fn parse_grid(text: &str) -> Result<usize, String> {
+    let n: usize = text.trim().parse().map_err(|e| format!("{e}"))?;
+    if !(4..=256).contains(&n) {
+        return Err(format!(
+            "the grid must have 4 to 256 cells on each face, got {n}"
+        ));
+    }
+    Ok(n)
 }
 
 fn parse_size(text: &str) -> Result<(f32, f32), String> {
@@ -129,6 +146,20 @@ mod tests {
         assert_eq!(args.flat_projection, ProjectionKind::Mercator);
         assert_eq!(args.size, (390.0, 844.0));
         assert_eq!(args.safe_area.unwrap().0.top, 59.0);
+    }
+
+    #[test]
+    fn run_years_and_grid_parse() {
+        let args =
+            Args::try_parse_from(["isotherm-app", "--run-years", "30", "--grid", "64"]).unwrap();
+        assert_eq!(args.run_years, Some(30));
+        assert_eq!(args.grid, 64);
+        let args = Args::none();
+        assert_eq!(args.run_years, None);
+        assert_eq!(args.grid, 32);
+        for bad in ["0", "512", "x"] {
+            assert!(Args::try_parse_from(["isotherm-app", "--grid", bad]).is_err());
+        }
     }
 
     #[test]
