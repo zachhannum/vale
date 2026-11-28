@@ -24,6 +24,22 @@ pub struct HeightLayer {
     pub high_m: f64,
 }
 
+/// The world of a Vale project.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ValeWorld {
+    pub name: String,
+    pub radius_m: f64,
+}
+
+/// The name and the radius of the world of a Vale project file.
+pub fn world(path: &Path) -> Result<ValeWorld, ImportError> {
+    let (_, project) = open(path)?;
+    Ok(ValeWorld {
+        name: project.world.name.clone(),
+        radius_m: project.world.radius_km * 1000.0,
+    })
+}
+
 /// The height layers of a Vale project file, in the order of its layers.
 pub fn height_layers(path: &Path) -> Result<Vec<HeightLayer>, ImportError> {
     let (_, project) = open(path)?;

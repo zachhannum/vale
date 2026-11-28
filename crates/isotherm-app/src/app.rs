@@ -4,6 +4,7 @@
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, pos2, vec2};
 use isotherm_fields::{Means, Period};
@@ -21,17 +22,29 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 mod ask;
 mod planet;
+mod start;
 
 pub use ask::{ASK_TEXT, ASK_TITLE, Ask, START_AGAIN};
 pub use planet::*;
+pub use start::{
+    CANCEL, DELETE, DELETE_BUTTON, DELETE_TITLE, DUPLICATE, Dialog, IN_ICLOUD, NAME, NEW_FROM_VALE,
+    NEW_WORLD, NO_WORLDS, OPEN, RENAME, RENAME_BUTTON, RENAME_TITLE, Start, WORLDS, actions_name,
+    delete_text, open_name,
+};
 
 use crate::cli::Args;
 use crate::document::{self, Change, Document, Read};
 use crate::explore::{self, Explore, Layer};
 use crate::globe::{Globe, Overlay, WorldView};
 use crate::memory;
+use crate::resume::View;
 use crate::sim::{Run, Simulation, Speed};
-use crate::worlds;
+use crate::thumbnail;
+use crate::worlds::{self, Folders};
+use isotherm_world::World;
+use vale_globe::view::GlobeView;
+use vale_shell::files::{Files, PlainFiles};
+use vale_shell::workcopy::WorkCopy;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Workspace {
@@ -53,6 +66,16 @@ impl Workspace {
         Workspace::Export,
     ];
 
+    /// The workspaces of the switch of an open world. The start screen is
+    /// not one of them.
+    pub const SWITCH: [Workspace; 5] = [
+        Workspace::Terrain,
+        Workspace::Planet,
+        Workspace::Simulate,
+        Workspace::Explore,
+        Workspace::Export,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Workspace::Worlds => "Worlds",
@@ -67,11 +90,12 @@ impl Workspace {
     /// The empty state of a workspace with no content yet.
     pub fn hint(self) -> Option<&'static str> {
         match self {
-            Workspace::Worlds => Some("Saved worlds come in a later version."),
             Workspace::Export => Some("Export comes in a later version."),
-            Workspace::Terrain | Workspace::Planet | Workspace::Simulate | Workspace::Explore => {
-                None
-            }
+            Workspace::Worlds
+            | Workspace::Terrain
+            | Workspace::Planet
+            | Workspace::Simulate
+            | Workspace::Explore => None,
         }
     }
 
@@ -109,6 +133,17 @@ impl Layout {
     }
 }
 
+/// The file that the file picker asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// A heightmap or a Vale project, for the terrain of the world.
+    Import,
+    /// A world file.
+    Open,
+    /// A Vale project, for a new world.
+    ValeProject,
+}
+
 /// The step of an import that waits for the user.
 pub enum Pending {
     /// An image with no units, and the heights of black and white.
@@ -126,6 +161,8 @@ pub enum Pending {
     },
 }
 
+/// The button that goes from an open world to the start screen.
+pub const ALL_WORLDS: &str = "All worlds";
 /// The name of the button of the workspace menu on a compact screen.
 pub const WORKSPACE_MENU: &str = "Workspace";
 pub const IMPORT: &str = "Import heightmap…";
@@ -161,6 +198,9 @@ const MONTHS: [&str; 12] = [
 
 /// The file types of an import.
 pub const IMPORT_TYPES: [&str; 4] = ["png", "tif", "tiff", "gpkg"];
+/// The type of a GeoPackage file for the Files app.
+#[cfg(target_os = "ios")]
+const GEOPACKAGE: &str = "org.opengeospatial.geopackage";
 
 /// The space between a card and the edge of the safe area.
 const MARGIN: f32 = 16.0;
@@ -219,12 +259,34 @@ pub struct IsothermApp {
     /// The orbit preset of the last tap. Two orbit presets can give the
     /// same orbit, and the row then shows this one.
     orbit_pick: Option<OrbitPreset>,
-    /// The folder of the world files. `None`: an import can only replace
+    /// The folders of the world files. `None`: an import can only replace
     /// the terrain of an open world file.
-    pub data_dir: Option<PathBuf>,
-    /// The user asked for the file picker. The app shows it after the
+    pub folders: Option<Folders>,
+    /// The file services of the folders.
+    pub files: Box<dyn Files>,
+    /// The list of the worlds must be read again.
+    pub worlds_stale: bool,
+    /// The workspace of the last frame.
+    shown_workspace: Workspace,
+    /// The last workspace of the open world. A tap on the card of the open
+    /// world goes back to it.
+    world_workspace: Workspace,
+    /// The start screen of the Worlds workspace.
+    pub start: Start,
+    /// The folder of the resume file. `None`: the next start does not
+    /// open this world.
+    pub state_dir: Option<PathBuf>,
+    /// The file picker that the user asked for. The app shows it after the
     /// frame.
-    pub pick: bool,
+    pub pick: Option<Pick>,
+    /// The file picker of iOS that waits for the user.
+    pub picking: Option<Pick>,
+    /// The iCloud folder that the system gave, for the next frame. The
+    /// inner `None`: the device has no iCloud Drive.
+    pub cloud_dir: Arc<Mutex<Option<Option<PathBuf>>>>,
+    /// The open world file and its view, for the save of the iOS life
+    /// cycle.
+    pub resume: Rc<RefCell<Option<(PathBuf, View)>>>,
     /// The controls of the last frame.
     pub controls: Controls,
     /// The cards of the last frame.
@@ -294,10 +356,7 @@ impl IsothermApp {
     pub fn new(doc: Document, layout: Layout) -> IsothermApp {
         let globe = Globe::new(&doc.world.terrain.heights);
         let qualities = memory::qualities(memory::available());
-        let saved = doc.file.as_ref().and_then(|f| f.load_run().ok().flatten());
-        // A saved run opens at its own size, also a size that this device
-        // does not offer for a new run.
-        let sim = saved.and_then(|state| Simulation::restore(&doc.world, state, false).ok());
+        let sim = restored_run(&doc, false);
         let quality = sim.as_ref().map_or_else(
             || memory::default_quality(&qualities),
             Simulation::face_size,
@@ -305,6 +364,7 @@ impl IsothermApp {
         let run = Run {
             sim,
             path: doc.path.clone(),
+            work: None,
         };
         let mut app = IsothermApp {
             workspace: Workspace::Explore,
@@ -319,8 +379,17 @@ impl IsothermApp {
             planet_start: None,
             ask: None,
             orbit_pick: None,
-            data_dir: None,
-            pick: false,
+            folders: None,
+            files: Box::new(PlainFiles),
+            worlds_stale: true,
+            shown_workspace: Workspace::Explore,
+            world_workspace: Workspace::Explore,
+            start: Start::default(),
+            state_dir: None,
+            pick: None,
+            picking: None,
+            cloud_dir: Arc::default(),
+            resume: Rc::default(),
             controls: Controls::new(),
             cards: Vec::new(),
             build: crate::build::label(),
@@ -371,9 +440,6 @@ impl IsothermApp {
     fn step_run(&mut self, ctx: &egui::Context) {
         {
             let mut run = self.run.borrow_mut();
-            if run.path != self.doc.path {
-                run.path = self.doc.path.clone();
-            }
             if let Some(sim) = run.sim.as_mut() {
                 sim.speed = self.speed;
                 sim.frame();
@@ -389,10 +455,19 @@ impl IsothermApp {
     pub fn clear_run(&mut self) {
         self.run.borrow_mut().sim = None;
         self.set_means(None);
-        if let Some(file) = &mut self.doc.file
-            && let Err(e) = file.clear_run()
-        {
-            self.status = Some(format!("Could not delete the run: {e}."));
+        if let Some(file) = &mut self.doc.file {
+            let result = file
+                .clear_run()
+                .map_err(|e| format!("Could not delete the run: {e}."));
+            self.saved(result);
+        }
+    }
+
+    /// Notes a save to the world file, or shows its error.
+    fn saved(&mut self, result: Result<(), String>) {
+        match result {
+            Ok(()) => self.run.borrow_mut().changed(),
+            Err(e) => self.status = Some(e),
         }
     }
 
@@ -437,18 +512,17 @@ impl IsothermApp {
             Ask::Planet(planet) => {
                 let old = std::mem::replace(&mut self.doc.world.planet, *planet);
                 self.clear_run();
-                if let Err(e) = self.doc.save_planet(&old) {
-                    self.status = Some(e);
-                }
+                let result = self.doc.save_planet(&old);
+                self.saved(result);
             }
             Ask::SeaLevel(m) => {
                 let terrain = &mut self.doc.world.terrain;
                 let old = terrain.sea_level_m;
                 terrain.sea_level_m = terrain.clamp_sea(m);
                 self.clear_run();
-                if let Err(e) = self.doc.save_sea_level(old) {
-                    self.status = Some(e);
-                }
+                let result = self.doc.save_sea_level(old);
+                self.saved(result);
+                self.save_thumbnail();
             }
             Ask::Undo => self.undo(),
             Ask::Redo => self.redo(),
@@ -502,21 +576,79 @@ impl IsothermApp {
     }
 
     /// The app that the arguments ask for. With no `--project`, the app
-    /// opens the last world in `resume`, or else the sample world.
-    pub fn from_args(args: &Args, resume: Option<&Path>) -> Result<IsothermApp, String> {
-        let last = resume.and_then(worlds::last_world);
-        let doc = match (&args.project, last) {
-            (Some(path), _) => Document::open(path)?,
-            (None, Some(path)) => Document::open(&path).or_else(|_| Document::sample())?,
-            (None, None) => Document::sample()?,
+    /// opens the last world in the state folder `state`, at its last view.
+    /// With no last world, it opens the start screen over the sample world.
+    pub fn from_args(args: &Args, state: Option<&Path>) -> Result<IsothermApp, String> {
+        IsothermApp::from_args_in(args, state, None, Box::new(PlainFiles))
+    }
+
+    /// `from_args` with the folders of the worlds. The last world opens
+    /// as a working copy if it is in iCloud Drive.
+    pub fn from_args_in(
+        args: &Args,
+        state: Option<&Path>,
+        folders: Option<Folders>,
+        files: Box<dyn Files>,
+    ) -> Result<IsothermApp, String> {
+        let last = state.and_then(worlds::last_world);
+        let ((doc, work), view) = match (&args.project, last) {
+            (Some(path), _) => ((Document::open(path)?, None), None),
+            (None, Some((path, view))) => match Document::open_in(&path, folders.as_ref(), &*files)
+            {
+                Ok(open) => (open, view),
+                Err(_) => ((Document::sample()?, None), None),
+            },
+            (None, None) => ((Document::sample()?, None), None),
         };
+        let start_screen = state.is_some() && args.project.is_none() && doc.file.is_none();
         let mut app = IsothermApp::new(doc, args.layout());
+        app.set_work(work);
+        app.folders = folders;
+        app.files = files;
+        app.state_dir = state.map(Path::to_path_buf);
         app.workspace = args.workspace;
         app.sheet_collapsed = args.sheet_detent == crate::cli::SheetDetent::Title;
         app.globe.world_view = args.view;
         app.globe.flat.set_spec(args.flat_spec());
         app.safe_area = args.safe_area;
+        if let Some(view) = view {
+            app.apply_view(&view);
+        }
+        if start_screen {
+            app.workspace = Workspace::Worlds;
+        }
         Ok(app)
+    }
+
+    /// The view of the open world.
+    /// The view of the open world. On the start screen, the workspace is
+    /// the last workspace of the world, so the next start opens the world.
+    pub fn view(&self) -> View {
+        let workspace = match self.workspace {
+            Workspace::Worlds => self.world_workspace,
+            workspace => workspace,
+        };
+        View {
+            workspace,
+            world_view: self.globe.world_view,
+            globe: self.globe.view,
+            flat_spec: self.globe.flat.spec(),
+            flat_center: self.globe.flat.center,
+            flat_zoom: self.globe.flat.zoom,
+        }
+    }
+
+    /// Puts back a view of the world.
+    pub fn apply_view(&mut self, view: &View) {
+        self.workspace = view.workspace;
+        if view.workspace != Workspace::Worlds {
+            self.world_workspace = view.workspace;
+        }
+        self.globe.world_view = view.world_view;
+        self.globe.view = view.globe;
+        self.globe.flat.set_spec(view.flat_spec);
+        self.globe.flat.center = view.flat_center;
+        self.globe.flat.zoom = view.flat_zoom;
     }
 
     /// Reads an import file. A heightmap in meters and a Vale project with
@@ -543,25 +675,305 @@ impl IsothermApp {
         }
     }
 
-    /// Puts an imported terrain in the world, and shows it.
+    /// Puts an imported terrain in the world, and shows it. With no open
+    /// world file, the import makes a new world file.
     fn finish_import(&mut self, name: &str, terrain: Terrain) {
         self.pending = None;
-        match self.doc.import(name, terrain, self.data_dir.as_deref()) {
-            Ok(()) => {
-                self.globe.set_terrain(&self.doc.world.terrain.heights);
-                self.clear_run();
-                self.remember();
+        if self.doc.file.is_none() {
+            let world = World {
+                name: name.to_owned(),
+                planet: self.doc.world.planet.clone(),
+                terrain,
+            };
+            self.create_world(world);
+            self.save_thumbnail();
+            return;
+        }
+        let result = self.doc.import(name, terrain, None);
+        self.globe.set_terrain(&self.doc.world.terrain.heights);
+        self.clear_run();
+        self.saved(result);
+        self.save_thumbnail();
+    }
+
+    /// Keeps the open world file as the world of the next start.
+    pub fn remember(&self) {
+        if let (Some(dir), Some(path)) = (&self.state_dir, &self.doc.path) {
+            // The next start opens the start screen if this fails.
+            let _ = worlds::remember(dir, path, self.view());
+        }
+    }
+
+    /// Gives the run the working copy of the open world file.
+    fn set_work(&mut self, work: Option<WorkCopy>) {
+        let mut run = self.run.borrow_mut();
+        run.path = match &work {
+            Some(work) => Some(work.path().to_path_buf()),
+            None => self.doc.path.clone(),
+        };
+        run.work = work;
+    }
+
+    /// Writes the picture of the open world to its file.
+    pub fn save_thumbnail(&mut self) {
+        let Some(file) = &mut self.doc.file else {
+            return;
+        };
+        let picture = thumbnail::render(&self.doc.world.terrain, &self.globe.view, thumbnail::SIZE);
+        let result = file
+            .set_thumbnail(&picture)
+            .map_err(|e| format!("Could not save the picture of the world: {e}."));
+        self.saved(result);
+    }
+
+    /// Copies the changed working copy to iCloud Drive.
+    fn write_back(&mut self) {
+        if let Err(e) = self.run.borrow_mut().write_back(&*self.files) {
+            self.status = Some(e);
+        }
+        self.follow_source();
+    }
+
+    /// Follows the world to a new file. A write back makes a new file if
+    /// another device changed the file.
+    fn follow_source(&mut self) {
+        let moved = {
+            let run = self.run.borrow();
+            let source = run.work.as_ref().map(WorkCopy::source);
+            source
+                .filter(|source| Some(*source) != self.doc.path.as_deref())
+                .map(Path::to_path_buf)
+        };
+        if let Some(source) = moved {
+            self.doc.path = Some(source);
+            self.worlds_stale = true;
+            self.remember();
+        }
+    }
+
+    /// Saves each change of the open world: its picture, its run, and its
+    /// working copy.
+    pub fn flush(&mut self) {
+        if self.doc.file.is_none() {
+            return;
+        }
+        self.save_thumbnail();
+        if let Err(e) = self.save_run() {
+            self.status = Some(e);
+        }
+        self.write_back();
+        self.worlds_stale = true;
+    }
+
+    /// Opens a world file of the folders, at the start view in the Explore
+    /// workspace.
+    pub fn open_world(&mut self, path: &Path) {
+        self.status = None;
+        if self.doc.path.as_deref() == Some(path) {
+            // The open world comes back as the user left it.
+            self.workspace = self.world_workspace;
+            self.remember();
+            return;
+        }
+        self.flush();
+        match Document::open_in(path, self.folders.as_ref(), &*self.files) {
+            Ok((doc, work)) => self.install(doc, work),
+            Err(e) => {
+                self.status = Some(e);
+                return;
+            }
+        }
+        self.enter();
+    }
+
+    /// Makes a new world from the built-in Earth, and opens it.
+    pub fn new_world(&mut self) {
+        self.status = None;
+        match Document::sample() {
+            Ok(doc) => {
+                self.create_world(doc.world);
+                self.enter();
             }
             Err(e) => self.status = Some(e),
         }
     }
 
-    /// Keeps the open world file as the world of the next start.
-    fn remember(&self) {
-        if let (Some(dir), Some(path)) = (&self.data_dir, &self.doc.path) {
-            // The next start opens the sample world if this fails.
-            let _ = worlds::remember(dir, path);
+    /// Makes a new world from the first height layer of a Vale project,
+    /// and opens it.
+    pub fn new_from_vale(&mut self, path: &Path) {
+        self.status = None;
+        match document::vale_world(path) {
+            Ok(world) => {
+                self.create_world(world);
+                self.enter();
+            }
+            Err(e) => self.status = Some(e),
         }
+    }
+
+    /// Opens a world file from outside the folders. A copy of the file
+    /// goes to the folder of new worlds, and the copy opens.
+    pub fn open_file(&mut self, path: &Path) {
+        self.status = None;
+        let file = document::file_name(path);
+        match isotherm_store::summary(path) {
+            Ok(_) => {}
+            Err(isotherm_store::StoreError::NotAWorld)
+                if isotherm_import::vale_project::world(path).is_ok() =>
+            {
+                self.status = Some(format!(
+                    "{file} is a Vale project. Use New from Vale project…"
+                ));
+                return;
+            }
+            Err(e) => {
+                self.status = Some(format!("Could not open {file}: {e}."));
+                return;
+            }
+        }
+        let Some(folders) = &self.folders else {
+            self.open_world(path);
+            return;
+        };
+        if folders.location_of(path).is_some() {
+            self.open_world(path);
+            return;
+        }
+        let dir = folders.new_world_dir();
+        let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+        let to = worlds::new_path(dir, &stem);
+        let copy = std::fs::create_dir_all(dir).and_then(|()| {
+            self.files
+                .write(&to, &mut |to| std::fs::copy(path, to).map(drop))
+        });
+        match copy {
+            Ok(()) => {
+                self.worlds_stale = true;
+                self.open_world(&to);
+            }
+            Err(e) => self.status = Some(format!("Could not copy {file}: {e}.")),
+        }
+    }
+
+    /// Gives a world a new name. The name of the file stays.
+    pub fn rename_world(&mut self, path: &Path, name: &str) {
+        self.status = None;
+        self.worlds_stale = true;
+        if self.doc.path.as_deref() == Some(path) {
+            if let Some(file) = &mut self.doc.file {
+                let result = file
+                    .set_name(name)
+                    .map_err(|e| format!("Could not rename the world: {e}."));
+                if result.is_ok() {
+                    self.doc.world.name = name.to_owned();
+                }
+                self.saved(result);
+            }
+            return;
+        }
+        let Some(folders) = &self.folders else {
+            return;
+        };
+        if let Err(e) = folders.rename(path, name, &*self.files) {
+            self.status = Some(e);
+        }
+    }
+
+    /// Makes a copy of a world, named with " copy". Returns its path.
+    pub fn duplicate_world(&mut self, path: &Path) -> Option<PathBuf> {
+        self.status = None;
+        self.worlds_stale = true;
+        if self.doc.path.as_deref() == Some(path) {
+            self.flush();
+        }
+        let folders = self.folders.as_ref()?;
+        match folders.duplicate(path, &*self.files) {
+            Ok(to) => Some(to),
+            Err(e) => {
+                self.status = Some(e);
+                None
+            }
+        }
+    }
+
+    /// Deletes a world file. If it is the open world, the sample world
+    /// opens first, with no file.
+    pub fn delete_world(&mut self, path: &Path) {
+        self.status = None;
+        self.worlds_stale = true;
+        if self.doc.path.as_deref() == Some(path) {
+            if let Some(work) = &mut self.run.borrow_mut().work {
+                // The file goes, so the changes of the working copy go too.
+                work.forget();
+            }
+            match Document::sample() {
+                Ok(doc) => self.install(doc, None),
+                Err(e) => {
+                    self.status = Some(e);
+                    return;
+                }
+            }
+        }
+        let Some(folders) = &self.folders else {
+            return;
+        };
+        if let Err(e) = folders.delete(path, &*self.files) {
+            self.status = Some(e);
+        }
+    }
+
+    /// Makes a new world file in the folder of new worlds, and puts it in
+    /// place of the open world.
+    fn create_world(&mut self, world: World) {
+        let Some(folders) = &self.folders else {
+            self.status = Some("This device has no folder for worlds.".to_owned());
+            return;
+        };
+        let dir = folders.new_world_dir().to_path_buf();
+        let created = Document::create(world, &dir, Some(folders), &*self.files);
+        match created {
+            Ok((doc, work)) => {
+                self.flush();
+                self.install(doc, work);
+                self.remember();
+                self.worlds_stale = true;
+            }
+            Err(e) => self.status = Some(e),
+        }
+    }
+
+    /// Puts `doc` in place of the open world, with its saved run.
+    fn install(&mut self, doc: Document, work: Option<WorkCopy>) {
+        self.globe.set_terrain(&doc.world.terrain.heights);
+        let sim = restored_run(&doc, self.threaded);
+        if let Some(sim) = &sim {
+            self.quality = sim.face_size();
+        }
+        // The old database closes before its working copy goes.
+        let old = std::mem::replace(&mut self.doc, doc);
+        drop(old);
+        self.run.borrow_mut().sim = sim;
+        self.set_work(work);
+        self.set_means(None);
+        self.take_means();
+        self.overlay_shown = None;
+        self.pending = None;
+        self.ask = None;
+        self.explore.pin = None;
+    }
+
+    /// Shows the open world at the start view in the Explore workspace,
+    /// and keeps it as the world of the next start.
+    fn enter(&mut self) {
+        self.globe.view = GlobeView::centered(crate::globe::START.0, crate::globe::START.1);
+        self.workspace = Workspace::Explore;
+        let has_picture = self.run.borrow().path.as_ref().is_some_and(|db| {
+            isotherm_store::summary(db).is_ok_and(|summary| summary.thumbnail.is_some())
+        });
+        if self.doc.file.is_some() && !has_picture {
+            self.save_thumbnail();
+        }
+        self.remember();
     }
 
     pub fn undo(&mut self) {
@@ -581,6 +993,7 @@ impl IsothermApp {
                     self.globe.set_terrain(&self.doc.world.terrain.heights);
                 }
                 self.clear_run();
+                self.save_thumbnail();
             }
             Ok(None) => {}
             Err(e) => self.status = Some(e),
@@ -652,6 +1065,34 @@ impl IsothermApp {
 
     /// Draws one frame.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        let cloud = self.cloud_dir.lock().ok().and_then(|mut dir| dir.take());
+        if let (Some(dir), Some(folders)) = (cloud, &mut self.folders) {
+            folders.set_cloud(dir);
+            self.worlds_stale = true;
+        }
+        // The card of the open world shows the view of the globe when the
+        // start screen opens.
+        if self.workspace == Workspace::Worlds && self.shown_workspace != Workspace::Worlds {
+            self.save_thumbnail();
+            self.worlds_stale = true;
+        }
+        self.shown_workspace = self.workspace;
+        if self.workspace != Workspace::Worlds {
+            self.world_workspace = self.workspace;
+        }
+        if self.run.borrow().write_back_due() {
+            self.write_back();
+        } else {
+            self.follow_source();
+        }
+        let now = self
+            .doc
+            .path
+            .as_ref()
+            .map(|path| (path.clone(), self.view()));
+        if *self.resume.borrow() != now {
+            *self.resume.borrow_mut() = now;
+        }
         self.step_run(ui.ctx());
         self.sync_overlay();
         self.globe.contours = self.explore.contours;
@@ -663,6 +1104,9 @@ impl IsothermApp {
         };
         let mut controls = Controls::new();
         self.cards.clear();
+        if self.on_start() {
+            self.refresh_worlds();
+        }
         // The cards are glass when the app has a wgpu renderer.
         widgets::set_backdrop(&ctx, self.globe.backdrop());
         match self.layout {
@@ -675,18 +1119,29 @@ impl IsothermApp {
         } else {
             self.projections = false;
         }
+        if self.on_start() {
+            self.start_menu(&ctx, &mut controls, safe);
+            self.start_dialog(&ctx, &mut controls, safe);
+        } else {
+            self.start.menu = None;
+            self.start.dialog = None;
+        }
         if self.ask.is_some() {
             self.ask_card(&ctx, &mut controls, screen, safe);
         }
         self.controls = controls;
     }
 
-    /// The globe in `rect`, with the canvas below it.
+    /// The globe in `rect`, with the canvas below it. The start screen
+    /// has only the canvas.
     fn canvas(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let bands = self.doc.world.terrain.bands();
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.set_clip_rect(rect);
             ui.painter().rect_filled(rect, 0.0, theme::CANVAS);
+            if self.on_start() {
+                return;
+            }
             let resp = self.globe.show(ui, rect, theme::CANVAS, &bands);
             let at = |pos: Option<egui::Pos2>| pos.and_then(|pos| self.globe.direction_at(pos));
             self.explore.hover = match resp.hovered() && !resp.dragged() {
@@ -725,16 +1180,40 @@ impl IsothermApp {
         painter.hline(bar.x_range(), bar.bottom(), line);
         painter.vline(side.right(), side.y_range(), line);
 
-        let names = Workspace::ALL.map(Workspace::name);
-        let width = widgets::segments_width(ui, &names);
         let row = TOUCH + 2.0 * PAD;
-        let switch = Rect::from_center_size(
-            pos2(safe.center().x, safe.top() + BAR / 2.0),
-            vec2(width, row),
-        );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(switch));
-        self.switch_segments(&mut child, controls);
-        self.cards.push(("workspace-switch", switch));
+        if self.on_start() {
+            let title = pos2(safe.left() + 20.0, safe.top() + BAR / 2.0);
+            let font = theme::title();
+            painter.text(title, Align2::LEFT_CENTER, "Isotherm", font, theme::TEXT);
+        } else {
+            let names = Workspace::SWITCH.map(Workspace::name);
+            let width = widgets::segments_width(ui, &names);
+            let switch = Rect::from_center_size(
+                pos2(safe.center().x, safe.top() + BAR / 2.0),
+                vec2(width, row),
+            );
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(switch));
+            self.switch_segments(&mut child, controls);
+            self.cards.push(("workspace-switch", switch));
+            let back = Rect::from_min_size(
+                pos2(safe.left() + 8.0, safe.top() + (BAR - TOUCH) / 2.0),
+                vec2(TOUCH, TOUCH),
+            );
+            self.cards.push(("all-worlds", back));
+            if widgets::icon_button_at(
+                ui,
+                controls,
+                back,
+                ALL_WORLDS,
+                Icon::LayoutGrid,
+                false,
+                true,
+            )
+            .clicked()
+            {
+                self.workspace = Workspace::Worlds;
+            }
+        }
 
         let body = Rect::from_min_max(
             pos2(side.left() + 8.0, side.top() + CARD_PAD),
@@ -752,11 +1231,21 @@ impl IsothermApp {
                 app.panel_rows(ui, controls, true);
             },
         );
+        if self.on_start() {
+            let area = Rect::from_min_max(
+                pos2(globe.left() + 2.0 * MARGIN, globe.top()),
+                pos2(globe.right() - 2.0 * MARGIN, globe.bottom()),
+            );
+            self.start_screen(ui, controls, area, start::Header::Title);
+        }
         self.readout_card(ui.ctx(), globe.shrink(MARGIN));
     }
 
     /// The readout card at the bottom middle of `area`.
     fn readout_card(&mut self, ctx: &egui::Context, area: Rect) {
+        if self.on_start() {
+            return;
+        }
         if let Some(text) = self.readout() {
             let rect = explore::readout_card(ctx, area, &text);
             self.cards.push((explore::READOUT, rect));
@@ -781,6 +1270,48 @@ impl IsothermApp {
         // the screen.
         self.canvas(ui, screen);
 
+        if self.on_start() {
+            // The start screen has no workspace switch. A world opens from
+            // its card.
+            let area = Rect::from_min_max(
+                pos2(safe.left() + MARGIN, top),
+                pos2(safe.right() - MARGIN, safe.bottom()),
+            );
+            let header = match class {
+                WidthClass::Compact => start::Header::Narrow,
+                _ => start::Header::Wide,
+            };
+            self.start_screen(ui, controls, area, header);
+            self.menu = false;
+            return;
+        }
+        let row = TOUCH + 2.0 * PAD;
+        let back = Rect::from_min_size(pos2(safe.left() + MARGIN, top), vec2(row, row));
+        self.cards.push(("all-worlds", back));
+        widgets::card(
+            &ctx,
+            self.globe.backdrop(),
+            "all-worlds",
+            back,
+            egui::Order::Middle,
+            CornerRadius::same(255),
+            |ui| {
+                let button = Rect::from_center_size(back.center(), vec2(TOUCH, TOUCH));
+                if widgets::icon_button_at(
+                    ui,
+                    controls,
+                    button,
+                    ALL_WORLDS,
+                    Icon::LayoutGrid,
+                    false,
+                    true,
+                )
+                .clicked()
+                {
+                    self.workspace = Workspace::Worlds;
+                }
+            },
+        );
         let switch = self.switch_rect(ui, safe, class, top);
         let backdrop = self.globe.backdrop();
         let current = self.workspace;
@@ -863,10 +1394,10 @@ impl IsothermApp {
 
     /// The segmented list of the workspaces, in the max rect of `ui`.
     fn switch_segments(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
-        let items: Vec<(&str, bool)> = Workspace::ALL.iter().map(|w| (w.name(), true)).collect();
-        let active = Workspace::ALL.iter().position(|&w| w == self.workspace);
+        let items: Vec<(&str, bool)> = Workspace::SWITCH.iter().map(|w| (w.name(), true)).collect();
+        let active = Workspace::SWITCH.iter().position(|&w| w == self.workspace);
         if let Some(index) = widgets::segments(ui, controls, &items, active.unwrap_or(0)) {
-            self.workspace = Workspace::ALL[index];
+            self.workspace = Workspace::SWITCH[index];
         }
     }
 
@@ -1047,16 +1578,15 @@ impl IsothermApp {
         if self.workspace == Workspace::Planet {
             self.planet_rows(ui, controls);
         }
+        if self.workspace == Workspace::Worlds {
+            self.start_rows(ui, controls);
+        }
         if self.workspace.has_view() {
             self.view_rows(ui, controls);
         }
         if hint && let Some(text) = self.workspace.hint() {
             ui.add_space(8.0);
             wrapped(ui, text, theme::body(), theme::TEXT);
-            if self.workspace == Workspace::Worlds {
-                ui.add_space(4.0);
-                wrapped(ui, &self.build, theme::hint(), theme::MUTE);
-            }
         }
     }
 
@@ -1076,7 +1606,7 @@ impl IsothermApp {
             }
             None => {
                 if widgets::button_row(ui, controls, IMPORT, true).clicked() {
-                    self.pick = true;
+                    self.pick = Some(Pick::Import);
                 }
                 self.sea_row(ui, controls);
             }
@@ -1230,9 +1760,10 @@ impl IsothermApp {
         }
         if resp.released
             && let Some(old) = self.sea_start.take()
-            && let Err(e) = self.doc.save_sea_level(old)
         {
-            self.status = Some(e);
+            let result = self.doc.save_sea_level(old);
+            self.saved(result);
+            self.save_thumbnail();
         }
     }
 
@@ -1428,10 +1959,12 @@ impl IsothermApp {
     fn switch_rect(&self, ui: &egui::Ui, safe: Rect, class: WidthClass, top: f32) -> Rect {
         let row = TOUCH + 2.0 * PAD;
         if class == WidthClass::Compact {
+            // The menu button is right of the button of all worlds.
             let width = widgets::menu_button_width(ui, self.workspace.name());
-            return Rect::from_min_size(pos2(safe.left() + MARGIN, top), vec2(width, row));
+            let left = safe.left() + MARGIN + row + 8.0;
+            return Rect::from_min_size(pos2(left, top), vec2(width, row));
         }
-        let names = Workspace::ALL.map(Workspace::name);
+        let names = Workspace::SWITCH.map(Workspace::name);
         let width = widgets::segments_width(ui, &names);
         Rect::from_min_size(pos2(safe.center().x - width / 2.0, top), vec2(width, row))
     }
@@ -1439,7 +1972,7 @@ impl IsothermApp {
     /// The menu of the workspaces below the menu button.
     fn workspace_menu(&mut self, ctx: &egui::Context, controls: &mut Controls, button: Rect) {
         let inset = widgets::menu_inset();
-        let height = 2.0 * inset.y + Workspace::ALL.len() as f32 * PANEL_ROW;
+        let height = 2.0 * inset.y + Workspace::SWITCH.len() as f32 * PANEL_ROW;
         let at = pos2(button.left(), button.bottom() + 8.0);
         let rect = Rect::from_min_size(at, vec2(MENU_WIDTH, height));
         let pressed = ctx.input(|i| {
@@ -1458,7 +1991,7 @@ impl IsothermApp {
         let origin = button.center().clamp(rect.min, rect.max);
         let backdrop = widgets::backdrop(ctx);
         widgets::menu_card(ctx, backdrop, "workspace-menu", rect, origin, |ui| {
-            for workspace in Workspace::ALL {
+            for workspace in Workspace::SWITCH {
                 let on = workspace == current;
                 let name = workspace.name();
                 if widgets::text_row(ui, controls, name, 0.0, on, true).clicked() {
@@ -1473,21 +2006,16 @@ impl IsothermApp {
     }
 
     /// The card with the empty state of the workspace, at the bottom of the
-    /// screen. The Worlds workspace also shows which build this is.
+    /// screen.
     fn hint_card(&mut self, ui: &egui::Ui, safe: Rect) {
         let Some(hint) = self.workspace.hint() else {
             return;
         };
-        let build = (self.workspace == Workspace::Worlds).then_some(self.build.as_str());
         let pad = widgets::BODY_PAD;
-        let mut width = widgets::text_width(ui, hint, theme::body());
-        if let Some(build) = build {
-            width = width.max(widgets::text_width(ui, build, theme::hint()));
-        }
+        let width = widgets::text_width(ui, hint, theme::body());
         let width = (width + 2.0 * pad).min(safe.width() - 2.0 * MARGIN);
         let line = 24.0;
-        let lines = if build.is_some() { 2.0 } else { 1.0 };
-        let height = lines * line + 2.0 * 12.0;
+        let height = line + 2.0 * 12.0;
         let rect = Rect::from_min_size(
             pos2(
                 safe.center().x - width / 2.0,
@@ -1511,9 +2039,6 @@ impl IsothermApp {
                     ui.put(rect, egui::Label::new(label).truncate());
                 };
                 text(ui, body.top(), hint, theme::body(), theme::TEXT);
-                if let Some(build) = build {
-                    text(ui, body.top() + line, build, theme::hint(), theme::MUTE);
-                }
             },
         );
     }
@@ -1523,22 +2048,55 @@ impl IsothermApp {
     pub fn run_picker(&mut self) {
         #[cfg(target_os = "ios")]
         {
-            for path in self.picked.take() {
-                self.import_path(&path);
+            let paths = self.picked.take();
+            if !paths.is_empty() {
+                let pick = self.picking.take().unwrap_or(Pick::Import);
+                for path in paths {
+                    self.picked_file(pick, &path);
+                }
             }
-            if std::mem::take(&mut self.pick)
+            if let Some(pick) = self.pick.take()
                 && let Some(picker) = &self.picker
             {
-                picker.pick(&["public.png", "public.tiff", "org.opengeospatial.geopackage"]);
+                let types: &[&str] = match pick {
+                    Pick::Import => &["public.png", "public.tiff", GEOPACKAGE],
+                    Pick::Open | Pick::ValeProject => &[GEOPACKAGE],
+                };
+                if picker.pick(types) {
+                    self.picking = Some(pick);
+                }
             }
         }
         #[cfg(not(target_os = "ios"))]
-        if std::mem::take(&mut self.pick)
-            && let Some(path) = vale_shell::picker::pick_file("Heightmap", &IMPORT_TYPES)
-        {
-            self.import_path(&path);
+        if let Some(pick) = self.pick.take() {
+            let path = match pick {
+                Pick::Import => vale_shell::picker::pick_file("Heightmap", &IMPORT_TYPES),
+                Pick::Open => vale_shell::picker::pick_file("World", &[worlds::EXTENSION]),
+                Pick::ValeProject => {
+                    vale_shell::picker::pick_file("Vale project", &[worlds::EXTENSION])
+                }
+            };
+            if let Some(path) = path {
+                self.picked_file(pick, &path);
+            }
         }
     }
+
+    /// Uses a file that the file picker gave.
+    pub fn picked_file(&mut self, pick: Pick, path: &Path) {
+        match pick {
+            Pick::Import => self.import_path(path),
+            Pick::Open => self.open_file(path),
+            Pick::ValeProject => self.new_from_vale(path),
+        }
+    }
+}
+
+/// The run that a world file keeps. A saved run opens at its own size,
+/// also a size that this device does not offer for a new run.
+fn restored_run(doc: &Document, threaded: bool) -> Option<Simulation> {
+    let saved = doc.file.as_ref()?.load_run().ok().flatten()?;
+    Simulation::restore(&doc.world, saved, threaded).ok()
 }
 
 /// A text that wraps to the width of `ui`.
@@ -1652,7 +2210,9 @@ impl eframe::App for IsothermApp {
     }
 
     fn on_exit(&mut self) {
-        if let Err(e) = self.save_run() {
+        self.flush();
+        self.remember();
+        if let Some(e) = &self.status {
             eprintln!("isotherm-app: {e}");
         }
     }

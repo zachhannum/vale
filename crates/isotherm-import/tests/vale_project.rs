@@ -1,4 +1,4 @@
-use isotherm_import::vale_project::{height_layers, read_layer};
+use isotherm_import::vale_project::{ValeWorld, height_layers, read_layer, world};
 use vale_store::{
     GeometryKind, HEIGHT_UNIT, Project, ProjectFile, TILE_SIZE, TileChanges, TileKey, World,
 };
@@ -42,4 +42,26 @@ fn the_height_layers_of_a_vale_project_are_listed_and_read() {
     assert_eq!(terrain.sea_level_m, 0.0);
     assert_eq!(terrain.heights.get(2, TILE_SIZE as i64 + 5, 7), 40000);
     assert_eq!(terrain.heights.get(2, 5, 7), 0);
+}
+
+#[test]
+fn the_name_and_the_radius_of_a_vale_world_are_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.gpkg");
+    let project = Project::new(World {
+        name: "Aster".into(),
+        radius_km: 3000.0,
+        ..World::default()
+    });
+    ProjectFile::create(&path, &project).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let got = world(&path).unwrap();
+    assert_eq!(
+        got,
+        ValeWorld {
+            name: "Aster".into(),
+            radius_m: 3_000_000.0,
+        }
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

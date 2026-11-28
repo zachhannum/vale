@@ -62,7 +62,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 
 Isotherm is in its phase 0, the specification and the skeleton. The phase table in `docs/isotherm/DESIGN.md` gives the order of the work. The GitHub issues of Isotherm have the label `isotherm`. When a phase is done, update this section.
 
-The app `isotherm-app` opens on a globe with a sample heightmap of the Earth. It has the workspace switch, and the Worlds, Planet, and Export workspaces show a hint. This command opens the window:
+The app `isotherm-app` opens the world of the last run, at its last view. On the first start, it opens the start screen, which lists the world files with a picture of each globe. The start screen makes a world from the built-in Earth or from a Vale project. On iOS, the worlds are in a local folder and in iCloud Drive. The Export workspace shows a hint. This command opens the window:
 
 ```sh
 cargo run --release -p isotherm-app

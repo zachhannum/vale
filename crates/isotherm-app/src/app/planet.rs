@@ -259,9 +259,9 @@ impl IsothermApp {
         }
         if resp.released
             && let Some(old) = self.planet_start.take()
-            && let Err(e) = self.doc.save_planet(&old)
         {
-            self.status = Some(e);
+            let result = self.doc.save_planet(&old);
+            self.saved(result);
         }
     }
 }

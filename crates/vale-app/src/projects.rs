@@ -4,9 +4,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use vale_shell::files::{listed, placeholder_of, real_path};
 use vale_store::{ProjectFile, StoreError, Thumbnail};
 
-use crate::files::{Availability, Files, Version};
+use crate::files::{Availability, Files, PlainFiles, Version};
 use crate::session::{EXTENSION, new_project_path};
 
 /// The file in the state folder that holds the recent list.
@@ -14,9 +15,6 @@ const RECENT_FILE: &str = "recent.txt";
 /// The file in the state folder that holds the location of the last new
 /// world.
 const CHOICE_FILE: &str = "location.txt";
-/// The extension of the file that iCloud Drive keeps in place of a file
-/// that is not on the device. The name of that file starts with a dot.
-const PLACEHOLDER: &str = "icloud";
 
 /// The folder in the state folder that holds the working copies.
 const WORK_DIR: &str = "work";
@@ -177,10 +175,10 @@ impl Locations {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy();
             std::fs::rename(path, new_project_path(local, &stem)).is_ok()
         };
-        let old = project_paths(state).into_iter();
-        old.filter(|path| placeholder_target(path).is_none())
-            .filter(moved)
-            .count()
+        // A placeholder of iCloud Drive is not on the device.
+        let old = listed(state, EXTENSION, &PlainFiles).into_iter();
+        let old = old.filter(|(_, availability)| *availability == Availability::Here);
+        old.map(|(path, _)| path).filter(moved).count()
     }
 
     /// The folder of the working copies.
@@ -213,9 +211,7 @@ impl Locations {
         let mut entries = Vec::new();
         for location in Location::ALL {
             if let Some(dir) = self.dir(location) {
-                for path in project_paths(dir) {
-                    let availability = availability(&path, files);
-                    let path = placeholder_target(&path).unwrap_or(path);
+                for (path, availability) in listed(dir, EXTENSION, files) {
                     entries.push(Entry::unread(path, location, availability));
                 }
             }
@@ -224,73 +220,21 @@ impl Locations {
     }
 }
 
-/// The path with no symbolic link in its folder. The path of a file from
-/// the system can name the same folder in a different way.
-fn real_path(path: &Path) -> PathBuf {
-    if let Ok(real) = std::fs::canonicalize(path) {
-        return real;
-    }
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
-    match (absolute.parent(), absolute.file_name()) {
-        (Some(dir), Some(name)) => match std::fs::canonicalize(dir) {
-            Ok(dir) => dir.join(name),
-            Err(_) => absolute,
-        },
-        _ => absolute,
-    }
-}
-
-/// The project file that a placeholder of iCloud Drive stands for.
-fn placeholder_target(path: &Path) -> Option<PathBuf> {
-    let name = path.file_name()?.to_str()?;
-    let name = name.strip_prefix('.')?;
-    let name = name.strip_suffix(PLACEHOLDER)?.strip_suffix('.')?;
-    let target = path.with_file_name(name);
-    (target.extension().is_some_and(|e| e == EXTENSION)).then_some(target)
-}
-
-/// The placeholder of iCloud Drive for a project file.
-fn placeholder_of(path: &Path) -> Option<PathBuf> {
-    let name = path.file_name()?.to_str()?;
-    Some(path.with_file_name(format!(".{name}.{PLACEHOLDER}")))
-}
-
-/// The project files and the placeholders of a folder. A placeholder of a
-/// file that is in the folder is not in the list.
-fn project_paths(dir: &Path) -> Vec<PathBuf> {
-    let Ok(files) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let project = |path: &PathBuf| match placeholder_target(path) {
-        Some(target) => !target.exists(),
-        None => path.extension().is_some_and(|e| e == EXTENSION) && path.is_file(),
-    };
-    let paths = files.filter_map(|file| Some(file.ok()?.path()));
-    paths.filter(project).collect()
-}
-
-fn availability(path: &Path, files: &dyn Files) -> Availability {
-    match placeholder_target(path) {
-        Some(target) => match files.availability(&target) {
-            Availability::Here => Availability::InCloud,
-            other => other,
-        },
-        None => files.availability(path),
-    }
-}
-
 fn list_dir(dir: &Path, location: Location, files: &dyn Files) -> Vec<Entry> {
-    let entry_of = |path: PathBuf| match availability(&path, files) {
-        availability @ (Availability::Here | Availability::Stale) => Entry {
+    let entry_of = |(path, availability): (PathBuf, Availability)| match availability {
+        Availability::Here | Availability::Stale => Entry {
             location,
             availability,
             conflicts: files.conflicts(&path),
             ..entry(&path)
         },
         // A read of a file that is not on the device waits for its download.
-        other => Entry::unread(placeholder_target(&path).unwrap_or(path), location, other),
+        other => Entry::unread(path, location, other),
     };
-    project_paths(dir).into_iter().map(entry_of).collect()
+    listed(dir, EXTENSION, files)
+        .into_iter()
+        .map(entry_of)
+        .collect()
 }
 
 fn sort(entries: &mut [Entry]) {

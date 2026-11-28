@@ -33,6 +33,14 @@ targets:
         # The Files app shows the Documents folder, with the world files.
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        # The Files app shows the iCloud container of the app as
+        # "iCloud Drive > Isotherm". The system reads this key again only
+        # when CFBundleVersion changes.
+        NSUbiquitousContainers:
+          iCloud.dev.vale.isotherm:
+            NSUbiquitousContainerIsDocumentScopePublic: true
+            NSUbiquitousContainerName: Isotherm
+            NSUbiquitousContainerSupportedFolderLevels: Any
         CFBundleDocumentTypes:
           - CFBundleTypeName: Isotherm world
             CFBundleTypeRole: Editor
@@ -62,9 +70,16 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+    # A build with no iCloud entitlement has the local folder only.
     entitlements:
       path: IsothermApp.entitlements
       properties:
+        com.apple.developer.icloud-container-identifiers:
+          - iCloud.dev.vale.isotherm
+        com.apple.developer.ubiquity-container-identifiers:
+          - iCloud.dev.vale.isotherm
+        com.apple.developer.icloud-services:
+          - CloudDocuments
         # On a device with enough RAM, iOS stops the app at a higher footprint.
         # The App ID needs the capability "Increased Memory Limit".
         com.apple.developer.kernel.increased-memory-limit: true

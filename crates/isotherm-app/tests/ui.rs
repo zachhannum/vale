@@ -2,21 +2,53 @@
 
 use eframe::egui;
 use egui_kittest::kittest::Queryable;
-use isotherm_app::app::{WORKSPACE_MENU, Workspace};
+use isotherm_app::app::{ALL_WORLDS, WORKSPACE_MENU, Workspace};
 use isotherm_app::headless::harness;
 
-const NAMES: [&str; 6] = [
-    "Worlds", "Terrain", "Planet", "Simulate", "Explore", "Export",
-];
+const NAMES: [&str; 5] = ["Terrain", "Planet", "Simulate", "Explore", "Export"];
 
 #[test]
-fn the_ipad_switch_shows_all_six_workspaces() {
+fn the_ipad_switch_shows_the_five_workspaces_of_a_world() {
     let mut harness = harness((1194.0, 834.0));
     harness.run_steps(2);
     for name in NAMES {
         harness.get_by_label(name);
     }
+    assert!(harness.query_by_label("Worlds").is_none());
     assert!(harness.query_by_label(WORKSPACE_MENU).is_none());
+}
+
+#[test]
+fn the_start_screen_has_no_workspace_switch() {
+    for (size, layout) in [
+        ((1194.0, 834.0), Layout::Pad),
+        ((393.0, 852.0), Layout::Pad),
+        ((1440.0, 900.0), Layout::Desktop),
+    ] {
+        let mut app = isotherm_app::app::IsothermApp::sample(layout).unwrap();
+        app.workspace = Workspace::Worlds;
+        let mut harness = isotherm_app::headless::harness_with(size, app);
+        harness.run_steps(2);
+        for name in NAMES.iter().chain(&[WORKSPACE_MENU, ALL_WORLDS]) {
+            assert!(harness.query_by_label(name).is_none(), "{name} at {size:?}");
+        }
+    }
+}
+
+#[test]
+fn all_worlds_opens_the_start_screen_in_each_layout() {
+    for (size, layout) in [
+        ((1194.0, 834.0), Layout::Pad),
+        ((393.0, 852.0), Layout::Pad),
+        ((1440.0, 900.0), Layout::Desktop),
+    ] {
+        let app = isotherm_app::app::IsothermApp::sample(layout).unwrap();
+        let mut harness = isotherm_app::headless::harness_with(size, app);
+        harness.run_steps(2);
+        harness.get_by_label(ALL_WORLDS).click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().workspace, Workspace::Worlds, "{size:?}");
+    }
 }
 
 #[test]
@@ -49,7 +81,7 @@ fn the_phone_switch_is_one_menu_button() {
 fn the_worlds_workspace_shows_the_build() {
     let mut harness = harness((1194.0, 834.0));
     harness.run_steps(2);
-    harness.get_by_label("Worlds").click();
+    harness.get_by_label(ALL_WORLDS).click();
     harness.run_steps(2);
     harness.get_by_label(&isotherm_app::build::label());
 }
@@ -195,7 +227,11 @@ fn phone_safe_area() -> egui::SafeAreaInsets {
 /// worlds.
 fn app_in(dir: &std::path::Path, workspace: Workspace) -> IsothermApp {
     let mut app = IsothermApp::sample(Layout::Pad).unwrap();
-    app.data_dir = Some(dir.to_path_buf());
+    app.folders = Some(isotherm_app::worlds::Folders::new(
+        dir.to_path_buf(),
+        dir.to_path_buf(),
+    ));
+    app.state_dir = Some(dir.to_path_buf());
     app.workspace = workspace;
     app
 }
@@ -294,7 +330,8 @@ fn an_8_bit_png_asks_for_black_and_white_and_makes_a_world_file() {
     assert_eq!(app.doc.world.terrain.high_m, 8000.0);
     assert_eq!(app.globe.uploads(), 2);
     // The next start opens this world.
-    assert_eq!(isotherm_app::worlds::last_world(dir.path()), Some(path));
+    let last = isotherm_app::worlds::last_world(dir.path()).map(|(path, _)| path);
+    assert_eq!(last, Some(path));
     h.get_by_label(IMPORT);
 }
 
@@ -483,6 +520,21 @@ fn check_layout(
     let mut app = IsothermApp::sample(layout).unwrap();
     app.workspace = workspace;
     app.safe_area = safe_area;
+    // The start screen lists the worlds of a local folder and of iCloud
+    // Drive.
+    let dir = tempfile::tempdir().unwrap();
+    if workspace == Workspace::Worlds {
+        let local = dir.path().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(dir.path().join("cloud")).unwrap();
+        for name in ["Borea", "Austral", "Meridian"] {
+            let world = isotherm_world::World::flat(name, isotherm_world::Planet::earth(), 16);
+            isotherm_store::WorldFile::create(local.join(format!("{name}.gpkg")), &world).unwrap();
+        }
+        let mut folders = isotherm_app::worlds::Folders::new(local, dir.path().join("state"));
+        folders.set_cloud(Some(dir.path().join("cloud")));
+        app.folders = Some(folders);
+    }
     let mut h = harness_with(size, app);
     h.run_steps(4);
     let what = format!("{workspace:?} at {size:?} in {layout:?}");
@@ -500,6 +552,13 @@ fn check_layout(
     }
     if let Some(hint) = workspace.hint() {
         h.get_by_label(hint);
+    }
+    if workspace == Workspace::Worlds {
+        for name in ["Borea", "Austral", "Meridian"] {
+            h.get_by_label(&isotherm_app::app::open_name(name));
+        }
+        h.get_by_label(isotherm_app::app::NEW_WORLD);
+        h.get_by_label(isotherm_app::worlds::Location::Cloud.label(size.0 < 600.0));
     }
     if workspace == Workspace::Terrain {
         h.get_by_label(IMPORT);

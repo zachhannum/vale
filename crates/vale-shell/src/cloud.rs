@@ -1,0 +1,234 @@
+//! The file services of iOS for a folder of iCloud Drive: file
+//! coordination, the versions of a file, and the iCloud container of the
+//! app.
+
+use std::cell::{Cell, RefCell};
+use std::io;
+use std::path::{Path, PathBuf};
+use std::ptr::NonNull;
+use std::time::{Duration, SystemTime};
+
+use block2::{RcBlock, StackBlock};
+use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
+use objc2_foundation::{
+    NSError, NSFileCoordinator, NSFileCoordinatorReadingOptions, NSFileCoordinatorWritingOptions,
+    NSFileManager, NSFileVersion, NSFileVersionReplacingOptions, NSNotification,
+    NSNotificationCenter, NSNotificationName, NSNumber, NSString, NSURL,
+    NSURLUbiquitousItemDownloadingStatusCurrent, NSURLUbiquitousItemDownloadingStatusKey,
+    NSURLUbiquitousItemDownloadingStatusNotDownloaded, NSURLUbiquitousItemIsDownloadingKey,
+};
+use objc2_ui_kit::UIApplicationDidBecomeActiveNotification;
+
+use crate::files::{Availability, Files, Version};
+
+fn url_of(path: &Path) -> io::Result<Retained<NSURL>> {
+    NSURL::from_file_path(path).ok_or_else(|| io::ErrorKind::InvalidInput.into())
+}
+
+fn io_error(error: Retained<NSError>) -> io::Error {
+    io::Error::other(error.localizedDescription().to_string())
+}
+
+/// One resource value of a file. `None`: the file does not have the value.
+fn resource(url: &NSURL, key: &NSString) -> Option<Retained<AnyObject>> {
+    let mut value = None;
+    // SAFETY: `key` is a resource key of the system, and `value` gets an
+    // object or stays empty.
+    unsafe { url.getResourceValue_forKey_error(&mut value, key) }.ok()?;
+    value
+}
+
+/// Runs `f` in a coordinated read or write of a file.
+fn coordinate(
+    path: &Path,
+    write: bool,
+    f: &mut dyn FnMut(&Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let url = url_of(path)?;
+    let f = RefCell::new(f);
+    let result: Cell<Option<io::Result<()>>> = Cell::new(None);
+    let (f, result) = (&f, &result);
+    let block = StackBlock::new(move |url: NonNull<NSURL>| {
+        // SAFETY: the coordinator gives a live URL for the time of the call.
+        let path = unsafe { url.as_ref() }.to_file_path();
+        let done = match (path, f.try_borrow_mut()) {
+            (Some(path), Ok(mut f)) => (*f)(&path),
+            _ => Err(io::ErrorKind::InvalidInput.into()),
+        };
+        result.set(Some(done));
+    });
+    let coordinator = NSFileCoordinator::new();
+    let mut error = None;
+    if write {
+        coordinator.coordinateWritingItemAtURL_options_error_byAccessor(
+            &url,
+            NSFileCoordinatorWritingOptions(0),
+            Some(&mut error),
+            &block,
+        );
+    } else {
+        coordinator.coordinateReadingItemAtURL_options_error_byAccessor(
+            &url,
+            NSFileCoordinatorReadingOptions(0),
+            Some(&mut error),
+            &block,
+        );
+    }
+    match (result.take(), error) {
+        (Some(done), _) => done,
+        (None, Some(error)) => Err(io_error(error)),
+        (None, None) => Err(io::Error::other("The system did not give the file.")),
+    }
+}
+
+/// The versions of a file that wait for a choice.
+fn conflict_versions(url: &NSURL) -> Vec<Retained<NSFileVersion>> {
+    let versions = NSFileVersion::unresolvedConflictVersionsOfItemAtURL(url);
+    versions.map(|list| list.to_vec()).unwrap_or_default()
+}
+
+/// The file services of iOS.
+pub struct CloudFiles;
+
+impl Files for CloudFiles {
+    fn availability(&self, path: &Path) -> Availability {
+        let Ok(url) = url_of(path) else {
+            return Availability::Here;
+        };
+        // SAFETY: the statics are constants of Foundation.
+        let (status_key, downloading_key, current, not_downloaded) = unsafe {
+            (
+                NSURLUbiquitousItemDownloadingStatusKey,
+                NSURLUbiquitousItemIsDownloadingKey,
+                NSURLUbiquitousItemDownloadingStatusCurrent,
+                NSURLUbiquitousItemDownloadingStatusNotDownloaded,
+            )
+        };
+        let status = resource(&url, status_key).and_then(|v| v.downcast::<NSString>().ok());
+        // A file with no status is not in the sync service.
+        let Some(status) = status else {
+            return Availability::Here;
+        };
+        if &*status == current {
+            return Availability::Here;
+        }
+        if &*status != not_downloaded {
+            return Availability::Stale;
+        }
+        let downloading =
+            resource(&url, downloading_key).and_then(|v| v.downcast::<NSNumber>().ok());
+        if downloading.is_some_and(|number| number.as_bool()) {
+            Availability::Downloading
+        } else {
+            Availability::InCloud
+        }
+    }
+
+    fn start_download(&self, path: &Path) -> io::Result<()> {
+        let url = url_of(path)?;
+        let manager = NSFileManager::defaultManager();
+        manager
+            .startDownloadingUbiquitousItemAtURL_error(&url)
+            .map_err(io_error)
+    }
+
+    fn conflicts(&self, path: &Path) -> Vec<Version> {
+        let Ok(url) = url_of(path) else {
+            return Vec::new();
+        };
+        let version = |version: Retained<NSFileVersion>| {
+            let device = version.localizedNameOfSavingComputer();
+            let since = version
+                .modificationDate()
+                .map(|d| d.timeIntervalSince1970());
+            let since = since.and_then(|secs| Duration::try_from_secs_f64(secs).ok());
+            Version {
+                device: device.map_or_else(|| "another device".to_string(), |d| d.to_string()),
+                modified: since.map(|since| SystemTime::UNIX_EPOCH + since),
+            }
+        };
+        conflict_versions(&url).into_iter().map(version).collect()
+    }
+
+    fn resolve(&self, path: &Path, keep: Option<usize>) -> io::Result<()> {
+        coordinate(path, true, &mut |path| {
+            let url = url_of(path)?;
+            let versions = conflict_versions(&url);
+            if let Some(index) = keep {
+                let version = versions.get(index).ok_or(io::ErrorKind::NotFound)?;
+                version
+                    .replaceItemAtURL_options_error(&url, NSFileVersionReplacingOptions(0))
+                    .map_err(io_error)?;
+            }
+            for version in &versions {
+                version.setResolved(true);
+            }
+            NSFileVersion::removeOtherVersionsOfItemAtURL_error(&url).map_err(io_error)
+        })
+    }
+
+    fn read(&self, path: &Path, f: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
+        coordinate(path, false, f)
+    }
+
+    fn write(&self, path: &Path, f: &mut dyn FnMut(&Path) -> io::Result<()>) -> io::Result<()> {
+        coordinate(path, true, f)
+    }
+
+    fn with_access(&self, path: &Path, f: &mut dyn FnMut() -> io::Result<()>) -> io::Result<()> {
+        let url = url_of(path)?;
+        // SAFETY: each start that returns `true` has one stop.
+        let scoped = unsafe { url.startAccessingSecurityScopedResource() };
+        let result = f();
+        if scoped {
+            // SAFETY: see above.
+            unsafe { url.stopAccessingSecurityScopedResource() };
+        }
+        result
+    }
+
+    fn for_thread(&self) -> Option<Box<dyn Files + Send>> {
+        Some(Box::new(CloudFiles))
+    }
+}
+
+/// The Documents folder of the iCloud container. `None`: the device has no
+/// iCloud account, or the build has no iCloud entitlement. The call can
+/// take a long time, so it must not run on the main thread.
+pub fn container_documents() -> Option<PathBuf> {
+    let manager = NSFileManager::defaultManager();
+    manager.ubiquityIdentityToken()?;
+    let container = manager.URLForUbiquityContainerIdentifier(None)?;
+    let dir = container.to_file_path()?.join("Documents");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Observes a notification of the app for the life of the process.
+pub fn observe(name: &NSNotificationName, f: impl Fn(&NSNotification) + 'static) {
+    let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
+        // SAFETY: the center gives a live notification for the time of the
+        // call.
+        f(unsafe { notification.as_ref() });
+    });
+    let center = NSNotificationCenter::defaultCenter();
+    // SAFETY: the block is `'static`, and it runs on the thread that posts
+    // the notification. UIKit posts these notifications on the main thread.
+    let token = unsafe {
+        center.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+    };
+    std::mem::forget(token);
+}
+
+/// Gives `f` the Documents folder of the iCloud container each time the
+/// app becomes active, from a worker thread. The account of the device can
+/// change while the app is in the background. Call it on the main thread.
+pub fn watch_container(f: impl Fn(Option<PathBuf>) + Clone + Send + 'static) {
+    // SAFETY: the static is a constant of UIKit.
+    let active = unsafe { UIApplicationDidBecomeActiveNotification };
+    observe(active, move |_| {
+        let f = f.clone();
+        std::thread::spawn(move || f(container_documents()));
+    });
+}

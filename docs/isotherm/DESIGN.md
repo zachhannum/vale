@@ -94,7 +94,7 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 | `vale-store` | Reads the height layers of a Vale project for the import. The world file of Isotherm copies the GeoPackage and the undo log of `vale-store` as a pattern. Its tables have the prefix `isotherm_`. |
 | `vale-globe` | The globe renderer, navigation, and the flat view. |
 | `vale-shell` pad module and backdrop | The theme, the touch-size widgets, and the glass cards. Each card, menu, and hint is glass over the globe when the app has a wgpu renderer. The panels of Vale stay in `vale-app`. |
-| `vale-shell` lifecycle, working copy, and resume file | Save on background, the working copy, and the restore of the last session on iOS. Each app gives its own project file and its own view. |
+| `vale-shell` lifecycle, working copy, resume file, and iCloud files | Save on background, the working copy, the restore of the last session, and the iCloud Drive folder on iOS. Each app gives its own project file and its own view. |
 | `vale-app/src/headless.rs`, `cli.rs` (copied as a pattern) | The headless flags `--screenshot`, `--export`, `--size`, and `--layout pad`. |
 | `vale-app/ios` (copied as a pattern) | `project.yml` for xcodegen, `build-rust.sh`, `toolchain.cmake` for PROJ, and the app icon setup. |
 | `.github/workflows/ios.yml` and `scripts/testflight` (extended) | The same workflows build both apps. Each app has its own bundle ID and its own TestFlight app. A path filter skips the build of an app that a PR does not touch. |
@@ -241,12 +241,21 @@ The UI follows the rules of Vale: iPad first, touch-size controls, the theme of 
 
 | Workspace | Content |
 | --- | --- |
-| Worlds | The start screen, with a picture of each world, as in Vale |
 | Terrain | Import of the heightmap, the heights of black and white, and the sea level slider |
 | Planet | Star, orbit, rotation, atmosphere, and moons, with presets that we design |
 | Simulate | Run, pause, speed, the year counter, the energy flow chart, and the quality setting |
 | Explore | The output layers, the month slider, contours, the readout, and the habitability profile |
 | Export | GeoJSON, GeoPackage, GeoTIFF, PNG maps and posters, animations, and the Vale project |
+
+### The worlds
+
+The start screen is a separate screen, as in Vale, and it has no workspace switch. The "All worlds" button at the left of the top row of a world opens it. The start screen shows a card for each world file, with a picture of the globe, the name, and the date of the last change. A tap on a card opens the world. A tap on the card of the open world goes back to the world as you left it. The actions of a card rename, duplicate, and delete the world. The buttons of the header make a new world from the built-in Earth, make a new world from a Vale project, and open a world file from another folder.
+
+A new world from a Vale project takes the first height layer, the radius, and the name of the Vale world. The app only reads the Vale file.
+
+On iOS, the worlds are in a local folder and in the iCloud Drive folder of the app, and the Files app shows both. A world in iCloud Drive opens through a working copy, as in Vale, and the app writes the copy back to iCloud Drive. A segmented control of the start screen picks the folder of a new world. On the desktop, the worlds are in one local folder.
+
+The app opens the world of the last run, at its last workspace and its last view. With no world of the last run, the app opens the start screen. The world file keeps its picture, and the app makes the picture again when it leaves the world.
 
 ### The terrain
 
