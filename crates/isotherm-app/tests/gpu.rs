@@ -5,6 +5,7 @@ mod zonal;
 
 use eframe::egui;
 use isotherm_app::app::{IsothermApp, Layout, Workspace};
+use isotherm_app::explore::Layer;
 use isotherm_app::globe::WorldView;
 use isotherm_app::headless::{PIXELS_PER_POINT, gpu_harness, gpu_harness_with};
 use vale_shell::pad::theme;
@@ -225,6 +226,29 @@ fn the_equator_is_warmer_in_color_than_the_pole() {
         let pole = place(&image, &app, 10.0, 75.0);
         assert!(
             warmth(equator) > warmth(pole) + 80,
+            "{view:?}: equator {equator:?}, pole {pole:?}"
+        );
+    }
+}
+
+/// The smallest channel: larger for a whiter color.
+fn whiteness(p: image::Rgba<u8>) -> i32 {
+    i32::from(p.0[0].min(p.0[1]).min(p.0[2]))
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_ice_layer_is_whiter_at_the_pole_than_at_the_equator() {
+    for view in [WorldView::Globe, WorldView::Flat] {
+        let mut app = explore_app(view, false);
+        app.set_means(Some(zonal::zonal_means_with_ice()));
+        app.explore.layer = Layer::IceCover;
+        app.globe.coastline = false;
+        let (image, app) = render_app(app);
+        let equator = place(&image, &app, 10.0, 2.0);
+        let pole = place(&image, &app, 10.0, 75.0);
+        assert!(
+            whiteness(pole) > whiteness(equator) + 80,
             "{view:?}: equator {equator:?}, pole {pole:?}"
         );
     }

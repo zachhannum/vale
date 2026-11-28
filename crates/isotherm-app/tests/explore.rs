@@ -5,12 +5,14 @@ mod zonal;
 
 use eframe::egui;
 use egui_kittest::kittest::Queryable;
-use isotherm_app::app::{CONTOURS, IsothermApp, Layout, MONTH, RUN_HINT, TEMPERATURE, Workspace};
-use isotherm_app::explore::{self, READOUT};
+use isotherm_app::app::{
+    CONTOURS, ICE_COVER, IsothermApp, Layout, MONTH, RUN_HINT, TEMPERATURE, Workspace,
+};
+use isotherm_app::explore::{self, Layer, READOUT};
 use isotherm_app::headless::harness_with;
 use isotherm_fields::{Means, Output, Period};
 use vale_terrain::math::lonlat_to_dir;
-use zonal::{FACE, zonal, zonal_means};
+use zonal::{FACE, zonal, zonal_ice, zonal_means, zonal_means_with_ice};
 
 type H = egui_kittest::Harness<'static, IsothermApp>;
 
@@ -167,4 +169,67 @@ fn another_workspace_hides_the_overlay() {
     h.get_by_label("Terrain").click();
     h.run_steps(2);
     assert!(h.state().globe.overlay().is_none());
+}
+
+/// The texts that the last frame painted.
+fn painted_texts(h: &H) -> Vec<String> {
+    h.output()
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn the_layer_switch_shows_the_ice_cover_with_its_legend_and_readout() {
+    let mut h = explore((1194.0, 834.0), Some(zonal_means_with_ice()));
+    assert!(painted_texts(&h).iter().any(|t| t == "°C"));
+    let temperature = h.state().globe.overlay().expect("an overlay").clone();
+    h.get_by_label(ICE_COVER).click();
+    h.run_steps(2);
+    assert_eq!(h.state().explore.layer, Layer::IceCover);
+    let ice = h.state().globe.overlay().expect("an overlay").clone();
+    assert_eq!(ice.bands, explore::ice_bands());
+    assert_ne!(ice.levels, temperature.levels);
+    let texts = painted_texts(&h);
+    assert!(texts.iter().any(|t| t == "%"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "°C"), "{texts:?}");
+
+    let (lon, lat) = isotherm_app::globe::START;
+    let globe = &h.state().globe;
+    let pos = globe
+        .view
+        .project(globe.rect, lonlat_to_dir(lon, lat))
+        .expect("visible");
+    tap(&mut h, pos);
+    let app = h.state();
+    let place = app.explore.pin.expect("a pinned place");
+    let field = app.means().unwrap().field(Output::IceCover);
+    let value = field.get(Period::Year).unwrap()[explore::cell_of(FACE, place)];
+    assert!((f64::from(value) - zonal_ice(lat.to_radians())).abs() < 0.1);
+    let text = app.readout().expect("a readout");
+    assert!(
+        text.starts_with(&Layer::IceCover.value_text(value)),
+        "{text}"
+    );
+    assert!(text.contains(" % ice · "), "{text}");
+
+    // The contours follow the stops of the ice cover.
+    assert!(h.state().globe.contours);
+    h.get_by_label(TEMPERATURE).click();
+    h.run_steps(2);
+    let back = h.state().globe.overlay().expect("an overlay");
+    assert_eq!(back.levels, temperature.levels);
+}
+
+#[test]
+fn a_run_with_no_ice_cover_shows_an_empty_period() {
+    let mut h = explore((1194.0, 834.0), Some(zonal_means()));
+    h.get_by_label(ICE_COVER).click();
+    h.run_steps(2);
+    assert!(h.state().globe.overlay().is_none());
+    h.get_by_label(isotherm_app::app::EMPTY_PERIOD);
 }
