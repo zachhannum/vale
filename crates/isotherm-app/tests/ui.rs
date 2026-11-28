@@ -488,6 +488,21 @@ fn check_layout(
     let mut app = IsothermApp::sample(layout).unwrap();
     app.workspace = workspace;
     app.safe_area = safe_area;
+    // The start screen lists the worlds of a local folder and of iCloud
+    // Drive.
+    let dir = tempfile::tempdir().unwrap();
+    if workspace == Workspace::Worlds {
+        let local = dir.path().join("local");
+        std::fs::create_dir_all(&local).unwrap();
+        std::fs::create_dir_all(dir.path().join("cloud")).unwrap();
+        for name in ["Borea", "Austral", "Meridian"] {
+            let world = isotherm_world::World::flat(name, isotherm_world::Planet::earth(), 16);
+            isotherm_store::WorldFile::create(local.join(format!("{name}.gpkg")), &world).unwrap();
+        }
+        let mut folders = isotherm_app::worlds::Folders::new(local, dir.path().join("state"));
+        folders.set_cloud(Some(dir.path().join("cloud")));
+        app.folders = Some(folders);
+    }
     let mut h = harness_with(size, app);
     h.run_steps(4);
     let what = format!("{workspace:?} at {size:?} in {layout:?}");
@@ -505,6 +520,13 @@ fn check_layout(
     }
     if let Some(hint) = workspace.hint() {
         h.get_by_label(hint);
+    }
+    if workspace == Workspace::Worlds {
+        for name in ["Borea", "Austral", "Meridian"] {
+            h.get_by_label(&isotherm_app::app::open_name(name));
+        }
+        h.get_by_label(isotherm_app::app::NEW_WORLD);
+        h.get_by_label(isotherm_app::worlds::Location::Cloud.label(size.0 < 600.0));
     }
     if workspace == Workspace::Terrain {
         h.get_by_label(IMPORT);
