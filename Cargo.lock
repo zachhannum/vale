@@ -4091,6 +4091,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "eframe",
+ "vale-shell",
  "vale-sphere",
  "vale-store",
  "vale-terrain",
