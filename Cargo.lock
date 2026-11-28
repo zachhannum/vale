@@ -1913,6 +1913,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "isotherm-classify"
+version = "0.1.0"
+dependencies = [
+ "isotherm-fields",
+]
+
+[[package]]
+name = "isotherm-export"
+version = "0.1.0"
+dependencies = [
+ "isotherm-vector",
+ "serde_json",
+]
+
+[[package]]
 name = "isotherm-fields"
 version = "0.1.0"
 dependencies = [
@@ -1944,6 +1959,21 @@ version = "0.1.0"
 dependencies = [
  "isotherm-fields",
  "isotherm-world",
+]
+
+[[package]]
+name = "isotherm-store"
+version = "0.1.0"
+dependencies = [
+ "isotherm-world",
+]
+
+[[package]]
+name = "isotherm-vector"
+version = "0.1.0"
+dependencies = [
+ "isotherm-classify",
+ "isotherm-fields",
 ]
 
 [[package]]
