@@ -114,13 +114,15 @@ jobs:
 
       # TestFlight groups the builds by version, so each PR has its own row.
       # The build number holds the attempt, so a second attempt of a run gets a new number.
+      # TestFlight needs a build number that is higher than the earlier builds of
+      # the app, so the number starts at 2000.
       - name: Set the version and the build number
         id: version
         run: |
           echo "ARCHIVE=$RUNNER_TEMP/$PROJECT.xcarchive" >> "$GITHUB_ENV"
           echo "ASC_KEY_PATH=$RUNNER_TEMP/asc-key.p8" >> "$GITHUB_ENV"
           echo "version=$VERSION_PREFIX.${PR:-0}" >> "$GITHUB_OUTPUT"
-          echo "build=${{ github.run_number }}.${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          echo "build=$((2000 + ${{ github.run_number }})).${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
 
       # The archive has an ad hoc signature, because a build with no signature
       # loses the iCloud entitlement.
