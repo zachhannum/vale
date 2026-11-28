@@ -7,11 +7,11 @@ use vale_terrain::{
     AbyssalHills, AbyssalStroke, CHANNEL_WIDTHS_KM, ChannelMap, ChannelShape, ChannelWindow,
     CoarseHeights, ErodeBrush, Erosion, FACES, FIELD_WGSL, FLOODPLAINS_KM, FlowMap, GROUP_STAMPS,
     GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Hotspot, HotspotLine, HotspotPlan,
-    LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Margin, MarginStroke, Mode, OuterFlow, Pyramid,
-    RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge, RidgeLine, RidgePlan,
-    SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan, TILE_SIZE,
-    TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map, pyramid_layout,
-    tiles_layout, window_channels,
+    LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Margin, MarginStroke, Mode, OuterFlow, Plateau,
+    PlateauStroke, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge,
+    RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan,
+    TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
+    pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -4452,6 +4452,135 @@ fn gpu_seamounts_match_cpu_across_a_face_edge() {
         run.changed
     );
     assert!(run.difference <= SEAMOUNT_TOLERANCE, "{}", run.difference);
+}
+
+/// The largest difference between a GPU level and a CPU level after a
+/// plateau stroke. Each texel takes its level from before the stroke and
+/// the plateau once, so the differences do not add.
+const PLATEAU_TOLERANCE: u16 = 2;
+
+/// Grows a plateau at stamp centers on `start`, on the CPU and on the GPU,
+/// as one stroke. One `PlateauStroke` makes the plans for both.
+fn plateau_run(start: &Heightmap, spec: Plateau, centers: &[V3], radius: f64) -> SeamountRun {
+    let gpu = gpu();
+    let n = start.face_size();
+    let mut cpu = Heightmap::new(n, start.base());
+    for (face, rect) in start.allocated_rects() {
+        let mut data = Vec::new();
+        start.read_rect(face, rect, &mut data);
+        cpu.store_rect(face, rect, &data);
+    }
+    let map = gpu.copy_of(start);
+    let mut stroke = PlateauStroke::new(spec, n);
+    map.begin_stroke(&gpu.queue);
+    cpu.begin_stroke();
+    let mut enc = gpu.encoder();
+    let mut batches = 1;
+    for &center in centers {
+        let plan = stroke.stamp(&cpu, center, radius, 0.5, 0.7);
+        cpu.plateau(&plan);
+        if !map.plateau(&gpu.queue, &mut enc, &plan) {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            map.begin_batch();
+            batches += 1;
+            assert!(map.plateau(&gpu.queue, &mut enc, &plan));
+        }
+    }
+    gpu.submit(enc);
+    map.begin_batch();
+    cpu.end_stroke();
+    let faces = gpu.read_all(&map);
+    let mut changed = [0; FACES];
+    for (face, count) in changed.iter_mut().enumerate() {
+        let (mut after, mut before) = (Vec::new(), Vec::new());
+        cpu.read_rect(face, full(n), &mut after);
+        start.read_rect(face, full(n), &mut before);
+        *count = after.iter().zip(&before).filter(|(a, b)| a != b).count();
+    }
+    SeamountRun {
+        difference: max_difference(&cpu, &faces),
+        changed,
+        batches,
+    }
+}
+
+fn plateau_spec() -> Plateau {
+    Plateau {
+        height_m: 3000.0,
+        age_myr: 60.0,
+        world_km: 1000.0,
+        seed: 11,
+        limits: Limits::default(),
+    }
+}
+
+#[test]
+#[ignore = "gpu"]
+fn gpu_plateau_matches_cpu_for_one_stamp() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let center = lonlat_to_dir(10.0, 5.0);
+    let run = plateau_run(&start, plateau_spec(), &[center], 0.1);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "one plateau stamp: {changed} texels, difference {}",
+        run.difference
+    );
+    assert!(changed > 1000, "{changed} texels changed");
+    assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
+}
+
+/// A stroke of more stamps than one batch holds.
+#[test]
+#[ignore = "gpu"]
+fn gpu_plateau_matches_cpu_for_a_stroke() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let centers = seamount_line((6.0, 3.0), (14.0, 7.0), 30);
+    assert!(centers.len() > SEAMOUNT_SLOTS as usize);
+    let run = plateau_run(&start, plateau_spec(), &centers, 0.06);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "plateau stroke: {changed} texels, difference {}",
+        run.difference
+    );
+    assert!(run.batches > 1, "{} batches", run.batches);
+    assert!(changed > 6000, "{changed} texels changed");
+    assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
+}
+
+/// A plateau at the largest height, which rounds into the ceiling below
+/// sea level.
+#[test]
+#[ignore = "gpu"]
+fn gpu_plateau_matches_cpu_at_the_ceiling() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let spec = Plateau {
+        height_m: 8000.0,
+        ..plateau_spec()
+    };
+    let centers = seamount_line((8.0, 4.0), (12.0, 6.0), 12);
+    let run = plateau_run(&start, spec, &centers, 0.06);
+    eprintln!("plateau at the ceiling: difference {}", run.difference);
+    assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
+}
+
+/// A stroke from face 0 to face 2. The edge between them is at 45 degrees
+/// of longitude.
+#[test]
+#[ignore = "gpu"]
+fn gpu_plateau_matches_cpu_across_a_face_edge() {
+    let start = sea_slope(512, 45.0, 5.0);
+    let centers = seamount_line((40.0, 4.0), (50.0, 6.0), 20);
+    let run = plateau_run(&start, plateau_spec(), &centers, 0.06);
+    eprintln!(
+        "plateau across a face edge: {:?}, difference {}",
+        run.changed, run.difference
+    );
+    assert!(
+        run.changed[0] > 1000 && run.changed[2] > 1000,
+        "{:?}",
+        run.changed
+    );
+    assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
 }
 
 /// The largest difference between a GPU level and a CPU level after an

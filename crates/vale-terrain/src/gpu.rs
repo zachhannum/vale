@@ -24,6 +24,7 @@ use crate::heightmap::{
 use crate::hotspot::HotspotPlan;
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
+use crate::plateau::{PLATEAU_FLOATS, PlateauPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -54,6 +55,14 @@ const MARGIN_FIELD_BYTES: u32 = (FIELD_CELLS * FIELD_CELLS * FIELD_FLOATS * 4) a
 
 /// The bytes of the volcanoes of one seamount plan.
 const SEAMOUNT_BYTES: u32 = (PLAN_VOLCANOES * VOLCANO_FLOATS * 4) as u32;
+
+/// The size of a slot of the volcano buffer: a seamounts plan or a plateau
+/// plan.
+const VOLCANO_SLOT_BYTES: u32 = if SEAMOUNT_BYTES > (PLATEAU_FLOATS * 4) as u32 {
+    SEAMOUNT_BYTES
+} else {
+    (PLATEAU_FLOATS * 4) as u32
+};
 
 /// A group stops before the stamp that makes its rectangle on a face larger
 /// than this number of times the largest stamp rectangle on that face. Each
@@ -260,7 +269,7 @@ impl BindParts {
         let mut entries = vec![
             buffer(0, &self.uniforms, size_of::<Uniforms>()),
             buffer(7, &self.ridge_uniforms, size_of::<RidgeUniforms>()),
-            buffer(14, &self.volcanoes, SEAMOUNT_BYTES as usize),
+            buffer(14, &self.volcanoes, VOLCANO_SLOT_BYTES as usize),
             buffer(15, &self.margin_field, MARGIN_FIELD_BYTES as usize),
         ];
         for (i, view) in self.views.iter().enumerate() {
@@ -579,7 +588,7 @@ impl StampPipeline {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: true,
-                        min_binding_size: NonZeroU64::new(u64::from(SEAMOUNT_BYTES)),
+                        min_binding_size: NonZeroU64::new(u64::from(VOLCANO_SLOT_BYTES)),
                     },
                     count: None,
                 },
@@ -770,8 +779,8 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let volcano_slot_size =
-            SEAMOUNT_BYTES.next_multiple_of(device.limits().min_storage_buffer_offset_alignment);
+        let volcano_slot_size = VOLCANO_SLOT_BYTES
+            .next_multiple_of(device.limits().min_storage_buffer_offset_alignment);
         let volcanoes = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("seamount volcanoes"),
             size: u64::from(volcano_slot_size * SEAMOUNT_SLOTS),
@@ -1085,6 +1094,7 @@ impl GpuHeightmap {
                 | Mode::AbyssalHills
                 | Mode::Margin
                 | Mode::Hotspot
+                | Mode::Plateau
         ) {
             // These stamps change nothing, so they need no pass.
             let same = plans.iter().take_while(|plan| plan.stamp.mode == mode);
@@ -1161,7 +1171,8 @@ impl GpuHeightmap {
                     | Mode::Seamounts
                     | Mode::AbyssalHills
                     | Mode::Margin
-                    | Mode::Hotspot => 5,
+                    | Mode::Hotspot
+                    | Mode::Plateau => 5,
                     Mode::Weather => 6,
                     Mode::Warp => 7,
                     Mode::Ridge => 8,
@@ -1833,6 +1844,69 @@ impl GpuHeightmap {
                 mode: 17,
                 size: self.face_size as i32,
                 count: plan.volcanoes.len() as u32,
+                origin: [rect.x0 as i32, rect.y0 as i32],
+                limits: packed(plan.limits),
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let used = size_of::<Uniforms>() - GROUP_STAMPS * size_of::<FaceStamp>();
+            queue.write_buffer(
+                &self.uniforms,
+                u64::from(offset),
+                &bytemuck::bytes_of(&uniforms)[..used],
+            );
+            self.pass(queue, enc, state, face, rect, [offset, 0, volcano_offset]);
+        }
+        true
+    }
+
+    /// Grows the plateau of a plan on the ground from before the stroke, as
+    /// `seamounts` grows volcanoes. The plan takes a slot of the volcano
+    /// buffer. Call `begin_stroke` at the start of each stroke, before its
+    /// first plan.
+    ///
+    /// Returns `false` and adds nothing if the batch is full. Then submit
+    /// `enc`, call `begin_batch`, and add the plan to a new encoder.
+    pub fn plateau(
+        &self,
+        queue: &wgpu::Queue,
+        enc: &mut wgpu::CommandEncoder,
+        plan: &PlateauPlan,
+    ) -> bool {
+        assert_eq!(plan.face_size as u32, self.face_size, "the face size");
+        assert!(plan.floats().len() <= PLATEAU_FLOATS, "the grid");
+        let passes = plan.rects.iter().flatten().count() as u32;
+        if passes == 0 {
+            return true;
+        }
+        let first_slot = self.used_slots.load(Ordering::Relaxed);
+        let volcano_slot = self.used_seamount_slots.load(Ordering::Relaxed);
+        if passes > STAMP_SLOTS - first_slot || volcano_slot == SEAMOUNT_SLOTS {
+            return false;
+        }
+        self.used_slots
+            .store(first_slot + passes, Ordering::Relaxed);
+        self.used_seamount_slots
+            .store(volcano_slot + 1, Ordering::Relaxed);
+        let volcano_offset = volcano_slot * self.volcano_slot_size;
+        queue.write_buffer(
+            &self.volcanoes,
+            u64::from(volcano_offset),
+            bytemuck::cast_slice(plan.floats()),
+        );
+        let state = &mut *self.state();
+        let touched = plan.rects.iter().enumerate();
+        let touched: Vec<_> = touched
+            .filter_map(|(face, rect)| Some((face, (*rect)?)))
+            .collect();
+        for &(face, rect) in &touched {
+            self.keep_start(queue, enc, state, face, rect);
+        }
+        for (slot, (face, rect)) in (first_slot..).zip(touched) {
+            let offset = slot * self.slot_size;
+            let uniforms = Uniforms {
+                face: face as u32,
+                mode: 21,
+                size: self.face_size as i32,
                 origin: [rect.x0 as i32, rect.y0 as i32],
                 limits: packed(plan.limits),
                 ..bytemuck::Zeroable::zeroed()

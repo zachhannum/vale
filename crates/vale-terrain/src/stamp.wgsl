@@ -3121,6 +3121,156 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
     return limited(start, clamp(floor(start + sum + 0.5), 0.0, 65535.0));
 }
 
+// The constants of `plateau.rs`, with a `PLATEAU_` prefix. The plan is in
+// the volcano buffer: a header and the grid of distances to the edge.
+const PLATEAU = 21u;
+const PLATEAU_HEADER = 24u;
+const PLATEAU_FLOOR_LEVEL = 0u;
+const PLATEAU_TOP_LEVEL = 1u;
+const PLATEAU_TOP_M = 2u;
+const PLATEAU_WORLD_KM = 3u;
+const PLATEAU_SEED_LOW = 4u;
+const PLATEAU_SEED_HIGH = 5u;
+const PLATEAU_WARP_KM = 6u;
+const PLATEAU_TEXEL_KM = 7u;
+const PLATEAU_SIZE = 8u;
+const PLATEAU_CENTER = 12u;
+const PLATEAU_EAST = 15u;
+const PLATEAU_NORTH = 18u;
+const PLATEAU_CELL = 21u;
+const PLATEAU_FAR_KM = 22u;
+const PLATEAU_WARP_TEXELS = 3.0;
+const PLATEAU_SCARP = 8.0;
+const PLATEAU_FOOT = 0.35;
+const PLATEAU_RAMP = 24.0;
+const PLATEAU_RAMP_WARP = 0.25;
+const PLATEAU_FAULT_HEIGHT = vec3<f32>(0.45, 0.35, 0.2);
+const PLATEAU_FAULT_LOW = vec3<f32>(0.0, 0.4, 0.8);
+const PLATEAU_FAULT_HIGH = vec3<f32>(0.22, 0.58, 0.95);
+const PLATEAU_FAULT_SHIFT = 0.25;
+const PLATEAU_FAULT_KM = 60.0;
+const PLATEAU_EDGE_KM = 160.0;
+const PLATEAU_EDGE_GAIN = 0.5;
+const PLATEAU_EDGE_REACH = 0.2;
+const PLATEAU_RELIEF_M = vec3<f32>(300.0, 120.0, 40.0);
+const PLATEAU_RELIEF_KM = vec3<f32>(250.0, 60.0, 15.0);
+const PLATEAU_CEILING_M = -50.0;
+const PLATEAU_CEILING_ROUND_M = 300.0;
+const PLATEAU_SALT_FAULT = 0x5a171000u;
+const PLATEAU_SALT_RELIEF = 0x5a174000u;
+const PLATEAU_SALT_EDGE = 0x5a176000u;
+const PLATEAU_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
+
+fn plateau(slot: u32) -> f32 {
+    return volcanoes[slot];
+}
+
+fn plateau_v3(slot: u32) -> vec3<f32> {
+    return vec3<f32>(plateau(slot), plateau(slot + 1u), plateau(slot + 2u));
+}
+
+fn plateau_seed() -> u32 {
+    return u32(plateau(PLATEAU_SEED_LOW)) | (u32(plateau(PLATEAU_SEED_HIGH)) << 16u);
+}
+
+// How far the fractal noise moves the edge out, in kilometers. The steps
+// are those of `PlateauPlan::edge_noise`.
+fn plateau_edge_noise(p: vec3<f32>) -> f32 {
+    let world = plateau(PLATEAU_WORLD_KM);
+    let last = PLATEAU_WARP_TEXELS * plateau(PLATEAU_TEXEL_KM);
+    var wavelength = PLATEAU_EDGE_KM;
+    var amplitude = PLATEAU_EDGE_REACH * (1.0 - PLATEAU_EDGE_GAIN) * plateau(PLATEAU_WARP_KM);
+    var sum = 0.0;
+    var k = 0u;
+    while wavelength >= last && k < 12u {
+        let n = noise3(p * (world / wavelength), plateau_seed() ^ (PLATEAU_SALT_EDGE + k));
+        sum += amplitude * n.x;
+        wavelength *= 0.5;
+        amplitude *= PLATEAU_EDGE_GAIN;
+        k += 1u;
+    }
+    return sum;
+}
+
+// The signed distance to the edge in kilometers, from the grid. The steps
+// are those of `PlateauPlan::distance_at`.
+fn plateau_distance(p: vec3<f32>) -> f32 {
+    let far = plateau(PLATEAU_FAR_KM);
+    let size = u32(plateau(PLATEAU_SIZE));
+    let cell = plateau(PLATEAU_CELL);
+    let up = dot(p, plateau_v3(PLATEAU_CENTER));
+    if up <= 0.0 || size < 2u {
+        return -far;
+    }
+    let middle = f32(size - 1u) * 0.5;
+    let x = dot(p, plateau_v3(PLATEAU_EAST)) / up / cell + middle;
+    let y = dot(p, plateau_v3(PLATEAU_NORTH)) / up / cell + middle;
+    let top = f32(size - 1u);
+    if x < 0.0 || x > top || y < 0.0 || y > top {
+        return -far;
+    }
+    let i = min(u32(floor(x)), size - 2u);
+    let j = min(u32(floor(y)), size - 2u);
+    let tx = x - f32(i);
+    let ty = y - f32(j);
+    let a = plateau(PLATEAU_HEADER + j * size + i);
+    let b = plateau(PLATEAU_HEADER + j * size + i + 1u);
+    let c = plateau(PLATEAU_HEADER + (j + 1u) * size + i);
+    let d = plateau(PLATEAU_HEADER + (j + 1u) * size + i + 1u);
+    let low = a + (b - a) * tx;
+    let high = c + (d - c) * tx;
+    return low + (high - low) * ty;
+}
+
+// The part of the height of the plateau. The steps are those of
+// `PlateauPlan::part`.
+fn plateau_part(p: vec3<f32>) -> f32 {
+    let world = plateau(PLATEAU_WORLD_KM);
+    let d = plateau_distance(p) + plateau_edge_noise(p);
+    let top_km = plateau(PLATEAU_TOP_M) / 1000.0;
+    let u = d / (PLATEAU_SCARP * top_km);
+    if u <= -PLATEAU_FAULT_SHIFT {
+        return 0.0;
+    }
+    let n = noise3(p * (world / PLATEAU_FAULT_KM), plateau_seed() ^ PLATEAU_SALT_FAULT);
+    var foot = 0.0;
+    for (var k = 0u; k < 3u; k++) {
+        let shift = PLATEAU_FAULT_SHIFT * (0.8 * n.x + 0.2 * n[k]);
+        foot += PLATEAU_FAULT_HEIGHT[k]
+            * smooth_between(PLATEAU_FAULT_LOW[k] + shift, PLATEAU_FAULT_HIGH[k] + shift, u);
+    }
+    let ramp = min(PLATEAU_RAMP * top_km, PLATEAU_RAMP_WARP * plateau(PLATEAU_WARP_KM));
+    let rise = 1.0 - exp(-max(d, 0.0) / ramp);
+    return PLATEAU_FOOT * foot + (1.0 - PLATEAU_FOOT) * rise * smooth_between(0.0, 1.0, u);
+}
+
+// The level of the top of the plateau. The steps are those of
+// `PlateauPlan::target`.
+fn plateau_target(p: vec3<f32>) -> f32 {
+    let world = plateau(PLATEAU_WORLD_KM);
+    var level = plateau(PLATEAU_FLOOR_LEVEL) + plateau(PLATEAU_TOP_LEVEL);
+    for (var k = 0u; k < 3u; k++) {
+        let n = noise3(p * (world / PLATEAU_RELIEF_KM[k]), plateau_seed() ^ (PLATEAU_SALT_RELIEF + k));
+        level += PLATEAU_LEVELS_PER_M * PLATEAU_RELIEF_M[k] * n.x;
+    }
+    let ceiling = (PLATEAU_CEILING_M - ELEVATION_LOW) * PLATEAU_LEVELS_PER_M;
+    return smooth_min(level, ceiling, PLATEAU_CEILING_ROUND_M * PLATEAU_LEVELS_PER_M);
+}
+
+// The level of a texel after a plateau pass, from its level from before
+// the stroke. The steps are those of `PlateauPlan::level`.
+fn plateau_level(at: vec2<i32>) -> f32 {
+    let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+    let p = normalize(texel_dir(group.face, at));
+    let f = plateau_part(p);
+    if f <= 0.0 {
+        return start;
+    }
+    let base = min(start, plateau(PLATEAU_FLOOR_LEVEL));
+    let next = max(base + f * (plateau_target(p) - base), start);
+    return limited(start, clamp(floor(next + 0.5), 0.0, 65535.0));
+}
+
 // The constants of `hotspot.rs`, with a `HOTSPOT_` prefix.
 const HOTSPOT_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
 const HOTSPOT_JOIN_M = 800.0;
@@ -3272,6 +3422,9 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
     }
     if group.mode == SEAMOUNTS {
         return vec4<u32>(u32(seamounts_level(at)), 0u, 0u, 0u);
+    }
+    if group.mode == PLATEAU {
+        return vec4<u32>(u32(plateau_level(at)), 0u, 0u, 0u);
     }
     if group.mode == ABYSSAL {
         // The pass lays the hills on the ground from before the stroke.

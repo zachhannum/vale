@@ -23,6 +23,7 @@ mod lake;
 mod line;
 mod margin;
 pub mod math;
+mod plateau;
 mod polygonize;
 #[cfg(feature = "gpu")]
 mod pyramid;
@@ -80,14 +81,18 @@ pub use margin::{
     FIELD_CELLS, FIELD_FLOATS, Margin, MarginField, MarginInputs, MarginPlan, MarginStroke,
     SHELF_DEPTH_RANGE, erode_margin, margin_window,
 };
+pub use plateau::{
+    PLATEAU_AGE_MYR, PLATEAU_FIELD_CELLS, PLATEAU_FLOATS, PLATEAU_HEADER, PLATEAU_HEIGHT_M,
+    PLATEAU_HEIGHT_RANGE, Plateau, PlateauPlan, PlateauStroke, plateau_floor, plateau_top_m,
+};
 pub use polygonize::{BandRings, Contours, Trace, polygonize};
 #[cfg(feature = "gpu")]
 pub use pyramid::{FIELD_WGSL, GpuPyramid, PyramidPipelines, pyramid_layout};
 pub use rain::Rain;
 pub use range::{RANGE_ERODE_RATE, RANGE_STEPS, RangeLine, RangePlan, RangeSpec, erode_range};
 pub use realism::{
-    ATLANTIC_RIDGE, EPR_RIDGE, HAWAII, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch, Realism,
-    Reference, SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
+    ATLANTIC_RIDGE, EPR_RIDGE, HAWAII, MANIHIKI, MIN_WAVELENGTH_CELLS, PACIFIC_FLANK, Patch,
+    Realism, Reference, SLOPE_BINS_DEG, US_EAST_MARGIN, WEDGE_HALF_WIDTH, realism,
 };
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};

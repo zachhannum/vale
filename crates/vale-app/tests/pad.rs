@@ -3042,6 +3042,103 @@ fn the_hotspot_track_mode_fits_on_the_smallest_ipad() {
 }
 
 #[test]
+fn the_plateau_mode_is_in_the_terrain_cell_and_has_its_sliders() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Plateau");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Plateau)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!(
+        (brush.plateau_height_m, brush.plateau_age_myr),
+        (4000.0, 120.0)
+    );
+    // The strip has Size and Height.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip height").is_some());
+    let label = vale_app::ui::pad::slider_label(Mode::Plateau, vale_app::strip::Slider::Strength);
+    assert_eq!(label, "Height");
+    // The panel has the size, the hardness, the flow, the height, the age,
+    // and the seed.
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush strength",
+        "Brush age",
+        "Brush seed value",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in ["Brush density", "Brush erosion", "Apply"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush strength", "10", 500.0),
+        ("Brush strength", "90000", 8000.0),
+        ("Brush strength", "2500", 2500.0),
+        ("Brush age", "-5", 0.0),
+        ("Brush age", "900", 200.0),
+        ("Brush age", "40", 40.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush age" => brush.plateau_age_myr,
+            _ => brush.plateau_height_m,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    // The height and the age do not change the other modes.
+    let defaults = BrushSettings::default();
+    let brush = h.state().globe.brush;
+    assert_eq!(brush.strength_m, defaults.strength_m);
+    assert_eq!(brush.seamount_height_m, defaults.seamount_height_m);
+    assert_eq!(brush.seamount_age_myr, defaults.seamount_age_myr);
+    assert_eq!(brush.hotspot_age_myr, defaults.hotspot_age_myr);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Plateau mode");
+    screenshot::save(&mut h, "pad-plateau");
+}
+
+#[test]
+fn the_plateau_mode_fits_on_the_smallest_ipad() {
+    for board in [(1133.0, 744.0), (1194.0, 834.0)] {
+        let mut h = pad(board);
+        open_group(&mut h, ModeGroup::Terrain);
+        let menu = h.state().pad.flyouts.rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(screen.contains_rect(menu), "{menu:?}");
+        // The flyout scrolls to its last row.
+        let from = menu.center();
+        drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+        let row = control(&h, "Plateau").unwrap();
+        assert!(menu.contains_rect(row), "{row:?}");
+        screenshot::save(&mut h, &format!("pad-plateau-modes-{}", board.1));
+        tap(&mut h, "Plateau");
+        assert_eq!(h.state().globe.brush.mode, Mode::Plateau);
+        tap(&mut h, "Brush settings");
+        let (_, panel) = h.state().pad.panels[0];
+        assert!(screen.contains_rect(panel), "{panel:?}");
+        for row in ["Brush strength", "Brush age", "Brush seed value"] {
+            let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+            assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+        }
+        let name = format!("{} high with the Plateau panel", board.1);
+        check_controls(&h, &name);
+        screenshot::save(&mut h, &format!("pad-plateau-{}", board.1));
+    }
+}
+
+#[test]
 fn the_abyssal_hills_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

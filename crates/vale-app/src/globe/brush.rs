@@ -8,8 +8,9 @@ use vale_terrain::{
     AbyssalHills, BASIN_DENSITY_KM, BasinSpec, CHANNEL_WIDTH_KM, CHANNEL_WIDTHS_KM, ChannelShape,
     ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, HOTSPOT_HEIGHT_M,
     HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot,
-    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, Rain, RangeSpec, Ridge,
-    SHELF_DEPTH_RANGE, Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
+    LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, PLATEAU_AGE_MYR,
+    PLATEAU_HEIGHT_M, PLATEAU_HEIGHT_RANGE, Plateau, Rain, RangeSpec, Ridge, SHELF_DEPTH_RANGE,
+    Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
 use super::math::{V3, add, angle, arc_motion, normalize, scale};
@@ -72,7 +73,8 @@ pub const SEAMOUNT_DENSITY: std::ops::RangeInclusive<f64> = 1.0..=500.0;
 /// The limits of the characteristic height of the seamounts mode, in meters.
 pub const SEAMOUNT_HEIGHT_M: std::ops::RangeInclusive<f64> = 50.0..=3000.0;
 /// The limits of the age of the floor of the seamounts mode and of the
-/// hotspot track mode, in millions of years.
+/// hotspot track mode, and of the age of the plateau mode, in millions of
+/// years.
 pub const FLOOR_AGE_MYR: std::ops::RangeInclusive<f64> = 0.0..=200.0;
 /// The limits of the scale of the hills of the ocean ridge mode and of the
 /// abyssal hills mode, the factor of the horizontal sizes of the model.
@@ -88,6 +90,8 @@ pub const HOTSPOT_SPEED: std::ops::RangeInclusive<f64> =
 /// mode, in meters.
 pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
     HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
+/// The limits of the height of the plateau mode, in meters.
+pub const PLATEAU_HEIGHT: std::ops::RangeInclusive<f64> = PLATEAU_HEIGHT_RANGE;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -236,6 +240,11 @@ pub struct BrushSettings {
     /// The age of the floor at the hotspot of the hotspot track mode, in
     /// millions of years.
     pub hotspot_age_myr: f64,
+    /// The height of the top of the plateau mode above the floor when the
+    /// plateau forms, in meters.
+    pub plateau_height_m: f64,
+    /// The age of the plateau of the plateau mode, in millions of years.
+    pub plateau_age_myr: f64,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -305,6 +314,8 @@ impl Default for BrushSettings {
             hotspot_height_m: HOTSPOT_HEIGHT_M,
             hotspot_reefs: false,
             hotspot_age_myr: 90.0,
+            plateau_height_m: PLATEAU_HEIGHT_M,
+            plateau_age_myr: PLATEAU_AGE_MYR,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -350,6 +361,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | AbyssalHills
             | Margin
             | Hotspot
+            | Plateau
     )
 }
 
@@ -549,6 +561,19 @@ impl BrushSettings {
         }
     }
 
+    /// The settings of a plateau stroke. `world_km` is the radius of the
+    /// world.
+    pub fn plateau_spec(&self, world_km: f64, seed: u32) -> Plateau {
+        let (low, high) = (*PLATEAU_HEIGHT.start(), *PLATEAU_HEIGHT.end());
+        Plateau {
+            height_m: self.plateau_height_m.clamp(low, high),
+            age_myr: self.plateau_age_myr,
+            world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
     /// The settings of an abyssal hills stroke. `world_km` is the radius of
     /// the world.
     pub fn abyssal_spec(&self, world_km: f64, seed: u32) -> AbyssalHills {
@@ -741,7 +766,8 @@ impl Tip<'_> {
                 | Mode::Noise
                 | Mode::Seamounts
                 | Mode::AbyssalHills
-                | Mode::Margin => flow,
+                | Mode::Margin
+                | Mode::Plateau => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
                 Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint | Mode::Hotspot => {
@@ -975,6 +1001,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::AbyssalHills
         | Mode::Margin
         | Mode::Hotspot
+        | Mode::Plateau
         | Mode::Noise => 1,
     }
 }
@@ -1549,6 +1576,22 @@ mod tests {
         assert_eq!(spec.age_myr, 150.0);
         brush.lock = Some(1.0);
         assert_eq!(brush.radius(360.0), MAX_RIDGE_RADIUS);
+    }
+
+    #[test]
+    fn the_plateau_spec_carries_the_height_and_the_age() {
+        let mut brush = BrushSettings {
+            mode: Mode::Plateau,
+            ..BrushSettings::default()
+        };
+        assert!(needs_height(Mode::Plateau));
+        let spec = brush.plateau_spec(6371.0, 7);
+        assert_eq!((spec.height_m, spec.age_myr), (4000.0, 120.0));
+        assert_eq!((spec.world_km, spec.seed), (6371.0, 7));
+        brush.plateau_height_m = 1e6;
+        brush.plateau_age_myr = 30.0;
+        let spec = brush.plateau_spec(6371.0, 7);
+        assert_eq!((spec.height_m, spec.age_myr), (8000.0, 30.0));
     }
 
     #[test]

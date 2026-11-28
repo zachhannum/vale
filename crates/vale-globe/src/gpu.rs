@@ -15,9 +15,9 @@ use std::collections::HashMap;
 use vale_store::{ImageId, LayerId, RasterId};
 use vale_terrain::{
     AbyssalPlan, ChannelMap, ChannelWindow, ErodeStep, FACES, FIELD_WGSL, GpuHeightmap, GpuPyramid,
-    GpuTiles, Heightmap, HotspotPlan, MAX_BANDS, MarginPlan, PyramidPipelines, RangePlan, Readback,
-    RidgePlan, SeamountPlan, StampPipeline, StampPlan, TILES_WGSL, TexelRect, pyramid_layout,
-    tiles_layout,
+    GpuTiles, Heightmap, HotspotPlan, MAX_BANDS, MarginPlan, PlateauPlan, PyramidPipelines,
+    RangePlan, Readback, RidgePlan, SeamountPlan, StampPipeline, StampPlan, TILES_WGSL, TexelRect,
+    pyramid_layout, tiles_layout,
 };
 
 use crate::compile::{Compiled, render_pipeline};
@@ -2964,12 +2964,13 @@ impl LineOp {
     }
 }
 
-/// The plan of one stamp of a seamounts stroke, an abyssal hills stroke,
-/// or a margin stroke.
+/// The plan of one stamp of a seamounts, abyssal hills, margin, or plateau
+/// stroke.
 pub enum SeaOp {
     Seamounts(Box<SeamountPlan>),
     Abyssal(Box<AbyssalPlan>),
     Margin(Box<MarginPlan>),
+    Plateau(Box<PlateauPlan>),
 }
 
 impl SeaOp {
@@ -2979,6 +2980,7 @@ impl SeaOp {
             SeaOp::Seamounts(plan) => &plan.rects,
             SeaOp::Abyssal(plan) => &plan.rects,
             SeaOp::Margin(plan) => &plan.rects,
+            SeaOp::Plateau(plan) => &plan.rects,
         }
     }
 }
@@ -2999,8 +3001,8 @@ pub enum Op {
         stroke: u64,
         time: Instant,
     },
-    /// One stamp of a seamounts stroke, an abyssal hills stroke, or a
-    /// margin stroke. `time` is the frame that read its pen sample.
+    /// One stamp of a seamounts, abyssal hills, margin, or plateau stroke.
+    /// `time` is the frame that read its pen sample.
     Sea {
         plan: SeaOp,
         stroke: u64,
@@ -3667,6 +3669,7 @@ impl Batch<'_> {
                     SeaOp::Seamounts(plan) => heights.seamounts(queue, enc, plan),
                     SeaOp::Abyssal(plan) => heights.abyssal(queue, enc, plan),
                     SeaOp::Margin(plan) => heights.margin(queue, enc, plan),
+                    SeaOp::Plateau(plan) => heights.plateau(queue, enc, plan),
                 };
                 if !add(self.encoder()) {
                     self.submit();
