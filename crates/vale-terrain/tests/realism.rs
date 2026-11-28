@@ -1442,11 +1442,15 @@ const SCARP_PROFILE_KM: f64 = 200.0;
 /// A scarp stroke with the median drop and width of the Manihiki Scarp, on a
 /// flat top on a world of the size of the Earth.
 fn earth_scarp(reference: &ScarpReference) -> Painted {
+    earth_scarp_with_steps(reference, 1)
+}
+
+fn earth_scarp_with_steps(reference: &ScarpReference, steps: u32) -> Painted {
     let mut painted = Painted::earth(SCARP_TOP_M);
     let spec = Scarp {
         drop_m: median(reference.profiles.iter().map(|p| p.drop_m)),
         width_km: median(reference.profiles.iter().map(|p| p.width_km)) / SMOOTHSTEP_10_90,
-        steps: 1,
+        steps,
         scars: true,
         world_km: EARTH_KM,
         seed: RIDGE_SEED,
@@ -1574,4 +1578,28 @@ fn a_scarp_is_near_the_manihiki_scarp() {
     let rms = (a.iter().zip(&b).map(|(x, y)| (x - y).powi(2)).sum::<f64>() / a.len() as f64).sqrt();
     println!("rms of the shape: {rms:.3}");
     assert!(rms < 0.1, "the shape is far from the reference");
+}
+
+/// The test scarp with 1 step and with 3 steps, beside the GEBCO patch of
+/// the Manihiki Plateau, with the Manihiki Scarp on its east side. The patch
+/// comes from `scripts/gebco-reference.sh manihiki`.
+#[test]
+#[ignore = "manual"]
+fn manual_scarp_next_to_the_manihiki_scarp() {
+    let scarp = ScarpReference::parse(MANIHIKI_SCARP).unwrap();
+    let reference = Reference::parse(MANIHIKI).unwrap();
+    let gebco = gebco_patch("manihiki");
+    let n = reference.size;
+    let mut image = image::RgbImage::new(3 * n as u32, n as u32);
+    for (i, steps) in [1, 3].into_iter().enumerate() {
+        let painted = earth_scarp_with_steps(&scarp, steps);
+        let heights = painted.patch(&reference).heights;
+        draw(&mut image, &heights, n, reference.cell_m, [i * n, 0]);
+    }
+    draw(&mut image, &gebco, n, reference.cell_m, [2 * n, 0]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/scarp.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
 }
