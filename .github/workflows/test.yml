@@ -1,7 +1,14 @@
 name: Test
 
+# A PR runs this workflow only if it changes Vale or a part that Vale uses.
+# `scripts/ci/paths.py` gives the list of the paths.
 on:
   pull_request:
+    paths:
+      - "**"
+      - "!crates/isotherm-*/**"
+      - "!docs/isotherm/**"
+      - "!scripts/isotherm-ipad.sh"
   push:
     branches: [main]
   workflow_dispatch:
@@ -19,34 +26,8 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
 
 jobs:
-  # A PR builds only the apps that it touches. A push to `main` and a run by
-  # hand build both apps.
-  changes:
-    name: Find the apps that the change touches
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    outputs:
-      vale: ${{ steps.apps.outputs.vale }}
-      isotherm: ${{ steps.apps.outputs.isotherm }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Test the script
-        run: python3 -m unittest discover scripts/ci
-
-      - name: Find the apps
-        id: apps
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
-        run: scripts/ci/changes.py "$BASE" "$HEAD"
-
   test:
     name: Test the fast tier and the UI tier of Vale
-    needs: changes
-    if: needs.changes.outputs.vale == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -63,62 +44,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config
 
       - uses: Swatinem/rust-cache@v2
+
+      - name: Test the CI scripts
+        run: |
+          python3 -m unittest discover scripts/ci
+          python3 -m unittest discover scripts/testflight
 
       - name: Check the format
         run: cargo fmt --all --check
 
       - name: Run the fast tier and the UI tier
         run: cargo test --workspace --exclude 'isotherm-*'
-
-  isotherm:
-    name: Test Isotherm (${{ matrix.os }})
-    needs: changes
-    if: needs.changes.outputs.isotherm == 'true'
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt
-          rustup default stable
-
-      - name: Install the system libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libfontconfig1-dev pkg-config
-
-      # The PROJ build needs the SQLite library and the `sqlite3` program.
-      - name: Install SQLite
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          vcpkg install "sqlite3[tool]:x64-windows-static-md"
-          root="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows-static-md"
-          # CMake looks for programs in the `bin` folder of each prefix.
-          mkdir -p "$root/bin"
-          find "$root" -iname sqlite3.exe -exec cp {} "$root/bin/" \;
-          test -f "$root/bin/sqlite3.exe"
-          echo "CMAKE_PREFIX_PATH=$(cygpath -m "$root")" >> "$GITHUB_ENV"
-          cygpath -w "$root/bin" >> "$GITHUB_PATH"
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Check the format
-        if: runner.os == 'Linux'
-        run: cargo fmt --all --check
-
-      # The tests of the `isotherm-` crates build the Vale crates that they use,
-      # and no other Vale crate.
-      - name: Run the fast tier and the UI tier
-        shell: bash
-        run: cargo test --workspace --exclude 'vale-*'
 
   gpu:
     name: Test the GPU tier (${{ matrix.name }})
@@ -142,8 +78,6 @@ jobs:
             tests: -p vale-terrain --features gpu --test gpu
           - name: render
             tests: -p vale-render --features gpu --test gpu
-          - name: isotherm
-            tests: -p isotherm-app --test gpu
     steps:
       - uses: actions/checkout@v4
 
