@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 eframe.workspace = true
+bytemuck.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.5"

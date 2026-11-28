@@ -20,7 +20,6 @@ use vale_terrain::{
     reduced_face_size, smoothing_level,
 };
 
-pub mod backdrop;
 pub mod basin;
 pub mod brush;
 pub mod combine;
@@ -55,6 +54,7 @@ pub mod vtiles;
 pub mod zoom_test;
 
 pub use vale_globe::frame::{FrameDraw, FrameItem, FramePlace, Look, MAX_RUNS, RasterLook};
+pub use vale_shell::backdrop;
 pub use vale_globe::{compile, detail, edges, flat, gpu, math, nav, preview, view};
 
 use crate::extent::GpuExtent;
