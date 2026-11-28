@@ -4163,6 +4163,8 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "eframe",
+ "egui_kittest",
+ "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "tempfile",

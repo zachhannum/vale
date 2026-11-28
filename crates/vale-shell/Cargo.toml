@@ -10,6 +10,10 @@ license.workspace = true
 eframe.workspace = true
 bytemuck.workspace = true
 
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+egui_kittest.workspace = true
+image.workspace = true
+
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
