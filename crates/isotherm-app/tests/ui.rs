@@ -129,3 +129,10 @@ fn one_finger_turns_the_globe() {
 fn the_mouse_turns_the_globe() {
     assert!(drag_globe(false));
 }
+
+#[test]
+fn the_cards_are_plain_with_no_gpu() {
+    let mut harness = harness((1194.0, 834.0));
+    harness.run_steps(2);
+    assert!(!vale_shell::pad::widgets::is_glass(&harness.ctx));
+}

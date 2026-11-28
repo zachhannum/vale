@@ -90,6 +90,12 @@ impl Globe {
         self.format = Some(render_state.target_format);
     }
 
+    /// The format of the glass of the cards. `None`: a card has a plain
+    /// fill.
+    pub fn backdrop(&self) -> Option<wgpu::TextureFormat> {
+        self.format
+    }
+
     /// Draws the globe in `rect` and turns it with one finger or the mouse.
     pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32) {
         self.rect = rect;

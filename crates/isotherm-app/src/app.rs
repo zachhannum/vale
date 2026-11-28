@@ -107,24 +107,28 @@ impl IsothermApp {
         };
         let class = WidthClass::of(safe.width());
         let mut controls = Controls::new();
+        // The cards are glass when the app has a wgpu renderer.
+        let backdrop = self.globe.backdrop();
+        widgets::set_backdrop(&ctx, backdrop);
         ctx.layer_painter(egui::LayerId::background())
             .with_clip_rect(screen)
             .rect_filled(screen, 0.0, theme::CANVAS);
 
-        let row = TOUCH + 2.0 * PAD;
         let top = safe.top()
             + if safe.top() > screen.top() {
                 TOP_GAP
             } else {
                 TOP_MARGIN
             };
-        let canvas = Rect::from_min_max(pos2(safe.left(), top + row), safe.max);
-        self.globe.show(ui, canvas, theme::CANVAS);
+        // The globe fills the safe area, and the glass of the cards shows
+        // it below them.
+        self.globe.show(ui, safe, theme::CANVAS);
 
         let switch = self.switch_rect(ui, safe, class, top);
         let current = self.workspace;
-        widgets::plain_card(
+        widgets::card(
             &ctx,
+            backdrop,
             "workspace-switch",
             switch,
             egui::Order::Middle,
@@ -193,30 +197,17 @@ impl IsothermApp {
         }
         let current = self.workspace;
         let mut chosen = None;
-        widgets::plain_card(
-            ctx,
-            "workspace-menu",
-            rect,
-            egui::Order::Foreground,
-            CornerRadius::same(theme::CARD_RADIUS as u8),
-            |ui| {
-                // A menu is opaque and lighter than a card.
-                let card = ui.max_rect();
-                let radius =
-                    widgets::card_radius(card, CornerRadius::same(theme::CARD_RADIUS as u8));
-                ui.painter().rect_filled(card, radius, theme::menu());
-                let rows = card.shrink2(inset);
-                let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rows));
-                ui.spacing_mut().item_spacing.y = 0.0;
-                for workspace in Workspace::ALL {
-                    let on = workspace == current;
-                    let name = workspace.name();
-                    if widgets::text_row(&mut ui, controls, name, 0.0, on, true).clicked() {
-                        chosen = Some(workspace);
-                    }
+        let origin = button.center().clamp(rect.min, rect.max);
+        let backdrop = widgets::backdrop(ctx);
+        widgets::menu_card(ctx, backdrop, "workspace-menu", rect, origin, |ui| {
+            for workspace in Workspace::ALL {
+                let on = workspace == current;
+                let name = workspace.name();
+                if widgets::text_row(ui, controls, name, 0.0, on, true).clicked() {
+                    chosen = Some(workspace);
                 }
-            },
-        );
+            }
+        });
         if let Some(workspace) = chosen {
             self.workspace = workspace;
             self.menu = false;
@@ -246,8 +237,9 @@ impl IsothermApp {
             ),
             vec2(width, height),
         );
-        widgets::plain_card(
+        widgets::card(
             ui.ctx(),
+            widgets::backdrop(ui.ctx()),
             "workspace-hint",
             rect,
             egui::Order::Middle,

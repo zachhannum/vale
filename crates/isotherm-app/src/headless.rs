@@ -32,12 +32,9 @@ pub fn gpu_harness(
     let mut harness = Harness::builder()
         .with_size(egui::vec2(size.0, size.1))
         .with_pixels_per_point(PIXELS_PER_POINT)
-        .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-            render_state,
-        ))
+        .renderer(vale_shell::headless::ScreenRenderer::new(render_state))
         .build_ui_state(draw, app);
-    // The renderer of the harness writes only the safe area to the image,
-    // so the app takes the safe area and the image keeps the whole screen.
+    // The app takes the safe area, and the image keeps the whole screen.
     harness.state_mut().safe_area = safe_area;
     harness
 }

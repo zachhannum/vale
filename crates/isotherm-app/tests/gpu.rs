@@ -80,3 +80,11 @@ fn manual_screenshots() {
         .save(dir.join("menu.png"))
         .unwrap();
 }
+
+#[test]
+#[ignore = "gpu"]
+fn the_cards_are_glass_with_the_gpu() {
+    let mut harness = gpu_harness((1194.0, 834.0), None);
+    harness.run_steps(2);
+    assert!(vale_shell::pad::widgets::is_glass(&harness.ctx));
+}
