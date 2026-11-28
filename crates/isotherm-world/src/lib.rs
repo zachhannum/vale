@@ -3,6 +3,9 @@
 pub use vale_terrain::Heightmap;
 use vale_terrain::{Bands, FACES, SEA_LEVEL, TexelRect};
 
+/// The gravitational constant, in m³/(kg s²).
+pub const G: f64 = 6.674_30e-11;
+
 /// The bulk properties of a planet.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Planet {
@@ -23,6 +26,8 @@ pub struct Star {
     pub luminosity_w: f64,
     /// The temperature of the photosphere, in kelvins.
     pub temperature_k: f64,
+    /// The mass, in kilograms.
+    pub mass_kg: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -36,8 +41,8 @@ pub struct Orbit {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Rotation {
-    /// The length of the solar day, in seconds.
-    pub day_s: f64,
+    /// The period of one turn about the axis against the stars, in seconds.
+    pub sidereal_day_s: f64,
     /// The angle between the axis of rotation and the normal of the orbit, in degrees.
     pub tilt_deg: f64,
 }
@@ -48,6 +53,8 @@ pub struct Atmosphere {
     pub surface_pressure_pa: f64,
     /// The fraction of carbon dioxide, in parts per million by volume.
     pub co2_ppm: f64,
+    /// The fraction of methane, in parts per million by volume.
+    pub ch4_ppm: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +74,7 @@ impl Planet {
             star: Star {
                 luminosity_w: 3.828e26,
                 temperature_k: 5772.0,
+                mass_kg: 1.989e30,
             },
             orbit: Orbit {
                 semi_major_m: 1.495_978_707e11,
@@ -74,17 +82,41 @@ impl Planet {
                 perihelion_deg: 282.9,
             },
             rotation: Rotation {
-                day_s: 86_400.0,
+                sidereal_day_s: 86_164.1,
                 tilt_deg: 23.44,
             },
             atmosphere: Atmosphere {
                 surface_pressure_pa: 101_325.0,
                 co2_ppm: 280.0,
+                ch4_ppm: 0.722,
             },
             moons: vec![Moon {
                 mass_kg: 7.342e22,
                 distance_m: 3.844e8,
             }],
+        }
+    }
+
+    /// The mass of the planet, in kilograms, from its gravity and radius.
+    pub fn mass_kg(&self) -> f64 {
+        self.gravity * self.radius_m * self.radius_m / G
+    }
+
+    /// The period of the orbit, in seconds, from the third law of Kepler.
+    pub fn orbital_period_s(&self) -> f64 {
+        let a = self.orbit.semi_major_m;
+        2.0 * std::f64::consts::PI * (a * a * a / (G * (self.star.mass_kg + self.mass_kg()))).sqrt()
+    }
+
+    /// The length of the solar day, in seconds. A tidally locked planet has
+    /// an infinite solar day. A planet that turns against its orbit has a
+    /// negative sidereal day.
+    pub fn solar_day_s(&self) -> f64 {
+        let rate = 1.0 / self.rotation.sidereal_day_s - 1.0 / self.orbital_period_s();
+        if rate.abs() < 1e-12 / self.rotation.sidereal_day_s.abs() {
+            f64::INFINITY
+        } else {
+            (1.0 / rate).abs()
         }
     }
 }
@@ -211,13 +243,34 @@ mod tests {
     fn the_default_planet_is_the_earth() {
         let planet = Planet::default();
         assert_eq!(planet.radius_m, 6_371_000.0);
-        assert_eq!(planet.rotation.day_s, 86_400.0);
+        assert!((planet.solar_day_s() - 86_400.0).abs() < 1.0);
         assert_eq!(planet.moons.len(), 1);
         assert!((planet.atmosphere.surface_pressure_pa - 101_325.0).abs() < 1.0);
         // The solar constant at 1 AU is about 1,361 W/m².
         let a = planet.orbit.semi_major_m;
         let flux = planet.star.luminosity_w / (4.0 * std::f64::consts::PI * a * a);
         assert!((flux - 1361.0).abs() < 5.0, "{flux}");
+    }
+
+    #[test]
+    fn the_earth_orbits_in_one_year() {
+        let days = Planet::earth().orbital_period_s() / 86_400.0;
+        assert!((days - 365.25).abs() < 0.01, "{days}");
+    }
+
+    #[test]
+    fn a_tidally_locked_planet_has_no_solar_day() {
+        let mut planet = Planet::earth();
+        planet.rotation.sidereal_day_s = planet.orbital_period_s();
+        assert_eq!(planet.solar_day_s(), f64::INFINITY);
+    }
+
+    #[test]
+    fn a_three_to_two_resonance_has_a_solar_day_of_two_orbits() {
+        let mut planet = Planet::earth();
+        let year = planet.orbital_period_s();
+        planet.rotation.sidereal_day_s = year * 2.0 / 3.0;
+        assert!((planet.solar_day_s() / year - 2.0).abs() < 1e-9);
     }
 
     #[test]
