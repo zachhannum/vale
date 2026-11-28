@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds one iOS app of the workspace, installs it on the connected iPad or iPhone,
-# and starts it. `app-ipad.sh` and `globe-proto-ipad.sh` call this script.
+# and starts it. `app-ipad.sh`, `isotherm-ipad.sh`, and `globe-proto-ipad.sh` call this script.
 #
 # Usage: scripts/ipad-run.sh CRATE PROJECT BUNDLE_ID NAME
 #   CRATE      The crate that has the `ios` directory, for example vale-app.
