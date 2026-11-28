@@ -6,7 +6,12 @@
 //! have `done = 1`, and the steps that can be redone have `done = 0`.
 
 use std::fmt;
+use std::io::{Read, Write};
 use std::path::Path;
+
+use flate2::Compression;
+use flate2::read::DeflateDecoder;
+use flate2::write::DeflateEncoder;
 
 use isotherm_world::{Atmosphere, Heightmap, Moon, Orbit, Planet, Rotation, Star, Terrain, World};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
@@ -15,11 +20,11 @@ use crate::{run, tile};
 use isotherm_sim::RunState;
 
 /// The version of the `isotherm_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2, v3];
 
 /// The most undo steps that the file keeps.
 pub const UNDO_STEPS: usize = 100;
@@ -102,6 +107,77 @@ pub enum Restored {
     Terrain(Box<Terrain>),
 }
 
+/// A small picture of the world for the start screen, with 4 bytes of RGBA
+/// for each pixel, row by row from the top.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Thumbnail {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// What the start screen shows of a world file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summary {
+    pub name: String,
+    pub thumbnail: Option<Thumbnail>,
+}
+
+/// Reads the name and the picture of a world file. This does not migrate or
+/// change the file. A file of an older format version has no picture.
+pub fn summary(path: impl AsRef<Path>) -> Result<Summary, StoreError> {
+    let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = Connection::open_with_flags(path, flags)?;
+    let version = format_version(&conn)?;
+    if version > FORMAT_VERSION {
+        return Err(StoreError::NewerFormat {
+            file: version,
+            app: FORMAT_VERSION,
+        });
+    }
+    let name = read_name(&conn)?;
+    if version < 3 {
+        return Ok(Summary {
+            name,
+            thumbnail: None,
+        });
+    }
+    let row: Option<(u32, u32, Vec<u8>)> = conn
+        .query_row(
+            "SELECT width, height, data FROM isotherm_thumbnail",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let thumbnail = match row {
+        Some((width, height, data)) => {
+            let mut rgba = Vec::new();
+            let read = DeflateDecoder::new(data.as_slice()).read_to_end(&mut rgba);
+            let len = u64::from(width) * u64::from(height) * 4;
+            if read.is_err() || rgba.len() as u64 != len {
+                return Err(corrupt("the pixels of the thumbnail"));
+            }
+            Some(Thumbnail {
+                width,
+                height,
+                rgba,
+            })
+        }
+        None => None,
+    };
+    Ok(Summary { name, thumbnail })
+}
+
+fn read_name(conn: &Connection) -> Result<String, StoreError> {
+    conn.query_row(
+        "SELECT value FROM isotherm_meta WHERE key = 'name'",
+        [],
+        |r| r.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| corrupt("no name record"))
+}
+
 /// An open world file. Each change is one transaction and one undo step.
 pub struct WorldFile {
     conn: Connection,
@@ -158,16 +234,8 @@ impl WorldFile {
             migrate(&tx, version)?;
             tx.commit()?;
         }
-        let name = conn
-            .query_row(
-                "SELECT value FROM isotherm_meta WHERE key = 'name'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?
-            .ok_or_else(|| corrupt("no name record"))?;
         let world = World {
-            name,
+            name: read_name(&conn)?,
             planet: read_planet(&conn)?,
             terrain: read_terrain(&conn)?,
         };
@@ -275,6 +343,31 @@ impl WorldFile {
         let tx = self.conn.transaction()?;
         run::clear_run(&tx)?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Writes the picture of the world. This is not an edit, so it gets no
+    /// undo step.
+    pub fn set_thumbnail(&mut self, thumbnail: &Thumbnail) -> Result<(), StoreError> {
+        let len = u64::from(thumbnail.width) * u64::from(thumbnail.height) * 4;
+        assert_eq!(thumbnail.rgba.len() as u64, len, "4 bytes for each pixel");
+        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+        encoder.write_all(&thumbnail.rgba)?;
+        let data = encoder.finish()?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO isotherm_thumbnail (id, width, height, data)
+             VALUES (1, ?1, ?2, ?3)",
+            params![thumbnail.width, thumbnail.height, data],
+        )?;
+        Ok(())
+    }
+
+    /// Writes the name of the world. This gets no undo step.
+    pub fn set_name(&mut self, name: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO isotherm_meta (key, value) VALUES ('name', ?1)",
+            [name],
+        )?;
         Ok(())
     }
 
@@ -648,6 +741,23 @@ fn v2(tx: &Transaction) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// The picture of the world for the start screen.
+fn v3(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(
+        "CREATE TABLE isotherm_thumbnail (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           width INTEGER NOT NULL,
+           height INTEGER NOT NULL,
+           data BLOB NOT NULL
+         );
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           VALUES ('isotherm_thumbnail', 'isotherm', 'isotherm_thumbnail');
+         INSERT INTO gpkg_extensions
+           VALUES ('isotherm_thumbnail', NULL, 'isotherm_world', 'Records of the Isotherm app',
+             'read-write');",
+    )
 }
 
 /// The numbers of a planet before its moons, in the order of the columns of

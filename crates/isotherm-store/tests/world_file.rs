@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-use isotherm_store::{FORMAT_VERSION, Restored, StoreError, WorldFile};
+use isotherm_store::{
+    FORMAT_VERSION, Restored, StoreError, Summary, Thumbnail, WorldFile, summary,
+};
 use isotherm_world::{Heightmap, Moon, Planet, Terrain, World};
 use rusqlite::Connection;
 
@@ -301,4 +303,171 @@ fn the_file_is_a_geopackage() {
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .unwrap();
     assert_eq!(ok, "ok");
+}
+
+fn thumbnail() -> Thumbnail {
+    let (width, height) = (5, 3);
+    Thumbnail {
+        width,
+        height,
+        rgba: (0..width * height * 4).map(|i| (i * 13) as u8).collect(),
+    }
+}
+
+/// Makes the world file at `path` a file of format version 2, as the app
+/// of that version wrote it.
+fn make_v2(path: &Path) {
+    Connection::open(path)
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE isotherm_thumbnail;
+             DELETE FROM gpkg_contents WHERE table_name = 'isotherm_thumbnail';
+             DELETE FROM gpkg_extensions WHERE table_name = 'isotherm_thumbnail';
+             UPDATE isotherm_meta SET value = '2' WHERE key = 'format_version';",
+        )
+        .unwrap();
+}
+
+fn file_version(path: &Path) -> String {
+    Connection::open(path)
+        .unwrap()
+        .query_row(
+            "SELECT value FROM isotherm_meta WHERE key = 'format_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+#[test]
+fn a_version_2_file_opens_with_the_world_and_no_thumbnail() {
+    let dir = tempfile::tempdir().unwrap();
+    let original = world();
+    let mut file = WorldFile::create(path(&dir), &original).unwrap();
+    file.set_sea_level(-99.0, 250.0).unwrap();
+    drop(file);
+    make_v2(&path(&dir));
+
+    let (mut file, opened) = reopen(&path(&dir));
+    assert_eq!(opened.name, "Tethys");
+    assert_eq!(opened.planet, original.planet);
+    assert_eq!(opened.terrain.sea_level_m, 250.0);
+    assert!(file.can_undo());
+    assert_eq!(file_version(&path(&dir)), FORMAT_VERSION.to_string());
+    assert_eq!(summary(path(&dir)).unwrap().thumbnail, None);
+
+    file.set_thumbnail(&thumbnail()).unwrap();
+    drop(file);
+    assert_eq!(summary(path(&dir)).unwrap().thumbnail, Some(thumbnail()));
+    let conn = Connection::open(path(&dir)).unwrap();
+    let listed: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM gpkg_contents c JOIN gpkg_extensions e USING (table_name)
+             WHERE table_name = 'isotherm_thumbnail' AND c.data_type = 'isotherm'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(listed, 1);
+}
+
+#[test]
+fn set_thumbnail_then_summary_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = WorldFile::create(path(&dir), &world()).unwrap();
+    assert_eq!(
+        summary(path(&dir)).unwrap(),
+        Summary {
+            name: "Tethys".to_owned(),
+            thumbnail: None,
+        }
+    );
+    file.set_thumbnail(&thumbnail()).unwrap();
+    let mut other = thumbnail();
+    other.rgba.reverse();
+    file.set_thumbnail(&other).unwrap();
+    assert!(!file.can_undo());
+    assert_eq!(
+        summary(path(&dir)).unwrap(),
+        Summary {
+            name: "Tethys".to_owned(),
+            thumbnail: Some(other),
+        }
+    );
+}
+
+#[test]
+fn summary_does_not_change_an_old_file() {
+    let dir = tempfile::tempdir().unwrap();
+    WorldFile::create(path(&dir), &world()).unwrap();
+    make_v2(&path(&dir));
+    let before = std::fs::read(path(&dir)).unwrap();
+    let read = summary(path(&dir)).unwrap();
+    assert_eq!(read.name, "Tethys");
+    assert_eq!(read.thumbnail, None);
+    assert_eq!(std::fs::read(path(&dir)).unwrap(), before);
+    assert_eq!(file_version(&path(&dir)), "2");
+}
+
+#[test]
+fn summary_of_a_file_that_is_not_a_world_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let plain = dir.path().join("plain.sqlite");
+    Connection::open(&plain)
+        .unwrap()
+        .execute_batch("CREATE TABLE t (x INTEGER)")
+        .unwrap();
+    assert!(matches!(summary(&plain), Err(StoreError::NotAWorld)));
+
+    let vale = dir.path().join("vale.gpkg");
+    Connection::open(&vale)
+        .unwrap()
+        .execute_batch(
+            "PRAGMA application_id = 1196444487;
+             PRAGMA user_version = 10300;
+             CREATE TABLE gpkg_contents (table_name TEXT PRIMARY KEY, data_type TEXT NOT NULL);
+             CREATE TABLE vale_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+             INSERT INTO vale_meta VALUES ('format_version', '43');
+             CREATE TABLE vale_world (name TEXT NOT NULL);
+             INSERT INTO vale_world VALUES ('Vale world');",
+        )
+        .unwrap();
+    assert!(matches!(summary(&vale), Err(StoreError::NotAWorld)));
+
+    let text = dir.path().join("text.gpkg");
+    std::fs::write(
+        &text,
+        "not a database, but long enough to be read as a header ".repeat(4),
+    )
+    .unwrap();
+    assert!(matches!(summary(&text), Err(StoreError::NotAWorld)));
+}
+
+#[test]
+fn summary_of_a_newer_file_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    WorldFile::create(path(&dir), &world()).unwrap();
+    Connection::open(path(&dir))
+        .unwrap()
+        .execute(
+            "UPDATE isotherm_meta SET value = ?1 WHERE key = 'format_version'",
+            [(FORMAT_VERSION + 1).to_string()],
+        )
+        .unwrap();
+    assert!(matches!(
+        summary(path(&dir)),
+        Err(StoreError::NewerFormat { .. })
+    ));
+}
+
+#[test]
+fn set_name_then_open_and_summary_give_the_new_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut file = WorldFile::create(path(&dir), &world()).unwrap();
+    file.set_name("Nereid").unwrap();
+    assert!(!file.can_undo());
+    drop(file);
+    assert_eq!(reopen(&path(&dir)).1.name, "Nereid");
+    assert_eq!(summary(path(&dir)).unwrap().name, "Nereid");
 }
