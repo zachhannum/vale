@@ -20,14 +20,25 @@ objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
     "NSArray",
+    "NSDate",
+    "NSError",
+    "NSFileCoordinator",
+    "NSFileManager",
+    "NSFileVersion",
     "NSNotification",
+    "NSObject",
+    "NSOperation",
     "NSString",
     "NSURL",
+    "NSValue",
+    "block2",
 ] }
+block2 = "0.6.2"
 objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "std",
     "block2",
     "objc2-uniform-type-identifiers",
+    "UIApplication",
     "UIResponder",
     "UIViewController",
     "UIDocumentPickerViewController",
