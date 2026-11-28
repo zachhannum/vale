@@ -119,11 +119,12 @@ Data moves from left to right. The terrain crate is not in the diagram. It write
 | labeler | Standalone labeling engine. It takes page-space geometry and returns placed text. |
 | render | Display list and the Vello, Krilla, SVG, and raster backends |
 | globe | Globe renderer, navigation, and flat view. The app gives it the layers and their looks. |
+| shell | Pad theme, touch widgets, working copy, resume file, and iOS lifecycle, shared with Isotherm |
 | app | egui shell, tools, panels |
 
-An unpublished tenth crate, `vale-labeler-demo`, holds the command-line tool for the labeling prototype. The binary of the app crate is named `vale-app`.
+An unpublished eleventh crate, `vale-labeler-demo`, holds the command-line tool for the labeling prototype. The binary of the app crate is named `vale-app`.
 
-An unpublished eleventh crate, `vale-globe-proto`, is a prototype that tests pen drawing on the globe. The section "Globe prototype" describes it.
+An unpublished twelfth crate, `vale-globe-proto`, is a prototype that tests pen drawing on the globe. The section "Globe prototype" describes it.
 
 The published crate names take a `vale-` prefix, for example `vale-labeler` and `vale-sphere`. The crates of Isotherm, the climate simulator in the same workspace, take an `isotherm-` prefix. `docs/isotherm/DESIGN.md` describes them. The plain name `vale` is taken on crates.io by an unrelated validation library.
 
