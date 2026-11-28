@@ -1,5 +1,7 @@
 //! The planet record and the terrain of an Isotherm world.
 
+pub mod presets;
+
 pub use vale_terrain::Heightmap;
 use vale_terrain::{Bands, FACES, SEA_LEVEL, TexelRect};
 
@@ -149,6 +151,33 @@ impl Planet {
             f64::INFINITY
         } else {
             (1.0 / rate).abs()
+        }
+    }
+
+    /// True when the planet turns once in each orbit, so that one side
+    /// always faces the star.
+    pub fn is_locked(&self) -> bool {
+        self.solar_day_s().is_infinite()
+    }
+
+    /// Makes the sidereal day equal to the orbital period.
+    pub fn lock(&mut self) {
+        self.rotation.sidereal_day_s = self.orbital_period_s();
+    }
+
+    /// Sets the sidereal day that gives a solar day of `solar_s` seconds,
+    /// for a planet that turns in the direction of its orbit.
+    pub fn set_solar_day_s(&mut self, solar_s: f64) {
+        self.rotation.sidereal_day_s = 1.0 / (1.0 / solar_s + 1.0 / self.orbital_period_s());
+    }
+
+    /// Applies `edit`, and keeps a locked planet locked when the edit
+    /// changes its orbital period.
+    pub fn keep_lock(&mut self, edit: impl FnOnce(&mut Planet)) {
+        let locked = self.is_locked();
+        edit(self);
+        if locked {
+            self.lock();
         }
     }
 }
@@ -320,6 +349,29 @@ mod tests {
         let year = planet.orbital_period_s();
         planet.rotation.sidereal_day_s = year * 2.0 / 3.0;
         assert!((planet.solar_day_s() / year - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_solar_day_gives_the_sidereal_day() {
+        let mut planet = Planet::earth();
+        planet.set_solar_day_s(86_400.0);
+        assert!((planet.rotation.sidereal_day_s - 86_164.1).abs() < 0.2);
+        planet.set_solar_day_s(36_000.0);
+        assert!((planet.solar_day_s() - 36_000.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_locked_planet_stays_locked_when_the_orbit_changes() {
+        let mut planet = Planet::earth();
+        planet.lock();
+        assert!(planet.is_locked());
+        planet.keep_lock(|p| p.orbit.semi_major_m *= 0.1);
+        assert!(planet.is_locked());
+        planet.keep_lock(|p| p.star.mass_kg *= 0.3);
+        assert!(planet.is_locked());
+        let mut free = Planet::earth();
+        free.keep_lock(|p| p.orbit.semi_major_m *= 0.1);
+        assert_eq!(free.rotation.sidereal_day_s, 86_164.1);
     }
 
     #[test]
