@@ -1,0 +1,10 @@
+[package]
+name = "isotherm-world"
+description = "Planet record and terrain of an Isotherm world"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vale-terrain.workspace = true
