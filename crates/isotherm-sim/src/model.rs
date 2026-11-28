@@ -1,6 +1,7 @@
 //! The energy balance model of tier 1.
 //!
-//! Each cell has a temperature at sea level and, at sea, an ice thickness.
+//! Each cell has a temperature at sea level. A sea cell has an ice
+//! thickness, and a land cell has a snow mass.
 //! Each step solves the energy balance of all cells together with one
 //! linearized backward Euler step, so a step of any length is stable.
 
@@ -18,7 +19,7 @@ pub const SIGMA: f64 = 5.670_374e-8;
 
 /// The version of the state of a run. A saved run of another version does
 /// not open.
-pub const MODEL_VERSION: u32 = 1;
+pub const MODEL_VERSION: u32 = 2;
 
 /// The free constants of the model, with the values of the Earth preset.
 #[derive(Clone, Debug, PartialEq)]
@@ -49,14 +50,26 @@ pub struct Params {
     pub min_ice_m: f64,
     /// The thickness of sea ice that covers a whole cell, in m.
     pub cover_ice_m: f64,
-    /// The albedo of open ground and open water, clouds included.
-    pub albedo_free: f64,
-    /// The albedo of ice and snow, clouds included.
-    pub albedo_ice: f64,
-    /// The temperature of half snow cover on land, in K.
-    pub snow_k: f64,
-    /// The width of the change from open ground to snow, in K.
-    pub snow_width_k: f64,
+    /// The albedo of the sea, of open ground, of snow, and of sea ice, in
+    /// the visible band and in the infrared band.
+    pub albedo_sea: [f64; 2],
+    pub albedo_land: [f64; 2],
+    pub albedo_snow: [f64; 2],
+    pub albedo_ice: [f64; 2],
+    /// The share of the light of the star that the air and the clouds
+    /// reflect.
+    pub air_reflectance: f64,
+    /// The share of the light of the star that goes down through the air
+    /// and the clouds and up again.
+    pub air_transmission: f64,
+    /// The snowfall on land below the melting point, at the saturation
+    /// humidity of 0 °C, in kg/(m² s). The snowfall is in proportion to
+    /// the saturation humidity.
+    pub snowfall: f64,
+    /// The snow of a full snow cover, in kg/m².
+    pub snow_cover_kg: f64,
+    /// The most snow that a cell keeps, in kg/m².
+    pub max_snow_kg: f64,
     /// The lapse rate at the gravity of the Earth, in K/m.
     pub lapse_k_per_m: f64,
     /// The optical depth of a dry atmosphere with the gases of the Earth.
@@ -101,10 +114,15 @@ impl Params {
             fusion: 3.34e5,
             min_ice_m: 0.05,
             cover_ice_m: 1.0,
-            albedo_free: 0.28,
-            albedo_ice: 0.55,
-            snow_k: 263.15,
-            snow_width_k: 5.0,
+            albedo_sea: [0.06, 0.06],
+            albedo_land: [0.10, 0.30],
+            albedo_snow: [0.96, 0.68],
+            albedo_ice: [0.73, 0.33],
+            air_reflectance: 0.25,
+            air_transmission: 0.37,
+            snowfall: 0.5 / 86_400.0,
+            snow_cover_kg: 100.0,
+            max_snow_kg: 1000.0,
             lapse_k_per_m: 6.5e-3,
             tau0: 0.276,
             k_co2: 5.35 / 110.0,
@@ -119,6 +137,13 @@ impl Params {
             omega0: 7.292e-5,
             g0: 9.81,
         }
+    }
+
+    /// The albedo of a surface at the top of the atmosphere, with the share
+    /// `visible` of the light in the visible band.
+    pub fn albedo(&self, surface: [f64; 2], visible: f64) -> f64 {
+        let surface = visible * surface[0] + (1.0 - visible) * surface[1];
+        self.air_reflectance + self.air_transmission * surface
     }
 
     /// The optical depth of the gases other than water vapor.
@@ -154,18 +179,21 @@ pub struct RunState {
     pub temperature_k: Vec<f64>,
     /// The thickness of the sea ice of each cell, in m.
     pub ice_m: Vec<f64>,
+    /// The snow of each cell, in kg/m².
+    pub snow_kg: Vec<f64>,
     pub means: Means,
 }
 
 impl RunState {
     pub fn heap_bytes(&self) -> u64 {
-        ((self.temperature_k.capacity() + self.ice_m.capacity()) * 8) as u64
+        ((self.temperature_k.capacity() + self.ice_m.capacity() + self.snow_kg.capacity()) * 8)
+            as u64
             + self.means.heap_bytes()
     }
 }
 
 /// The f64 buffers of a model for each cell, other than the solver.
-pub const F64_PER_CELL: usize = 12;
+pub const F64_PER_CELL: usize = 13;
 
 /// A run of the model on one world.
 pub struct Model {
@@ -182,10 +210,17 @@ pub struct Model {
     /// The pressure factor of the optical depth and the dry optical depth.
     pressure_factor: f64,
     dry_tau: f64,
+    /// The albedo of each surface at the top of the atmosphere, for the
+    /// light of the star.
+    albedo_sea: f64,
+    albedo_land: f64,
+    albedo_snow: f64,
+    albedo_ice: f64,
     land: Vec<bool>,
     height_m: Vec<f64>,
     temperature: Vec<f64>,
     ice: Vec<f64>,
+    snow: Vec<f64>,
     sun: Vec<f64>,
     h: Vec<f64>,
     dh: Vec<f64>,
@@ -226,7 +261,12 @@ impl Model {
         let r = planet.radius_m;
         let (land, height_m) = sample_terrain(world, &grid);
         let zeros = || vec![0.0; n];
+        let visible = planet.star.visible_fraction();
         Model {
+            albedo_sea: params.albedo(params.albedo_sea, visible),
+            albedo_land: params.albedo(params.albedo_land, visible),
+            albedo_snow: params.albedo(params.albedo_snow, visible),
+            albedo_ice: params.albedo(params.albedo_ice, visible),
             sky,
             solver: Solver::new(&grid),
             atmosphere,
@@ -240,6 +280,7 @@ impl Model {
             height_m,
             temperature: zeros(),
             ice: zeros(),
+            snow: zeros(),
             sun: zeros(),
             h: zeros(),
             dh: zeros(),
@@ -258,8 +299,8 @@ impl Model {
     }
 
     /// Sets each cell to the balance of the yearly mean insolation and the
-    /// outgoing infrared, with open water no colder than its freezing
-    /// point.
+    /// outgoing infrared, with no snow and no ice, and with open water no
+    /// colder than its freezing point.
     fn start(&mut self) {
         let samples = 72;
         let stride = STEPS_PER_YEAR / samples;
@@ -277,9 +318,9 @@ impl Model {
             for _ in 0..50 {
                 let ts = (lo + hi) / 2.0;
                 let albedo = if self.land[i] {
-                    self.land_albedo(ts)
+                    self.albedo_land
                 } else {
-                    self.params.albedo_free
+                    self.albedo_sea
                 };
                 let net = self.rhs[i] * (1.0 - albedo) - self.olr(ts).0;
                 if net > 0.0 { lo = ts } else { hi = ts }
@@ -291,23 +332,25 @@ impl Model {
             self.temperature[i] = t;
         }
         self.ice.fill(0.0);
+        self.snow.fill(0.0);
     }
 
-    fn snow(&self, ts: f64) -> f64 {
-        let p = &self.params;
-        0.5 * (1.0 - ((ts - p.snow_k) / p.snow_width_k).tanh())
-    }
-
-    fn land_albedo(&self, ts: f64) -> f64 {
-        let p = &self.params;
-        p.albedo_free + (p.albedo_ice - p.albedo_free) * self.snow(ts)
-    }
-
-    fn ice_cover(&self, i: usize, ts: f64) -> f64 {
+    /// The share of a cell under snow or sea ice.
+    fn cover(&self, i: usize) -> f64 {
         if self.land[i] {
-            self.snow(ts)
+            (self.snow[i] / self.params.snow_cover_kg).min(1.0)
         } else {
             (self.ice[i] / self.params.cover_ice_m).min(1.0)
+        }
+    }
+
+    /// The albedo of a cell at the top of the atmosphere.
+    fn albedo(&self, i: usize) -> f64 {
+        let f = self.cover(i);
+        if self.land[i] {
+            self.albedo_land + (self.albedo_snow - self.albedo_land) * f
+        } else {
+            self.albedo_sea + (self.albedo_ice - self.albedo_sea) * f
         }
     }
 
@@ -339,12 +382,7 @@ impl Model {
             let t = self.temperature[i];
             let ts = t - self.lapse * self.height_m[i];
             let ice = self.ice[i];
-            let albedo = if self.land[i] {
-                self.land_albedo(ts)
-            } else {
-                let f = self.ice_cover(i, ts);
-                p.albedo_free + (p.albedo_ice - p.albedo_free) * f
-            };
+            let albedo = self.albedo(i);
             let (olr, dolr) = self.olr(ts);
             let (qs, dqs) = saturation(t, ps);
             self.h[i] = p.cp * t + p.lv * p.relative_humidity * qs;
@@ -379,6 +417,7 @@ impl Model {
             &mut self.delta,
         );
         let latent = p.ice_density * p.fusion;
+        let melt_humidity = saturation(p.melting_k, ps).0;
         for i in 0..n {
             let mut t = self.temperature[i] + self.delta[i];
             if !self.land[i] {
@@ -403,13 +442,27 @@ impl Model {
                     t = p.freezing_k;
                 }
                 self.ice[i] = ice;
+            } else {
+                // Snow falls below the melting point. Above it, the heat
+                // above the melting point melts the snow.
+                let ts = t - self.lapse * self.height_m[i];
+                let mut snow = self.snow[i];
+                if ts < p.melting_k {
+                    snow += self.dt * p.snowfall * saturation(ts, ps).0 / melt_humidity;
+                } else if snow > 0.0 {
+                    let capacity = self.air_capacity + p.land_capacity;
+                    let melt = (capacity * (ts - p.melting_k) / p.fusion).min(snow);
+                    snow -= melt;
+                    t -= melt * p.fusion / capacity;
+                }
+                self.snow[i] = snow.min(p.max_snow_kg);
             }
             self.temperature[i] = t;
         }
         for i in 0..n {
             let ts = self.temperature[i] - self.lapse * self.height_m[i];
             self.out_t[i] = ts - 273.15;
-            self.out_ice[i] = self.ice_cover(i, ts);
+            self.out_ice[i] = self.cover(i);
         }
         let month = (self.step % u64::from(STEPS_PER_YEAR)) as usize / STEPS_PER_MONTH as usize;
         self.means.add(month, &[&self.out_t, &self.out_ice]);
@@ -474,6 +527,18 @@ impl Model {
         &self.ice
     }
 
+    /// The snow of each cell, in kg/m².
+    pub fn snow_kg(&self) -> &[f64] {
+        &self.snow
+    }
+
+    /// The share of each cell under snow or sea ice.
+    pub fn ice_cover(&self, out: &mut [f64]) {
+        for (i, out) in out.iter_mut().enumerate() {
+            *out = self.cover(i);
+        }
+    }
+
     /// The mean height of the land of each cell, in m. A sea cell has 0.
     pub fn height_m(&self) -> &[f64] {
         &self.height_m
@@ -515,6 +580,7 @@ impl Model {
             step: self.step,
             temperature_k: self.temperature.clone(),
             ice_m: self.ice.clone(),
+            snow_kg: self.snow.clone(),
             means: self.means.clone(),
         }
     }
@@ -529,6 +595,7 @@ impl Model {
         let cells = model.grid.len();
         let fits = state.temperature_k.len() == cells
             && state.ice_m.len() == cells
+            && state.snow_kg.len() == cells
             && state.means.outputs() == Output::ALL
             && state.means.fields().iter().all(|f| f.face_size == n);
         if !fits {
@@ -537,6 +604,7 @@ impl Model {
         model.step = state.step;
         model.temperature = state.temperature_k;
         model.ice = state.ice_m;
+        model.snow = state.snow_kg;
         model.means = state.means;
         Ok(model)
     }
@@ -547,6 +615,7 @@ impl Model {
             &self.height_m,
             &self.temperature,
             &self.ice,
+            &self.snow,
             &self.sun,
             &self.h,
             &self.dh,

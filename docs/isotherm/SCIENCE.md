@@ -83,15 +83,18 @@ Sources: Berger (1978), Hartmann (2016).
 
 ### Star spectrum and two bands
 
-The star is a black body at the temperature `T_star`. The fraction `f_vis` of its energy below the wavelength `λ_c = 0.7 µm` is the integral of the Planck function to `λ_c`, divided by `σ T_star⁴`. The rest is the near-infrared band.
+The star is a black body at the temperature `T_star`. The fraction `f_vis` of its energy below the wavelength `λ_c = 0.7 µm` is the integral of the Planck function to `λ_c`, divided by `σ T_star⁴`. The rest is the near-infrared band. The integral is the series of Widger and Woodall (1976), with `x = h c / (k λ_c T_star)`:
 
 ```
+f_vis = (15 / π⁴) Σ_n (e^(−n x) / n) (x³ + 3x²/n + 6x/n² + 6/n³)
 α = f_vis α_vis + (1 − f_vis) α_nir
 ```
 
+`f_vis` is 0.49 for the Sun at 5,772 K and 0.10 for a red dwarf at 3,200 K.
+
 Snow and ice have a high albedo in the visible band and a low albedo in the near-infrared band. A cool star puts more of its energy in the near-infrared band, so the ice of its planets absorbs more of the light.
 
-Sources: Joshi and Haberle (2012), Shields et al. (2013).
+Sources: Widger and Woodall (1976), Joshi and Haberle (2012), Shields et al. (2013).
 
 ### Binary stars
 
@@ -157,15 +160,34 @@ Sources: Hwang and Frierson (2010), Frierson, Held, and Zurita-Gotor (2007), Bol
 
 ### Snow, ice, and albedo feedback
 
-The albedo of snow and ice changes smoothly from the value of open ground or open water to the value of ice, near the freezing point.
+Each surface has an albedo `α_s` in the visible band and in the near-infrared band.
+
+| Surface | Visible | Near-infrared |
+| --- | --- | --- |
+| Sea | 0.06 | 0.06 |
+| Open ground | 0.10 | 0.30 |
+| Snow | 0.96 | 0.68 |
+| Sea ice | 0.73 | 0.33 |
+
+The air and the clouds reflect a share `R` of the light. A share `T` of the light goes down to the surface and up again. The albedo at the top of the atmosphere in each band is:
 
 ```
-α(T) = α_ice + (α_free − α_ice) (1 + tanh((T − T_s) / ΔT)) / 2
+α_b = R + T α_s,b
 ```
 
-On land, `T` is the surface temperature at the height of the cell, `T_s` is 263.15 K, and `ΔT` is 5 K. At sea, the albedo goes from `α_free` to `α_ice` with the ice cover. The albedos are values at the top of the atmosphere, with the clouds: `α_free = 0.28` and `α_ice = 0.55`.
+`R = 0.25` and `T = 0.37` are tuned to the Earth preset. For the light of the Sun, they give 0.27 over the sea and 0.55 over snow. The section "Star spectrum and two bands" weights the two bands. A cell takes `α = α_open + (α_cover − α_open) f`, with `f` the share of the cell under snow or sea ice.
 
-Sources: Budyko (1969), Spiegel, Menou, and Scharf (2008).
+Snow on land is a mass `S` of water, in kg/m². Below the melting point at the height of the cell, snow falls:
+
+```
+P_snow = P_0 q_s(T) / q_s(273.15 K)
+```
+
+`P_0` is 0.5 mm of water per day, and `q_s` is the saturation specific humidity, so colder air gives less snow. Above the melting point, the heat above the melting point melts snow, and the cell stays at the melting point until the snow is gone. The snow covers the share `f = min(1, S / 100 kg/m²)` of the cell, which includes the trees and the rocks that stand out of thin snow. A cell keeps at most 1,000 kg/m². The section "Heat capacity" gives the growth and the melt of sea ice. Tier 2 replaces `P_0` with the snowfall of the water cycle.
+
+`P_0` and the snow of a full cover are tuned to the Earth preset. With them, the yearly mean is 14.8 °C, and the pole-to-equator difference is 43.0 °C. North, Cahalan, and Coakley (1981) give 14.9 °C and 42 °C.
+
+Sources: Budyko (1969), Spiegel, Menou, and Scharf (2008), Briegleb et al. (2004) for the albedos of snow and sea ice, Hartmann (2016) for the albedos of the sea and open ground.
 
 ### Lapse rate
 
@@ -408,6 +430,8 @@ Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary cl
 
 Bolton, D. (1980). The computation of equivalent potential temperature. Monthly Weather Review, 108(7), 1046–1053. https://doi.org/10.1175/1520-0493(1980)108<1046:tcoept>2.0.co;2
 
+Briegleb, B. P., Bitz, C. M., Hunke, E. C., Lipscomb, W. H., Holland, M. M., Schramm, J. L., & Moritz, R. E. (2004). Scientific description of the sea ice component in the Community Climate System Model, Version 3 (NCAR Technical Note NCAR/TN-463+STR). National Center for Atmospheric Research.
+
 Budyko, M. I. (1969). The effect of solar radiation variations on the climate of the Earth. Tellus, 21(5), 611–619. https://doi.org/10.1111/j.2153-3490.1969.tb00466.x
 
 Copernicus Climate Change Service. (2019). ERA5 monthly averaged data on single levels from 1940 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). https://doi.org/10.24381/cds.f17050d7
@@ -493,6 +517,8 @@ Sverdrup, H. U. (1947). Wind-driven currents in a baroclinic ocean; with applica
 van der Vorst, H. A. (1992). Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG for the solution of nonsymmetric linear systems. SIAM Journal on Scientific and Statistical Computing, 13(2), 631–644. https://doi.org/10.1137/0913035
 
 Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press. https://doi.org/10.1017/9781107588417
+
+Widger, W. K., & Woodall, M. P. (1976). Integration of the Planck blackbody radiation function. Bulletin of the American Meteorological Society, 57(10), 1217–1219. https://doi.org/10.1175/1520-0477(1976)057<1217:iotpbr>2.0.co;2
 
 Williams, D. M., & Kasting, J. F. (1997). Habitable planets with high obliquities. Icarus, 129(1), 254–267. https://doi.org/10.1006/icar.1997.5759
 

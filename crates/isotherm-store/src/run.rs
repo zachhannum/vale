@@ -2,7 +2,7 @@
 //!
 //! `isotherm_run` holds the face size, the step, the model version, and the
 //! month of the sums. `isotherm_run_grid` holds the temperature, the ice,
-//! and the sums of the month, as deflated f64 values. `isotherm_field` holds
+//! the snow, and the sums of the month, as deflated f64 values. `isotherm_field` holds
 //! each filled month of each output, as deflated f32 values.
 
 use std::io::{Read, Write};
@@ -84,6 +84,7 @@ pub(crate) fn write_run(tx: &Transaction, state: &RunState) -> Result<(), StoreE
     let mut grid = tx.prepare("INSERT INTO isotherm_run_grid VALUES (?1, ?2)")?;
     grid.execute(params!["temperature", deflate_f64(&state.temperature_k)?])?;
     grid.execute(params!["ice_m", deflate_f64(&state.ice_m)?])?;
+    grid.execute(params!["snow_kg", deflate_f64(&state.snow_kg)?])?;
     for (output, sum) in state.means.outputs().iter().zip(&partial.sums) {
         grid.execute(params![format!("sum:{}", output.key()), deflate_f64(sum)?])?;
     }
@@ -176,6 +177,7 @@ pub(crate) fn read_run(conn: &Connection) -> Result<Option<RunState>, StoreError
         step: u64::try_from(step).map_err(|_| corrupt("a negative step"))?,
         temperature_k: grid("temperature")?,
         ice_m: grid("ice_m")?,
+        snow_kg: grid("snow_kg")?,
         means,
     }))
 }
