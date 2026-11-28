@@ -3,11 +3,14 @@
 use std::f64::consts::PI;
 
 pub mod grid;
+pub mod memory;
+pub mod model;
 pub mod ops;
 pub mod solver;
 pub mod sun;
 
 pub use grid::{Edge, Grid, Vector};
+pub use model::{MODEL_VERSION, Model, Params, RunState};
 pub use ops::Ops;
 
 /// The steps of each model year. The step count does not depend on the

@@ -75,6 +75,10 @@ cos H₀ = −tan φ tan δ, clamped to [−1, 1]
 Q_day = (S_star / π) (a_ref / r)² (H₀ sin φ sin δ + cos φ cos δ sin H₀)
 ```
 
+Each model year has 360 steps of equal length, a twelfth of the orbital period for each month of 30 steps. The orbital period follows from the third law of Kepler with the masses of the star and the planet. The year starts at 79/365.25 of the period before the northern spring equinox, so month 0 is January on the Earth. The planet turns at its sidereal rate, and the star is over longitude 0 at periapsis. Newton's method with 8 iterations solves `M = E − e sin E`.
+
+The mean of `S` over a step uses `δ` and `r` at the middle of the step and the change of `H` over the step. The integral of `max(0, a + b cos H)` over any interval of `H` follows from `H₀` in closed form, with `a = sin φ sin δ` and `b = cos φ cos δ`. A step of a fast rotator covers about one day, so its mean is close to `Q_day`. A step of a slow rotator covers a part of a day, so the model resolves the day and the night.
+
 Sources: Berger (1978), Hartmann (2016).
 
 ### Star spectrum and two bands
@@ -101,10 +105,12 @@ The atmosphere has one optical depth `τ` for the infrared. The outgoing flux fo
 
 ```
 OLR = σ T⁴ / (1 + 3τ/4)
-τ = (p_s / p_0)^n (τ_0 + k_CO2 ln(c_CO2 / c_CO2,0) + k_CH4 (sqrt(c_CH4) − sqrt(c_CH4,0)) + k_H2O q)
+τ = (p_s / p_0)^n (τ_0 + k_CO2 ln(c_CO2 / c_CO2,0) + k_CH4 (sqrt(c_CH4) − sqrt(c_CH4,0)) + k_H2O ln(1 + q / q_ref))
 ```
 
-`p_s` is the surface pressure. The exponent `n` is between 1 and 2, because pressure broadening makes the lines wider. The terms in CO2 and CH4 follow the forms of the radiative forcing of Myhre et al. (1998). The term in water vapor uses the specific humidity `q` of the cell, so the water vapor feedback follows.
+`p_s` is the surface pressure. The exponent `n` is between 1 and 2, because pressure broadening makes the lines wider. The terms in CO2 and CH4 follow the forms of the radiative forcing of Myhre et al. (1998). The term in water vapor uses the specific humidity `q` at the surface temperature of the cell, so the water vapor feedback follows. The forcing of water vapor grows with the logarithm of `q`, as the forcing of CO2 does, so the feedback stays near 1.6 W/m² per K over the temperatures of the Earth.
+
+A change of `τ` of 1 changes the OLR of the Earth by about 110 W/m², so `k_CO2 = 5.35 / 110` and `k_CH4 = 1.14 / 110`, from the coefficients of Myhre et al. The values `τ_0 = 0.276`, `k_H2O = 0.25`, and `q_ref = 0.001` give `τ = 0.84` and an OLR of 239 W/m² at 288 K.
 
 Sources: Pierrehumbert (2010), Frierson, Held, and Zurita-Gotor (2006), Myhre et al. (1998).
 
@@ -123,6 +129,8 @@ F_top = k_i (T_f − T) / H_i
 ```
 
 `T_f` is the freezing point of sea water, and `k_i` is the conductivity of ice.
+
+The temperature of a cell is the temperature of the air column and the surface together. The air adds `C_air = p_s c_p / g` to each cell. Open water below `T_f` turns the missing heat into ice and stays at `T_f`. An ice cell has the heat capacity of the air only. The heat that the ice conducts from the water at `T_f` grows the ice at its base. Heat above the melting point at the top melts the ice. When the ice is gone, the rest of the heat warms the open water. The ice covers a fraction `min(1, H_i / 1 m)` of the cell.
 
 Sources: Semtner (1976), Hartmann (2016).
 
@@ -143,6 +151,8 @@ e_s(T) = 611.2 exp(17.67 (T − 273.15) / (T − 29.65))
 D = D_0 (p_s / p_0) (c_p / c_p,0) (m_0 / m)² (Ω_0 / Ω)²
 ```
 
+The flux is `(p_s / g) D ∇h`. Tier 1 has no molar mass and one `c_p`, so those factors are 1. The factor `(Ω_0 / Ω)²` is at most 100. `D_0 = 0.9 × 10⁶ m²/s` is tuned to the pole-to-equator difference of the Earth. Hwang and Frierson (2010) give `1.06 × 10⁶ m²/s` for a model without an ice-albedo feedback.
+
 Sources: Hwang and Frierson (2010), Frierson, Held, and Zurita-Gotor (2007), Bolton (1980), Williams and Kasting (1997).
 
 ### Snow, ice, and albedo feedback
@@ -150,8 +160,10 @@ Sources: Hwang and Frierson (2010), Frierson, Held, and Zurita-Gotor (2007), Bol
 The albedo of snow and ice changes smoothly from the value of open ground or open water to the value of ice, near the freezing point.
 
 ```
-α(T) = α_ice + (α_free − α_ice) (1 + tanh((T − T_f) / ΔT)) / 2
+α(T) = α_ice + (α_free − α_ice) (1 + tanh((T − T_s) / ΔT)) / 2
 ```
+
+On land, `T` is the surface temperature at the height of the cell, `T_s` is 263.15 K, and `ΔT` is 5 K. At sea, the albedo goes from `α_free` to `α_ice` with the ice cover. The albedos are values at the top of the atmosphere, with the clouds: `α_free = 0.28` and `α_ice = 0.55`.
 
 Sources: Budyko (1969), Spiegel, Menou, and Scharf (2008).
 
@@ -167,6 +179,18 @@ T(z) = T − Γ z
 `Γ` is between the moist lapse rate and `Γ_dry`. It is 6.5 K per km in the Earth preset, and it scales with `g / c_p` on other planets.
 
 Source: Hartmann (2016).
+
+### Time step
+
+Each step is one linearized backward Euler step of the energy balance of all cells together, so a step of any length is stable. The unknown is the change `δT` of each cell.
+
+```
+(C / Δt + dOLR/dT) δT − ∇·(K ∇(h′ δT)) = S (1 − α) − OLR + ∇·(K ∇h)
+```
+
+`h′ = dh/dT`, and `K = p_s D / g`. The albedo is from the start of the step. The operator is not symmetric, so BiCGSTAB with a Jacobi preconditioner solves the system to a relative residual of 10⁻⁸. The Laplacian is a sparse matrix with 13 entries for each cell, equal to the operator of the section "Grid and operators".
+
+Sources: van der Vorst (1992), Hartmann (2016).
 
 ### Tidal heating
 
@@ -356,7 +380,7 @@ Sources: Beck et al. (2023), Peel, Finlayson, and McMahon (2007).
 
 ## Observations for the checks
 
-The checks of the Earth preset compare its outputs with these data sets. `docs/isotherm/DESIGN.md` lists the checks under "Correctness". Each data set gives the means of 1991 to 2020.
+The checks of the Earth preset compare its outputs with these data sets. `docs/isotherm/DESIGN.md` lists the checks under "Correctness". Each data set other than the values of North, Cahalan, and Coakley (1981) gives the means of 1991 to 2020.
 
 | Data set | License | Outputs |
 | --- | --- | --- |
@@ -364,6 +388,9 @@ The checks of the Earth preset compare its outputs with these data sets. `docs/i
 | ERA5 monthly averaged data on single levels (Copernicus Climate Change Service, 2019), described in Hersbach et al. (2020) | CC BY | Surface air temperature over the sea, sea ice, sea-level pressure, surface wind, cloud cover, sea surface temperature |
 | GPCP monthly precipitation, version 2.3 (Adler et al., 2017), described in Adler et al. (2018) | CC0 | Precipitation over the sea |
 | Drifter climatology of near-surface currents (Laurindo, Mariano, and Lumpkin, 2017) | Not clear, to be confirmed before use | Ocean currents |
+| Zonal mean sea-level temperature of the northern hemisphere, North, Cahalan, and Coakley (1981), Table 1 | Published values | The pole-to-equator difference of tier 1 |
+
+North, Cahalan, and Coakley fit the yearly mean as `T(x) = T_0 + T_2 P_2(x)`, with `x` the sine of the latitude, `T_0 = 14.9 °C`, and `T_2 = −28.0 °C`. The equator is then `1.5 |T_2| = 42 °C` warmer than the pole. A test fits the same curve to the model after 12 years on a grid of 32 cells on each face, and it requires a difference within 5 °C of 42 °C.
 
 Over land, the checks of temperature and precipitation use the climatology of Beck et al., not ERA5 or GPCP. The maps come from that climatology, so a model that passes those checks gets the inputs of the Köppen classes right. Beck et al. make the climatology from WorldClim V2, CHELSA V1.2, CHELSA V2.1, and CHPclim V1, moved to 1991 to 2020 with CRU TS V4.07 for temperature and GPCC V2022 for precipitation. They give it at 0.01°, 0.1°, 0.5°, and 1°. The coarse maps come from the 0.01° map by majority resampling, and the coarse climatologies come from the 0.01° climatology by averaging.
 
@@ -462,6 +489,8 @@ Spiegel, D. S., Menou, K., & Scharf, C. A. (2008). Habitable climates. The Astro
 Stommel, H. (1948). The westward intensification of wind-driven ocean currents. Transactions, American Geophysical Union, 29(2), 202–206. https://doi.org/10.1029/tr029i002p00202
 
 Sverdrup, H. U. (1947). Wind-driven currents in a baroclinic ocean; with application to the equatorial currents of the eastern Pacific. Proceedings of the National Academy of Sciences, 33(11), 318–326. https://doi.org/10.1073/pnas.33.11.318
+
+van der Vorst, H. A. (1992). Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG for the solution of nonsymmetric linear systems. SIAM Journal on Scientific and Statistical Computing, 13(2), 631–644. https://doi.org/10.1137/0913035
 
 Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press. https://doi.org/10.1017/9781107588417
 

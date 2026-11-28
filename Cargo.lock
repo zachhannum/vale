@@ -1985,7 +1985,9 @@ name = "isotherm-sim"
 version = "0.1.0"
 dependencies = [
  "isotherm-fields",
+ "isotherm-import",
  "isotherm-world",
+ "vale-terrain",
 ]
 
 [[package]]
