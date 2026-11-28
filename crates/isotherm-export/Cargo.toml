@@ -1,0 +1,11 @@
+[package]
+name = "isotherm-export"
+description = "GeoJSON and other exports of the Isotherm results"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+isotherm-vector.workspace = true
+serde_json.workspace = true
