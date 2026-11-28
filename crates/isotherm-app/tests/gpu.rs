@@ -368,3 +368,70 @@ fn manual_screenshots_of_the_question() {
         screenshot::save(&mut harness, &format!("{name}-ask"));
     }
 }
+
+/// An app on the start screen with three worlds that have pictures, in a
+/// local folder and in iCloud Drive, in `dir`.
+fn start_app(dir: &std::path::Path, layout: Layout) -> IsothermApp {
+    let mut app = IsothermApp::sample(layout).unwrap();
+    let mut folders = isotherm_app::worlds::Folders::new(dir.join("local"), dir.join("state"));
+    folders.set_cloud(Some(dir.join("cloud")));
+    app.folders = Some(folders);
+    app.state_dir = Some(dir.join("state"));
+    let picture = isotherm_app::thumbnail::render(
+        &app.doc.world.terrain,
+        &app.globe.view,
+        isotherm_app::thumbnail::SIZE,
+    );
+    for (name, folder) in [
+        ("Borea", "local"),
+        ("Austral", "cloud"),
+        ("Meridian", "local"),
+    ] {
+        let folder = dir.join(folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut world = isotherm_app::document::Document::sample().unwrap().world;
+        world.name = name.to_owned();
+        let mut file =
+            isotherm_store::WorldFile::create(folder.join(format!("{name}.gpkg")), &world).unwrap();
+        file.set_thumbnail(&picture).unwrap();
+    }
+    app.workspace = Workspace::Worlds;
+    app
+}
+
+/// Saves a picture of the start screen in the desktop, iPad, and iPhone
+/// layouts, and of the rename dialog on the iPhone, when `VALE_SCREENSHOTS`
+/// is set.
+#[test]
+#[ignore = "gpu"]
+fn manual_screenshots_of_the_start_screen() {
+    let phone = egui::SafeAreaInsets(egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 0.0,
+        top: 59.0,
+        bottom: 34.0,
+    });
+    let layouts = [
+        ("desktop", (1440.0, 900.0), Layout::Desktop, None),
+        ("pad", (1194.0, 834.0), Layout::Pad, None),
+        ("phone", (393.0, 852.0), Layout::Pad, Some(phone)),
+    ];
+    for (name, size, layout, safe_area) in layouts {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = start_app(dir.path(), layout);
+        app.safe_area = safe_area;
+        let mut harness = gpu_harness_with(size, app);
+        harness.run_steps(4);
+        harness.render().unwrap();
+        harness.step();
+        screenshot::save(&mut harness, &format!("start-{name}"));
+        if name == "phone" {
+            let path = harness.state().start.entries[0].path.clone();
+            let world = harness.state().start.entries[0].name.clone();
+            harness.state_mut().start.dialog =
+                Some(isotherm_app::app::Dialog::Rename { path, name: world });
+            harness.run_steps(20);
+            screenshot::save(&mut harness, "start-phone-rename");
+        }
+    }
+}

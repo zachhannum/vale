@@ -45,6 +45,8 @@ const INFO: f32 = 60.0;
 const INFO_TALL: f32 = 78.0;
 const MENU_WIDTH: f32 = 220.0;
 const DIALOG_WIDTH: f32 = 400.0;
+/// The space at the top of the safe area for the workspace switch.
+const SWITCH_ROOM: f32 = 80.0;
 /// The width of the label at the left of the field of a dialog.
 const LABEL_WIDTH: f32 = 64.0;
 /// The fill of a button that deletes, as the red of the system.
@@ -662,7 +664,8 @@ impl IsothermApp {
             }
         };
         let height = 20.0 + title_height + 12.0 + body + 20.0 + TOUCH + 14.0;
-        let top = safe.top() + ((safe.height() / 3.0 - height) / 2.0).max(MARGIN);
+        // The dialog stays below the workspace switch.
+        let top = safe.top() + ((safe.height() / 3.0 - height) / 2.0).max(SWITCH_ROOM);
         let rect = Rect::from_min_size(
             pos2(safe.center().x - width / 2.0, top),
             vec2(width, height),
@@ -691,7 +694,7 @@ impl IsothermApp {
             );
             let body_top = top + title_height + 12.0;
             let y = rect.bottom() - 14.0 - TOUCH / 2.0;
-            let right = pos2(rect.right() - BODY_PAD + 8.0, y);
+            let right = pos2(rect.right() - BODY_PAD + HIGHLIGHT_INSET, y);
             let (action, enabled, colors) = match &mut dialog {
                 Dialog::Rename { name, .. } => {
                     ui.painter().text(
