@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use eframe::egui::{self, Pos2, Rect, Vec2};
 
-use super::view::Camera;
+use crate::view::Camera;
 
 /// The zoom factor of one point of wheel scroll, as an exponent.
 const WHEEL_ZOOM: f64 = 0.002;
@@ -534,8 +534,8 @@ mod tests {
     use eframe::egui::TouchPhase::{Cancel, End, Move, Start};
 
     use super::*;
-    use crate::globe::math::angle;
-    use crate::globe::view::GlobeView;
+    use crate::math::angle;
+    use crate::view::GlobeView;
 
     fn rect() -> Rect {
         Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))

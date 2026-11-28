@@ -18,12 +18,7 @@ use vale_terrain::{face_dir, unwarp, warp};
 
 use crate::globe::math::{V3, add, angle, dot, lonlat_to_dir, normalize, scale};
 use crate::pipeline::{Batch, Plain, draw_plain};
-
-/// The texels along one side of a tile, with no gutter.
-pub const TILE: usize = 256;
-/// The texels along one side of the picture of a tile: the tile and a
-/// gutter of one texel on each side, so that a filter has no seam.
-pub const TILE_PX: usize = TILE + 2;
+pub use vale_globe::tiles::{TILE, TILE_PX};
 
 /// The points of a chunk.
 const CHUNK: usize = 64;

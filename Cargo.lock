@@ -3988,12 +3988,24 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tiff",
+ "vale-globe",
  "vale-import",
  "vale-labeler",
  "vale-render",
  "vale-sphere",
  "vale-store",
  "vale-style",
+ "vale-terrain",
+]
+
+[[package]]
+name = "vale-globe"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eframe",
+ "vale-sphere",
+ "vale-store",
  "vale-terrain",
 ]
 

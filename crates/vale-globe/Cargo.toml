@@ -1,0 +1,14 @@
+[package]
+name = "vale-globe"
+description = "Globe renderer, navigation, and flat view for Vale"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+vale-store.workspace = true
+vale-sphere.workspace = true
+vale-terrain = { workspace = true, features = ["gpu"] }
+eframe.workspace = true
+bytemuck = "1.25.2"

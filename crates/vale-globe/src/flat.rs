@@ -6,8 +6,8 @@ use std::sync::Arc;
 use eframe::egui::{Pos2, Rect};
 use vale_sphere::{Point, Projection, ProjectionKind, ProjectionSpec, wrap180};
 
-use super::math::{V3, add, cross, dir_to_lonlat, lonlat_to_dir, normalize, scale};
-use super::view::Camera;
+use crate::math::{V3, add, cross, dir_to_lonlat, lonlat_to_dir, normalize, scale};
+use crate::view::Camera;
 
 /// The limits of the zoom. At a zoom of 1, the whole map fits the canvas.
 /// Past the maximum, the raster layers on the mesh move more than a pixel
@@ -277,7 +277,7 @@ mod tests {
     use eframe::egui::Vec2;
 
     use super::*;
-    use crate::globe::math::angle;
+    use crate::math::angle;
 
     fn rect() -> Rect {
         Rect::from_min_size(Pos2::new(10.0, 20.0), Vec2::new(800.0, 600.0))
