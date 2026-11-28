@@ -1964,7 +1964,10 @@ version = "0.1.0"
 dependencies = [
  "isotherm-world",
  "png",
+ "tempfile",
+ "tiff",
  "vale-import",
+ "vale-store",
  "vale-terrain",
 ]
 
