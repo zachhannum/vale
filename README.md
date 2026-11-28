@@ -3,7 +3,7 @@
 This repository holds two apps in one Rust workspace.
 
 - Vale is a GIS for fictional worlds, for desktop, iPad, and iPhone. It draws maps of invented planets with the right projections and with good labels.
-- Isotherm is a climate simulator for invented planets. It computes the climate of a planet from its heightmap, its star, its orbit, and its atmosphere. Its design is in `docs/isotherm/DESIGN.md`, and it has no code yet.
+- Isotherm is a climate simulator for invented planets. It computes the climate of a planet from its heightmap, its star, its orbit, and its atmosphere. Its design is in `docs/isotherm/DESIGN.md`. The app `isotherm-app` shows a sample heightmap of the Earth on a globe, and `cargo run --release -p isotherm-app` opens it.
 
 The rest of this file is about Vale. The repository holds a Vale app prototype and the labeling library `vale-labeler`. The prototype is a thin slice of the whole design. It runs, but it is not finished.
 

@@ -62,6 +62,18 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 
 Isotherm is in its phase 0, the specification and the skeleton. The phase table in `docs/isotherm/DESIGN.md` gives the order of the work. The GitHub issues of Isotherm have the label `isotherm`. When a phase is done, update this section.
 
+The app `isotherm-app` opens on a globe with a sample heightmap of the Earth. It has the workspace switch, and each workspace other than Explore shows a hint. This command opens the window:
+
+```sh
+cargo run --release -p isotherm-app
+```
+
+This command renders the UI of an iPhone 16 in portrait to a PNG, with its safe area:
+
+```sh
+cargo run --release -p isotherm-app -- --layout pad --screenshot target/isotherm/phone.png --size 393x852 --safe-area 59,0,34,0
+```
+
 ## Rules
 
 - The project is one Rust workspace. Put each crate in `crates/`. Give each crate of Vale and each crate that both apps share a `vale-` prefix, and give each crate of Isotherm an `isotherm-` prefix. A `vale-` crate must not depend on an `isotherm-` crate, except that `isotherm-export` can use `vale-store`. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
