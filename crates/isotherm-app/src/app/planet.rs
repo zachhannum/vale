@@ -165,8 +165,9 @@ impl IsothermApp {
 
         heading(ui, ORBIT);
         let names = OrbitPreset::ALL.map(OrbitPreset::name);
-        let active = index_of(&OrbitPreset::ALL, OrbitPreset::of(&planet));
+        let active = index_of(&OrbitPreset::ALL, self.orbit_preset());
         if let Some(i) = preset_row(ui, controls, ORBIT, &names, active) {
+            self.orbit_pick = Some(OrbitPreset::ALL[i]);
             self.edit(|p| p.keep_lock(|p| OrbitPreset::ALL[i].apply(p)));
         }
         self.slider(ui, controls, Setting::Distance);
@@ -205,6 +206,15 @@ impl IsothermApp {
             wrapped(ui, status, theme::hint(), theme::WARN);
         }
         ui.add_space(4.0);
+    }
+
+    /// The orbit preset that the row shows: the preset of the last tap
+    /// while it still matches the planet, else the first that matches.
+    pub fn orbit_preset(&self) -> Option<OrbitPreset> {
+        let planet = &self.doc.world.planet;
+        self.orbit_pick
+            .filter(|p| p.matches(planet))
+            .or_else(|| OrbitPreset::of(planet))
     }
 
     /// A change of the planet at once, as one undo step.

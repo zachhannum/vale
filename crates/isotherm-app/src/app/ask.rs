@@ -81,6 +81,8 @@ impl IsothermApp {
             let right = pos2(accent.rect.left() - 8.0, y);
             cancel = plain_button(ui, controls, right, CANCEL).clicked();
         });
+        // The Escape key cancels, as on macOS.
+        cancel |= ctx.input(|i| i.key_pressed(egui::Key::Escape));
         if start {
             self.start_again();
         } else if cancel {

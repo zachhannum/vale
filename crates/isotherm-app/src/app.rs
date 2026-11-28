@@ -9,6 +9,7 @@ use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, pos2, vec2};
 use isotherm_fields::{Means, Period};
 use isotherm_import::vale_project::HeightLayer;
 use isotherm_import::{Samples, Scale};
+use isotherm_world::presets::OrbitPreset;
 use isotherm_world::{Planet, Terrain};
 use vale_shell::pad::icons::{self, Icon};
 use vale_shell::pad::metrics::{PAD, TOUCH, WidthClass};
@@ -215,6 +216,9 @@ pub struct IsothermApp {
     planet_start: Option<Planet>,
     /// A change that waits for the user to delete the run.
     pub ask: Option<Ask>,
+    /// The orbit preset of the last tap. Two orbit presets can give the
+    /// same orbit, and the row then shows this one.
+    orbit_pick: Option<OrbitPreset>,
     /// The folder of the world files. `None`: an import can only replace
     /// the terrain of an open world file.
     pub data_dir: Option<PathBuf>,
@@ -314,6 +318,7 @@ impl IsothermApp {
             sea_start: None,
             planet_start: None,
             ask: None,
+            orbit_pick: None,
             data_dir: None,
             pick: false,
             controls: Controls::new(),

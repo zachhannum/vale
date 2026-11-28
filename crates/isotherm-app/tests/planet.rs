@@ -267,3 +267,34 @@ fn with_a_run_a_drag_of_the_sea_level_asks_first() {
     assert!(h.state().has_run());
     assert_eq!(h.state().doc.world.terrain.sea_level_m, before);
 }
+
+#[test]
+fn with_a_run_escape_cancels_the_question() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(app_with_file(dir.path(), Workspace::Planet));
+    start_run(&mut h);
+    let before = planet(&h);
+    click(&mut h, &preset_name(STAR, StarPreset::Red.name()));
+    assert!(asks(&h));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(!asks(&h));
+    assert_eq!(planet(&h), before);
+    assert!(h.state().run.borrow().sim.is_some());
+}
+
+#[test]
+fn two_presets_with_the_same_orbit_show_the_one_of_the_last_tap() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(app_with_file(dir.path(), Workspace::Planet));
+    // Around the yellow star, the temperate orbit is the orbit of the Earth.
+    assert_eq!(h.state().orbit_preset(), Some(OrbitPreset::Earth));
+    click(&mut h, &preset_name(ORBIT, OrbitPreset::Temperate.name()));
+    assert!(OrbitPreset::Earth.matches(&planet(&h)));
+    assert_eq!(h.state().orbit_preset(), Some(OrbitPreset::Temperate));
+    click(&mut h, &preset_name(ORBIT, OrbitPreset::Earth.name()));
+    assert_eq!(h.state().orbit_preset(), Some(OrbitPreset::Earth));
+    // A slider that leaves both presets shows none.
+    drag_slider(&mut h, Setting::Distance.label());
+    assert_eq!(h.state().orbit_preset(), None);
+}
