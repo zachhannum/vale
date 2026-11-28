@@ -2,7 +2,7 @@
 
 use eframe::egui::{self, Color32, FontId};
 
-use super::geometry::TOUCH;
+use super::metrics::TOUCH;
 
 pub const CANVAS: Color32 = Color32::from_rgb(15, 17, 19);
 /// The globe below the raster layers of the world.
@@ -146,7 +146,7 @@ const MEDIUM: &str = "Ubuntu-Medium";
 /// Adds the medium weight to the fonts of `ctx`. The weight is ready from
 /// the next pass.
 pub fn add_fonts(ctx: &egui::Context) {
-    let data = include_bytes!("../../../../../assets/fonts/Ubuntu-Medium.ttf");
+    let data = include_bytes!("../../../../assets/fonts/Ubuntu-Medium.ttf");
     ctx.add_font(egui::epaint::text::FontInsert {
         name: MEDIUM.to_owned(),
         data: egui::FontData::from_static(data),

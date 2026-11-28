@@ -10,5 +10,6 @@ license.workspace = true
 vale-store.workspace = true
 vale-sphere.workspace = true
 vale-terrain = { workspace = true, features = ["gpu"] }
+vale-shell.workspace = true
 eframe.workspace = true
 bytemuck = "1.25.2"

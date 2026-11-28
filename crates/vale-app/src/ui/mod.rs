@@ -3001,7 +3001,7 @@ impl AppState {
         let Some(dir) = self.projects.all_work_dir() else {
             return;
         };
-        let (saved, errors) = workcopy::recover(&dir, self.files.as_ref());
+        let (saved, errors) = workcopy::recover(&dir, self.files.as_ref(), &workcopy::ValeProject);
         let name = |path: &PathBuf| {
             let stem = path.file_stem().unwrap_or_default();
             stem.to_string_lossy().into_owned()

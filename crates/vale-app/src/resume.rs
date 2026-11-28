@@ -1,9 +1,6 @@
-//! The state that the next start of the app puts back: the open project and
-//! its view. The state is a text file in the projects folder, with one key
-//! and its values on each line.
+//! The view of a Vale project that the next start of the app puts back.
 
-use std::path::{Path, PathBuf};
-
+use vale_shell::resume::{Lines, ResumeView, floats, numbers};
 use vale_sphere::{Point, ProjectionKind, ProjectionSpec};
 use vale_store::{MapId, PageId};
 
@@ -11,9 +8,6 @@ use crate::globe::math::Mat3;
 use crate::globe::view::GlobeView;
 use crate::globe::{WorldView, flat, view};
 use crate::ui::Workspace;
-
-/// The file in the projects folder that holds the state.
-const RESUME_FILE: &str = "resume.txt";
 
 /// The view of the open world.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -32,125 +26,70 @@ pub struct View {
     pub map: Option<MapId>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct Resume {
-    /// The open project file. `None`: the app shows the start screen.
-    pub project: Option<PathBuf>,
-    /// The view of the project. `None`: the project has its first view.
-    pub view: Option<View>,
-}
+/// The state of Vale for its next start.
+pub type Resume = vale_shell::resume::Resume<View>;
 
-impl Resume {
-    /// The state with no open project.
-    pub const START_SCREEN: Resume = Resume {
-        project: None,
-        view: None,
-    };
-
-    /// The state of the last run in this projects folder. `None`: the folder
-    /// has no state.
-    pub fn read(dir: &Path) -> Option<Resume> {
-        let text = std::fs::read_to_string(dir.join(RESUME_FILE)).ok()?;
-        Some(Resume::parse(&text))
-    }
-
-    /// Writes the state to the projects folder. A stop of the app during the
-    /// write leaves the old file.
-    pub fn write(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let partial = dir.join(format!("{RESUME_FILE}.partial"));
-        std::fs::write(&partial, self.text())?;
-        std::fs::rename(partial, dir.join(RESUME_FILE))
-    }
-
-    fn text(&self) -> String {
-        let mut lines = Vec::new();
-        if let Some(project) = &self.project {
-            lines.push(format!("project {}", project.display()));
+impl ResumeView for View {
+    fn lines(&self, lines: &mut Vec<String>) {
+        let view = self;
+        let workspace = match view.workspace {
+            Workspace::Globe => "globe",
+            Workspace::Atlas => "atlas",
+        };
+        let world_view = match view.world_view {
+            WorldView::Globe => "globe",
+            WorldView::Flat => "flat",
+        };
+        let rot: Vec<f64> = view.globe.rot.0.iter().flatten().copied().collect();
+        let spec = view.flat_spec;
+        lines.push(format!("workspace {workspace}"));
+        lines.push(format!("world_view {world_view}"));
+        lines.push(format!("globe_rot {}", numbers(&rot)));
+        lines.push(format!("globe_zoom {}", view.globe.zoom));
+        lines.push(format!("flat_projection {}", spec.to_proj()));
+        let center = view.flat_center;
+        lines.push(format!("flat_center {}", numbers(&[center.x, center.y])));
+        lines.push(format!("flat_zoom {}", view.flat_zoom));
+        if let Some(page) = view.page {
+            lines.push(format!("page {}", page.0));
         }
-        if let Some(view) = &self.view {
-            let workspace = match view.workspace {
-                Workspace::Globe => "globe",
-                Workspace::Atlas => "atlas",
-            };
-            let world_view = match view.world_view {
-                WorldView::Globe => "globe",
-                WorldView::Flat => "flat",
-            };
-            let rot: Vec<f64> = view.globe.rot.0.iter().flatten().copied().collect();
-            let spec = view.flat_spec;
-            lines.push(format!("workspace {workspace}"));
-            lines.push(format!("world_view {world_view}"));
-            lines.push(format!("globe_rot {}", numbers(&rot)));
-            lines.push(format!("globe_zoom {}", view.globe.zoom));
-            lines.push(format!("flat_projection {}", spec.to_proj()));
-            let center = view.flat_center;
-            lines.push(format!("flat_center {}", numbers(&[center.x, center.y])));
-            lines.push(format!("flat_zoom {}", view.flat_zoom));
-            if let Some(page) = view.page {
-                lines.push(format!("page {}", page.0));
-            }
-            if let Some(map) = view.map {
-                lines.push(format!("map {}", map.0));
-            }
-        }
-        lines.join("\n")
-    }
-
-    /// A line that this version does not know has no effect. If a line of
-    /// the view is absent or bad, the state has no view.
-    fn parse(text: &str) -> Resume {
-        let value = |key: &str| {
-            let mut lines = text.lines().filter_map(|line| line.split_once(' '));
-            lines.find_map(|(k, value)| (k == key).then_some(value))
-        };
-        let parse = |text: &str, count: usize| -> Option<Vec<f64>> {
-            let parsed = text.split(' ').map(|v| v.parse::<f64>().ok());
-            let floats: Vec<f64> = parsed.collect::<Option<_>>()?;
-            (floats.len() == count && floats.iter().all(|v| v.is_finite())).then_some(floats)
-        };
-        let floats = |key: &str, count: usize| parse(value(key)?, count);
-        let view = || {
-            let workspace = match value("workspace")? {
-                "globe" => Workspace::Globe,
-                "atlas" | "map" => Workspace::Atlas,
-                _ => return None,
-            };
-            let world_view = match value("world_view")? {
-                "globe" => WorldView::Globe,
-                "flat" => WorldView::Flat,
-                _ => return None,
-            };
-            let r = floats("globe_rot", 9)?;
-            let rot = Mat3([[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]]);
-            let globe_zoom = floats("globe_zoom", 1)?[0];
-            let flat_spec = flat_spec(value("flat_projection")?, parse)?;
-            let flat_center = floats("flat_center", 2)?;
-            let flat_zoom = floats("flat_zoom", 1)?[0];
-            is_rotation(&rot).then_some(View {
-                workspace,
-                world_view,
-                globe: GlobeView {
-                    rot,
-                    zoom: globe_zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
-                },
-                flat_spec,
-                flat_center: Point::new(flat_center[0], flat_center[1]),
-                flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
-                page: value("page").and_then(|v| v.parse().ok()).map(PageId),
-                map: value("map").and_then(|v| v.parse().ok()).map(MapId),
-            })
-        };
-        Resume {
-            project: value("project").map(PathBuf::from),
-            view: view(),
+        if let Some(map) = view.map {
+            lines.push(format!("map {}", map.0));
         }
     }
-}
 
-fn numbers(values: &[f64]) -> String {
-    let texts: Vec<String> = values.iter().map(f64::to_string).collect();
-    texts.join(" ")
+    fn parse(lines: &Lines) -> Option<View> {
+        let value = |key: &str| lines.value(key);
+        let workspace = match value("workspace")? {
+            "globe" => Workspace::Globe,
+            "atlas" | "map" => Workspace::Atlas,
+            _ => return None,
+        };
+        let world_view = match value("world_view")? {
+            "globe" => WorldView::Globe,
+            "flat" => WorldView::Flat,
+            _ => return None,
+        };
+        let r = lines.floats("globe_rot", 9)?;
+        let rot = Mat3([[r[0], r[1], r[2]], [r[3], r[4], r[5]], [r[6], r[7], r[8]]]);
+        let globe_zoom = lines.floats("globe_zoom", 1)?[0];
+        let flat_spec = flat_spec(value("flat_projection")?)?;
+        let flat_center = lines.floats("flat_center", 2)?;
+        let flat_zoom = lines.floats("flat_zoom", 1)?[0];
+        is_rotation(&rot).then_some(View {
+            workspace,
+            world_view,
+            globe: GlobeView {
+                rot,
+                zoom: globe_zoom.clamp(view::ZOOM_MIN, view::ZOOM_MAX),
+            },
+            flat_spec,
+            flat_center: Point::new(flat_center[0], flat_center[1]),
+            flat_zoom: flat_zoom.clamp(flat::ZOOM_MIN, flat::ZOOM_MAX),
+            page: value("page").and_then(|v| v.parse().ok()).map(PageId),
+            map: value("map").and_then(|v| v.parse().ok()).map(MapId),
+        })
+    }
 }
 
 /// True if the rows of the matrix have the length 1 and are at right angles.
@@ -162,8 +101,22 @@ fn is_rotation(rot: &Mat3) -> bool {
         .all(|(a, b)| (dot(a, b) - f64::from(u8::from(a == b))).abs() < 1e-6)
 }
 
+/// Reads the projection of the flat view. A file of an older version has the
+/// ID of the kind and the center.
+fn flat_spec(text: &str) -> Option<ProjectionSpec> {
+    if text.starts_with('+') {
+        return ProjectionSpec::from_proj(text);
+    }
+    let (kind, center) = text.split_once(' ')?;
+    let center = floats(center, 2)?;
+    let kind = ProjectionKind::from_id(kind)?;
+    Some(ProjectionSpec::new(kind, center[0], center[1]).normalized())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     fn view() -> View {
@@ -235,19 +188,4 @@ mod tests {
         let parsed = Resume::parse(&no_page).view.unwrap();
         assert_eq!(parsed.page, None);
     }
-}
-
-/// Reads the projection of the flat view. A file of an older version has the
-/// ID of the kind and the center.
-fn flat_spec(
-    text: &str,
-    parse: impl Fn(&str, usize) -> Option<Vec<f64>>,
-) -> Option<ProjectionSpec> {
-    if text.starts_with('+') {
-        return ProjectionSpec::from_proj(text);
-    }
-    let (kind, center) = text.split_once(' ')?;
-    let center = parse(center, 2)?;
-    let kind = ProjectionKind::from_id(kind)?;
-    Some(ProjectionSpec::new(kind, center[0], center[1]).normalized())
 }

@@ -1,0 +1,11 @@
+[package]
+name = "isotherm-vector"
+description = "Raster to vector conversion of the Isotherm results"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+isotherm-classify.workspace = true
+isotherm-fields.workspace = true

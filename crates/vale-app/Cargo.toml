@@ -19,6 +19,7 @@ vale-import.workspace = true
 vale-labeler.workspace = true
 vale-terrain = { workspace = true, features = ["gpu"] }
 vale-globe.workspace = true
+vale-shell.workspace = true
 eframe.workspace = true
 clap.workspace = true
 anyhow.workspace = true

@@ -43,6 +43,16 @@ vale-sphere = { path = "crates/vale-sphere", version = "0.1.0" }
 vale-terrain = { path = "crates/vale-terrain", version = "0.1.0" }
 vale-import = { path = "crates/vale-import", version = "0.1.0" }
 vale-globe = { path = "crates/vale-globe", version = "0.1.0" }
+vale-shell = { path = "crates/vale-shell", version = "0.1.0" }
+isotherm-world = { path = "crates/isotherm-world", version = "0.1.0" }
+isotherm-import = { path = "crates/isotherm-import", version = "0.1.0" }
+isotherm-fields = { path = "crates/isotherm-fields", version = "0.1.0" }
+isotherm-sim = { path = "crates/isotherm-sim", version = "0.1.0" }
+isotherm-gpu = { path = "crates/isotherm-gpu", version = "0.1.0" }
+isotherm-classify = { path = "crates/isotherm-classify", version = "0.1.0" }
+isotherm-vector = { path = "crates/isotherm-vector", version = "0.1.0" }
+isotherm-export = { path = "crates/isotherm-export", version = "0.1.0" }
+isotherm-store = { path = "crates/isotherm-store", version = "0.1.0" }
 
 [profile.dev.package.png]
 opt-level = 3

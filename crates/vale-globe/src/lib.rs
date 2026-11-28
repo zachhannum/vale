@@ -1,7 +1,7 @@
 //! The globe renderer, the navigation, and the flat view. The app gives the
 //! renderer its layers and their looks.
 
-pub mod compile;
+pub use vale_shell::compile;
 pub mod detail;
 pub mod edges;
 pub mod extent;

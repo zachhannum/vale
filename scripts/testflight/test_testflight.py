@@ -52,14 +52,27 @@ class WhatToTest(unittest.TestCase):
 class Comment(unittest.TestCase):
     def test_shows_the_build_number_the_commit_and_the_state(self):
         for state, sentence in testflight.STATES.items():
-            body = testflight.comment_body(state, "0.1.12", "57.1", "abc1234def")
+            body = testflight.comment_body("", "vale", state, "0.1.12", "57.1", "abc1234def")
             self.assertTrue(body.startswith(testflight.MARKER))
-            self.assertIn("TestFlight build 57.1 of commit abc1234def, version 0.1.12", body)
+            self.assertIn("Vale: TestFlight build 57.1 of commit abc1234def, version 0.1.12", body)
             self.assertIn(sentence, body)
 
     def test_a_failure_links_to_the_run(self):
-        body = testflight.comment_body("failed", "0.1.12", "57.1", "abc1234", "https://example.org/run")
+        body = testflight.comment_body("", "vale", "failed", "0.1.12", "57.1", "abc1234", "https://example.org/run")
         self.assertIn("(https://example.org/run)", body)
+
+    def test_keeps_the_line_of_the_other_app(self):
+        vale = testflight.comment_body("", "vale", "ready", "0.1.12", "57.1", "abc1234")
+        both = testflight.comment_body(vale, "isotherm", "uploading", "0.1.12", "58.1", "abc1234")
+        self.assertIn("Vale: TestFlight build 57.1", both)
+        self.assertIn("Isotherm: TestFlight build 58.1", both)
+        self.assertLess(both.index("Vale:"), both.index("Isotherm:"))
+
+    def test_replaces_the_line_of_the_same_app(self):
+        first = testflight.comment_body("", "isotherm", "uploading", "0.1.12", "58.1", "abc1234")
+        second = testflight.comment_body(first, "isotherm", "ready", "0.1.12", "58.1", "abc1234")
+        self.assertEqual(second.count("Isotherm:"), 1)
+        self.assertIn(testflight.STATES["ready"], second)
 
 
 class Token(unittest.TestCase):

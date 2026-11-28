@@ -56,8 +56,8 @@ Isotherm lives in the Vale repository, in the same Rust workspace. Its crates ar
                app (egui shell, panels, globe and map views, iOS host)
 
 import ──> world ──> sim ──> fields ──> classify ──> vector ──> export
-                      │                                 ^
-                      └── gpu (wgpu compute) ───────────┘
+                      │        ^
+                      └─> gpu ─┘  (wgpu compute)
 ```
 
 | Crate | Role |
@@ -77,7 +77,7 @@ import ──> world ──> sim ──> fields ──> classify ──> vector 
 
 Isotherm uses the Vale crates through path dependencies. A change to a shared crate and the change to each app that uses it go in one PR, so the two apps cannot drift apart.
 
-The globe renderer is in the crate `vale-globe`. Other shared parts are modules of `vale-app` today. Phase 0 moves the pad widgets and the iOS lifecycle into `vale-shell`. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
+The globe renderer is in the crate `vale-globe`. The pad theme, widgets, and glass cards, the shader compiles, the screen renderer of the screenshots, the iOS lifecycle, the working copy, and the resume file are in the crate `vale-shell`. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
 
 No `vale-` crate depends on an `isotherm-` crate. The one exception is the Vale export of `isotherm-export`, which writes a Vale project through `vale-store`, in that direction only.
 
@@ -93,8 +93,8 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 | `vale-import` | PNG, 16-bit TIFF, and GeoTIFF read and write. |
 | `vale-store` GeoPackage and undo log | The project file. The extra tables get the prefix `isotherm_`. |
 | `vale-globe` | The globe renderer, navigation, and the flat view. |
-| `vale-app/src/ui/pad`, moved to `vale-shell` | The theme and the touch-size widgets. |
-| `vale-app/src/lifecycle.rs`, `workcopy.rs`, `resume.rs`, moved to `vale-shell` | Save on background, the working copy, and the restore of the last session on iOS. |
+| `vale-shell` pad module and backdrop | The theme, the touch-size widgets, and the glass cards. Each card, menu, and hint is glass over the globe when the app has a wgpu renderer. The panels of Vale stay in `vale-app`. |
+| `vale-shell` lifecycle, working copy, and resume file | Save on background, the working copy, and the restore of the last session on iOS. Each app gives its own project file and its own view. |
 | `vale-app/src/headless.rs`, `cli.rs` (copied as a pattern) | The headless flags `--screenshot`, `--export`, `--size`, and `--layout pad`. |
 | `vale-app/ios` (copied as a pattern) | `project.yml` for xcodegen, `build-rust.sh`, `toolchain.cmake` for PROJ, and the app icon setup. |
 | `.github/workflows/ios.yml` and `scripts/testflight` (extended) | The same workflows build both apps. Each app has its own bundle ID and its own TestFlight app. A path filter skips the build of an app that a PR does not touch. |

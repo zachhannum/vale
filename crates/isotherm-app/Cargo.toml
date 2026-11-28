@@ -1,0 +1,28 @@
+[package]
+name = "isotherm-app"
+description = "Isotherm app for desktop, iPad, and iPhone"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+eframe.workspace = true
+bytemuck.workspace = true
+vale-shell.workspace = true
+vale-globe.workspace = true
+vale-store.workspace = true
+vale-terrain.workspace = true
+isotherm-import.workspace = true
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+egui_kittest.workspace = true
+image.workspace = true
+
+[[bin]]
+name = "isotherm-app"
+path = "src/main.rs"

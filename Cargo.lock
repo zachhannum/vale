@@ -1913,6 +1913,92 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
 
 [[package]]
+name = "isotherm-app"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eframe",
+ "egui_kittest",
+ "image",
+ "isotherm-import",
+ "vale-globe",
+ "vale-shell",
+ "vale-store",
+ "vale-terrain",
+]
+
+[[package]]
+name = "isotherm-classify"
+version = "0.1.0"
+dependencies = [
+ "isotherm-fields",
+]
+
+[[package]]
+name = "isotherm-export"
+version = "0.1.0"
+dependencies = [
+ "isotherm-vector",
+ "serde_json",
+]
+
+[[package]]
+name = "isotherm-fields"
+version = "0.1.0"
+dependencies = [
+ "isotherm-world",
+]
+
+[[package]]
+name = "isotherm-gpu"
+version = "0.1.0"
+dependencies = [
+ "isotherm-sim",
+ "naga",
+ "wgpu",
+]
+
+[[package]]
+name = "isotherm-import"
+version = "0.1.0"
+dependencies = [
+ "isotherm-world",
+ "png",
+ "vale-import",
+ "vale-terrain",
+]
+
+[[package]]
+name = "isotherm-sim"
+version = "0.1.0"
+dependencies = [
+ "isotherm-fields",
+ "isotherm-world",
+]
+
+[[package]]
+name = "isotherm-store"
+version = "0.1.0"
+dependencies = [
+ "isotherm-world",
+]
+
+[[package]]
+name = "isotherm-vector"
+version = "0.1.0"
+dependencies = [
+ "isotherm-classify",
+ "isotherm-fields",
+]
+
+[[package]]
+name = "isotherm-world"
+version = "0.1.0"
+dependencies = [
+ "vale-terrain",
+]
+
+[[package]]
 name = "itertools"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3992,6 +4078,7 @@ dependencies = [
  "vale-import",
  "vale-labeler",
  "vale-render",
+ "vale-shell",
  "vale-sphere",
  "vale-store",
  "vale-style",
@@ -4004,6 +4091,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "eframe",
+ "vale-shell",
  "vale-sphere",
  "vale-store",
  "vale-terrain",
@@ -4067,6 +4155,19 @@ dependencies = [
  "vello",
  "vello_cpu 0.3.0",
  "wgpu",
+]
+
+[[package]]
+name = "vale-shell"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "eframe",
+ "egui_kittest",
+ "image",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "tempfile",
 ]
 
 [[package]]

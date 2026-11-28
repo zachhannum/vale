@@ -1,7 +1,14 @@
 name: Test
 
+# A PR runs this workflow only if it changes Vale or a part that Vale uses.
+# `scripts/ci/paths.py` gives the list of the paths.
 on:
   pull_request:
+    paths:
+      - "**"
+      - "!crates/isotherm-*/**"
+      - "!docs/isotherm/**"
+      - "!scripts/isotherm-ipad.sh"
   push:
     branches: [main]
   workflow_dispatch:
@@ -20,7 +27,7 @@ env:
 
 jobs:
   test:
-    name: Test the fast tier and the UI tier
+    name: Test the fast tier and the UI tier of Vale
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -38,11 +45,16 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Test the CI scripts
+        run: |
+          python3 -m unittest discover scripts/ci
+          python3 -m unittest discover scripts/testflight
+
       - name: Check the format
         run: cargo fmt --all --check
 
       - name: Run the fast tier and the UI tier
-        run: cargo test --workspace
+        run: cargo test --workspace --exclude 'isotherm-*'
 
   gpu:
     name: Test the GPU tier (${{ matrix.name }})

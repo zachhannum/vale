@@ -4,7 +4,7 @@
 CI runs this script after `xcodebuild` uploads a build.
 
 Usage:
-  testflight.py comment --state STATE --version V --build B --sha SHA --pr N
+  testflight.py comment --app APP --state STATE --version V --build B --sha SHA --pr N
   testflight.py notes --bundle-id ID --version V --build B --sha SHA [--pr N]
 
 `comment` reads GITHUB_REPOSITORY, and `gh` reads GH_TOKEN. `notes` reads
@@ -31,6 +31,8 @@ LOCALE = "en-US"
 RETRY_WAITS = (5, 15, 30, 60)
 # The limit of the "What to Test" text.
 NOTES_LIMIT = 4000
+# The apps of the repository, in the order of the comment, with the name that the comment shows.
+APPS = {"vale": "Vale", "isotherm": "Isotherm"}
 STATES = {
     "uploading": "CI uploads it to TestFlight now.",
     "processing": "The upload is complete. Apple processes the build now.",
@@ -81,11 +83,27 @@ def what_to_test(pr, title, body, sha):
     return f"PR #{int(pr)}: {title}\n\n{steps}"[:NOTES_LIMIT]
 
 
-def comment_body(state, version, build, sha, run_url=""):
-    lines = [MARKER, f"TestFlight build {build} of commit {sha}, version {version}: {STATES[state]}"]
+def app_line(app, state, version, build, sha, run_url=""):
+    """Makes the line of one app in the comment. The line starts with a marker of the app."""
+    line = f"<!-- app:{app} --> {APPS[app]}: TestFlight build {build} of commit {sha}, version {version}: {STATES[state]}"
     if state == "failed" and run_url:
-        lines += ["", f"The log is in the [workflow run]({run_url})."]
-    return "\n".join(lines) + "\n"
+        line += f" The log is in the [workflow run]({run_url})."
+    return line
+
+
+def comment_body(old, app, state, version, build, sha, run_url=""):
+    """Puts the line of one app in the comment, and keeps the lines of the other apps.
+
+    `old` is the current text of the comment, or an empty string.
+    """
+    lines = {}
+    for line in (old or "").splitlines():
+        found = re.match(r"^<!-- app:(\w+) -->", line)
+        if found and found.group(1) in APPS:
+            lines[found.group(1)] = line
+    lines[app] = app_line(app, state, version, build, sha, run_url)
+    # GitHub shows a single newline as a line break, so each app has its own paragraph.
+    return "\n\n".join([MARKER] + [lines[name] for name in APPS if name in lines]) + "\n"
 
 
 def der_to_raw(der):
@@ -181,20 +199,40 @@ def gh(*args, stdin=None):
 
 
 def comment(args):
+    """Writes the line of one app in the comment of the PR.
+
+    The jobs of two apps can write at the same time, so the function reads the
+    comment again after each write, and writes again if its line is not there.
+    """
     repo = os.environ["GITHUB_REPOSITORY"]
     number = int(args.pr)
-    body = json.dumps({"body": comment_body(args.state, args.version, args.build, args.sha, args.run_url)})
-    old = gh(
-        "api",
-        "--paginate",
-        f"repos/{repo}/issues/{number}/comments?per_page=100",
-        "--jq",
-        f'.[] | select(.body | startswith("{MARKER}")) | .id',
-    ).split()
-    if old:
-        gh("api", "--method", "PATCH", f"repos/{repo}/issues/comments/{old[0]}", "--input", "-", stdin=body)
-    else:
-        gh("api", "--method", "POST", f"repos/{repo}/issues/{number}/comments", "--input", "-", stdin=body)
+    mine = app_line(args.app, args.state, args.version, args.build, args.sha, args.run_url)
+    for wait in (*RETRY_WAITS, None):
+        old = json.loads(
+            gh(
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{repo}/issues/{number}/comments?per_page=100",
+            )
+        )
+        old = [c for page in old for c in page if c["body"].startswith(MARKER)]
+        text = old[0]["body"] if old else ""
+        body = json.dumps(
+            {"body": comment_body(text, args.app, args.state, args.version, args.build, args.sha, args.run_url)}
+        )
+        if old:
+            gh("api", "--method", "PATCH", f"repos/{repo}/issues/comments/{old[0]['id']}", "--input", "-", stdin=body)
+            written = json.loads(gh("api", f"repos/{repo}/issues/comments/{old[0]['id']}"))["body"]
+        else:
+            written = json.loads(
+                gh("api", "--method", "POST", f"repos/{repo}/issues/{number}/comments", "--input", "-", stdin=body)
+            )["body"]
+        if mine in written.splitlines():
+            return
+        if wait is None:
+            sys.exit("Another job changed the comment at the same time, and the line of this app is not in it.")
+        time.sleep(wait)
 
 
 def notes(args):
@@ -239,6 +277,7 @@ def main():
     p.add_argument("--state", required=True, choices=sorted(STATES))
     p.add_argument("--pr", required=True)
     p.add_argument("--run-url", default="")
+    p.add_argument("--app", default="vale", choices=sorted(APPS))
     p.set_defaults(run=comment)
 
     q = commands.add_parser("notes")

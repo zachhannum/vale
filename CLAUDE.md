@@ -62,6 +62,24 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 
 Isotherm is in its phase 0, the specification and the skeleton. The phase table in `docs/isotherm/DESIGN.md` gives the order of the work. The GitHub issues of Isotherm have the label `isotherm`. When a phase is done, update this section.
 
+The app `isotherm-app` opens on a globe with a sample heightmap of the Earth. It has the workspace switch, and each workspace other than Explore shows a hint. This command opens the window:
+
+```sh
+cargo run --release -p isotherm-app
+```
+
+This command renders the UI of an iPhone 16 in portrait to a PNG, with its safe area:
+
+```sh
+cargo run --release -p isotherm-app -- --layout pad --screenshot target/isotherm/phone.png --size 393x852 --safe-area 59,0,34,0
+```
+
+This command builds the app and starts it on a connected iPad or iPhone:
+
+```sh
+scripts/isotherm-ipad.sh
+```
+
 ## Rules
 
 - The project is one Rust workspace. Put each crate in `crates/`. Give each crate of Vale and each crate that both apps share a `vale-` prefix, and give each crate of Isotherm an `isotherm-` prefix. A `vale-` crate must not depend on an `isotherm-` crate, except that `isotherm-export` can use `vale-store`. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
@@ -120,7 +138,7 @@ A feature session keeps its context small on purpose.
 
 - If a crate has more than one test file, you can run only the test files that cover the change, for example `cargo test -p vale-app --test pad`. Do not run `cargo test --workspace` before a push. The full run is the work of CI.
 
-- The tests have three tiers. The fast tier is the unit tests and the app tests with no harness. The UI tier is the tests with an egui harness and no GPU pixels. The GPU tier is the tests that read pixels from a GPU render. A GPU test has the attribute `#[ignore = "gpu"]`. CI runs the GPU tier on each push to `main`. To run it on a branch, start the workflow "Test" from the Actions tab. Before a push, run the fast tier and the UI tier with `cargo test -p <crate>`.
+- The tests have three tiers. The fast tier is the unit tests and the app tests with no harness. The UI tier is the tests with an egui harness and no GPU pixels. The GPU tier is the tests that read pixels from a GPU render. A GPU test has the attribute `#[ignore = "gpu"]`. CI runs the GPU tier on each push to `main`. To run it on a branch, start the workflow "Test" for Vale or "Test Isotherm" for Isotherm from the Actions tab. Before a push, run the fast tier and the UI tier with `cargo test -p <crate>`.
 
 - Run only the GPU tests that cover the change, by name. This command runs the GPU tests of `globe.rs` that have `hillshade` in the name:
 

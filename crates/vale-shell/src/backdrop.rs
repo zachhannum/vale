@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use eframe::egui_wgpu::{self, wgpu};
 
-use super::compile::{Compiled, render_pipeline};
+use crate::compile::{Compiled, render_pipeline};
 
 /// The standard deviation of the blur of the copy, in points.
 pub const BLUR_POINTS: f32 = 3.0;

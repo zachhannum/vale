@@ -52,13 +52,11 @@ pub mod fonts;
 pub mod furniture;
 pub mod geometry;
 pub mod grid_labels;
-pub mod icons;
 pub mod label_text;
 pub mod labels;
 pub mod list;
 pub mod manage;
 pub mod map_card;
-pub mod motion;
 pub mod number;
 pub mod panels_menu;
 pub mod panes;
@@ -72,10 +70,11 @@ pub mod selectable;
 pub mod stops;
 pub mod table;
 pub mod text_style;
-pub mod theme;
 pub mod toolbox;
 pub mod value;
 pub mod widgets;
+
+pub use vale_shell::pad::{icons, motion, theme};
 
 use flyout::{Choice, Flyout, Flyouts};
 use geometry::{

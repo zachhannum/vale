@@ -50,6 +50,13 @@ S = S_star (a_ref / r)² max(0, cos Z)
 
 `φ` is the latitude, `Z` is the zenith angle, and `S_star` is the flux of the star at the distance `a_ref`. The model takes the mean of `S` over each step. The angle of the planet about its axis advances with the length of the solar day. A tidally locked world has a solar day of infinite length, so `H` does not change. A 3:2 resonance follows from the same equations.
 
+The mean of `S` over one day follows from the hour angle `H₀` of sunset. `H₀ = 0` in the polar night, and `H₀ = π` in the polar day.
+
+```
+cos H₀ = −tan φ tan δ, clamped to [−1, 1]
+Q_day = (S_star / π) (a_ref / r)² (H₀ sin φ sin δ + cos φ cos δ sin H₀)
+```
+
 Sources: Berger (1978), Hartmann (2016).
 
 ### Star spectrum and two bands

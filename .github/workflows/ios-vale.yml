@@ -1,0 +1,31 @@
+name: iOS Vale
+
+# A PR runs this workflow only if it changes Vale or a part that Vale uses.
+# `scripts/ci/paths.py` gives the list of the paths.
+on:
+  pull_request:
+    paths:
+      - "**"
+      - "!crates/isotherm-*/**"
+      - "!docs/isotherm/**"
+      - "!scripts/isotherm-ipad.sh"
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-vale-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    name: Vale
+    uses: ./.github/workflows/ios-app.yml
+    with:
+      app: vale
+    permissions:
+      contents: read
+      pull-requests: write
+    secrets: inherit

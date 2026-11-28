@@ -1,0 +1,76 @@
+# xcodegen reads this file and writes IsothermApp.xcodeproj.
+name: IsothermApp
+options:
+  bundleIdPrefix: dev.vale
+  deploymentTarget:
+    iOS: "16.0"
+targets:
+  IsothermApp:
+    type: application
+    platform: iOS
+    sources:
+      - main.m
+      - Assets.xcassets
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Isotherm
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        # The app has no encryption of its own, so TestFlight does not ask about it.
+        ITSAppUsesNonExemptEncryption: false
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        # The scene delegate of winit puts the window on the window scene.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+          UISceneConfigurations:
+            UIWindowSceneSessionRoleApplication:
+              - UISceneConfigurationName: Default Configuration
+                UISceneDelegateClassName: WinitSceneDelegate
+        UIApplicationSupportsIndirectInputEvents: true
+        CADisableMinimumFrameDurationOnPhone: true
+        UISupportedInterfaceOrientations~iphone:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    entitlements:
+      path: IsothermApp.entitlements
+      properties:
+        # On a device with enough RAM, iOS stops the app at a higher footprint.
+        # The App ID needs the capability "Increased Memory Limit".
+        com.apple.developer.kernel.increased-memory-limit: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.vale.isotherm
+        # 1 is iPhone, and 2 is iPad.
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # CI sets the version and the build number of each TestFlight build.
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_USER_SCRIPT_SANDBOXING: false
+        # PROJ is in the Rust library. It needs the C++ library and SQLite.
+        OTHER_LDFLAGS: -lisotherm_app -lc++ -lsqlite3
+        "LIBRARY_SEARCH_PATHS[sdk=iphoneos*]": $(PROJECT_DIR)/../../../target/aarch64-apple-ios/release
+        "LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]": $(PROJECT_DIR)/../../../target/aarch64-apple-ios-sim/release
+    preBuildScripts:
+      - name: Build the Rust library
+        script: sh "$PROJECT_DIR/build-rust.sh"
+        basedOnDependencyAnalysis: false
+    dependencies:
+      - sdk: UIKit.framework
+      - sdk: Foundation.framework
+      - sdk: CoreFoundation.framework
+      - sdk: CoreGraphics.framework
+      - sdk: CoreText.framework
+      - sdk: QuartzCore.framework
+      - sdk: Metal.framework

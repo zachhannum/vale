@@ -21,7 +21,7 @@ use crate::globe::{DISPLAY_CAP, reduce_tile, thumbnail};
 use crate::raster_style::{
     self, load_image_styles, load_raster_styles, store_image_styles, store_raster_styles,
 };
-use crate::workcopy::WorkCopy;
+use crate::workcopy::{ValeProject, WorkCopy};
 
 /// The time from a change to its save. One drag of a control changes the
 /// project in each frame, and this delay turns the drag into a few saves.
@@ -165,7 +165,7 @@ impl Session {
         files: &dyn Files,
         doc: &mut Document,
     ) -> Result<Session, StoreError> {
-        let work = WorkCopy::open(path, work_dir, files)?;
+        let work = WorkCopy::open(path, work_dir, files, &ValeProject)?;
         let new = !work.path().exists();
         let database = work.path().to_path_buf();
         let mut session = Session::open_at(&database, path, Some(work), doc)?;
@@ -299,7 +299,7 @@ impl Session {
         let Some(work) = &mut self.work else {
             return Ok(false);
         };
-        work.write_back(files)?;
+        work.write_back(files, &ValeProject)?;
         let moved = work.source() != self.path;
         self.path = work.source().to_path_buf();
         Ok(moved)
