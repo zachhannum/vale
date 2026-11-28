@@ -54,8 +54,8 @@ pub mod vtiles;
 pub mod zoom_test;
 
 pub use vale_globe::frame::{FrameDraw, FrameItem, FramePlace, Look, MAX_RUNS, RasterLook};
-pub use vale_shell::backdrop;
 pub use vale_globe::{compile, detail, edges, flat, gpu, math, nav, preview, view};
+pub use vale_shell::backdrop;
 
 use crate::extent::GpuExtent;
 use crate::pen::Pen;
