@@ -1995,6 +1995,8 @@ name = "isotherm-store"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "isotherm-fields",
+ "isotherm-sim",
  "isotherm-world",
  "rusqlite",
  "tempfile",

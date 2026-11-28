@@ -11,7 +11,8 @@ use std::path::Path;
 use isotherm_world::{Atmosphere, Heightmap, Moon, Orbit, Planet, Rotation, Star, Terrain, World};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction, params};
 
-use crate::tile;
+use crate::{run, tile};
+use isotherm_sim::RunState;
 
 /// The version of the `isotherm_` tables that this code writes.
 pub const FORMAT_VERSION: u32 = 2;
@@ -89,7 +90,7 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
-fn corrupt(what: impl Into<String>) -> StoreError {
+pub(crate) fn corrupt(what: impl Into<String>) -> StoreError {
     StoreError::Corrupt(what.into())
 }
 
@@ -201,6 +202,7 @@ impl WorldFile {
         let old = read_planet(&tx)?;
         push_step(&tx, "planet", None, Some(&planet_blob(&old)))?;
         write_planet(&tx, planet)?;
+        run::clear_run(&tx)?;
         trim(&tx)?;
         tx.commit()?;
         self.count_steps()
@@ -220,6 +222,7 @@ impl WorldFile {
         )?;
         count_step_bytes(&tx, step)?;
         write_terrain(&tx, terrain)?;
+        run::clear_run(&tx)?;
         trim(&tx)?;
         tx.commit()?;
         self.count_steps()
@@ -231,6 +234,7 @@ impl WorldFile {
         let tx = self.conn.transaction()?;
         push_step(&tx, "sea_level", Some(old_m), None)?;
         tx.execute("UPDATE isotherm_terrain SET sea_level_m = ?1", [new_m])?;
+        run::clear_run(&tx)?;
         trim(&tx)?;
         tx.commit()?;
         self.count_steps()
@@ -250,6 +254,28 @@ impl WorldFile {
             "SELECT id, kind FROM isotherm_undo WHERE done = 0 ORDER BY id",
             1,
         )
+    }
+
+    /// Writes the state of a run in place of the saved run. A run is not an
+    /// undo step.
+    pub fn save_run(&mut self, state: &RunState) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        run::write_run(&tx, state)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The saved run. `None`: the file has no run, or a run of another
+    /// version of the model.
+    pub fn load_run(&self) -> Result<Option<RunState>, StoreError> {
+        run::read_run(&self.conn)
+    }
+
+    pub fn clear_run(&mut self) -> Result<(), StoreError> {
+        let tx = self.conn.transaction()?;
+        run::clear_run(&tx)?;
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn can_undo(&self) -> bool {
@@ -272,6 +298,7 @@ impl WorldFile {
         let Some((id, kind)) = step else {
             return Ok(None);
         };
+        run::clear_run(&tx)?;
         let restored = match kind.as_str() {
             "sea_level" => {
                 let stored: f64 = tx.query_row(
@@ -571,7 +598,8 @@ fn v1(tx: &Transaction) -> rusqlite::Result<()> {
 }
 
 /// The mass of the star, the methane, and the sidereal day in place of the
-/// solar day, in the planet and in the planets of the undo log.
+/// solar day, in the planet and in the planets of the undo log. The tables
+/// of a model run.
 fn v2(tx: &Transaction) -> rusqlite::Result<()> {
     let old: Option<Vec<f64>> = tx
         .query_row(
@@ -588,6 +616,17 @@ fn v2(tx: &Transaction) -> rusqlite::Result<()> {
          ALTER TABLE isotherm_planet ADD COLUMN ch4_ppm REAL NOT NULL DEFAULT 0;
          ALTER TABLE isotherm_planet DROP COLUMN day_s;",
     )?;
+    tx.execute_batch(&format!(
+        "{}
+         INSERT INTO gpkg_contents (table_name, data_type, identifier)
+           SELECT name, 'isotherm', name FROM sqlite_master
+           WHERE type = 'table' AND name IN ('isotherm_run', 'isotherm_run_grid', 'isotherm_field');
+         INSERT INTO gpkg_extensions
+           SELECT table_name, NULL, 'isotherm_world', 'Records of the Isotherm app', 'read-write'
+           FROM gpkg_contents
+           WHERE table_name IN ('isotherm_run', 'isotherm_run_grid', 'isotherm_field');",
+        run::RUN_TABLES
+    ))?;
     if let Some(old) = old {
         let n = numbers_from_v1(&old);
         tx.execute(
