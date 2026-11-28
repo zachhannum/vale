@@ -1914,8 +1914,8 @@ impl IsothermApp {
         #[cfg(target_os = "ios")]
         {
             let paths = self.picked.take();
-            if let Some(pick) = self.picking.filter(|_| !paths.is_empty()) {
-                self.picking = None;
+            if !paths.is_empty() {
+                let pick = self.picking.take().unwrap_or(Pick::Import);
                 for path in paths {
                     self.picked_file(pick, &path);
                 }

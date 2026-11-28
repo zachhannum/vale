@@ -55,10 +55,6 @@ pub fn run(args: cli::Args) -> eframe::Result {
                         vale_shell::picker::Picker::new(controller, picked, exports, wake)
                     });
                 }
-                // The system stops the frames in the background, and the run
-                // goes on when they come back. The save runs at two
-                // notifications, so a frame that holds the run at the first
-                // one does not stop the save.
                 // The system gives the iCloud folder on a worker thread, and
                 // the next frame takes it.
                 let (cloud, ctx) = (app.cloud_dir.clone(), cc.egui_ctx.clone());
@@ -68,6 +64,11 @@ pub fn run(args: cli::Args) -> eframe::Result {
                     }
                     ctx.request_repaint();
                 });
+                // The system stops the frames in the background, and the run
+                // goes on when they come back. The save runs at two
+                // notifications, so a frame that holds the run at the first
+                // one does not stop the save. The save also writes the working
+                // copy to iCloud Drive, and the view for the next start.
                 let (run, resume) = (app.run.clone(), app.resume.clone());
                 let save = Box::new(move || {
                     if let Ok(mut run) = run.try_borrow_mut() {
