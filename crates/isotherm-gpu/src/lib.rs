@@ -1,5 +1,9 @@
 //! The wgpu compute shaders of the steps of `isotherm-sim`.
 
+mod ops;
+
+pub use ops::{ADVECTION_WGSL, DIVERGENCE_WGSL, GRADIENT_WGSL, GpuGrid, GpuOps, LAPLACIAN_WGSL};
+
 /// The daily mean insolation of each cell, as in
 /// `isotherm_sim::daily_mean_insolation`. Each invocation reads the latitude
 /// of one cell, in radians, and writes its flux, in W/m².
@@ -42,15 +46,44 @@ pub fn insolation_module() -> wgpu::ShaderModuleDescriptor<'static> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn insolation_shader_is_valid() {
-        let module = naga::front::wgsl::parse_str(INSOLATION_WGSL).unwrap();
+    fn validate(source: &str) {
+        let module = naga::front::wgsl::parse_str(source).unwrap();
         naga::valid::Validator::new(
             naga::valid::ValidationFlags::all(),
             naga::valid::Capabilities::empty(),
         )
         .validate(&module)
         .unwrap();
+    }
+
+    #[test]
+    fn insolation_shader_is_valid() {
+        validate(INSOLATION_WGSL);
         assert_eq!(insolation_module().label, Some("isotherm insolation"));
+    }
+
+    #[test]
+    fn gradient_shader_is_valid() {
+        validate(GRADIENT_WGSL);
+    }
+
+    #[test]
+    fn divergence_shader_is_valid() {
+        validate(DIVERGENCE_WGSL);
+    }
+
+    #[test]
+    fn laplacian_shader_is_valid() {
+        validate(LAPLACIAN_WGSL);
+    }
+
+    #[test]
+    fn advection_shader_is_valid() {
+        validate(ADVECTION_WGSL);
+    }
+
+    #[test]
+    fn the_tables_take_320_bytes_a_cell() {
+        assert_eq!(GpuGrid::table_bytes(64), 6 * 64 * 64 * 320);
     }
 }

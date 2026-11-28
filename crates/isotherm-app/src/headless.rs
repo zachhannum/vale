@@ -70,9 +70,13 @@ pub fn render(harness: &mut Harness<'_, IsothermApp>) -> Result<image::RgbaImage
     render(harness)
 }
 
-/// Renders the UI that the arguments ask for to an image.
-pub fn screenshot(args: &Args) -> Result<image::RgbaImage, String> {
-    let app = IsothermApp::from_args(args, None)?;
+/// Renders the UI that the arguments ask for to an image. `app`: an app
+/// that the arguments already made.
+pub fn screenshot(args: &Args, app: Option<IsothermApp>) -> Result<image::RgbaImage, String> {
+    let app = match app {
+        Some(app) => app,
+        None => IsothermApp::from_args(args, None)?,
+    };
     let mut harness = gpu_harness_with(args.size, app);
     render(&mut harness)
 }

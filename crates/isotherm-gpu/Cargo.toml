@@ -9,6 +9,9 @@ license.workspace = true
 [dependencies]
 isotherm-sim.workspace = true
 wgpu.workspace = true
+bytemuck.workspace = true
 
 [dev-dependencies]
+pollster.workspace = true
+wgpu = { workspace = true, features = ["vulkan", "metal", "gles"] }
 naga = { version = "30.0.1", features = ["wgsl-in"] }

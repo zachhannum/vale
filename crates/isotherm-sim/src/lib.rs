@@ -2,6 +2,23 @@
 
 use std::f64::consts::PI;
 
+pub mod grid;
+pub mod memory;
+pub mod model;
+pub mod ops;
+pub mod solver;
+pub mod sun;
+
+pub use grid::{Edge, Grid, Vector};
+pub use model::{MODEL_VERSION, Model, Params, RunState};
+pub use ops::Ops;
+
+/// The steps of each model year. The step count does not depend on the
+/// planet, so a year of any length takes the same work.
+pub const STEPS_PER_YEAR: u32 = 360;
+/// The steps of each month. The twelve months are equal slices of the year.
+pub const STEPS_PER_MONTH: u32 = STEPS_PER_YEAR / 12;
+
 /// The mean flux of the star over one day at the top of the atmosphere, in
 /// W/m², with `s0` the flux at the distance of the planet. The latitude and
 /// the declination are in radians.

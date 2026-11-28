@@ -114,3 +114,6 @@ jobs:
 
       - name: Run the GPU tier
         run: cargo test -p isotherm-app --test gpu -- --ignored --skip manual_ --test-threads=1
+
+      - name: Run the GPU tier of the compute shaders
+        run: cargo test -p isotherm-gpu --test gpu -- --ignored

@@ -1921,7 +1921,9 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "isotherm-fields",
  "isotherm-import",
+ "isotherm-sim",
  "isotherm-store",
  "isotherm-world",
  "png",
@@ -1959,8 +1961,10 @@ dependencies = [
 name = "isotherm-gpu"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "isotherm-sim",
  "naga",
+ "pollster 0.4.0",
  "wgpu",
 ]
 
@@ -1982,7 +1986,9 @@ name = "isotherm-sim"
 version = "0.1.0"
 dependencies = [
  "isotherm-fields",
+ "isotherm-import",
  "isotherm-world",
+ "vale-terrain",
 ]
 
 [[package]]
@@ -1990,6 +1996,8 @@ name = "isotherm-store"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "isotherm-fields",
+ "isotherm-sim",
  "isotherm-world",
  "rusqlite",
  "tempfile",

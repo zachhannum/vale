@@ -80,8 +80,8 @@ opt-level = 3
 [profile.dev.package."*"]
 opt-level = 2
 
-# The tests of the app run the terrain, the map projections, and the
-# labeler, so these crates also build with optimization.
+# The tests of the apps run the terrain, the map projections, the labeler,
+# and the climate model, so these crates also build with optimization.
 [profile.dev.package.vale-terrain]
 opt-level = 2
 
@@ -92,6 +92,9 @@ opt-level = 2
 opt-level = 2
 
 [profile.dev.package.vale-labeler]
+opt-level = 2
+
+[profile.dev.package.isotherm-sim]
 opt-level = 2
 
 [patch.crates-io]

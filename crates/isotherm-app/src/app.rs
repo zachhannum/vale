@@ -1,14 +1,18 @@
 //! The screen of the app: the globe, the workspace switch, the panel of
 //! each workspace, and the view card.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, pos2, vec2};
+use isotherm_fields::{Means, Output, Period};
 use isotherm_import::vale_project::HeightLayer;
 use isotherm_import::{Samples, Scale};
 use isotherm_world::Terrain;
 use vale_shell::pad::icons::{self, Icon};
 use vale_shell::pad::metrics::{PAD, TOUCH, WidthClass};
+use vale_shell::pad::motion;
 use vale_shell::pad::number::{slider_row, stepper_row};
 use vale_shell::pad::theme;
 use vale_shell::pad::widgets::{self, Controls, PANEL_ROW};
@@ -16,7 +20,10 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use crate::cli::Args;
 use crate::document::{self, Change, Document, Read};
-use crate::globe::{Globe, WorldView};
+use crate::explore::{self, Explore};
+use crate::globe::{Globe, Overlay, WorldView};
+use crate::memory;
+use crate::sim::{Run, Simulation, Speed};
 use crate::worlds;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -55,9 +62,8 @@ impl Workspace {
         match self {
             Workspace::Worlds => Some("Saved worlds come in a later version."),
             Workspace::Planet => Some("The planet settings come in a later version."),
-            Workspace::Simulate => Some("The climate model comes in a later version."),
             Workspace::Export => Some("Export comes in a later version."),
-            Workspace::Terrain | Workspace::Explore => None,
+            Workspace::Terrain | Workspace::Simulate | Workspace::Explore => None,
         }
     }
 
@@ -115,6 +121,26 @@ pub const REDO: &str = "Redo";
 pub const PROJECTION: &str = "Projection";
 pub const SCALE_HINT: &str = "Set the heights of black and white.";
 pub const LAYERS_HINT: &str = "Choose a height layer.";
+pub const TEMPERATURE: &str = "Temperature";
+pub const MONTH: &str = "Month";
+pub const CONTOURS: &str = "Contours";
+pub const RUN_HINT: &str = "Run the model to see the temperature.";
+pub const EMPTY_PERIOD: &str = "No values for this period yet.";
+pub const RUN: &str = "Run";
+pub const PAUSE: &str = "Pause";
+pub const SPEED: &str = "Speed";
+pub const QUALITY: &str = "Quality";
+pub const COARSE_ONLY: &str = "This device has memory for the coarse grid only.";
+/// The names of the face sizes of the quality setting.
+pub const QUALITY_NAMES: [(usize, &str); 4] = [
+    (32, "Coarse"),
+    (64, "Medium"),
+    (128, "Fine"),
+    (256, "Finest"),
+];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 /// The file types of an import.
 pub const IMPORT_TYPES: [&str; 4] = ["png", "tif", "tiff", "gpkg"];
@@ -136,6 +162,16 @@ const LIST_WIDTH: f32 = 280.0;
 const CARD_PAD: f32 = 8.0;
 /// The corners of the top of a bottom sheet.
 const SHEET_RADIUS: u8 = 40;
+
+/// The space of the grabber at the top of the bottom sheet.
+const GRABBER: f32 = 16.0;
+
+/// The header of the bottom sheet: the grabber and the title of the
+/// workspace. A tap or a drag on it collapses or expands the sheet.
+const SHEET_HEADER: f32 = GRABBER + TOUCH;
+
+/// The drag in points that moves the sheet to the other detent.
+const SHEET_SNAP: f32 = 40.0;
 /// The height of the top bar and the width of the side panel of the
 /// desktop layout.
 const BAR: f32 = 56.0;
@@ -172,6 +208,29 @@ pub struct IsothermApp {
     build: String,
     /// The safe area of a screenshot. `None`: the safe area of the system.
     pub safe_area: Option<egui::SafeAreaInsets>,
+    /// The monthly and yearly means of the last run.
+    means: Option<Means>,
+    /// The count of the calls of `set_means`.
+    means_generation: u64,
+    pub explore: Explore,
+    /// The bottom sheet of a compact screen shows only its header.
+    pub sheet_collapsed: bool,
+    /// The distance of the drag of the sheet header, down from its start.
+    sheet_drag: Option<f32>,
+    /// The period and the means generation of the overlay on the globe.
+    overlay_shown: Option<(Period, u64)>,
+    /// The run of the model. The save of the iOS life cycle shares it.
+    pub run: Rc<RefCell<Run>>,
+    /// The face sizes that the quality setting offers.
+    pub qualities: Vec<usize>,
+    /// The face size of the next run.
+    pub quality: usize,
+    /// A new run steps on a worker thread.
+    pub threaded: bool,
+    pub speed: Speed,
+    /// The save of the run when the app leaves the foreground.
+    #[cfg(target_os = "ios")]
+    pub lifecycle: Option<vale_shell::lifecycle::Observer>,
     #[cfg(target_os = "ios")]
     pub picker: Option<vale_shell::picker::Picker>,
     #[cfg(target_os = "ios")]
@@ -203,7 +262,20 @@ impl IsothermApp {
     /// The app with `doc` open.
     pub fn new(doc: Document, layout: Layout) -> IsothermApp {
         let globe = Globe::new(&doc.world.terrain.heights);
-        IsothermApp {
+        let qualities = memory::qualities(memory::available());
+        let saved = doc.file.as_ref().and_then(|f| f.load_run().ok().flatten());
+        // A saved run opens at its own size, also a size that this device
+        // does not offer for a new run.
+        let sim = saved.and_then(|state| Simulation::restore(&doc.world, state, false).ok());
+        let quality = sim.as_ref().map_or_else(
+            || memory::default_quality(&qualities),
+            Simulation::face_size,
+        );
+        let run = Run {
+            sim,
+            path: doc.path.clone(),
+        };
+        let mut app = IsothermApp {
             workspace: Workspace::Explore,
             layout,
             menu: false,
@@ -219,10 +291,127 @@ impl IsothermApp {
             cards: Vec::new(),
             build: crate::build::label(),
             safe_area: None,
+            sheet_collapsed: false,
+            sheet_drag: None,
+            means: None,
+            means_generation: 0,
+            explore: Explore::default(),
+            overlay_shown: None,
+            run: Rc::new(RefCell::new(run)),
+            qualities,
+            quality,
+            threaded: false,
+            speed: Speed::default(),
+            #[cfg(target_os = "ios")]
+            lifecycle: None,
             #[cfg(target_os = "ios")]
             picker: None,
             #[cfg(target_os = "ios")]
             picked: Default::default(),
+        };
+        app.take_means();
+        app
+    }
+
+    /// Moves the steps of the run to a worker thread, for the window.
+    pub fn set_threaded(&mut self) {
+        self.threaded = true;
+        let mut run = self.run.borrow_mut();
+        run.sim = run.sim.take().map(Simulation::threaded);
+    }
+
+    /// Shows the means of a month that ended in the run.
+    fn take_means(&mut self) {
+        let news = self
+            .run
+            .borrow_mut()
+            .sim
+            .as_mut()
+            .and_then(Simulation::take_means);
+        if let Some(means) = news {
+            self.set_means(Some(means));
+        }
+    }
+
+    /// Steps the run by one frame, and shows the months that ended.
+    fn step_run(&mut self, ctx: &egui::Context) {
+        {
+            let mut run = self.run.borrow_mut();
+            if run.path != self.doc.path {
+                run.path = self.doc.path.clone();
+            }
+            if let Some(sim) = run.sim.as_mut() {
+                sim.speed = self.speed;
+                sim.frame();
+                if sim.running || sim.busy() {
+                    ctx.request_repaint();
+                }
+            }
+        }
+        self.take_means();
+    }
+
+    /// Stops the run and deletes it, because the world changed.
+    pub fn clear_run(&mut self) {
+        self.run.borrow_mut().sim = None;
+        self.set_means(None);
+        if let Some(file) = &mut self.doc.file
+            && let Err(e) = file.clear_run()
+        {
+            self.status = Some(format!("Could not delete the run: {e}."));
+        }
+    }
+
+    /// Writes the run to the world file.
+    pub fn save_run(&self) -> Result<(), String> {
+        self.run.borrow_mut().save()
+    }
+
+    /// Starts or pauses the run. A pause saves the run.
+    pub fn toggle_run(&mut self) {
+        let result = {
+            let mut run = self.run.borrow_mut();
+            let sim = run.sim.get_or_insert_with(|| {
+                Simulation::new(&self.doc.world, self.quality, self.threaded)
+            });
+            sim.running = !sim.running;
+            if sim.running { Ok(()) } else { run.save() }
+        };
+        if let Err(e) = result {
+            self.status = Some(e);
+        }
+    }
+
+    pub fn running(&self) -> bool {
+        self.run
+            .borrow()
+            .sim
+            .as_ref()
+            .is_some_and(|sim| sim.running)
+    }
+
+    /// Runs a new run of `years` years at face size `n` and waits for it,
+    /// saves it to the world file, and gives the yearly means as a line of
+    /// text.
+    pub fn run_years(&mut self, years: u64, face_size: usize) -> Result<String, String> {
+        self.quality = face_size;
+        let mut sim = Simulation::new(&self.doc.world, face_size, false);
+        sim.run_steps(years * u64::from(isotherm_sim::STEPS_PER_YEAR));
+        self.run.borrow_mut().sim = Some(sim);
+        self.take_means();
+        self.save_run()?;
+        let means = self.means().ok_or("The run has no means.")?;
+        let (mean, diff) = crate::sim::summary(means).ok_or("The run is shorter than one year.")?;
+        Ok(format!(
+            "year {years}: global mean {mean:.1} °C, equator minus pole {diff:.1} °C"
+        ))
+    }
+
+    /// Sets the face size of the next run. A new size deletes the run.
+    pub fn set_quality(&mut self, face_size: usize) {
+        if face_size != self.quality {
+            self.quality = face_size;
+            self.clear_run();
         }
     }
 
@@ -242,6 +431,7 @@ impl IsothermApp {
         };
         let mut app = IsothermApp::new(doc, args.layout());
         app.workspace = args.workspace;
+        app.sheet_collapsed = args.sheet_detent == crate::cli::SheetDetent::Title;
         app.globe.world_view = args.view;
         app.globe.flat.set_spec(args.flat_spec());
         app.safe_area = args.safe_area;
@@ -278,6 +468,7 @@ impl IsothermApp {
         match self.doc.import(name, terrain, self.data_dir.as_deref()) {
             Ok(()) => {
                 self.globe.set_terrain(&self.doc.world.terrain.heights);
+                self.clear_run();
                 self.remember();
             }
             Err(e) => self.status = Some(e),
@@ -304,14 +495,80 @@ impl IsothermApp {
 
     fn apply(&mut self, change: Result<Option<Change>, String>) {
         match change {
-            Ok(Some(Change::Terrain)) => self.globe.set_terrain(&self.doc.world.terrain.heights),
-            Ok(_) => {}
+            Ok(Some(change)) => {
+                if matches!(change, Change::Terrain) {
+                    self.globe.set_terrain(&self.doc.world.terrain.heights);
+                }
+                self.clear_run();
+            }
+            Ok(None) => {}
             Err(e) => self.status = Some(e),
         }
     }
 
+    /// Sets the means that the Explore workspace shows.
+    pub fn set_means(&mut self, means: Option<Means>) {
+        self.means = means;
+        self.means_generation += 1;
+    }
+
+    pub fn means(&self) -> Option<&Means> {
+        self.means.as_ref()
+    }
+
+    /// The temperature field of the means, if the run keeps it.
+    fn temperature(&self) -> Option<&isotherm_fields::Field> {
+        let means = self.means.as_ref()?;
+        means
+            .outputs()
+            .contains(&Output::Temperature)
+            .then(|| means.field(Output::Temperature))
+    }
+
+    /// Puts the temperature of the shown period on the globe in the Explore
+    /// workspace, and no overlay in the other workspaces.
+    fn sync_overlay(&mut self) {
+        let period = self.explore.period;
+        let filled = self
+            .temperature()
+            .is_some_and(|field| field.get(period).is_some());
+        let wanted = (self.workspace == Workspace::Explore && filled)
+            .then_some((period, self.means_generation));
+        if wanted == self.overlay_shown {
+            return;
+        }
+        self.overlay_shown = wanted;
+        let overlay = wanted.and_then(|_| {
+            let field = self.temperature()?;
+            let bands = explore::temperature_bands();
+            Some(Overlay {
+                face_size: field.face_size,
+                levels: explore::levels(&bands, field.get(period)?),
+                bands,
+            })
+        });
+        self.globe.set_overlay(overlay);
+    }
+
+    /// The text of the readout, or `None` with no place or no value.
+    pub fn readout(&self) -> Option<String> {
+        if self.workspace != Workspace::Explore {
+            return None;
+        }
+        let place = self.explore.place()?;
+        let value = explore::value_at(self.temperature()?, self.explore.period, place)?;
+        Some(format!(
+            "{} · {}",
+            explore::celsius_text(value),
+            explore::place_text(place)
+        ))
+    }
+
     /// Draws one frame.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        self.step_run(ui.ctx());
+        self.sync_overlay();
+        self.globe.contours = self.explore.contours;
         let ctx = ui.ctx().clone();
         let screen = ctx.viewport_rect();
         let safe = match self.safe_area {
@@ -341,7 +598,15 @@ impl IsothermApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.set_clip_rect(rect);
             ui.painter().rect_filled(rect, 0.0, theme::CANVAS);
-            self.globe.show(ui, rect, theme::CANVAS, &bands);
+            let resp = self.globe.show(ui, rect, theme::CANVAS, &bands);
+            let at = |pos: Option<egui::Pos2>| pos.and_then(|pos| self.globe.direction_at(pos));
+            self.explore.hover = match resp.hovered() && !resp.dragged() {
+                true => at(resp.hover_pos()),
+                false => None,
+            };
+            if resp.clicked() {
+                self.explore.pin = at(resp.interact_pointer_pos());
+            }
         });
     }
 
@@ -398,6 +663,15 @@ impl IsothermApp {
                 app.panel_rows(ui, controls, true);
             },
         );
+        self.readout_card(ui.ctx(), globe.shrink(MARGIN));
+    }
+
+    /// The readout card at the bottom middle of `area`.
+    fn readout_card(&mut self, ctx: &egui::Context, area: Rect) {
+        if let Some(text) = self.readout() {
+            let rect = explore::readout_card(ctx, area, &text);
+            self.cards.push((explore::READOUT, rect));
+        }
     }
 
     /// The pad layout: the globe fills the screen, and the cards float over
@@ -448,7 +722,7 @@ impl IsothermApp {
             pos2(safe.right() - MARGIN, safe.bottom() - MARGIN),
         );
         if class == WidthClass::Compact {
-            if self.workspace.has_view() {
+            if self.workspace.has_view() || self.workspace == Workspace::Simulate {
                 self.sheet(&ctx, controls, safe);
             }
         } else {
@@ -462,15 +736,31 @@ impl IsothermApp {
                     app.view_rows(ui, controls);
                 });
             }
-            if self.workspace == Workspace::Terrain {
+            if self.workspace == Workspace::Simulate {
+                let width = PANEL_WIDTH.min(room.width());
+                let height = self.measured(&ctx, "panel", 4.0 * PANEL_ROW);
+                let rect = Rect::from_min_size(room.min, vec2(width, height.min(room.height())));
+                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| {
+                    app.simulate_rows(ui, controls);
+                });
+            }
+            if matches!(self.workspace, Workspace::Terrain | Workspace::Explore) {
                 let width = PANEL_WIDTH.min(room.width() - VIEW_WIDTH - MARGIN);
                 let height = self.measured(&ctx, "panel", 3.0 * PANEL_ROW);
                 let rect = Rect::from_min_size(room.min, vec2(width, height.min(room.height())));
-                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| {
-                    app.terrain_rows(ui, controls);
+                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| match app
+                    .workspace
+                {
+                    Workspace::Explore => app.explore_rows(ui, controls),
+                    _ => app.terrain_rows(ui, controls),
                 });
             }
         }
+        // The readout stays above the sheet of a compact screen.
+        let sheet = self.cards.iter().find(|(id, _)| *id == "sheet");
+        let bottom = sheet.map_or(room.bottom(), |(_, rect)| rect.top() - 12.0);
+        let area = Rect::from_min_max(room.min, pos2(room.right(), bottom));
+        self.readout_card(&ctx, area);
         if class == WidthClass::Compact && self.menu {
             self.workspace_menu(&ctx, controls, switch);
         } else {
@@ -549,11 +839,21 @@ impl IsothermApp {
     }
 
     /// The bottom sheet of a compact screen, with the panel and the view
-    /// rows. It is at most half as high as the safe area.
+    /// rows below a header. It is at most half as high as the safe area,
+    /// and only as high as its header when it is collapsed.
     fn sheet(&mut self, ctx: &egui::Context, controls: &mut Controls, safe: Rect) {
         let id = "sheet";
-        let grabber = 16.0;
-        let height = (self.measured(ctx, id, 4.0 * PANEL_ROW) + grabber).min(safe.height() / 2.0);
+        let full = (self.measured(ctx, id, 4.0 * PANEL_ROW) + SHEET_HEADER)
+            .min(safe.height() / 2.0)
+            .max(SHEET_HEADER + CARD_PAD);
+        let open = motion::value(
+            ctx,
+            egui::Id::new("sheet-open"),
+            if self.sheet_collapsed { 0.0 } else { 1.0 },
+            motion::SNAPPY,
+        );
+        let low = SHEET_HEADER + CARD_PAD;
+        let height = (low + (full - low) * open - self.sheet_drag.unwrap_or(0.0)).clamp(low, full);
         let rect = Rect::from_min_max(
             pos2(safe.left() + 8.0, safe.bottom() - 8.0 - height),
             pos2(safe.right() - 8.0, safe.bottom() - 8.0),
@@ -567,21 +867,75 @@ impl IsothermApp {
         };
         let backdrop = self.globe.backdrop();
         widgets::card(ctx, backdrop, id, rect, egui::Order::Middle, radius, |ui| {
-            let handle = Rect::from_center_size(
-                pos2(rect.center().x, rect.top() + grabber / 2.0 + 2.0),
-                vec2(36.0, 5.0),
-            );
-            ui.painter().rect_filled(handle, 2.5, theme::divider());
+            let header = Rect::from_min_size(rect.min, vec2(rect.width(), SHEET_HEADER));
+            self.sheet_header(ui, controls, header, (height - low) / (full - low).max(1.0));
             let body = Rect::from_min_max(
-                pos2(rect.left() + 8.0, rect.top() + grabber + CARD_PAD),
+                pos2(rect.left() + 8.0, header.bottom()),
                 pos2(rect.right() - 8.0, rect.bottom() - CARD_PAD),
             );
+            if body.height() < 1.0 {
+                return;
+            }
             let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(layout));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(body)
+                    .layout(layout)
+                    .id_salt("sheet-body"),
+            );
+            child.set_clip_rect(body);
             self.scroll_body(&mut child, id, controls, |app, ui, controls| {
                 app.panel_rows(ui, controls, false);
             });
         });
+    }
+
+    /// The header of the bottom sheet in `rect`: the grabber and the title
+    /// of the workspace. A tap collapses or expands the sheet, and a drag
+    /// moves it with the finger. `open` is the part of the way from the
+    /// collapsed sheet to the open sheet, from 0 to 1.
+    fn sheet_header(&mut self, ui: &mut egui::Ui, controls: &mut Controls, rect: Rect, open: f32) {
+        let handle = Rect::from_center_size(
+            pos2(rect.center().x, rect.top() + GRABBER / 2.0 + 2.0),
+            vec2(36.0, 5.0),
+        );
+        ui.painter().rect_filled(handle, 2.5, theme::divider());
+        ui.painter().text(
+            pos2(rect.left() + 20.0, rect.top() + GRABBER + TOUCH / 2.0),
+            Align2::LEFT_CENTER,
+            self.workspace.name(),
+            theme::title(),
+            theme::TEXT,
+        );
+        let label = if self.sheet_collapsed {
+            "Expand sheet"
+        } else {
+            "Collapse sheet"
+        };
+        let resp = ui
+            .interact(rect, ui.id().with("sheet-header"), Sense::click_and_drag())
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        controls.push(widgets::Control {
+            name: label.to_owned(),
+            rect,
+        });
+        if resp.clicked() {
+            self.sheet_collapsed = !self.sheet_collapsed;
+        }
+        if resp.dragged() {
+            *self.sheet_drag.get_or_insert(0.0) += resp.drag_delta().y;
+        }
+        if resp.drag_stopped() {
+            let drag = self.sheet_drag.take().unwrap_or(0.0);
+            if drag > SHEET_SNAP {
+                self.sheet_collapsed = true;
+            } else if drag < -SHEET_SNAP {
+                self.sheet_collapsed = false;
+            }
+            // The sheet moves on from where the finger left it.
+            motion::set(ui.ctx(), egui::Id::new("sheet-open"), open);
+        }
     }
 
     /// The rows of the panel of the workspace, with the view rows below
@@ -590,6 +944,13 @@ impl IsothermApp {
         if self.workspace == Workspace::Terrain {
             self.terrain_rows(ui, controls);
             ui.add_space(12.0);
+        }
+        if self.workspace == Workspace::Explore {
+            self.explore_rows(ui, controls);
+            ui.add_space(12.0);
+        }
+        if self.workspace == Workspace::Simulate {
+            self.simulate_rows(ui, controls);
         }
         if self.workspace.has_view() {
             self.view_rows(ui, controls);
@@ -632,6 +993,89 @@ impl IsothermApp {
         }
     }
 
+    /// The rows of the Explore panel: the layer, the month, the contours,
+    /// and the legend.
+    fn explore_rows(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
+        if self.temperature().is_none() {
+            ui.add_space(4.0);
+            wrapped(ui, RUN_HINT, theme::body(), theme::TEXT);
+            ui.add_space(4.0);
+            return;
+        }
+        widgets::text_row(ui, controls, TEMPERATURE, 0.0, true, true);
+        let mut value = explore::period_index(self.explore.period) as f64;
+        let text = explore::period_name(self.explore.period);
+        let resp = slider_row(ui, controls, MONTH, &mut value, 0.0..=12.0, text);
+        if resp.changed {
+            self.explore.period = explore::period_at(value.round().clamp(0.0, 12.0) as usize);
+        }
+        widgets::switch_row(ui, controls, CONTOURS, CONTOURS, &mut self.explore.contours);
+        ui.add_space(4.0);
+        explore::legend(ui, &explore::temperature_bands(), "°C");
+        let filled = self
+            .temperature()
+            .is_some_and(|field| field.get(self.explore.period).is_some());
+        if !filled {
+            wrapped(ui, EMPTY_PERIOD, theme::hint(), theme::MUTE);
+        }
+    }
+
+    /// The rows of the Simulate panel: Run or Pause, the year and the month,
+    /// the speed, the quality, and the cost of the run.
+    fn simulate_rows(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
+        let name = if self.running() { PAUSE } else { RUN };
+        if widgets::button_row(ui, controls, name, true).clicked() {
+            self.toggle_run();
+        }
+        let (step, ms, size) = match self.run.borrow().sim.as_ref() {
+            Some(sim) => (sim.step_count(), sim.ms_per_step(), sim.face_size()),
+            None => (0, 0.0, self.quality),
+        };
+        let label = |ui: &mut egui::Ui, text: &str| -> Rect {
+            let (row, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
+            let inner = Rect::from_min_max(pos2(row.left() + PAD, row.top()), row.max);
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+            let text = egui::RichText::new(text)
+                .font(theme::body())
+                .color(theme::TEXT);
+            child.add(egui::Label::new(text).selectable(false));
+            row
+        };
+        label(ui, &year_text(step));
+
+        let row = label(ui, SPEED);
+        let names = Speed::ALL.map(Speed::name);
+        let active = Speed::ALL.iter().position(|&s| s == self.speed);
+        if let Some(i) = small_segments_in(ui, controls, row, &names, active.unwrap_or(0)) {
+            self.speed = Speed::ALL[i];
+        }
+
+        let row = label(ui, QUALITY);
+        let mut sizes = self.qualities.clone();
+        if !sizes.contains(&size) {
+            sizes.push(size);
+        }
+        let names: Vec<&str> = sizes.iter().map(|&n| quality_name(n)).collect();
+        let active = sizes.iter().position(|&n| n == size).unwrap_or(0);
+        if let Some(i) = small_segments_in(ui, controls, row, &names, active) {
+            self.set_quality(sizes[i]);
+        }
+        ui.add_space(4.0);
+        let mb = memory::run_bytes(size) as f64 / f64::from(1 << 20);
+        wrapped(ui, &cost_text(ms, mb), theme::hint(), theme::MUTE);
+        if self.qualities.len() == 1 {
+            ui.add_space(4.0);
+            wrapped(ui, COARSE_ONLY, theme::hint(), theme::MUTE);
+        }
+        if let Some(status) = &self.status {
+            ui.add_space(4.0);
+            wrapped(ui, status, theme::hint(), theme::WARN);
+        }
+        ui.add_space(4.0);
+    }
+
     /// The name of the world, and the Undo and Redo buttons.
     fn title_row(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
         let (row, _) =
@@ -672,6 +1116,7 @@ impl IsothermApp {
         let resp = slider_row(ui, controls, SEA_LEVEL, &mut value, range, &text);
         if resp.started {
             self.sea_start = Some(before);
+            self.clear_run();
         }
         if resp.changed {
             let terrain = &mut self.doc.world.terrain;
@@ -1015,6 +1460,43 @@ impl IsothermApp {
 }
 
 /// A text that wraps to the width of `ui`.
+/// The year and the month of the next step, for example "Year 3 · Mar".
+pub fn year_text(step: u64) -> String {
+    let per_year = u64::from(isotherm_sim::STEPS_PER_YEAR);
+    let month = (step % per_year) as usize / isotherm_sim::STEPS_PER_MONTH as usize;
+    format!("Year {} · {}", step / per_year + 1, MONTHS[month])
+}
+
+/// The time of a step and the memory of a run, for example
+/// "12 ms per step · 7 MB".
+pub fn cost_text(ms_per_step: f64, mb: f64) -> String {
+    format!("{ms_per_step:.0} ms per step · {mb:.0} MB")
+}
+
+pub fn quality_name(face_size: usize) -> &'static str {
+    QUALITY_NAMES
+        .iter()
+        .find(|(n, _)| *n == face_size)
+        .map_or("Custom", |(_, name)| name)
+}
+
+/// A small segmented control at the right of `row`.
+fn small_segments_in(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    row: Rect,
+    labels: &[&str],
+    active: usize,
+) -> Option<usize> {
+    let width = widgets::small_segments_width(ui, labels).min(row.width() * 0.7);
+    let height = (TOUCH - 8.0).min(row.height());
+    let rect = Rect::from_min_size(
+        pos2(row.right() - width, row.center().y - height / 2.0),
+        vec2(width, height),
+    );
+    widgets::small_segments(ui, controls, rect, labels, active)
+}
+
 fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: egui::Color32) {
     let label = egui::RichText::new(text).font(font).color(color);
     ui.add(egui::Label::new(label).wrap());
@@ -1061,11 +1543,24 @@ impl eframe::App for IsothermApp {
         self.run_picker();
         self.draw(ui);
     }
+
+    fn on_exit(&mut self) {
+        if let Err(e) = self.save_run() {
+            eprintln!("isotherm-app: {e}");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_year_counter_starts_at_year_one_in_january() {
+        assert_eq!(year_text(0), "Year 1 · Jan");
+        assert_eq!(year_text(2 * 360 + 2 * 30 + 5), "Year 3 · Mar");
+        assert_eq!(cost_text(12.4, 7.2), "12 ms per step · 7 MB");
+    }
 
     #[test]
     fn a_height_has_groups_of_three_digits_and_a_unit() {

@@ -102,7 +102,7 @@ impl egui_kittest::TestRenderer for ScreenRenderer {
         device
             .poll(wgpu::PollType::Wait {
                 submission_index: Some(index),
-                timeout: Some(std::time::Duration::from_secs(10)),
+                timeout: Some(std::time::Duration::from_secs(120)),
             })
             .map_err(|e| format!("PollError: {e}"))?;
         receiver

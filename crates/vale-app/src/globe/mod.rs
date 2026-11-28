@@ -4909,6 +4909,7 @@ impl Globe {
             extent: self.extent.clone(),
             flat,
             epoch: self.epoch,
+            line_layers: Vec::new(),
         })
     }
 

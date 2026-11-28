@@ -1148,7 +1148,8 @@ impl Resources {
             Pass::Layer(layer) => {
                 let full = frame.full.is_some_and(|key| key.layer == *layer);
                 let copy = frame.copies.iter().any(|key| key.layer == *layer);
-                full || copy || frame.details.iter().any(|key| key.layer == *layer)
+                let lines = frame.line_layers.contains(layer);
+                full || copy || lines || frame.details.iter().any(|key| key.layer == *layer)
             }
             Pass::Image(id) => frame.images.iter().any(|key| key.image == *id),
             Pass::VectorTiles(id) => frame.vector_tiles.contains(id),
@@ -3379,6 +3380,9 @@ pub struct Frame {
     pub flat: Option<Arc<FlatMesh>>,
     /// The count of the sets of reduced copies before this one.
     pub epoch: u64,
+    /// The layers of passes that draw only the lines of the stops, from the
+    /// map of another layer.
+    pub line_layers: Vec<LayerKey>,
 }
 
 /// One pass of a frame.

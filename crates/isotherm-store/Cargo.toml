@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 isotherm-world.workspace = true
+isotherm-fields.workspace = true
+isotherm-sim.workspace = true
 rusqlite.workspace = true
 flate2.workspace = true
 

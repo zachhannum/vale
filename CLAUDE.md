@@ -62,7 +62,7 @@ The phase table in `docs/DESIGN.md` gives the order of the work after that. When
 
 Isotherm is in its phase 0, the specification and the skeleton. The phase table in `docs/isotherm/DESIGN.md` gives the order of the work. The GitHub issues of Isotherm have the label `isotherm`. When a phase is done, update this section.
 
-The app `isotherm-app` opens on a globe with a sample heightmap of the Earth. It has the workspace switch, and each workspace other than Explore shows a hint. This command opens the window:
+The app `isotherm-app` opens on a globe with a sample heightmap of the Earth. It has the workspace switch, and the Worlds, Planet, and Export workspaces show a hint. This command opens the window:
 
 ```sh
 cargo run --release -p isotherm-app
@@ -78,6 +78,12 @@ This command builds the app and starts it on a connected iPad or iPhone:
 
 ```sh
 scripts/isotherm-ipad.sh
+```
+
+The Simulate workspace runs the energy balance of tier 1 on the CPU, and the Explore workspace shows the monthly temperature. This command runs the model for 10 years with no window, saves the run to the world file, and prints the yearly means:
+
+```sh
+cargo run --release -p isotherm-app -- --project world.gpkg --run-years 10
 ```
 
 ## Rules

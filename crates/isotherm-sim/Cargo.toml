@@ -9,3 +9,7 @@ license.workspace = true
 [dependencies]
 isotherm-world.workspace = true
 isotherm-fields.workspace = true
+vale-terrain.workspace = true
+
+[dev-dependencies]
+isotherm-import.workspace = true

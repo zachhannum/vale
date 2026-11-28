@@ -14,8 +14,11 @@ use vale_globe::gpu::{
 use vale_globe::nav::{Nav, Painting};
 use vale_globe::preview;
 use vale_globe::view::GlobeView;
-use vale_store::RasterDisplay;
-use vale_terrain::{Bands, FACES, TexelRect};
+use vale_store::{RasterDisplay, RasterId};
+use vale_terrain::{Bands, FACES, MAX_BANDS, TexelRect};
+
+/// The opacity of the overlay. The terrain shows a little below it.
+const OVERLAY_OPACITY: f32 = 0.9;
 
 /// The place at the middle of the globe at the start.
 pub const START: (f64, f64) = (10.0, 20.0);
@@ -37,9 +40,38 @@ impl WorldView {
     }
 }
 
+/// A grid of values on a cube map, in the colors of `bands`, over the
+/// terrain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Overlay {
+    pub face_size: usize,
+    /// One level of `bands` for each cell, in the order of the cube map.
+    pub levels: Vec<u16>,
+    pub bands: Bands,
+}
+
+/// The layer of the overlay on the GPU.
+const OVERLAY_LAYER: LayerKey = LayerKey::Raster(RasterId(1));
+
+/// The pass of the coastline over the overlay. It reads the heightmap.
+const COAST_LAYER: LayerKey = LayerKey::Raster(RasterId(2));
+
+/// The color of the coastline over the overlay.
+pub const COAST_COLOR: [u8; 3] = [24, 72, 200];
+
+/// The width of the coastline, in points.
+const COAST_WEIGHT: f32 = 1.5;
+
 pub struct Globe {
     link: Link,
     key: MapKey,
+    overlay: Option<(MapKey, Overlay)>,
+    /// The count of the overlays that went to the GPU.
+    overlay_uploads: u64,
+    /// The overlay shows the lines of its stops.
+    pub contours: bool,
+    /// The coastline shows over the overlay.
+    pub coastline: bool,
     /// The format of the render target. `None`: the app has no wgpu
     /// renderer, and the globe draws nothing.
     format: Option<wgpu::TextureFormat>,
@@ -69,6 +101,10 @@ impl Globe {
         let globe = Globe {
             link,
             key,
+            overlay: None,
+            overlay_uploads: 0,
+            contours: true,
+            coastline: true,
             format: None,
             nav,
             waiting: 2,
@@ -95,6 +131,53 @@ impl Globe {
     /// The count of the heightmaps that went to the GPU, from 1.
     pub fn uploads(&self) -> u64 {
         self.key.generation + 1
+    }
+
+    /// Shows `overlay` over the terrain, or no overlay. The levels go to the
+    /// GPU again.
+    pub fn set_overlay(&mut self, overlay: Option<Overlay>) {
+        self.overlay = overlay.map(|overlay| {
+            self.overlay_uploads += 1;
+            let n = overlay.face_size;
+            let key = MapKey {
+                layer: OVERLAY_LAYER,
+                generation: self.overlay_uploads,
+                kind: MapKind::Copy,
+                face_size: n as u32,
+            };
+            self.link.push(key, Op::Reset(0));
+            let rect = TexelRect {
+                x0: 0,
+                y0: 0,
+                x1: n,
+                y1: n,
+            };
+            for (face, data) in overlay.levels.chunks_exact(n * n).enumerate() {
+                let face = face as u32;
+                let data = data.to_vec();
+                self.link.push(key, Op::Upload { face, rect, data });
+            }
+            (key, overlay)
+        });
+        self.waiting = self.waiting.max(1);
+    }
+
+    pub fn overlay(&self) -> Option<&Overlay> {
+        self.overlay.as_ref().map(|(_, overlay)| overlay)
+    }
+
+    /// The count of the overlays that went to the GPU.
+    pub fn overlay_uploads(&self) -> u64 {
+        self.overlay_uploads
+    }
+
+    /// The direction of the world under a place on the screen, or `None`
+    /// off the world.
+    pub fn direction_at(&self, pos: egui::Pos2) -> Option<[f64; 3]> {
+        match self.world_view {
+            WorldView::Globe => self.view.unproject(self.rect, pos),
+            WorldView::Flat => self.flat.unproject(self.rect, pos),
+        }
     }
 
     fn upload(&self, map: &Heightmap) {
@@ -139,7 +222,13 @@ impl Globe {
     /// Draws the world in `rect` with the colors of `bands`. One finger or
     /// the mouse turns the globe or pans the map, and two fingers or the
     /// wheel zoom it.
-    pub fn show(&mut self, ui: &mut egui::Ui, rect: Rect, background: Color32, bands: &Bands) {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: Rect,
+        background: Color32,
+        bands: &Bands,
+    ) -> egui::Response {
         self.rect = rect;
         let resp = ui.interact(rect, ui.id().with("globe"), egui::Sense::click_and_drag());
         match self.world_view {
@@ -153,7 +242,7 @@ impl Globe {
             }
         }
         let Some(format) = self.format else {
-            return;
+            return resp;
         };
         // The pipelines compile on a worker, and the texels go to the GPU
         // in the first frame after that.
@@ -168,7 +257,7 @@ impl Globe {
             format,
             link: self.link.clone(),
             full: Some(self.key),
-            copies: Vec::new(),
+            copies: self.overlay.iter().map(|(key, _)| *key).collect(),
             details: Vec::new(),
             smooth_full: true,
             rivers: Vec::new(),
@@ -177,9 +266,10 @@ impl Globe {
             extent: None,
             flat: flat.then(|| self.flat.mesh()),
             epoch: 0,
+            line_layers: vec![COAST_LAYER],
         });
         let ppp = ui.ctx().pixels_per_point();
-        let uniforms = self.uniforms(ppp, background, bands);
+        let uniforms = self.uniforms(ppp, background, bands, self.key, RasterDisplay::Bands);
         let clip = {
             let r = rect * ppp;
             [r.min.x, r.min.y, r.max.x, r.max.y]
@@ -198,8 +288,43 @@ impl Globe {
             source: None,
             ..layer
         };
+        let mut draws = vec![layer];
+        if let Some((key, overlay)) = &self.overlay {
+            let mut uniforms = self.uniforms(
+                ppp,
+                background,
+                &overlay.bands,
+                *key,
+                RasterDisplay::Gradient,
+            );
+            if self.contours {
+                uniforms.lines = preview::line_uniforms(&overlay.bands, ppp);
+            }
+            uniforms.layer[0] = OVERLAY_OPACITY;
+            draws.push(Draw {
+                pass: Pass::Layer(OVERLAY_LAYER),
+                source: Some(*key),
+                lines: self.contours,
+                uniforms,
+                ..layer
+            });
+            if self.coastline {
+                let mut uniforms =
+                    self.uniforms(ppp, background, bands, self.key, RasterDisplay::Bands);
+                uniforms.lines = coast_lines(bands, ppp);
+                uniforms.layer[1] = 1.0;
+                draws.push(Draw {
+                    pass: Pass::Layer(COAST_LAYER),
+                    lines: true,
+                    uniforms,
+                    ..layer
+                });
+            }
+        }
         // The flat view has no rim.
-        let draws = if flat { vec![layer] } else { vec![layer, rim] };
+        if !flat {
+            draws.push(rim);
+        }
         for draw in draws {
             let callback = GlobeCallback {
                 frame: frame.clone(),
@@ -208,11 +333,19 @@ impl Globe {
             ui.painter()
                 .add(egui_wgpu::Callback::new_paint_callback(rect, callback));
         }
+        resp
     }
 
-    /// The uniforms of the passes: the bands of the land and the sea, with
-    /// no hillshade, rivers, or graticule.
-    fn uniforms(&self, ppp: f32, background: Color32, bands: &Bands) -> Uniforms {
+    /// The uniforms of the pass of the map `key` in `bands` and `display`,
+    /// with no hillshade, rivers, or graticule.
+    fn uniforms(
+        &self,
+        ppp: f32,
+        background: Color32,
+        bands: &Bands,
+        key: MapKey,
+        display: RasterDisplay,
+    ) -> Uniforms {
         let row = |r: [f64; 3]| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0];
         let color = |c: Color32| {
             let [r, g, b] = [c.r(), c.g(), c.b()].map(|c| f32::from(c) / 255.0);
@@ -222,7 +355,7 @@ impl Globe {
         let radius = self.radius() as f32 * ppp;
         let (band_rows, count) = preview::band_uniforms(bands);
         let sea = f32::from(bands.level(COAST)) / 65535.0;
-        let face_size = self.key.face_size;
+        let face_size = key.face_size;
         let flat_center = match self.world_view {
             WorldView::Globe => [0.0; 2],
             WorldView::Flat => [self.flat.center.x as f32, self.flat.center.y as f32],
@@ -230,12 +363,7 @@ impl Globe {
         Uniforms {
             rot: self.view.rot.0.map(row),
             globe: [center.x, center.y, radius, ppp],
-            params: [
-                face_size as f32,
-                0.0,
-                preview::mode(RasterDisplay::Bands),
-                count as f32,
-            ],
+            params: [face_size as f32, 0.0, preview::mode(display), count as f32],
             flat: [sea, 0.0, flat_center[0], flat_center[1]],
             layer: [1.0, 0.0, 0.0, 0.0],
             light: [0.0, 0.0, 1.0, 1.0],
@@ -247,4 +375,16 @@ impl Globe {
             ..bytemuck::Zeroable::zeroed()
         }
     }
+}
+
+/// The line uniforms with only the line of the coast stop of `bands`.
+fn coast_lines(bands: &Bands, ppp: f32) -> [preview::LineUniform; MAX_BANDS + 1] {
+    let mut out = [[[0.0; 4]; 2]; MAX_BANDS + 1];
+    let index = bands.stops().iter().position(|stop| stop.value == COAST);
+    if let Some(slot) = index.and_then(|i| out.get_mut(i)) {
+        let [r, g, b] = COAST_COLOR.map(|c| f32::from(c) / 255.0);
+        let at = f32::from(bands.level(COAST)) / 65535.0;
+        *slot = [[r, g, b, 0.5 * COAST_WEIGHT * ppp], [at, 0.0, 0.0, 0.0]];
+    }
+    out
 }

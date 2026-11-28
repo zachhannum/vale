@@ -51,7 +51,8 @@ struct Uniforms {
     // the width of a river line in pixels, and the opacity of the rivers and
     // the lakes, from 0 to 1.
     rivers: vec4<f32>,
-    // The opacity of the layer, from 0 to 1.
+    // The opacity of the layer, from 0 to 1, then 1 when the layer shows
+    // only the lines of its stops.
     layer: vec4<f32>,
     // The opacity of the hillshade, from 0 to 1, 1 for the highlights, the
     // height of the range of the values over the radius of the world, and
@@ -521,11 +522,25 @@ fn blended(frag: vec2<f32>, color: vec3<f32>, alpha: f32) -> vec4<f32> {
     return vec4<f32>(alpha * mixed + (1.0 - alpha) * below.rgb, alpha + ab * (1.0 - alpha));
 }
 
+// The lines of the stops alone, multiplied by the alpha, for a layer that
+// shows only its lines. The lines come from the passes of `edges.wgsl`.
+fn lines_only(frag: vec2<f32>) -> vec4<f32> {
+    if u.edges.x < 0.5 {
+        return vec4<f32>(0.0);
+    }
+    let line = line_cover(vec2<i32>(floor(frag)));
+    let alpha = line.a * u.layer.x;
+    return vec4<f32>(line.rgb * alpha, alpha);
+}
+
 @fragment
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let at = disk(frag);
     if at.cover <= 0.0 {
         discard;
+    }
+    if u.layer.y > 0.5 {
+        return lines_only(frag.xy);
     }
     var h = edge_shown(frag.xy);
     if h.x < 0.0 {
@@ -542,6 +557,10 @@ fn fs_main_blend(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let at = disk(frag);
     if at.cover <= 0.0 {
         return below;
+    }
+    if u.layer.y > 0.5 {
+        let line = lines_only(frag.xy);
+        return line + (1.0 - line.a) * below;
     }
     var h = edge_shown(frag.xy);
     if h.x < 0.0 {
@@ -614,6 +633,9 @@ fn flat_widths(d: vec3<f32>) -> vec2<f32> {
 
 @fragment
 fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
+    if u.layer.y > 0.5 {
+        return lines_only(in.position.xy);
+    }
     let d = normalize(in.dir);
     let dx = dpdx(d);
     let dy = dpdy(d);
@@ -630,6 +652,11 @@ fn fs_flat(in: FlatVertex) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_flat_blend(in: FlatVertex) -> @location(0) vec4<f32> {
+    if u.layer.y > 0.5 {
+        let below = textureLoad(backdrop, vec2<i32>(floor(in.position.xy)), 0);
+        let line = lines_only(in.position.xy);
+        return line + (1.0 - line.a) * below;
+    }
     let d = normalize(in.dir);
     let dx = dpdx(d);
     let dy = dpdy(d);
