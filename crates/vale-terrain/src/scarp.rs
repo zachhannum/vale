@@ -36,7 +36,7 @@ pub const SCARP_STEPS: RangeInclusive<u32> = 1..=5;
 /// The bend of the trace, as a part of the brush radius at most.
 const BEND: f64 = 0.15;
 /// The change of the drop along the line, as a part of the drop at most.
-const DROP_CHANGE: f64 = 0.25;
+const DROP_CHANGE: f64 = 0.4;
 /// The change of the share of the drop of one step, as a part of an even
 /// share at most.
 const STEP_CHANGE: f64 = 0.3;
@@ -227,9 +227,11 @@ impl ScarpPlan {
     /// 16-bit steps, at the distance `ur` along the line in brush radii.
     pub(crate) fn field(&self, ur: f64) -> (f64, f64) {
         let seed = self.seed;
-        let bend = 0.7 * noise1(0.5 * ur, 0, SALT_BEND, seed).0
-            + 0.3 * noise1(2.0 * ur, 1, SALT_BEND, seed).0;
-        let change = noise1(ur / 3.0, 0, SALT_DROP, seed).0;
+        let bend = 0.3 * noise1(0.5 * ur, 0, SALT_BEND, seed).0
+            + 0.4 * noise1(2.0 * ur, 1, SALT_BEND, seed).0
+            + 0.3 * noise1(4.0 * ur, 2, SALT_BEND, seed).0;
+        let change =
+            0.6 * noise1(ur, 0, SALT_DROP, seed).0 + 0.4 * noise1(4.0 * ur, 1, SALT_DROP, seed).0;
         (
             BEND * self.radius * bend,
             self.drop_levels() * (1.0 + DROP_CHANGE * change),
@@ -543,9 +545,9 @@ mod tests {
         assert!(high <= BEND * RADIUS && low >= -BEND * RADIUS);
         let (low, high) = drops.fold((f64::MAX, f64::MIN), |(a, b), x| (a.min(x), b.max(x)));
         assert!(high > 1.15 * low, "a drop from {low} to {high}");
-        // The trace has no kinks: the bend changes little between texels.
+        // The trace turns less than 45 degrees from the stroke.
         for pair in fields.windows(2) {
-            assert!((pair[1].0 - pair[0].0).abs() < 0.02 * RADIUS);
+            assert!((pair[1].0 - pair[0].0).abs() < 0.05 * RADIUS);
         }
         // Another seed gives another field.
         assert_ne!(plan.field(3.3), other.field(3.3));

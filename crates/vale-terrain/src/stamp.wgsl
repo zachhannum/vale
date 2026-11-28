@@ -1583,7 +1583,7 @@ fn abyssal_level(at: RidgePoint, p: vec3<f32>, old: f32) -> f32 {
 
 // The numbers of `scarp.rs`.
 const SCARP_BEND = 0.15;
-const SCARP_DROP_CHANGE = 0.25;
+const SCARP_DROP_CHANGE = 0.4;
 const SCARP_STEP_CHANGE = 0.3;
 const SALT_SCARP_BEND = 0x5ca70001u;
 const SALT_SCARP_DROP = 0x5ca70002u;
@@ -1601,9 +1601,11 @@ fn scarp_level(at: RidgePoint, old: f32) -> f32 {
     let c = 0.5 * width;
     let seed = ridge.seed;
     let ur = at.cell + at.rest / r;
-    let bend = SCARP_BEND * r * (0.7 * noise1(0.5 * ur, 0u, SALT_SCARP_BEND, seed).x
-        + 0.3 * noise1(2.0 * ur, 1u, SALT_SCARP_BEND, seed).x);
-    let drop = ridge.level * (1.0 + SCARP_DROP_CHANGE * noise1(ur / 3.0, 0u, SALT_SCARP_DROP, seed).x);
+    let bend = SCARP_BEND * r * (0.3 * noise1(0.5 * ur, 0u, SALT_SCARP_BEND, seed).x
+        + 0.4 * noise1(2.0 * ur, 1u, SALT_SCARP_BEND, seed).x
+        + 0.3 * noise1(4.0 * ur, 2u, SALT_SCARP_BEND, seed).x);
+    let drop = ridge.level * (1.0 + SCARP_DROP_CHANGE * (0.6 * noise1(ur, 0u, SALT_SCARP_DROP, seed).x
+        + 0.4 * noise1(4.0 * ur, 1u, SALT_SCARP_DROP, seed).x));
     let s = bend - at.across;
     let off = max(abs(s) - c, 0.0);
     let e = sqrt(at.past2 + off * off) / (r - c);
