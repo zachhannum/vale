@@ -1,0 +1,14 @@
+[package]
+name = "isotherm-gpu"
+description = "wgpu compute shaders of the Isotherm climate model"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+isotherm-sim.workspace = true
+wgpu.workspace = true
+
+[dev-dependencies]
+naga = { version = "30.0.1", features = ["wgsl-in"] }

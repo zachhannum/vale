@@ -1920,6 +1920,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "isotherm-gpu"
+version = "0.1.0"
+dependencies = [
+ "isotherm-sim",
+ "naga",
+ "wgpu",
+]
+
+[[package]]
 name = "isotherm-import"
 version = "0.1.0"
 dependencies = [
