@@ -30,6 +30,38 @@ pub struct Star {
     pub mass_kg: f64,
 }
 
+/// The wavelength between the visible band and the infrared band, in meters.
+pub const VISIBLE_EDGE_M: f64 = 0.7e-6;
+
+/// The second radiation constant `h c / k`, in m K.
+const C2: f64 = 1.438_776_877e-2;
+
+impl Star {
+    /// The share of the light of the star in the visible band, below
+    /// [`VISIBLE_EDGE_M`]. The star is a black body at its temperature.
+    pub fn visible_fraction(&self) -> f64 {
+        black_body_fraction(VISIBLE_EDGE_M, self.temperature_k)
+    }
+}
+
+/// The share of the emission of a black body at `temperature_k` below the
+/// wavelength `lambda_m`, from the series of the Planck integral of Widger
+/// and Woodall (1976).
+pub fn black_body_fraction(lambda_m: f64, temperature_k: f64) -> f64 {
+    let x = C2 / (lambda_m * temperature_k.max(1.0));
+    let mut sum = 0.0;
+    for n in 1..=200 {
+        let n = f64::from(n);
+        let term = (-n * x).exp() / n
+            * (x.powi(3) + 3.0 * x * x / n + 6.0 * x / (n * n) + 6.0 / (n * n * n));
+        sum += term;
+        if term < 1e-12 * sum {
+            break;
+        }
+    }
+    (15.0 / std::f64::consts::PI.powi(4) * sum).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Orbit {
     /// The semi-major axis, in meters.
@@ -250,6 +282,23 @@ mod tests {
         let a = planet.orbit.semi_major_m;
         let flux = planet.star.luminosity_w / (4.0 * std::f64::consts::PI * a * a);
         assert!((flux - 1361.0).abs() < 5.0, "{flux}");
+    }
+
+    #[test]
+    fn a_cooler_star_puts_less_of_its_light_in_the_visible_band() {
+        let mut star = Planet::earth().star;
+        // About 49 % of the light of a black body at 5,772 K is below 0.7 µm.
+        let sun = star.visible_fraction();
+        assert!((sun - 0.49).abs() < 0.01, "{sun}");
+        star.temperature_k = 3200.0;
+        let red = star.visible_fraction();
+        assert!(red < 0.15, "{red}");
+        // The series and a sum of the Planck function agree.
+        let planck = |l: f64| 1.0 / (l.powi(5) * ((C2 / (l * 5772.0)).exp() - 1.0));
+        let dl = 1e-9;
+        let below: f64 = (1..700).map(|i| planck(f64::from(i) * dl)).sum();
+        let all: f64 = (1..200_000).map(|i| planck(f64::from(i) * dl)).sum();
+        assert!((below / all - sun).abs() < 1e-3);
     }
 
     #[test]
