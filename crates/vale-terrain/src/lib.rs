@@ -33,6 +33,7 @@ mod realism;
 mod reduce;
 mod ridge;
 mod route;
+mod scarp;
 mod seamount;
 mod smooth;
 mod swatch;
@@ -97,6 +98,10 @@ pub use realism::{
 pub use reduce::{reduced_bytes, reduced_cap, reduced_face_size, reduction_factor};
 pub use ridge::{MAX_RIDGE_GUIDES, MAX_RIDGE_RADIUS, Ridge, RidgeLine, RidgePlan};
 pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
+pub use scarp::{
+    SCARP_DROP_M, SCARP_DROP_RANGE, SCARP_STEPS, SCARP_WIDTH_KM, SCARP_WIDTH_RANGE, Scarp,
+    ScarpPlan, ScarpStroke,
+};
 pub use seamount::{
     FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,
     VOLCANO_FLOATS, Volcano, elastic_km, sea_floor,

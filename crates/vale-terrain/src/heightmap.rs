@@ -19,6 +19,7 @@ use crate::margin::MarginPlan;
 use crate::math::{V3, add, angle, cross, dot, length, normalize, scale};
 use crate::range::RangePlan;
 use crate::ridge::RidgePlan;
+use crate::scarp::ScarpPlan;
 use crate::seamount::{SeamountPlan, Volcano};
 
 /// The side of a tile, in texels.
@@ -121,6 +122,9 @@ pub enum Mode {
     /// The mode of the plateau brush. A stamp of this mode changes nothing.
     /// `Heightmap::plateau` makes the change.
     Plateau,
+    /// The mode of the scarp brush. A stamp of this mode changes nothing.
+    /// `Heightmap::scarp` makes the change.
+    Scarp,
 }
 
 /// The elevation limits of a stamp, in 16-bit steps. A stamp changes only
@@ -1182,6 +1186,7 @@ impl Heightmap {
                 | Mode::Margin
                 | Mode::Hotspot
                 | Mode::Plateau
+                | Mode::Scarp
         ) {
             return 0;
         }
@@ -1338,7 +1343,8 @@ impl Heightmap {
                             | Mode::AbyssalHills
                             | Mode::Margin
                             | Mode::Hotspot
-                            | Mode::Plateau => continue,
+                            | Mode::Plateau
+                            | Mode::Scarp => continue,
                             Mode::Shape => {
                                 // The place of the texel in `before`.
                                 let (x, y) = (x - rect.x0 + reach, y - rect.y0 + reach);
@@ -1661,6 +1667,13 @@ impl Heightmap {
     /// Returns the number of texels that changed.
     pub fn abyssal(&mut self, plan: &AbyssalPlan) -> usize {
         self.lay(&plan.line, |start, at, p| plan.level(start, at, p))
+    }
+
+    /// Lays the scarp of a plan on the ground from before the stroke, as
+    /// `abyssal` lays abyssal hills. Call this in a stroke. Returns the
+    /// number of texels that changed.
+    pub fn scarp(&mut self, plan: &ScarpPlan) -> usize {
+        self.lay(&plan.line, |start, at, _| plan.level(start, at))
     }
 
     /// Adds a margin stamp: each sea texel under the brush moves toward the

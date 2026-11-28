@@ -909,7 +909,7 @@ fn envelope(x: f64) -> f64 {
 
 /// The seed of a chain with its hotspot at `end`. The place is in steps of
 /// about 1 m on a world of the size of the Earth.
-fn place_seed(seed: u32, end: V3) -> u32 {
+pub(crate) fn place_seed(seed: u32, end: V3) -> u32 {
     let q = |x: f64| (x * f64::from(1u32 << 23)).round() as i64 as u32;
     hash(q(end[0]), q(end[1]), q(end[2]), seed)
 }
