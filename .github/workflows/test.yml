@@ -138,6 +138,8 @@ jobs:
             tests: -p vale-terrain --features gpu --test gpu
           - name: render
             tests: -p vale-render --features gpu --test gpu
+          - name: isotherm
+            tests: -p isotherm-app --test gpu
     steps:
       - uses: actions/checkout@v4
 

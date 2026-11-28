@@ -74,6 +74,12 @@ This command renders the UI of an iPhone 16 in portrait to a PNG, with its safe 
 cargo run --release -p isotherm-app -- --layout pad --screenshot target/isotherm/phone.png --size 393x852 --safe-area 59,0,34,0
 ```
 
+This command builds the app and starts it on a connected iPad or iPhone:
+
+```sh
+scripts/isotherm-ipad.sh
+```
+
 ## Rules
 
 - The project is one Rust workspace. Put each crate in `crates/`. Give each crate of Vale and each crate that both apps share a `vale-` prefix, and give each crate of Isotherm an `isotherm-` prefix. A `vale-` crate must not depend on an `isotherm-` crate, except that `isotherm-export` can use `vale-store`. A patched copy of a third-party crate keeps its name and goes in `vendor/`, with a README that lists the change.
