@@ -16,7 +16,7 @@ Isotherm is the working name. A final name must not contain "World Climate Lab" 
 
 - A copy of the code, the text, the names, or the art of World Climate Lab.
 - A research-grade general circulation model (a full 3D model of the atmosphere, as climate scientists use). The model is of intermediate complexity, tuned for speed and for plausible results.
-- Procedural world generation as a main feature. The app has a small terrain editor, and Vale is the main tool for terrain.
+- A terrain editor or procedural world generation. Vale is the tool for terrain. Isotherm imports a heightmap and its masks, and it sets the sea level.
 
 ## Sources
 
@@ -45,7 +45,7 @@ Version 1 of Isotherm does these things.
 - Inputs: a heightmap from PNG, 16-bit TIFF, GeoTIFF, or a Vale project file, with a sea mask and a depression mask. The planet settings are the radius, the gravity, the star or two stars, the orbit, the tilt, the day length, the atmosphere, and the moons.
 - Outputs: the grids of the section "Outputs", with twelve monthly values and a yearly value, and the climate classes of the section "The climate model".
 - Views: each output on the globe or on the flat map, with a legend, contour lines, a readout under the pointer, a month slider, and the satellite view.
-- The terrain editor: import, the sea level, brushes for Apple Pencil and a pen tablet, erosion, masks, a reference image, and plate-based starter landmasses.
+- The terrain: import of the heightmap and the masks, and the sea level.
 - Exports: GeoJSON, GeoPackage, GeoTIFF, PNG maps and posters, animations of a year, and a Vale project file.
 
 ## Architecture
@@ -71,17 +71,17 @@ import ──> world ──> sim ──> fields ──> classify ──> vector 
 | `isotherm-export` | GeoJSON, GeoTIFF, PNG maps and posters, animations, and the Vale project writer. |
 | `isotherm-store` | The project file, a GeoPackage, with an undo log. |
 | `isotherm-import` | Heightmaps and masks from PNG, TIFF, and GeoTIFF, and Vale project files. |
-| `isotherm-app` | egui shell, globe and map views, panels, the terrain editor, headless commands, and the iOS target. |
+| `isotherm-app` | egui shell, globe and map views, panels, headless commands, and the iOS target. |
 
 ### What comes from Vale
 
 Isotherm uses the Vale crates through path dependencies. A change to a shared crate and the change to each app that uses it go in one PR, so the two apps cannot drift apart.
 
-The globe renderer is in the crate `vale-globe`. Other shared parts are modules of `vale-app` today. Phase 0 moves the pad widgets and the iOS lifecycle into `vale-shell`. Phase 6 moves the pen input into `vale-shell`, for the terrain editor. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
+The globe renderer is in the crate `vale-globe`. Other shared parts are modules of `vale-app` today. Phase 0 moves the pad widgets and the iOS lifecycle into `vale-shell`. The shared crates keep the `vale-` prefix. They must not depend on `vale-app` or on any `isotherm-` crate. Each app gives them its own layers and its own colors.
 
 No `vale-` crate depends on an `isotherm-` crate. The one exception is the Vale export of `isotherm-export`, which writes a Vale project through `vale-store`, in that direction only.
 
-These parts stay specific to Vale: the labeler, the style rules, the atlas and its export, the vector editing tools, and the heightmap brushes. Isotherm uses the erosion and the flow network of `vale-terrain`, and it writes its own brushes on top of them.
+These parts stay specific to Vale: the labeler, the style rules, the atlas and its export, the vector editing tools, the heightmap brushes, and the pen input. Isotherm uses the flow network of `vale-terrain`.
 
 The table lists the parts that Isotherm uses, and the parts that it copies as a pattern.
 
@@ -89,11 +89,10 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 | --- | --- |
 | `vale-sphere` | Projections through PROJ on a sphere of any radius, clipping, the graticule. Used as is. |
 | `vale-terrain` cube map, tiles, and `equirect.rs` | The grid of the model is a cube sphere, so the same cube map holds the terrain and the results. |
-| `vale-terrain` flow and erosion | Rivers and basins from the heightmap, and the erosion brush of the terrain editor. |
+| `vale-terrain` flow network | Rivers and basins from the heightmap. |
 | `vale-import` | PNG, 16-bit TIFF, and GeoTIFF read and write. |
 | `vale-store` GeoPackage and undo log | The project file. The extra tables get the prefix `isotherm_`. |
 | `vale-globe` | The globe renderer, navigation, and the flat view. |
-| `vale-app/src/pen`, moved to `vale-shell` in phase 6 | Apple Pencil input through UIKit, for the terrain editor. |
 | `vale-app/src/ui/pad`, moved to `vale-shell` | The theme and the touch-size widgets. |
 | `vale-app/src/lifecycle.rs`, `workcopy.rs`, `resume.rs`, moved to `vale-shell` | Save on background, the working copy, and the restore of the last session on iOS. |
 | `vale-app/src/headless.rs`, `cli.rs` (copied as a pattern) | The headless flags `--screenshot`, `--export`, `--size`, and `--layout pad`. |
@@ -183,7 +182,7 @@ The checks and the Köppen score use the same reference, so a model cannot pass 
 
 ERA5 is under CC BY, and GPCP is under CC0. A script downloads each data set and reduces it to reference values on the coarse grid of the CI job. The repository holds the reference values and their attribution, not the data sets. Before the reference values of a data set go into the repository, its task makes sure that the license allows it.
 
-The CI job of the Köppen score runs these checks too. A check fails if its result gets worse than its last value, or if it misses its first target. The first targets are a start. A later phase can make a target stricter, but not looser, and phase 8 makes each target stricter. `docs/isotherm/SCIENCE.md` gives the citation of each data set.
+The CI job of the Köppen score runs these checks too. A check fails if its result gets worse than its last value, or if it misses its first target. The first targets are a start. A later phase can make a target stricter, but not looser, and phase 7 makes each target stricter. `docs/isotherm/SCIENCE.md` gives the citation of each data set.
 
 ## Outputs
 
@@ -224,7 +223,7 @@ The UI follows the rules of Vale: iPad first, touch-size controls, the theme of 
 | Workspace | Content |
 | --- | --- |
 | Worlds | The start screen, with a picture of each world, as in Vale |
-| Terrain | Import of the heightmap and the masks, the sea level slider, brushes, erosion, a reference image overlay, and export of 16-bit maps |
+| Terrain | Import of the heightmap and the masks, and the sea level slider |
 | Planet | Star, orbit, rotation, atmosphere, and moons, with presets that we design |
 | Simulate | Run, pause, speed, the year counter, the energy flow chart, and the quality setting |
 | Explore | The output layers, the month slider, contours, the readout, and the habitability profile |
@@ -252,10 +251,9 @@ Each phase has a "done when" list in its GitHub issue, as in Vale. From phase 1 
 | 3 | Circulation and water | Tier 2 runs. Winds, rain, snow, currents, and clouds show. The Köppen classes show, and the Earth preset reaches 70 % agreement in CI. The precipitation, the pressure, the winds, the clouds, the sea surface temperature, and the currents of the Earth preset pass their checks against observations in CI. |
 | 4 | Vector export | GeoJSON and GeoPackage export of all output kinds, from the app and from the command line. The Vale project export works, and Vale opens the file. |
 | 5 | Other worlds | Classes for slow rotators and tidally locked worlds, binary stars, moons and tidal heating, thick and thin atmospheres, and the habitability profile. |
-| 6 | Terrain editor | Brushes with Apple Pencil and a pen tablet, erosion, plate-based landmasses as a starter, masks, and the reference overlay. |
-| 7 | Presentation | The satellite view, posters with a title and a legend, and animations of a year. |
-| 8 | Tier 3 | Shallow-water winds, the deep ocean option, tides, and the runaway test. The Earth preset reaches 80 %, and each check against observations has a stricter target. |
-| 9 | Version 1 release | The App Store, a notarized macOS build, and Windows and Linux builds. |
+| 6 | Presentation | The satellite view, posters with a title and a legend, and animations of a year. |
+| 7 | Tier 3 | Shallow-water winds, the deep ocean option, tides, and the runaway test. The Earth preset reaches 80 %, and each check against observations has a stricter target. |
+| 8 | Version 1 release | The App Store, a notarized macOS build, and Windows and Linux builds. |
 
 Phase 4 comes before phase 5 on purpose. The GeoJSON export then exists early, and the export of each later output is a small step.
 
@@ -265,7 +263,6 @@ The Vale repository holds both apps. These rules of the repository apply to Isot
 
 - `README.md` and `CLAUDE.md` say that the repository holds two apps.
 - The rule "give each crate a `vale-` prefix" allows the `isotherm-` prefix for the crates of Isotherm.
-- The rule "Wholesale procedural world generation is a permanent non-goal" applies to Vale. The plate-based starter landmasses of the Isotherm terrain editor are a small tool, not wholesale generation, and the rule says so.
 - The documents of Isotherm are in `docs/isotherm/`: `DESIGN.md`, which is this document, and `SCIENCE.md`.
 - The documents can use public information about other apps. They forbid only copying the code, the text, the names, and the art of other apps.
 - The GitHub issues of Isotherm have the label `isotherm`, and Isotherm has its own epic issue.

@@ -72,7 +72,7 @@ Isotherm is in its phase 0, the specification and the skeleton. The phase table 
 - The license is `MIT OR Apache-2.0` for all crates.
 - Do not name a binary `vale`, because a popular prose linter uses that command name.
 - Before you add Vello, Parley, or Krilla as a dependency, make sure of its current release status.
-- Wholesale procedural world generation is a permanent non-goal of Vale. The plate-based starter landmasses of the Isotherm terrain editor are a small tool, not wholesale generation.
+- Wholesale procedural world generation is a permanent non-goal of both apps. Isotherm has no terrain editor, and Vale is the tool for terrain.
 - All UI is iPad first. Design each screen, panel, and dialog for the iPad layout, with the theme and the widgets of `ui/pad` and with touch-size controls. A feature is not done until its iPad UI is done. The desktop UI follows the desktop mockups in `docs/mockups` and the section "Desktop layout" of `docs/DESIGN.md`. If no mockup shows a screen, use the patterns of the nearest desktop mockup. Until the app has the desktop layout, a plain desktop version is sufficient.
 - If a change contradicts `docs/DESIGN.md` or `docs/isotherm/DESIGN.md`, update the document in the same change.
 - Reference files for the demo are updated with `VALE_UPDATE_REFERENCE=1`.
