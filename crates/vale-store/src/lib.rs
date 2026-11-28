@@ -26,7 +26,7 @@ pub use collection::{Collection, CollectionId, WORLD_COLLECTION};
 pub use fill::{FillKind, FillPattern};
 pub use gpkg::{
     FORMAT_VERSION, ProjectFile, Restored, SaveStats, StoreError, Summary, Thumbnail, TileChanges,
-    TileKey, TileReader, summary,
+    TileKey, TileReader, read_project, summary,
 };
 pub use image_tile::{IMAGE_TILE_SIZE, decode_tile, encode_tile, image_levels, level_size};
 pub use scale_bar::{
@@ -430,6 +430,9 @@ impl Layer {
     }
 }
 
+/// The unit of a height raster.
+pub const HEIGHT_UNIT: &str = "m";
+
 /// The identity of a raster. It is never reused.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RasterId(pub u32);
@@ -475,6 +478,13 @@ pub struct Raster {
     pub rivers: bool,
     /// The globe draws the lines of the stops.
     pub lines: bool,
+}
+
+impl Raster {
+    /// The raster holds heights: its unit is [`HEIGHT_UNIT`].
+    pub fn is_height(&self) -> bool {
+        self.unit == HEIGHT_UNIT
+    }
 }
 
 /// The identity of an image. It is never reused.

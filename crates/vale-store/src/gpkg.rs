@@ -109,6 +109,12 @@ pub enum StoreError {
         file: u32,
         app: u32,
     },
+    /// An older version of the app wrote the file, and the read does not
+    /// migrate it.
+    OlderFormat {
+        file: u32,
+        app: u32,
+    },
     /// The file is a Vale project, but a record in it is not valid.
     Corrupt(String),
 }
@@ -122,6 +128,10 @@ impl fmt::Display for StoreError {
             StoreError::NewerFormat { file, app } => write!(
                 f,
                 "the project has format version {file}, and this app reads up to version {app}"
+            ),
+            StoreError::OlderFormat { file, app } => write!(
+                f,
+                "the project has format version {file}, and this app reads only version {app}: open it in Vale first"
             ),
             StoreError::Corrupt(what) => write!(f, "the project file is damaged: {what}"),
         }
@@ -324,6 +334,38 @@ impl TileReader {
         };
         read_tiles(&self.conn, raster, Some(rect), &mut tile)
     }
+
+    /// Reads each tile of a raster, in key order. `tile` gets `TILE_SIZE` by
+    /// `TILE_SIZE` pixels, row by row.
+    pub fn load_tiles(
+        &self,
+        raster: &Raster,
+        mut tile: impl FnMut(TileKey, Vec<u16>),
+    ) -> Result<(), StoreError> {
+        read_tiles(&self.conn, raster, None, &mut tile)
+    }
+}
+
+/// Reads the project of a project file with a read-only connection, and
+/// returns the connection for the tiles. The call does not change the file.
+/// A file of another format version gives an error.
+pub fn read_project(path: &Path) -> Result<(TileReader, Project), StoreError> {
+    let conn = open_for_read(path)?;
+    let version = format_version(&conn)?;
+    if version > FORMAT_VERSION {
+        return Err(StoreError::NewerFormat {
+            file: version,
+            app: FORMAT_VERSION,
+        });
+    }
+    if version < FORMAT_VERSION {
+        return Err(StoreError::OlderFormat {
+            file: version,
+            app: FORMAT_VERSION,
+        });
+    }
+    let project = load(&conn)?;
+    Ok((TileReader { conn }, project))
 }
 
 /// The records of a project file that a list of projects shows.
@@ -5570,6 +5612,33 @@ mod tests {
         file.load_tiles(raster, |key, pixels| tiles.push((key, pixels)))
             .unwrap();
         tiles
+    }
+
+    #[test]
+    fn a_read_of_a_project_does_not_change_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (project, _, rain) = rasters();
+        let wet = vec![(key(5, 3, 3), vec![u16::MAX; 65536])];
+        let mut file = ProjectFile::create(&path(&dir), &project).unwrap();
+        file.save_tiles(&project, &[put(rain, &wet, vec![])])
+            .unwrap();
+        drop(file);
+        let before = std::fs::read(path(&dir)).unwrap();
+
+        let (reader, loaded) = read_project(&path(&dir)).unwrap();
+        assert_eq!(loaded, project);
+        let mut tiles = Vec::new();
+        reader
+            .load_tiles(loaded.raster(rain).unwrap(), |k, p| tiles.push((k, p)))
+            .unwrap();
+        assert_eq!(tiles, wet);
+        drop(reader);
+        assert_eq!(std::fs::read(path(&dir)).unwrap(), before);
+
+        // A file of an older format is not migrated.
+        set_format_version(&dir, FORMAT_VERSION - 1);
+        let older = read_project(&path(&dir)).err().unwrap();
+        assert!(matches!(older, StoreError::OlderFormat { .. }), "{older}");
     }
 
     #[test]
