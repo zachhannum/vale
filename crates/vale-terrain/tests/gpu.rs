@@ -4547,6 +4547,22 @@ fn gpu_plateau_matches_cpu_for_a_stroke() {
     assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
 }
 
+/// A plateau at the largest height, which rounds into the ceiling below
+/// sea level.
+#[test]
+#[ignore = "gpu"]
+fn gpu_plateau_matches_cpu_at_the_ceiling() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let spec = Plateau {
+        height_m: 8000.0,
+        ..plateau_spec()
+    };
+    let centers = seamount_line((8.0, 4.0), (12.0, 6.0), 12);
+    let run = plateau_run(&start, spec, &centers, 0.06);
+    eprintln!("plateau at the ceiling: difference {}", run.difference);
+    assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
+}
+
 /// A stroke from face 0 to face 2. The edge between them is at 45 degrees
 /// of longitude.
 #[test]

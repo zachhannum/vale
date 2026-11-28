@@ -3154,6 +3154,8 @@ const PLATEAU_EDGE_GAIN = 0.5;
 const PLATEAU_EDGE_REACH = 0.2;
 const PLATEAU_RELIEF_M = vec3<f32>(300.0, 120.0, 40.0);
 const PLATEAU_RELIEF_KM = vec3<f32>(250.0, 60.0, 15.0);
+const PLATEAU_CEILING_M = -50.0;
+const PLATEAU_CEILING_ROUND_M = 300.0;
 const PLATEAU_SALT_FAULT = 0x5a171000u;
 const PLATEAU_SALT_RELIEF = 0x5a174000u;
 const PLATEAU_SALT_EDGE = 0x5a176000u;
@@ -3251,7 +3253,8 @@ fn plateau_target(p: vec3<f32>) -> f32 {
         let n = noise3(p * (world / PLATEAU_RELIEF_KM[k]), plateau_seed() ^ (PLATEAU_SALT_RELIEF + k));
         level += PLATEAU_LEVELS_PER_M * PLATEAU_RELIEF_M[k] * n.x;
     }
-    return level;
+    let ceiling = (PLATEAU_CEILING_M - ELEVATION_LOW) * PLATEAU_LEVELS_PER_M;
+    return smooth_min(level, ceiling, PLATEAU_CEILING_ROUND_M * PLATEAU_LEVELS_PER_M);
 }
 
 // The level of a texel after a plateau pass, from its level from before

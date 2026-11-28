@@ -18,6 +18,7 @@ use std::f64::consts::FRAC_PI_2;
 use crate::cube::{ELEV_MIN, FACES};
 use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, hash, noise3};
 use crate::line::{smoothstep, unit};
+use crate::margin::smooth_min;
 use crate::math::{V3, add, dot, length, normalize, scale};
 use crate::seamount::{LEVELS_PER_M, gdh1_depth};
 
@@ -58,8 +59,16 @@ const SINK: f64 = 0.5;
 /// The top keeps at least this part of the height.
 const KEEP: f64 = 0.2;
 
-/// The floor is this percentile of the ground in a window of 3 brush radii.
+/// The floor is this percentile of the ground in a window of `FLOOR_REACH`
+/// brush radii.
 const FLOOR_PERCENTILE: f64 = 0.1;
+const FLOOR_REACH: f64 = 6.0;
+
+/// The top stays below a ceiling in meters, under sea level, and it rounds
+/// into the ceiling over a height in meters. Thus a plateau never reaches
+/// the sea surface.
+const CEILING_M: f64 = -50.0;
+const CEILING_ROUND_M: f64 = 300.0;
 
 /// The warp of the growth: each octave moves a point by up to this part of
 /// its wavelength. The first wavelength is 2 brush radii, and the last is
@@ -228,7 +237,7 @@ impl PlateauStroke {
         let step = FRAC_PI_2 / n as f64;
         let radius = radius.max(2.0 * step);
         if self.floor_m.is_none() {
-            self.floor_m = Some(plateau_floor(map, center, 3.0 * radius));
+            self.floor_m = Some(plateau_floor(map, center, FLOOR_REACH * radius));
             self.warp = radius;
         }
         let mut plan = PlateauPlan {
@@ -748,7 +757,8 @@ impl PlateauPlan {
         sum
     }
 
-    /// The level of the top of the plateau at a texel, with its low relief.
+    /// The level of the top of the plateau at a texel, with its low relief,
+    /// below the ceiling.
     fn target(&self, p: V3) -> f64 {
         let world = self.get(WORLD_KM);
         let mut level = self.get(FLOOR_LEVEL) + self.get(TOP_LEVEL);
@@ -756,7 +766,8 @@ impl PlateauPlan {
             let n = noise3(scale(p, world / km), self.seed() ^ (SALT_RELIEF + k as u32));
             level += LEVELS_PER_M * m * n[0];
         }
-        level
+        let ceiling = (CEILING_M - ELEV_MIN) * LEVELS_PER_M;
+        smooth_min(level, ceiling, CEILING_ROUND_M * LEVELS_PER_M)
     }
 }
 
@@ -1035,6 +1046,25 @@ mod tests {
             .fold(0.0, f64::max);
         assert!(jump < 80.0, "a step of {jump} m");
         assert!(meters(map.level_at(lonlat_to_dir(13.0, 5.0)) as u16) > FLOOR_M + 2000.0);
+    }
+
+    #[test]
+    fn the_plateau_stays_below_sea_level() {
+        let mut map = flat();
+        let tall = Plateau {
+            height_m: 8000.0,
+            ..spec()
+        };
+        // Strokes over each other, at the largest height.
+        for _ in 0..3 {
+            paint(&mut map, tall, &wide(), RADIUS);
+        }
+        let highest = texels(&map, lonlat_to_dir(10.0, 6.0), 0.2)
+            .into_iter()
+            .map(|(_, l)| meters(l))
+            .fold(f64::MIN, f64::max);
+        assert!(highest < 0.0, "a top at {highest} m");
+        assert!(highest > -1000.0, "a top at {highest} m");
     }
 
     #[test]
