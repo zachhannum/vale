@@ -24,7 +24,7 @@ pub mod image_layer;
 pub mod keyboard;
 pub mod labels;
 #[cfg(target_os = "ios")]
-pub mod lifecycle;
+pub use vale_shell::lifecycle;
 pub mod lod;
 pub mod log_file;
 

@@ -3,4 +3,7 @@
 //! copy of a project, the state of the next start, and the iOS life cycle.
 
 pub mod files;
+#[cfg(target_os = "ios")]
+pub mod lifecycle;
 pub mod pad;
+pub mod workcopy;
