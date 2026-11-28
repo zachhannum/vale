@@ -346,3 +346,22 @@ fn manual_screenshots_of_the_explore_workspace() {
         }
     }
 }
+
+/// Saves a picture of the question before a change that deletes the run,
+/// on the iPad and the iPhone, when `VALE_SCREENSHOTS` is set.
+#[test]
+#[ignore = "gpu"]
+fn manual_screenshots_of_the_question() {
+    for (name, size) in [("pad", (1194.0, 834.0)), ("phone", (390.0, 844.0))] {
+        let mut app = IsothermApp::sample(Layout::Pad).unwrap();
+        app.workspace = Workspace::Planet;
+        let sim = isotherm_app::sim::Simulation::new(&app.doc.world, 8, false);
+        app.run.borrow_mut().sim = Some(sim);
+        app.ask = Some(isotherm_app::app::Ask::Undo);
+        let mut harness = gpu_harness_with(size, app);
+        harness.run_steps(20);
+        harness.render().unwrap();
+        harness.step();
+        screenshot::save(&mut harness, &format!("{name}-ask"));
+    }
+}
