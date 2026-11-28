@@ -127,6 +127,17 @@ impl Document {
         }
     }
 
+    /// Saves the planet after a change from `old`, as one undo step. A
+    /// world with no file keeps the planet in memory.
+    pub fn save_planet(&mut self, old: &Planet) -> Result<(), String> {
+        match &mut self.file {
+            Some(file) if *old != self.world.planet => file
+                .save_planet(&self.world.planet)
+                .map_err(|e| format!("Could not save the planet: {e}.")),
+            _ => Ok(()),
+        }
+    }
+
     pub fn can_undo(&self) -> bool {
         self.file.as_ref().is_some_and(WorldFile::can_undo)
     }

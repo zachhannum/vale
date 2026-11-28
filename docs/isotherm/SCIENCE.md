@@ -83,15 +83,18 @@ Sources: Berger (1978), Hartmann (2016).
 
 ### Star spectrum and two bands
 
-The star is a black body at the temperature `T_star`. The fraction `f_vis` of its energy below the wavelength `λ_c = 0.7 µm` is the integral of the Planck function to `λ_c`, divided by `σ T_star⁴`. The rest is the near-infrared band.
+The star is a black body at the temperature `T_star`. The fraction `f_vis` of its energy below the wavelength `λ_c = 0.7 µm` is the integral of the Planck function to `λ_c`, divided by `σ T_star⁴`. The rest is the near-infrared band. The integral is the series of Widger and Woodall (1976), with `x = h c / (k λ_c T_star)`:
 
 ```
+f_vis = (15 / π⁴) Σ_n (e^(−n x) / n) (x³ + 3x²/n + 6x/n² + 6/n³)
 α = f_vis α_vis + (1 − f_vis) α_nir
 ```
 
+`f_vis` is 0.49 for the Sun at 5,772 K and 0.10 for a red dwarf at 3,200 K.
+
 Snow and ice have a high albedo in the visible band and a low albedo in the near-infrared band. A cool star puts more of its energy in the near-infrared band, so the ice of its planets absorbs more of the light.
 
-Sources: Joshi and Haberle (2012), Shields et al. (2013).
+Sources: Widger and Woodall (1976), Joshi and Haberle (2012), Shields et al. (2013).
 
 ### Binary stars
 
@@ -157,15 +160,48 @@ Sources: Hwang and Frierson (2010), Frierson, Held, and Zurita-Gotor (2007), Bol
 
 ### Snow, ice, and albedo feedback
 
-The albedo of snow and ice changes smoothly from the value of open ground or open water to the value of ice, near the freezing point.
+Each surface has an albedo `α_s` in the visible band and in the near-infrared band.
+
+| Surface | Visible | Near-infrared | Source |
+| --- | --- | --- | --- |
+| Sea | 0.06 | 0.06 | Hartmann (2016) |
+| Open ground | 0.10 | 0.30 | Crops and short grass of BATS, Dickinson et al. (1993) |
+| Snow | 0.96 | 0.68 | Briegleb et al. (2004) |
+| Sea ice | 0.73 | 0.33 | Briegleb et al. (2004) |
+
+The albedo at the top of the atmosphere in each band comes from the single-layer model of Donohoe and Battisti (2011). One pass through the air and the clouds reflects a share `R` of the light and absorbs a share `A`. The rest goes through, and the reflections between the surface and the atmosphere repeat:
 
 ```
-α(T) = α_ice + (α_free − α_ice) (1 + tanh((T − T_s) / ΔT)) / 2
+α_b = R + α_s,b (1 − R − A)² / (1 − α_s,b R)
 ```
 
-On land, `T` is the surface temperature at the height of the cell, `T_s` is 263.15 K, and `ΔT` is 5 K. At sea, the albedo goes from `α_free` to `α_ice` with the ice cover. The albedos are values at the top of the atmosphere, with the clouds: `α_free = 0.28` and `α_ice = 0.55`.
+The section "Star spectrum and two bands" weights the two bands. A cell takes `α = α_open + (α_cover − α_open) f`, with `f` the share of the cell under snow or sea ice. `R` and `A` are the same in both bands and in each cell.
 
-Sources: Budyko (1969), Spiegel, Menou, and Scharf (2008).
+`R = 0.26` and `A = 0.25` are tuned to the Earth preset. Donohoe and Battisti give `R = 0.277` from ERBE, with a planetary albedo of 0.313, and an absorption of about 25 % in the tropics and 15 % at high latitudes. The section "Gray atmosphere" sets the OLR of the Earth to 239 W/m², and that balance needs a planetary albedo near 0.30, so `R` is lower than their value.
+
+Snow on land is a mass `S` of water, in kg/m². The temperature of a step has a normal spread with the standard deviation `σ = 4.5 K` about its mean `T`, as in the degree-day model of Reeh (1991). The share of the precipitation that falls as snow is the share of that spread below `T_s = 1 °C`, the mean threshold of Jennings et al. (2018). The melt follows the positive degree days of the spread, in the closed form of Calov and Greve (2005):
+
+```
+P_snow = P (1/2) erfc((T − T_s) / (√2 σ))
+PDD = σ/√(2π) exp(−T² / (2σ²)) + (T/2) erfc(−T / (√2 σ))
+M = DDF_snow PDD
+```
+
+`T` is in °C here, at the height of the cell, and `PDD` is in K for each day. `DDF_snow = 3 mm` of water for each K and each day, from Reeh (1991). Braithwaite (1995) gives 2.9 to 3.7 mm from a model of the energy balance, and Hock (2003) gives 2.5 to 5.7 mm for most sites. The melt takes its latent heat from the cell. `erfc` uses the approximation 7.1.26 of Abramowitz and Stegun (1964).
+
+The snow cover of a cell comes from the formula of Roesch et al. (2001) for the coarse cells of a climate model, with `S` in kg/m² and the standard deviation `σ_z` of the heights of the land in the cell, in m:
+
+```
+f = 0.95 tanh(0.1 S) √(S / (S + 0.15 σ_z))
+```
+
+Rough terrain thus has less snow cover than flat terrain with the same snow. The formula is the one that Räisänen et al. (2014) and Essery (2006) give, because the original paper was not available. The model has no vegetation, so trees do not hide the snow.
+
+Tier 1 has no water cycle. The precipitation `P` is 0.5 mm of water each day on all land. It has no source, and it is tuned to the Earth preset. Tier 2 replaces it with the precipitation of the water cycle. A cell keeps at most 1,000 kg/m² of snow, so that the state stays bounded. The section "Heat capacity" gives the growth and the melt of sea ice.
+
+With these values, the Earth preset gives a yearly mean of 15.2 °C, a pole-to-equator difference of 42.9 °C, and an OLR of 240.1 W/m². North, Cahalan, and Coakley (1981) give 14.9 °C and 42 °C. On a belt of land along the equator, the land at 5,000 m is free of snow and the land at 6,000 m is under snow all year. Rabatel et al. (2013) put the equilibrium line of tropical glaciers near 4,900 to 5,400 m.
+
+Sources: Budyko (1969), Spiegel, Menou, and Scharf (2008), Donohoe and Battisti (2011), Reeh (1991), Calov and Greve (2005), Roesch et al. (2001).
 
 ### Lapse rate
 
@@ -396,9 +432,11 @@ Over land, the checks of temperature and precipitation use the climatology of Be
 
 ## References
 
-Adler, R., Wang, J.-J., Sapiano, M., Huffman, G., Chiu, L., Xie, P.-P., Ferraro, R., Schneider, U., Becker, A., Bolvin, D., Nelkin, E., Gu, G., & NOAA CDR Program. (2017). Global Precipitation Climatology Project (GPCP) Climate Data Record (CDR), Version 2.3 (Monthly). NOAA National Centers for Environmental Information. https://doi.org/10.7289/V56971M6
+Abramowitz, M., & Stegun, I. A. (1964). Handbook of Mathematical Functions with Formulas, Graphs, and Mathematical Tables. National Bureau of Standards.
 
 Adler, R. F., Sapiano, M. R. P., Huffman, G. J., Wang, J.-J., Gu, G., Bolvin, D., Chiu, L., Schneider, U., Becker, A., Nelkin, E., Xie, P., Ferraro, R., & Shin, D.-B. (2018). The Global Precipitation Climatology Project (GPCP) monthly analysis (new version 2.3) and a review of 2017 global precipitation. Atmosphere, 9(4), 138. https://doi.org/10.3390/atmos9040138
+
+Adler, R., Wang, J.-J., Sapiano, M., Huffman, G., Chiu, L., Xie, P.-P., Ferraro, R., Schneider, U., Becker, A., Bolvin, D., Nelkin, E., Gu, G., & NOAA CDR Program. (2017). Global Precipitation Climatology Project (GPCP) Climate Data Record (CDR), Version 2.3 (Monthly). NOAA National Centers for Environmental Information. https://doi.org/10.7289/V56971M6
 
 Barth, T. J., & Jespersen, D. C. (1989). The design and application of upwind schemes on unstructured meshes. AIAA Paper 89-0366. https://doi.org/10.2514/6.1989-366
 
@@ -408,11 +446,23 @@ Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary cl
 
 Bolton, D. (1980). The computation of equivalent potential temperature. Monthly Weather Review, 108(7), 1046–1053. https://doi.org/10.1175/1520-0493(1980)108<1046:tcoept>2.0.co;2
 
+Braithwaite, R. J. (1995). Positive degree-day factors for ablation on the Greenland ice sheet studied by energy-balance modelling. Journal of Glaciology, 41(137), 153–160. https://doi.org/10.3189/S0022143000017846
+
+Briegleb, B. P., Bitz, C. M., Hunke, E. C., Lipscomb, W. H., Holland, M. M., Schramm, J. L., & Moritz, R. E. (2004). Scientific description of the sea ice component in the Community Climate System Model, Version 3 (NCAR Technical Note NCAR/TN-463+STR). National Center for Atmospheric Research.
+
 Budyko, M. I. (1969). The effect of solar radiation variations on the climate of the Earth. Tellus, 21(5), 611–619. https://doi.org/10.1111/j.2153-3490.1969.tb00466.x
+
+Calov, R., & Greve, R. (2005). A semi-analytical solution for the positive degree-day model with stochastic temperature variations. Journal of Glaciology, 51(172), 173–175. https://doi.org/10.3189/172756505781829601
 
 Copernicus Climate Change Service. (2019). ERA5 monthly averaged data on single levels from 1940 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). https://doi.org/10.24381/cds.f17050d7
 
+Dickinson, R. E., Henderson-Sellers, A., & Kennedy, P. J. (1993). Biosphere-Atmosphere Transfer Scheme (BATS) Version 1e as coupled to the NCAR Community Climate Model (NCAR Technical Note NCAR/TN-387+STR). https://doi.org/10.5065/D67W6959
+
+Donohoe, A., & Battisti, D. S. (2011). Atmospheric and surface contributions to planetary albedo. Journal of Climate, 24(16), 4402–4418. https://doi.org/10.1175/2011JCLI3946.1
+
 Ekman, V. W. (1905). On the influence of the earth's rotation on ocean-currents. Arkiv för Matematik, Astronomi och Fysik, 2(11), 1–52.
+
+Essery, R. (2006). Snow cover parametrizations. In ECMWF Seminar on Polar Meteorology. European Centre for Medium-Range Weather Forecasts.
 
 Ferziger, J. H., & Perić, M. (2002). Computational Methods for Fluid Dynamics (3rd ed.). Springer.
 
@@ -429,6 +479,8 @@ Hartmann, D. L. (2016). Global Physical Climatology (2nd ed.). Elsevier.
 Held, I. M., & Hou, A. Y. (1980). Nonlinear axially symmetric circulations in a nearly inviscid atmosphere. Journal of the Atmospheric Sciences, 37(3), 515–533. https://doi.org/10.1175/1520-0469(1980)037<0515:nascia>2.0.co;2
 
 Hersbach, H., Bell, B., Berrisford, P., Hirahara, S., Horányi, A., Muñoz-Sabater, J., Nicolas, J., Peubey, C., Radu, R., Schepers, D., Simmons, A., Soci, C., Abdalla, S., Abellan, X., Balsamo, G., Bechtold, P., Biavati, G., Bidlot, J., Bonavita, M., … Thépaut, J.-N. (2020). The ERA5 global reanalysis. Quarterly Journal of the Royal Meteorological Society, 146(730), 1999–2049. https://doi.org/10.1002/qj.3803
+
+Hock, R. (2003). Temperature index melt modelling in mountain areas. Journal of Hydrology, 282(1–4), 104–115. https://doi.org/10.1016/S0022-1694(03)00257-9
 
 Holton, J. R., & Hakim, G. J. (2013). An Introduction to Dynamic Meteorology (5th ed.). Academic Press.
 
@@ -466,9 +518,17 @@ Pierrehumbert, R. T. (2010). Principles of Planetary Climate. Cambridge Universi
 
 Pierrehumbert, R. T. (2011). A palette of climates for Gliese 581g. The Astrophysical Journal Letters, 726(1), L8. https://doi.org/10.1088/2041-8205/726/1/l8
 
+Rabatel, A., et al. (2013). Current state of glaciers in the tropical Andes: a multi-century perspective on glacier evolution and climate change. The Cryosphere, 7, 81–102. https://doi.org/10.5194/tc-7-81-2013
+
+Räisänen, P., et al. (2014). Evaluation of North Eurasian snow-off dates in the ECHAM5.4 atmospheric general circulation model. Geoscientific Model Development, 7, 3037–3057. https://doi.org/10.5194/gmd-7-3037-2014
+
 Rančić, M., Purser, R. J., & Mesinger, F. (1996). A global shallow-water model using an expanded spherical cube: Gnomonic versus conformal coordinates. Quarterly Journal of the Royal Meteorological Society, 122(532), 959–982. https://doi.org/10.1002/qj.49712253209
 
+Reeh, N. (1991). Parameterization of melt rate and surface temperature on the Greenland ice sheet. Polarforschung, 59(3), 113–128. https://doi.org/10.2312/polarforschung.59.3.113
+
 Roe, G. H. (2005). Orographic precipitation. Annual Review of Earth and Planetary Sciences, 33, 645–671. https://doi.org/10.1146/annurev.earth.33.092203.122541
+
+Roesch, A., Wild, M., Gilgen, H., & Ohmura, A. (2001). A new snow cover fraction parametrization for the ECHAM4 GCM. Climate Dynamics, 17(12), 933–946. https://doi.org/10.1007/s003820100153
 
 Ronchi, C., Iacono, R., & Paolucci, P. S. (1996). The "cubed sphere": A new method for the solution of partial differential equations in spherical geometry. Journal of Computational Physics, 124(1), 93–114. https://doi.org/10.1006/jcph.1996.0047
 
@@ -490,9 +550,11 @@ Stommel, H. (1948). The westward intensification of wind-driven ocean currents. 
 
 Sverdrup, H. U. (1947). Wind-driven currents in a baroclinic ocean; with application to the equatorial currents of the eastern Pacific. Proceedings of the National Academy of Sciences, 33(11), 318–326. https://doi.org/10.1073/pnas.33.11.318
 
+Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press. https://doi.org/10.1017/9781107588417
+
 van der Vorst, H. A. (1992). Bi-CGSTAB: A fast and smoothly converging variant of Bi-CG for the solution of nonsymmetric linear systems. SIAM Journal on Scientific and Statistical Computing, 13(2), 631–644. https://doi.org/10.1137/0913035
 
-Vallis, G. K. (2017). Atmospheric and Oceanic Fluid Dynamics (2nd ed.). Cambridge University Press. https://doi.org/10.1017/9781107588417
+Widger, W. K., & Woodall, M. P. (1976). Integration of the Planck blackbody radiation function. Bulletin of the American Meteorological Society, 57(10), 1217–1219. https://doi.org/10.1175/1520-0477(1976)057<1217:iotpbr>2.0.co;2
 
 Williams, D. M., & Kasting, J. F. (1997). Habitable planets with high obliquities. Icarus, 129(1), 254–267. https://doi.org/10.1006/icar.1997.5759
 

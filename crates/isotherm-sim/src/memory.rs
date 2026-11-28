@@ -28,7 +28,7 @@ pub fn model_bytes(face_size: usize) -> u64 {
 
 /// The heap bytes of one [`crate::RunState`] at face size `n`.
 pub fn snapshot_bytes(face_size: usize) -> u64 {
-    cells(face_size) as u64 * 16 + means_bytes(face_size)
+    cells(face_size) as u64 * 24 + means_bytes(face_size)
 }
 
 #[cfg(test)]
@@ -40,10 +40,10 @@ mod tests {
     /// The bytes of a run at each face size, as `docs/isotherm/DESIGN.md`
     /// gives them.
     const TABLE: [(usize, u64, u64); 4] = [
-        (32, 5_929_682, 836_306),
-        (64, 23_716_562, 3_343_058),
-        (128, 94_864_082, 13_370_066),
-        (256, 379_454_162, 53_478_098),
+        (32, 6_027_986, 885_458),
+        (64, 24_109_778, 3_539_666),
+        (128, 96_436_946, 14_156_498),
+        (256, 385_745_618, 56_623_826),
     ];
 
     #[test]

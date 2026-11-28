@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, pos2, vec2};
-use isotherm_fields::{Means, Output, Period};
+use isotherm_fields::{Means, Period};
 use isotherm_import::vale_project::HeightLayer;
 use isotherm_import::{Samples, Scale};
-use isotherm_world::Terrain;
+use isotherm_world::presets::OrbitPreset;
+use isotherm_world::{Planet, Terrain};
 use vale_shell::pad::icons::{self, Icon};
 use vale_shell::pad::metrics::{PAD, TOUCH, WidthClass};
 use vale_shell::pad::motion;
@@ -18,9 +19,15 @@ use vale_shell::pad::theme;
 use vale_shell::pad::widgets::{self, Controls, PANEL_ROW};
 use vale_sphere::{ProjectionKind, ProjectionSpec};
 
+mod ask;
+mod planet;
+
+pub use ask::{ASK_TEXT, ASK_TITLE, Ask, START_AGAIN};
+pub use planet::*;
+
 use crate::cli::Args;
 use crate::document::{self, Change, Document, Read};
-use crate::explore::{self, Explore};
+use crate::explore::{self, Explore, Layer};
 use crate::globe::{Globe, Overlay, WorldView};
 use crate::memory;
 use crate::sim::{Run, Simulation, Speed};
@@ -61,10 +68,19 @@ impl Workspace {
     pub fn hint(self) -> Option<&'static str> {
         match self {
             Workspace::Worlds => Some("Saved worlds come in a later version."),
-            Workspace::Planet => Some("The planet settings come in a later version."),
             Workspace::Export => Some("Export comes in a later version."),
-            Workspace::Terrain | Workspace::Simulate | Workspace::Explore => None,
+            Workspace::Terrain | Workspace::Planet | Workspace::Simulate | Workspace::Explore => {
+                None
+            }
         }
+    }
+
+    /// The workspace has a panel of rows.
+    pub fn has_panel(self) -> bool {
+        matches!(
+            self,
+            Workspace::Terrain | Workspace::Planet | Workspace::Simulate | Workspace::Explore
+        )
     }
 
     /// The workspace has the view card.
@@ -122,9 +138,10 @@ pub const PROJECTION: &str = "Projection";
 pub const SCALE_HINT: &str = "Set the heights of black and white.";
 pub const LAYERS_HINT: &str = "Choose a height layer.";
 pub const TEMPERATURE: &str = "Temperature";
+pub const ICE_COVER: &str = "Ice cover";
 pub const MONTH: &str = "Month";
 pub const CONTOURS: &str = "Contours";
-pub const RUN_HINT: &str = "Run the model to see the temperature.";
+pub const RUN_HINT: &str = "Run the model to see the results.";
 pub const EMPTY_PERIOD: &str = "No values for this period yet.";
 pub const RUN: &str = "Run";
 pub const PAUSE: &str = "Pause";
@@ -195,6 +212,13 @@ pub struct IsothermApp {
     pub status: Option<String>,
     /// The sea level at the start of a drag of the slider.
     sea_start: Option<f64>,
+    /// The planet at the start of a drag of a slider of the Planet panel.
+    planet_start: Option<Planet>,
+    /// A change that waits for the user to delete the run.
+    pub ask: Option<Ask>,
+    /// The orbit preset of the last tap. Two orbit presets can give the
+    /// same orbit, and the row then shows this one.
+    orbit_pick: Option<OrbitPreset>,
     /// The folder of the world files. `None`: an import can only replace
     /// the terrain of an open world file.
     pub data_dir: Option<PathBuf>,
@@ -217,8 +241,9 @@ pub struct IsothermApp {
     pub sheet_collapsed: bool,
     /// The distance of the drag of the sheet header, down from its start.
     sheet_drag: Option<f32>,
-    /// The period and the means generation of the overlay on the globe.
-    overlay_shown: Option<(Period, u64)>,
+    /// The layer, the period, and the means generation of the overlay on
+    /// the globe.
+    overlay_shown: Option<(Layer, Period, u64)>,
     /// The run of the model. The save of the iOS life cycle shares it.
     pub run: Rc<RefCell<Run>>,
     /// The face sizes that the quality setting offers.
@@ -245,17 +270,23 @@ pub fn setup(ctx: &egui::Context) {
 
 /// A height as the app shows it, for example "−1,200 m".
 pub fn meters_text(m: f64) -> String {
-    let n = m.round() as i64;
+    format!("{} m", grouped(m))
+}
+
+/// A whole number with groups of three digits and a true minus sign, for
+/// example "−1,200".
+pub fn grouped(value: f64) -> String {
+    let n = value.round() as i64;
     let digits = n.unsigned_abs().to_string();
-    let mut grouped = String::new();
+    let mut text = String::new();
     for (i, c) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            grouped.push(',');
+            text.push(',');
         }
-        grouped.push(c);
+        text.push(c);
     }
     let sign = if n < 0 { "−" } else { "" };
-    format!("{sign}{grouped} m")
+    format!("{sign}{text}")
 }
 
 impl IsothermApp {
@@ -285,6 +316,9 @@ impl IsothermApp {
             pending: None,
             status: None,
             sea_start: None,
+            planet_start: None,
+            ask: None,
+            orbit_pick: None,
             data_dir: None,
             pick: false,
             controls: Controls::new(),
@@ -379,6 +413,53 @@ impl IsothermApp {
         };
         if let Err(e) = result {
             self.status = Some(e);
+        }
+    }
+
+    /// A run exists, running or paused.
+    pub fn has_run(&self) -> bool {
+        self.run.borrow().sim.is_some()
+    }
+
+    /// Applies a change of the world. While a run exists, the change waits
+    /// until the user agrees to delete the run.
+    pub fn change(&mut self, ask: Ask) {
+        if self.has_run() {
+            self.ask = Some(ask);
+        } else {
+            self.apply_change(ask);
+        }
+    }
+
+    /// Deletes the run and applies a change, as one undo step.
+    fn apply_change(&mut self, ask: Ask) {
+        match ask {
+            Ask::Planet(planet) => {
+                let old = std::mem::replace(&mut self.doc.world.planet, *planet);
+                self.clear_run();
+                if let Err(e) = self.doc.save_planet(&old) {
+                    self.status = Some(e);
+                }
+            }
+            Ask::SeaLevel(m) => {
+                let terrain = &mut self.doc.world.terrain;
+                let old = terrain.sea_level_m;
+                terrain.sea_level_m = terrain.clamp_sea(m);
+                self.clear_run();
+                if let Err(e) = self.doc.save_sea_level(old) {
+                    self.status = Some(e);
+                }
+            }
+            Ask::Undo => self.undo(),
+            Ask::Redo => self.redo(),
+        }
+    }
+
+    /// Deletes the run and applies the change that waits.
+    pub fn start_again(&mut self) {
+        if let Some(ask) = self.ask.take() {
+            self.clear_run();
+            self.apply_change(ask);
         }
     }
 
@@ -516,34 +597,39 @@ impl IsothermApp {
         self.means.as_ref()
     }
 
-    /// The temperature field of the means, if the run keeps it.
-    fn temperature(&self) -> Option<&isotherm_fields::Field> {
+    /// The field of the shown layer, if the run keeps it.
+    fn field(&self) -> Option<&isotherm_fields::Field> {
         let means = self.means.as_ref()?;
+        let output = self.explore.layer.output();
         means
             .outputs()
-            .contains(&Output::Temperature)
-            .then(|| means.field(Output::Temperature))
+            .contains(&output)
+            .then(|| means.field(output))
     }
 
-    /// Puts the temperature of the shown period on the globe in the Explore
+    /// Puts the shown layer and period on the globe in the Explore
     /// workspace, and no overlay in the other workspaces.
     fn sync_overlay(&mut self) {
         let period = self.explore.period;
+        let layer = self.explore.layer;
         let filled = self
-            .temperature()
+            .field()
             .is_some_and(|field| field.get(period).is_some());
-        let wanted = (self.workspace == Workspace::Explore && filled)
-            .then_some((period, self.means_generation));
+        let wanted = (self.workspace == Workspace::Explore && filled).then_some((
+            layer,
+            period,
+            self.means_generation,
+        ));
         if wanted == self.overlay_shown {
             return;
         }
         self.overlay_shown = wanted;
         let overlay = wanted.and_then(|_| {
-            let field = self.temperature()?;
-            let bands = explore::temperature_bands();
+            let field = self.field()?;
+            let bands = layer.bands();
             Some(Overlay {
                 face_size: field.face_size,
-                levels: explore::levels(&bands, field.get(period)?),
+                levels: layer.levels(&bands, field.get(period)?),
                 bands,
             })
         });
@@ -556,10 +642,10 @@ impl IsothermApp {
             return None;
         }
         let place = self.explore.place()?;
-        let value = explore::value_at(self.temperature()?, self.explore.period, place)?;
+        let value = explore::value_at(self.field()?, self.explore.period, place)?;
         Some(format!(
             "{} · {}",
-            explore::celsius_text(value),
+            self.explore.layer.value_text(value),
             explore::place_text(place)
         ))
     }
@@ -588,6 +674,9 @@ impl IsothermApp {
             self.projection_list(&ctx, &mut controls, safe);
         } else {
             self.projections = false;
+        }
+        if self.ask.is_some() {
+            self.ask_card(&ctx, &mut controls, screen, safe);
         }
         self.controls = controls;
     }
@@ -722,7 +811,7 @@ impl IsothermApp {
             pos2(safe.right() - MARGIN, safe.bottom() - MARGIN),
         );
         if class == WidthClass::Compact {
-            if self.workspace.has_view() || self.workspace == Workspace::Simulate {
+            if self.workspace.has_panel() {
                 self.sheet(&ctx, controls, safe);
             }
         } else {
@@ -736,12 +825,15 @@ impl IsothermApp {
                     app.view_rows(ui, controls);
                 });
             }
-            if self.workspace == Workspace::Simulate {
+            if matches!(self.workspace, Workspace::Simulate | Workspace::Planet) {
                 let width = PANEL_WIDTH.min(room.width());
                 let height = self.measured(&ctx, "panel", 4.0 * PANEL_ROW);
                 let rect = Rect::from_min_size(room.min, vec2(width, height.min(room.height())));
-                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| {
-                    app.simulate_rows(ui, controls);
+                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| match app
+                    .workspace
+                {
+                    Workspace::Planet => app.planet_rows(ui, controls),
+                    _ => app.simulate_rows(ui, controls),
                 });
             }
             if matches!(self.workspace, Workspace::Terrain | Workspace::Explore) {
@@ -952,6 +1044,9 @@ impl IsothermApp {
         if self.workspace == Workspace::Simulate {
             self.simulate_rows(ui, controls);
         }
+        if self.workspace == Workspace::Planet {
+            self.planet_rows(ui, controls);
+        }
         if self.workspace.has_view() {
             self.view_rows(ui, controls);
         }
@@ -996,13 +1091,18 @@ impl IsothermApp {
     /// The rows of the Explore panel: the layer, the month, the contours,
     /// and the legend.
     fn explore_rows(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
-        if self.temperature().is_none() {
+        if self.means.is_none() {
             ui.add_space(4.0);
             wrapped(ui, RUN_HINT, theme::body(), theme::TEXT);
             ui.add_space(4.0);
             return;
         }
-        widgets::text_row(ui, controls, TEMPERATURE, 0.0, true, true);
+        for layer in Layer::ALL {
+            let on = layer == self.explore.layer;
+            if widgets::text_row(ui, controls, layer.name(), 0.0, on, true).clicked() {
+                self.explore.layer = layer;
+            }
+        }
         let mut value = explore::period_index(self.explore.period) as f64;
         let text = explore::period_name(self.explore.period);
         let resp = slider_row(ui, controls, MONTH, &mut value, 0.0..=12.0, text);
@@ -1011,9 +1111,10 @@ impl IsothermApp {
         }
         widgets::switch_row(ui, controls, CONTOURS, CONTOURS, &mut self.explore.contours);
         ui.add_space(4.0);
-        explore::legend(ui, &explore::temperature_bands(), "°C");
+        let layer = self.explore.layer;
+        explore::legend(ui, &layer.bands(), layer.unit());
         let filled = self
-            .temperature()
+            .field()
             .is_some_and(|field| field.get(self.explore.period).is_some());
         if !filled {
             wrapped(ui, EMPTY_PERIOD, theme::hint(), theme::MUTE);
@@ -1097,16 +1198,17 @@ impl IsothermApp {
         let can_redo = self.doc.can_redo() && !busy;
         if widgets::icon_button_at(ui, controls, undo, UNDO, Icon::Undo, false, can_undo).clicked()
         {
-            self.undo();
+            self.change(Ask::Undo);
         }
         if widgets::icon_button_at(ui, controls, redo, REDO, Icon::Redo, false, can_redo).clicked()
         {
-            self.redo();
+            self.change(Ask::Redo);
         }
     }
 
     /// The sea level slider. A drag moves the coast on the globe, and the
-    /// end of the drag is one undo step.
+    /// end of the drag is one undo step. While a run exists, a drag asks to
+    /// delete the run first.
     fn sea_row(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
         let terrain = &self.doc.world.terrain;
         let before = terrain.sea_level_m;
@@ -1115,10 +1217,14 @@ impl IsothermApp {
         let text = meters_text(before);
         let resp = slider_row(ui, controls, SEA_LEVEL, &mut value, range, &text);
         if resp.started {
+            if self.has_run() {
+                self.ask = Some(Ask::SeaLevel(value));
+                return;
+            }
             self.sea_start = Some(before);
             self.clear_run();
         }
-        if resp.changed {
+        if resp.changed && self.sea_start.is_some() {
             let terrain = &mut self.doc.world.terrain;
             terrain.sea_level_m = terrain.clamp_sea(value);
         }
@@ -1152,32 +1258,8 @@ impl IsothermApp {
             ui.allocate_exact_size(vec2(ui.available_width(), PANEL_ROW), Sense::hover());
         let right = pos2(row.right(), row.center().y);
         let import = widgets::accent_button(ui, controls, right, "Import");
-        let width = widgets::text_width(ui, "Cancel", theme::body()) + 36.0;
-        let cancel_rect = Rect::from_min_size(
-            pos2(
-                import.rect.left() - 8.0 - width,
-                row.center().y - TOUCH / 2.0,
-            ),
-            vec2(width, TOUCH),
-        );
-        let cancel = widgets::hit(
-            ui,
-            controls,
-            cancel_rect,
-            "Cancel",
-            Sense::click(),
-            true,
-            None,
-        );
-        widgets::fill(ui, cancel_rect, &cancel, false);
-        ui.painter().text(
-            cancel_rect.center(),
-            Align2::CENTER_CENTER,
-            "Cancel",
-            theme::body(),
-            theme::TEXT,
-        );
-        if cancel.clicked() {
+        let right = pos2(import.rect.left() - 8.0, row.center().y);
+        if plain_button(ui, controls, right, "Cancel").clicked() {
             return;
         }
         if import.clicked() {
@@ -1495,6 +1577,31 @@ fn small_segments_in(
         vec2(width, height),
     );
     widgets::small_segments(ui, controls, rect, labels, active)
+}
+
+/// A button with a text and no fill. Its right edge and its middle are at
+/// `right`.
+fn plain_button(
+    ui: &egui::Ui,
+    controls: &mut Controls,
+    right: egui::Pos2,
+    name: &str,
+) -> egui::Response {
+    let width = widgets::text_width(ui, name, theme::body()) + 36.0;
+    let rect = Rect::from_min_size(
+        pos2(right.x - width, right.y - TOUCH / 2.0),
+        vec2(width, TOUCH),
+    );
+    let resp = widgets::hit(ui, controls, rect, name, Sense::click(), true, None);
+    widgets::fill(ui, rect, &resp, false);
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        name,
+        theme::body(),
+        theme::TEXT,
+    );
+    resp
 }
 
 fn wrapped(ui: &mut egui::Ui, text: &str, font: egui::FontId, color: egui::Color32) {

@@ -1,8 +1,8 @@
-//! The Explore workspace: the colors and the contours of the temperature,
+//! The Explore workspace: the output layers, their colors and contours,
 //! the month, and the readout of one place.
 
 use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Sense, pos2, vec2};
-use isotherm_fields::{Field, Period};
+use isotherm_fields::{Field, Output, Period};
 use vale_shell::pad::{theme, widgets};
 use vale_terrain::math::V3;
 use vale_terrain::{Bands, Rgb, Stop, StopLine, face_of, warp};
@@ -31,6 +31,116 @@ const COLORS: [Rgb; 11] = [
 /// The color of the contours.
 const LINE: Rgb = [24, 28, 36];
 
+/// The spacing of the stops and the contours of the ice cover, in percent.
+pub const ICE_STEP: f64 = 20.0;
+
+/// The color of each band of 20 % of ice cover, from open water to full
+/// ice.
+const ICE_COLORS: [Rgb; 5] = [
+    [20, 48, 86],
+    [48, 88, 132],
+    [98, 138, 176],
+    [162, 192, 216],
+    [236, 242, 248],
+];
+
+/// An output layer of the Explore workspace.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Layer {
+    #[default]
+    Temperature,
+    IceCover,
+}
+
+impl Layer {
+    pub const ALL: [Layer; 2] = [Layer::Temperature, Layer::IceCover];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Layer::Temperature => "Temperature",
+            Layer::IceCover => "Ice cover",
+        }
+    }
+
+    pub fn output(self) -> Output {
+        match self {
+            Layer::Temperature => Output::Temperature,
+            Layer::IceCover => Output::IceCover,
+        }
+    }
+
+    pub fn bands(self) -> Bands {
+        match self {
+            Layer::Temperature => temperature_bands(),
+            Layer::IceCover => ice_bands(),
+        }
+    }
+
+    /// The unit of the legend.
+    pub fn unit(self) -> &'static str {
+        match self {
+            Layer::Temperature => "°C",
+            Layer::IceCover => "%",
+        }
+    }
+
+    /// The factor from a value of the output to a value of the bands.
+    pub fn scale(self) -> f64 {
+        match self {
+            Layer::Temperature => 1.0,
+            Layer::IceCover => 100.0,
+        }
+    }
+
+    /// The levels of the values of a grid of the output in the bands of the
+    /// layer.
+    pub fn levels(self, bands: &Bands, values: &[f32]) -> Vec<u16> {
+        let scale = self.scale();
+        values
+            .iter()
+            .map(|&v| bands.level(f64::from(v) * scale))
+            .collect()
+    }
+
+    /// A value as the readout shows it, for example "−3.5 °C" or "65 % ice".
+    pub fn value_text(self, value: f32) -> String {
+        match self {
+            Layer::Temperature => celsius_text(value),
+            Layer::IceCover => format!("{:.0} % ice", (value * 100.0).clamp(0.0, 100.0)),
+        }
+    }
+}
+
+/// Contour lines at the inner stops of `bands`.
+fn add_contours(bands: &mut Bands) {
+    let count = bands.stops().len();
+    for i in 1..count.saturating_sub(1) {
+        let line = StopLine {
+            on: true,
+            weight: 1.0,
+            color: LINE,
+            ..StopLine::default()
+        };
+        bands.set_line(i, line);
+    }
+}
+
+/// The bands of the ice cover, from 0 % to 100 %, with a stop and a contour
+/// every 20 %.
+pub fn ice_bands() -> Bands {
+    let count = ICE_COLORS.len();
+    let stops: Vec<Stop> = (0..=count)
+        .map(|i| Stop {
+            value: ICE_STEP * i as f64,
+            line: StopLine::default(),
+        })
+        .collect();
+    let mut bands = Bands::from_range_parts(0.0, 100.0, false, &stops, &ICE_COLORS)
+        .expect("the stops of the ice cover are valid");
+    add_contours(&mut bands);
+    bands
+}
+
 /// The names of the months and of the year on the slider.
 pub const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -47,21 +157,8 @@ pub fn temperature_bands() -> Bands {
         .collect();
     let mut bands = Bands::from_range_parts(MIN_C, MAX_C, false, &stops, &COLORS)
         .expect("the stops of the temperature are valid");
-    for i in 1..count {
-        let line = StopLine {
-            on: true,
-            weight: 1.0,
-            color: LINE,
-            ..StopLine::default()
-        };
-        bands.set_line(i, line);
-    }
+    add_contours(&mut bands);
     bands
-}
-
-/// The levels of the values of a grid in `bands`.
-pub fn levels(bands: &Bands, values: &[f32]) -> Vec<u16> {
-    values.iter().map(|&v| bands.level(f64::from(v))).collect()
 }
 
 /// The index of the cell of a cube map of `face_size` that holds a
@@ -117,8 +214,8 @@ pub fn celsius_text(c: f32) -> String {
     format!("{sign}{text} °C")
 }
 
-/// The temperature of a place in a period, or `None` before the model
-/// fills the period.
+/// The value of a place in a period, or `None` before the model fills the
+/// period.
 pub fn value_at(field: &Field, period: Period, d: V3) -> Option<f32> {
     let grid = field.get(period)?;
     grid.get(cell_of(field.face_size, d)).copied()
@@ -127,6 +224,7 @@ pub fn value_at(field: &Field, period: Period, d: V3) -> Option<f32> {
 /// The state of the Explore workspace.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Explore {
+    pub layer: Layer,
     pub period: Period,
     pub contours: bool,
     /// The place of the last tap.
@@ -138,6 +236,7 @@ pub struct Explore {
 impl Default for Explore {
     fn default() -> Explore {
         Explore {
+            layer: Layer::default(),
             period: Period::Year,
             contours: true,
             pin: None,
@@ -292,6 +391,18 @@ mod tests {
             .count();
         assert_eq!(lines, 10);
         assert!(bands.level(20.0) > bands.level(-20.0));
+    }
+
+    #[test]
+    fn the_ice_bands_run_from_open_water_to_full_ice() {
+        let bands = ice_bands();
+        let values: Vec<f64> = bands.stops().iter().map(|s| s.value).collect();
+        assert_eq!(values, [0.0, 20.0, 40.0, 60.0, 80.0, 100.0]);
+        let lines = bands.stops().iter().filter(|s| s.line.on).count();
+        assert_eq!(lines, 4);
+        let levels = Layer::IceCover.levels(&bands, &[0.0, 0.5, 1.0]);
+        assert!(levels[0] < levels[1] && levels[1] < levels[2]);
+        assert_eq!(Layer::IceCover.value_text(0.654), "65 % ice");
     }
 
     #[test]

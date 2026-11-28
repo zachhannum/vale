@@ -5,6 +5,7 @@ mod zonal;
 
 use eframe::egui;
 use isotherm_app::app::{IsothermApp, Layout, Workspace};
+use isotherm_app::explore::Layer;
 use isotherm_app::globe::WorldView;
 use isotherm_app::headless::{PIXELS_PER_POINT, gpu_harness, gpu_harness_with};
 use vale_shell::pad::theme;
@@ -230,6 +231,29 @@ fn the_equator_is_warmer_in_color_than_the_pole() {
     }
 }
 
+/// The smallest channel: larger for a whiter color.
+fn whiteness(p: image::Rgba<u8>) -> i32 {
+    i32::from(p.0[0].min(p.0[1]).min(p.0[2]))
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_ice_layer_is_whiter_at_the_pole_than_at_the_equator() {
+    for view in [WorldView::Globe, WorldView::Flat] {
+        let mut app = explore_app(view, false);
+        app.set_means(Some(zonal::zonal_means_with_ice()));
+        app.explore.layer = Layer::IceCover;
+        app.globe.coastline = false;
+        let (image, app) = render_app(app);
+        let equator = place(&image, &app, 10.0, 2.0);
+        let pole = place(&image, &app, 10.0, 75.0);
+        assert!(
+            whiteness(pole) > whiteness(equator) + 80,
+            "{view:?}: equator {equator:?}, pole {pole:?}"
+        );
+    }
+}
+
 /// The count of the dark pixels of the contours in the canvas.
 fn dark_pixels(image: &image::RgbaImage, app: &IsothermApp) -> usize {
     let r = app.globe.rect * PIXELS_PER_POINT;
@@ -320,5 +344,24 @@ fn manual_screenshots_of_the_explore_workspace() {
             let file = format!("explore-{name}-{}", view.name().to_lowercase());
             screenshot::save(&mut harness, &file);
         }
+    }
+}
+
+/// Saves a picture of the question before a change that deletes the run,
+/// on the iPad and the iPhone, when `VALE_SCREENSHOTS` is set.
+#[test]
+#[ignore = "gpu"]
+fn manual_screenshots_of_the_question() {
+    for (name, size) in [("pad", (1194.0, 834.0)), ("phone", (390.0, 844.0))] {
+        let mut app = IsothermApp::sample(Layout::Pad).unwrap();
+        app.workspace = Workspace::Planet;
+        let sim = isotherm_app::sim::Simulation::new(&app.doc.world, 8, false);
+        app.run.borrow_mut().sim = Some(sim);
+        app.ask = Some(isotherm_app::app::Ask::Undo);
+        let mut harness = gpu_harness_with(size, app);
+        harness.run_steps(20);
+        harness.render().unwrap();
+        harness.step();
+        screenshot::save(&mut harness, &format!("{name}-ask"));
     }
 }

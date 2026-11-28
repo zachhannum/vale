@@ -169,7 +169,8 @@ fn the_globe_fills_the_bands_outside_the_safe_area() {
 // The import, the sea level, the views, and the layouts.
 
 use isotherm_app::app::{
-    BLACK, IMPORT, IsothermApp, LAYERS_HINT, Layout, PROJECTION, SCALE_HINT, SEA_LEVEL, UNDO,
+    ATMOSPHERE, BLACK, IMPORT, IsothermApp, LAYERS_HINT, LOCKED, Layout, PROJECTION, SCALE_HINT,
+    SEA_LEVEL, STAR, Setting, UNDO, preset_name,
 };
 use isotherm_app::globe::WorldView;
 use isotherm_app::headless::harness_with;
@@ -504,6 +505,14 @@ fn check_layout(
         h.get_by_label(IMPORT);
         h.get_by_label(SEA_LEVEL);
     }
+    if workspace == Workspace::Planet {
+        for setting in Setting::ALL {
+            h.get_by_label(setting.label());
+        }
+        h.get_by_label(LOCKED);
+        h.get_by_label(&preset_name(STAR, "Yellow"));
+        h.get_by_label(&preset_name(ATMOSPHERE, "Thick"));
+    }
     if workspace.has_view() {
         h.get_by_label("Globe");
         h.get_by_label("Flat");
@@ -511,9 +520,7 @@ fn check_layout(
     let sheet = app.cards.iter().any(|(name, _)| *name == "sheet");
     assert_eq!(
         sheet,
-        layout == Layout::Pad
-            && size.0 < 600.0
-            && (workspace.has_view() || workspace == Workspace::Simulate),
+        layout == Layout::Pad && size.0 < 600.0 && workspace.has_panel(),
         "{what}"
     );
     if layout == Layout::Pad {

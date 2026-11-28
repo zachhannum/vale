@@ -116,10 +116,10 @@ Each grid size has a fixed memory. A unit test counts the bytes that the model a
 
 | Cells on each face | Cells | Memory of a run |
 | --- | --- | --- |
-| 32 | 6,144 | 6.5 MB |
-| 64 | 24,576 | 25.9 MB |
-| 128 | 98,304 | 103.6 MB |
-| 256 | 393,216 | 414.4 MB |
+| 32 | 6,144 | 6.6 MB |
+| 64 | 24,576 | 26.5 MB |
+| 128 | 98,304 | 105.8 MB |
+| 256 | 393,216 | 423.4 MB |
 
 At the start, the app reads the memory that the system still gives it. On iOS, this is the value of `os_proc_available_memory`. On other systems, the app uses a fixed budget of 1 GB. The quality setting offers a grid only if the memory of its run, plus 256 MB for the terrain, the globe, and the rest of the app, fits in that memory. The grid of 32 is always offered. Thus each class of device gets the grids that fit, and the app needs no table of device models. The oldest supported iPhone is the iPhone 8, with 2 GB of memory and iOS 16.
 
@@ -256,7 +256,7 @@ The world file is a GeoPackage that only Isotherm writes. It holds the planet re
 
 The Terrain workspace and the Explore workspace have a view card with a Globe and Flat switch and a projection list from `vale-sphere`. The layouts are those of Vale. At 600 points and wider, the panel is a card at the left. Below 600 points, the panel is a bottom sheet. A tap or a drag on the header of the sheet collapses it to the title of the workspace, and a second tap or a drag up opens it again.
 
-On iOS, the app saves the state of the model to the world file when the app leaves the foreground. The system stops the frames in the background, and the run continues when the app comes back. A pause also saves the run, and so does the end of the app on the desktop. A change to the planet, the terrain, or the sea level deletes the run. The quality setting offers only the grids that fit, as the section "Grid, time step, and memory" says.
+On iOS, the app saves the state of the model to the world file when the app leaves the foreground. The system stops the frames in the background, and the run continues when the app comes back. A pause also saves the run, and so does the end of the app on the desktop. A change to the planet, the terrain, or the sea level deletes the run. While a run exists, the app asks before such a change, and an undo or a redo also asks. A tidally locked planet has a sidereal day equal to its orbital period, and it stays locked when its distance or its star changes. The quality setting offers only the grids that fit, as the section "Grid, time step, and memory" says.
 
 Headless commands run the same crates as the app, as in Vale:
 
