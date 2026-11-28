@@ -196,6 +196,7 @@ fn phone_safe_area() -> egui::SafeAreaInsets {
 fn app_in(dir: &std::path::Path, workspace: Workspace) -> IsothermApp {
     let mut app = IsothermApp::sample(Layout::Pad).unwrap();
     app.data_dir = Some(dir.to_path_buf());
+    app.state_dir = Some(dir.to_path_buf());
     app.workspace = workspace;
     app
 }
@@ -294,7 +295,8 @@ fn an_8_bit_png_asks_for_black_and_white_and_makes_a_world_file() {
     assert_eq!(app.doc.world.terrain.high_m, 8000.0);
     assert_eq!(app.globe.uploads(), 2);
     // The next start opens this world.
-    assert_eq!(isotherm_app::worlds::last_world(dir.path()), Some(path));
+    let last = isotherm_app::worlds::last_world(dir.path()).map(|(path, _)| path);
+    assert_eq!(last, Some(path));
     h.get_by_label(IMPORT);
 }
 
