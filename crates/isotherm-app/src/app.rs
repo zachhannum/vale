@@ -105,7 +105,7 @@ impl IsothermApp {
             Some(insets) => screen - insets.0,
             None => ctx.content_rect(),
         };
-        let class = WidthClass::of(safe.width());
+        let class = WidthClass::of(screen.width());
         let mut controls = Controls::new();
         // The cards are glass when the app has a wgpu renderer.
         let backdrop = self.globe.backdrop();
@@ -120,9 +120,13 @@ impl IsothermApp {
             } else {
                 TOP_MARGIN
             };
-        // The globe fills the safe area, and the glass of the cards shows
-        // it below them.
-        self.globe.show(ui, safe, theme::CANVAS);
+        // The globe fills the screen, also the bands outside the safe area,
+        // and the glass of the cards shows it below them. The cards stay
+        // in the safe area.
+        ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
+            ui.set_clip_rect(screen);
+            self.globe.show(ui, screen, theme::CANVAS);
+        });
 
         let switch = self.switch_rect(ui, safe, class, top);
         let current = self.workspace;

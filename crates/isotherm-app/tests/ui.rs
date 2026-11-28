@@ -136,3 +136,22 @@ fn the_cards_are_plain_with_no_gpu() {
     harness.run_steps(2);
     assert!(!vale_shell::pad::widgets::is_glass(&harness.ctx));
 }
+
+#[test]
+fn the_globe_fills_the_bands_outside_the_safe_area() {
+    // The outer screen of iPhone Duo in portrait, with the column of the
+    // status bar at the right and the band of the home indicator at the bottom.
+    let mut h = harness((466.0, 678.0));
+    h.state_mut().safe_area = Some(egui::SafeAreaInsets(egui::epaint::MarginF32 {
+        left: 0.0,
+        right: 84.0,
+        top: 0.0,
+        bottom: 34.0,
+    }));
+    h.run_steps(2);
+    let screen = h.ctx.viewport_rect();
+    assert_eq!(h.state().globe.rect, screen);
+    // The card stays in the safe area.
+    let menu = h.get_by_label(WORKSPACE_MENU).rect();
+    assert!(menu.right() <= screen.right() - 84.0);
+}
