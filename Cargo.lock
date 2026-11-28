@@ -1921,6 +1921,7 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "isotherm-fields",
  "isotherm-import",
  "isotherm-store",
  "isotherm-world",

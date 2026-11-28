@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align2, CornerRadius, Rect, Sense, pos2, vec2};
+use isotherm_fields::{Means, Output, Period};
 use isotherm_import::vale_project::HeightLayer;
 use isotherm_import::{Samples, Scale};
 use isotherm_world::Terrain;
@@ -16,7 +17,8 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 use crate::cli::Args;
 use crate::document::{self, Change, Document, Read};
-use crate::globe::{Globe, WorldView};
+use crate::explore::{self, Explore};
+use crate::globe::{Globe, Overlay, WorldView};
 use crate::worlds;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -115,6 +117,11 @@ pub const REDO: &str = "Redo";
 pub const PROJECTION: &str = "Projection";
 pub const SCALE_HINT: &str = "Set the heights of black and white.";
 pub const LAYERS_HINT: &str = "Choose a height layer.";
+pub const TEMPERATURE: &str = "Temperature";
+pub const MONTH: &str = "Month";
+pub const CONTOURS: &str = "Contours";
+pub const RUN_HINT: &str = "Run the model to see the temperature.";
+pub const EMPTY_PERIOD: &str = "No values for this period yet.";
 
 /// The file types of an import.
 pub const IMPORT_TYPES: [&str; 4] = ["png", "tif", "tiff", "gpkg"];
@@ -172,6 +179,13 @@ pub struct IsothermApp {
     build: String,
     /// The safe area of a screenshot. `None`: the safe area of the system.
     pub safe_area: Option<egui::SafeAreaInsets>,
+    /// The monthly and yearly means of the last run.
+    means: Option<Means>,
+    /// The count of the calls of `set_means`.
+    means_generation: u64,
+    pub explore: Explore,
+    /// The period and the means generation of the overlay on the globe.
+    overlay_shown: Option<(Period, u64)>,
     #[cfg(target_os = "ios")]
     pub picker: Option<vale_shell::picker::Picker>,
     #[cfg(target_os = "ios")]
@@ -219,6 +233,10 @@ impl IsothermApp {
             cards: Vec::new(),
             build: crate::build::label(),
             safe_area: None,
+            means: None,
+            means_generation: 0,
+            explore: Explore::default(),
+            overlay_shown: None,
             #[cfg(target_os = "ios")]
             picker: None,
             #[cfg(target_os = "ios")]
@@ -310,8 +328,68 @@ impl IsothermApp {
         }
     }
 
+    /// Sets the means that the Explore workspace shows.
+    pub fn set_means(&mut self, means: Option<Means>) {
+        self.means = means;
+        self.means_generation += 1;
+    }
+
+    pub fn means(&self) -> Option<&Means> {
+        self.means.as_ref()
+    }
+
+    /// The temperature field of the means, if the run keeps it.
+    fn temperature(&self) -> Option<&isotherm_fields::Field> {
+        let means = self.means.as_ref()?;
+        means
+            .outputs()
+            .contains(&Output::Temperature)
+            .then(|| means.field(Output::Temperature))
+    }
+
+    /// Puts the temperature of the shown period on the globe in the Explore
+    /// workspace, and no overlay in the other workspaces.
+    fn sync_overlay(&mut self) {
+        let period = self.explore.period;
+        let filled = self
+            .temperature()
+            .is_some_and(|field| field.get(period).is_some());
+        let wanted = (self.workspace == Workspace::Explore && filled)
+            .then_some((period, self.means_generation));
+        if wanted == self.overlay_shown {
+            return;
+        }
+        self.overlay_shown = wanted;
+        let overlay = wanted.and_then(|_| {
+            let field = self.temperature()?;
+            let bands = explore::temperature_bands();
+            Some(Overlay {
+                face_size: field.face_size,
+                levels: explore::levels(&bands, field.get(period)?),
+                bands,
+            })
+        });
+        self.globe.set_overlay(overlay);
+    }
+
+    /// The text of the readout, or `None` with no place or no value.
+    pub fn readout(&self) -> Option<String> {
+        if self.workspace != Workspace::Explore {
+            return None;
+        }
+        let place = self.explore.place()?;
+        let value = explore::value_at(self.temperature()?, self.explore.period, place)?;
+        Some(format!(
+            "{} · {}",
+            explore::celsius_text(value),
+            explore::place_text(place)
+        ))
+    }
+
     /// Draws one frame.
     pub fn draw(&mut self, ui: &mut egui::Ui) {
+        self.sync_overlay();
+        self.globe.contours = self.explore.contours;
         let ctx = ui.ctx().clone();
         let screen = ctx.viewport_rect();
         let safe = match self.safe_area {
@@ -341,7 +419,15 @@ impl IsothermApp {
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.set_clip_rect(rect);
             ui.painter().rect_filled(rect, 0.0, theme::CANVAS);
-            self.globe.show(ui, rect, theme::CANVAS, &bands);
+            let resp = self.globe.show(ui, rect, theme::CANVAS, &bands);
+            let at = |pos: Option<egui::Pos2>| pos.and_then(|pos| self.globe.direction_at(pos));
+            self.explore.hover = match resp.hovered() && !resp.dragged() {
+                true => at(resp.hover_pos()),
+                false => None,
+            };
+            if resp.clicked() {
+                self.explore.pin = at(resp.interact_pointer_pos());
+            }
         });
     }
 
@@ -398,6 +484,15 @@ impl IsothermApp {
                 app.panel_rows(ui, controls, true);
             },
         );
+        self.readout_card(ui.ctx(), globe.shrink(MARGIN));
+    }
+
+    /// The readout card at the bottom middle of `area`.
+    fn readout_card(&mut self, ctx: &egui::Context, area: Rect) {
+        if let Some(text) = self.readout() {
+            let rect = explore::readout_card(ctx, area, &text);
+            self.cards.push((explore::READOUT, rect));
+        }
     }
 
     /// The pad layout: the globe fills the screen, and the cards float over
@@ -462,15 +557,23 @@ impl IsothermApp {
                     app.view_rows(ui, controls);
                 });
             }
-            if self.workspace == Workspace::Terrain {
+            if matches!(self.workspace, Workspace::Terrain | Workspace::Explore) {
                 let width = PANEL_WIDTH.min(room.width() - VIEW_WIDTH - MARGIN);
                 let height = self.measured(&ctx, "panel", 3.0 * PANEL_ROW);
                 let rect = Rect::from_min_size(room.min, vec2(width, height.min(room.height())));
-                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| {
-                    app.terrain_rows(ui, controls);
+                self.floating_card(&ctx, controls, "panel", rect, |app, ui, controls| match app
+                    .workspace
+                {
+                    Workspace::Explore => app.explore_rows(ui, controls),
+                    _ => app.terrain_rows(ui, controls),
                 });
             }
         }
+        // The readout stays above the sheet of a compact screen.
+        let sheet = self.cards.iter().find(|(id, _)| *id == "sheet");
+        let bottom = sheet.map_or(room.bottom(), |(_, rect)| rect.top() - 12.0);
+        let area = Rect::from_min_max(room.min, pos2(room.right(), bottom));
+        self.readout_card(&ctx, area);
         if class == WidthClass::Compact && self.menu {
             self.workspace_menu(&ctx, controls, switch);
         } else {
@@ -591,6 +694,10 @@ impl IsothermApp {
             self.terrain_rows(ui, controls);
             ui.add_space(12.0);
         }
+        if self.workspace == Workspace::Explore {
+            self.explore_rows(ui, controls);
+            ui.add_space(12.0);
+        }
         if self.workspace.has_view() {
             self.view_rows(ui, controls);
         }
@@ -629,6 +736,33 @@ impl IsothermApp {
             ui.add_space(4.0);
             wrapped(ui, status, theme::hint(), theme::WARN);
             ui.add_space(4.0);
+        }
+    }
+
+    /// The rows of the Explore panel: the layer, the month, the contours,
+    /// and the legend.
+    fn explore_rows(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
+        if self.temperature().is_none() {
+            ui.add_space(4.0);
+            wrapped(ui, RUN_HINT, theme::body(), theme::TEXT);
+            ui.add_space(4.0);
+            return;
+        }
+        widgets::text_row(ui, controls, TEMPERATURE, 0.0, true, true);
+        let mut value = explore::period_index(self.explore.period) as f64;
+        let text = explore::period_name(self.explore.period);
+        let resp = slider_row(ui, controls, MONTH, &mut value, 0.0..=12.0, text);
+        if resp.changed {
+            self.explore.period = explore::period_at(value.round().clamp(0.0, 12.0) as usize);
+        }
+        widgets::switch_row(ui, controls, CONTOURS, CONTOURS, &mut self.explore.contours);
+        ui.add_space(4.0);
+        explore::legend(ui, &explore::temperature_bands(), "°C");
+        let filled = self
+            .temperature()
+            .is_some_and(|field| field.get(self.explore.period).is_some());
+        if !filled {
+            wrapped(ui, EMPTY_PERIOD, theme::hint(), theme::MUTE);
         }
     }
 

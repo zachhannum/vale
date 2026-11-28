@@ -4,6 +4,7 @@ pub mod app;
 pub mod build;
 pub mod cli;
 pub mod document;
+pub mod explore;
 pub mod globe;
 #[cfg(not(target_os = "ios"))]
 pub mod headless;

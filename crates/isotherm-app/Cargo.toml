@@ -19,6 +19,7 @@ vale-globe.workspace = true
 vale-sphere.workspace = true
 vale-store.workspace = true
 vale-terrain.workspace = true
+isotherm-fields.workspace = true
 isotherm-import.workspace = true
 isotherm-store.workspace = true
 isotherm-world.workspace = true
