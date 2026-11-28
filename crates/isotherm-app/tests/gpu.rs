@@ -217,7 +217,10 @@ fn warmth(p: image::Rgba<u8>) -> i32 {
 #[ignore = "gpu"]
 fn the_equator_is_warmer_in_color_than_the_pole() {
     for view in [WorldView::Globe, WorldView::Flat] {
-        let (image, app) = render_app(explore_app(view, false));
+        // The coastline is off, so that no stroke covers a sample.
+        let mut app = explore_app(view, false);
+        app.globe.coastline = false;
+        let (image, app) = render_app(app);
         let equator = place(&image, &app, 10.0, 2.0);
         let pole = place(&image, &app, 10.0, 75.0);
         assert!(
