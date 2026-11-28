@@ -12,6 +12,7 @@ use isotherm_import::{Samples, Scale};
 use isotherm_world::Terrain;
 use vale_shell::pad::icons::{self, Icon};
 use vale_shell::pad::metrics::{PAD, TOUCH, WidthClass};
+use vale_shell::pad::motion;
 use vale_shell::pad::number::{slider_row, stepper_row};
 use vale_shell::pad::theme;
 use vale_shell::pad::widgets::{self, Controls, PANEL_ROW};
@@ -161,6 +162,16 @@ const LIST_WIDTH: f32 = 280.0;
 const CARD_PAD: f32 = 8.0;
 /// The corners of the top of a bottom sheet.
 const SHEET_RADIUS: u8 = 40;
+
+/// The space of the grabber at the top of the bottom sheet.
+const GRABBER: f32 = 16.0;
+
+/// The header of the bottom sheet: the grabber and the title of the
+/// workspace. A tap or a drag on it collapses or expands the sheet.
+const SHEET_HEADER: f32 = GRABBER + TOUCH;
+
+/// The drag in points that moves the sheet to the other detent.
+const SHEET_SNAP: f32 = 40.0;
 /// The height of the top bar and the width of the side panel of the
 /// desktop layout.
 const BAR: f32 = 56.0;
@@ -202,6 +213,10 @@ pub struct IsothermApp {
     /// The count of the calls of `set_means`.
     means_generation: u64,
     pub explore: Explore,
+    /// The bottom sheet of a compact screen shows only its header.
+    pub sheet_collapsed: bool,
+    /// The distance of the drag of the sheet header, down from its start.
+    sheet_drag: Option<f32>,
     /// The period and the means generation of the overlay on the globe.
     overlay_shown: Option<(Period, u64)>,
     /// The run of the model. The save of the iOS life cycle shares it.
@@ -276,6 +291,8 @@ impl IsothermApp {
             cards: Vec::new(),
             build: crate::build::label(),
             safe_area: None,
+            sheet_collapsed: false,
+            sheet_drag: None,
             means: None,
             means_generation: 0,
             explore: Explore::default(),
@@ -414,6 +431,7 @@ impl IsothermApp {
         };
         let mut app = IsothermApp::new(doc, args.layout());
         app.workspace = args.workspace;
+        app.sheet_collapsed = args.sheet_detent == crate::cli::SheetDetent::Title;
         app.globe.world_view = args.view;
         app.globe.flat.set_spec(args.flat_spec());
         app.safe_area = args.safe_area;
@@ -821,11 +839,21 @@ impl IsothermApp {
     }
 
     /// The bottom sheet of a compact screen, with the panel and the view
-    /// rows. It is at most half as high as the safe area.
+    /// rows below a header. It is at most half as high as the safe area,
+    /// and only as high as its header when it is collapsed.
     fn sheet(&mut self, ctx: &egui::Context, controls: &mut Controls, safe: Rect) {
         let id = "sheet";
-        let grabber = 16.0;
-        let height = (self.measured(ctx, id, 4.0 * PANEL_ROW) + grabber).min(safe.height() / 2.0);
+        let full = (self.measured(ctx, id, 4.0 * PANEL_ROW) + SHEET_HEADER)
+            .min(safe.height() / 2.0)
+            .max(SHEET_HEADER + CARD_PAD);
+        let open = motion::value(
+            ctx,
+            egui::Id::new("sheet-open"),
+            if self.sheet_collapsed { 0.0 } else { 1.0 },
+            motion::SNAPPY,
+        );
+        let low = SHEET_HEADER + CARD_PAD;
+        let height = (low + (full - low) * open - self.sheet_drag.unwrap_or(0.0)).clamp(low, full);
         let rect = Rect::from_min_max(
             pos2(safe.left() + 8.0, safe.bottom() - 8.0 - height),
             pos2(safe.right() - 8.0, safe.bottom() - 8.0),
@@ -839,21 +867,75 @@ impl IsothermApp {
         };
         let backdrop = self.globe.backdrop();
         widgets::card(ctx, backdrop, id, rect, egui::Order::Middle, radius, |ui| {
-            let handle = Rect::from_center_size(
-                pos2(rect.center().x, rect.top() + grabber / 2.0 + 2.0),
-                vec2(36.0, 5.0),
-            );
-            ui.painter().rect_filled(handle, 2.5, theme::divider());
+            let header = Rect::from_min_size(rect.min, vec2(rect.width(), SHEET_HEADER));
+            self.sheet_header(ui, controls, header, (height - low) / (full - low).max(1.0));
             let body = Rect::from_min_max(
-                pos2(rect.left() + 8.0, rect.top() + grabber + CARD_PAD),
+                pos2(rect.left() + 8.0, header.bottom()),
                 pos2(rect.right() - 8.0, rect.bottom() - CARD_PAD),
             );
+            if body.height() < 1.0 {
+                return;
+            }
             let layout = egui::Layout::top_down(egui::Align::Min);
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body).layout(layout));
+            let mut child = ui.new_child(
+                egui::UiBuilder::new()
+                    .max_rect(body)
+                    .layout(layout)
+                    .id_salt("sheet-body"),
+            );
+            child.set_clip_rect(body);
             self.scroll_body(&mut child, id, controls, |app, ui, controls| {
                 app.panel_rows(ui, controls, false);
             });
         });
+    }
+
+    /// The header of the bottom sheet in `rect`: the grabber and the title
+    /// of the workspace. A tap collapses or expands the sheet, and a drag
+    /// moves it with the finger. `open` is the part of the way from the
+    /// collapsed sheet to the open sheet, from 0 to 1.
+    fn sheet_header(&mut self, ui: &mut egui::Ui, controls: &mut Controls, rect: Rect, open: f32) {
+        let handle = Rect::from_center_size(
+            pos2(rect.center().x, rect.top() + GRABBER / 2.0 + 2.0),
+            vec2(36.0, 5.0),
+        );
+        ui.painter().rect_filled(handle, 2.5, theme::divider());
+        ui.painter().text(
+            pos2(rect.left() + 20.0, rect.top() + GRABBER + TOUCH / 2.0),
+            Align2::LEFT_CENTER,
+            self.workspace.name(),
+            theme::title(),
+            theme::TEXT,
+        );
+        let label = if self.sheet_collapsed {
+            "Expand sheet"
+        } else {
+            "Collapse sheet"
+        };
+        let resp = ui
+            .interact(rect, ui.id().with("sheet-header"), Sense::click_and_drag())
+            .on_hover_cursor(egui::CursorIcon::Grab);
+        resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        controls.push(widgets::Control {
+            name: label.to_owned(),
+            rect,
+        });
+        if resp.clicked() {
+            self.sheet_collapsed = !self.sheet_collapsed;
+        }
+        if resp.dragged() {
+            *self.sheet_drag.get_or_insert(0.0) += resp.drag_delta().y;
+        }
+        if resp.drag_stopped() {
+            let drag = self.sheet_drag.take().unwrap_or(0.0);
+            if drag > SHEET_SNAP {
+                self.sheet_collapsed = true;
+            } else if drag < -SHEET_SNAP {
+                self.sheet_collapsed = false;
+            }
+            // The sheet moves on from where the finger left it.
+            motion::set(ui.ctx(), egui::Id::new("sheet-open"), open);
+        }
     }
 
     /// The rows of the panel of the workspace, with the view rows below

@@ -38,6 +38,9 @@ pub struct Args {
     /// The size of the screenshot in points.
     #[arg(long, value_name = "WxH", default_value = "1440x900", value_parser = parse_size)]
     pub size: (f32, f32),
+    /// The detent of the bottom sheet of a compact screen.
+    #[arg(long, value_enum, default_value_t)]
+    pub sheet_detent: SheetDetent,
     /// The safe area of the screenshot, in points. An iPhone 16 in portrait
     /// has 59,0,34,0.
     #[arg(long, value_name = "T,R,B,L", value_parser = parse_safe_area)]
@@ -49,6 +52,16 @@ pub struct Args {
     /// The cells on each face of the grid of `--run-years`.
     #[arg(long, value_name = "N", default_value_t = 32, value_parser = parse_grid)]
     pub grid: usize,
+}
+
+/// The detent of the bottom sheet of a compact screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum SheetDetent {
+    /// The grabber and the title of the workspace.
+    Title,
+    /// The rows, up to half the height of the screen.
+    #[default]
+    Half,
 }
 
 impl Args {
@@ -141,6 +154,7 @@ mod tests {
         .unwrap();
         assert_eq!(args.project, Some(PathBuf::from("world.gpkg")));
         assert_eq!(args.workspace, Workspace::Terrain);
+        assert_eq!(args.sheet_detent, SheetDetent::Half);
         assert_eq!(args.layout(), Layout::Pad);
         assert_eq!(args.view, WorldView::Flat);
         assert_eq!(args.flat_projection, ProjectionKind::Mercator);
