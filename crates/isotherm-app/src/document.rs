@@ -6,9 +6,11 @@ use isotherm_import::vale_project::{self, HeightLayer, LayerId};
 use isotherm_import::{Samples, Scale};
 use isotherm_store::{Restored, WorldFile};
 use isotherm_world::{Heightmap, Planet, Terrain, World};
+use vale_shell::files::{Files, PlainFiles};
+use vale_shell::workcopy::WorkCopy;
 use vale_terrain::{FACES, TexelRect};
 
-use crate::worlds;
+use crate::worlds::{self, Folders, IsothermWorld};
 
 /// Texels on one edge of a cube face of the sample world.
 pub const SAMPLE_FACE_SIZE: usize = 256;
@@ -23,7 +25,10 @@ const SAMPLE: &[u8] = include_bytes!("../data/earth.png");
 /// The open world. A world with no file is the sample world, in memory.
 pub struct Document {
     pub world: World,
+    /// The open database: the world file, or its working copy.
     pub file: Option<WorldFile>,
+    /// The world file. A file in iCloud Drive has a working copy, which
+    /// the run keeps.
     pub path: Option<PathBuf>,
 }
 
@@ -70,7 +75,72 @@ impl Document {
         })
     }
 
-    /// Opens a world file.
+    /// The sample world as a new world file in `dir`.
+    pub fn new_earth(dir: &Path) -> Result<Document, String> {
+        let world = Document::sample()?.world;
+        Ok(Document::create(world, dir, None, &PlainFiles)?.0)
+    }
+
+    /// A new world file in `dir` from the first height layer of a Vale
+    /// project, with the name and the radius of its world. The Vale project
+    /// does not change.
+    pub fn from_vale(path: &Path, dir: &Path) -> Result<Document, String> {
+        Ok(Document::create(vale_world(path)?, dir, None, &PlainFiles)?.0)
+    }
+
+    /// Makes a new world file in `dir`, named after the world. A file in
+    /// iCloud Drive starts as a working copy, and goes to the folder as one
+    /// whole file.
+    pub fn create(
+        world: World,
+        dir: &Path,
+        folders: Option<&Folders>,
+        files: &dyn Files,
+    ) -> Result<(Document, Option<WorkCopy>), String> {
+        let error = |e: String| format!("Could not make the world: {e}.");
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("Could not make the folder of worlds: {e}."))?;
+        let path = worlds::new_path(dir, &world.name);
+        let mut work = match folders.and_then(|f| f.work_dir(&path)) {
+            Some(work_dir) => Some(
+                WorkCopy::open(&path, &work_dir, files, &IsothermWorld)
+                    .map_err(|e| error(e.to_string()))?,
+            ),
+            None => None,
+        };
+        let db = work.as_ref().map_or(path.as_path(), WorkCopy::path);
+        let _ = std::fs::remove_file(db);
+        let file = WorldFile::create(db, &world).map_err(|e| error(e.to_string()))?;
+        if let Some(work) = &mut work {
+            work.mark_changed(std::time::Instant::now());
+            work.write_back(files, &IsothermWorld)
+                .map_err(|e| error(e.to_string()))?;
+        }
+        let doc = Document {
+            world,
+            file: Some(file),
+            path: Some(path),
+        };
+        Ok((doc, work))
+    }
+
+    /// Opens a world file. A file in iCloud Drive opens as a working copy.
+    pub fn open_in(
+        source: &Path,
+        folders: Option<&Folders>,
+        files: &dyn Files,
+    ) -> Result<(Document, Option<WorkCopy>), String> {
+        let Some(work_dir) = folders.and_then(|f| f.work_dir(source)) else {
+            return Ok((Document::open(source)?, None));
+        };
+        let work = WorkCopy::open(source, &work_dir, files, &IsothermWorld)
+            .map_err(|e| format!("Could not open {}: {e}.", file_name(source)))?;
+        let mut doc = Document::open(work.path())?;
+        doc.path = Some(source.to_path_buf());
+        Ok((doc, Some(work)))
+    }
+
+    /// Opens a world file in place.
     pub fn open(path: &Path) -> Result<Document, String> {
         let (file, world) = WorldFile::open(path)
             .map_err(|e| format!("Could not open {}: {e}.", file_name(path)))?;
@@ -180,6 +250,26 @@ impl Document {
             }
         }
     }
+}
+
+/// The world of the first height layer of a Vale project.
+pub fn vale_world(path: &Path) -> Result<World, String> {
+    let file = file_name(path);
+    let read = |e: isotherm_import::ImportError| format!("Could not read {file}: {e}.");
+    let layers = vale_project::height_layers(path).map_err(read)?;
+    let layer = layers
+        .first()
+        .ok_or_else(|| format!("{file} has no height layers."))?;
+    let terrain = layer_terrain(path, layer.id)?;
+    let vale = vale_project::world(path).map_err(read)?;
+    Ok(World {
+        name: vale.name,
+        planet: Planet {
+            radius_m: vale.radius_m,
+            ..Planet::earth()
+        },
+        terrain,
+    })
 }
 
 /// The name of a file with no folder.
@@ -308,6 +398,86 @@ fn stretch_signed_16(samples: Samples) -> Samples {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Writes a Vale project with one height layer of face size 64.
+    pub fn write_vale(path: &Path) {
+        use vale_store::{HEIGHT_UNIT, Project, ProjectFile};
+        let world = vale_store::World {
+            name: "Aurelia".to_owned(),
+            radius_km: 3_000.0,
+            ..vale_store::World::default()
+        };
+        let mut project = Project::new(world);
+        project.add_raster("Height".to_owned(), 64, HEIGHT_UNIT.into(), -6000.0, 6000.0);
+        ProjectFile::create(path, &project).unwrap();
+    }
+
+    #[test]
+    fn a_new_earth_is_a_world_file_named_earth() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = Document::new_earth(dir.path()).unwrap();
+        assert_eq!(doc.path, Some(dir.path().join("Earth.gpkg")));
+        assert_eq!(doc.world.name, "Earth");
+        let again = Document::new_earth(dir.path()).unwrap();
+        assert_eq!(again.path, Some(dir.path().join("Earth 2.gpkg")));
+        assert_eq!(
+            isotherm_store::summary(dir.path().join("Earth.gpkg"))
+                .unwrap()
+                .name,
+            "Earth"
+        );
+    }
+
+    #[test]
+    fn a_world_from_a_vale_project_has_its_name_radius_and_heights() {
+        let dir = tempfile::tempdir().unwrap();
+        let vale = dir.path().join("Project.gpkg");
+        write_vale(&vale);
+        let before = std::fs::read(&vale).unwrap();
+        let worlds = dir.path().join("worlds");
+        let doc = Document::from_vale(&vale, &worlds).unwrap();
+        assert_eq!(doc.world.name, "Aurelia");
+        assert_eq!(doc.world.planet.radius_m, 3_000_000.0);
+        assert_eq!(doc.world.terrain.heights.face_size(), 64);
+        assert_eq!(doc.path, Some(worlds.join("Aurelia.gpkg")));
+        assert_eq!(std::fs::read(&vale).unwrap(), before);
+
+        let empty = dir.path().join("Empty.gpkg");
+        let project = vale_store::Project::new(vale_store::World::default());
+        vale_store::ProjectFile::create(&empty, &project).unwrap();
+        let error = Document::from_vale(&empty, &worlds).err().unwrap();
+        assert_eq!(error, "Empty.gpkg has no height layers.");
+    }
+
+    #[test]
+    fn a_world_in_the_cloud_opens_as_a_working_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folders = Folders::new(dir.path().join("local"), dir.path().join("state"));
+        folders.set_cloud(Some(dir.path().join("cloud")));
+        let files = PlainFiles;
+        let cloud = folders.cloud().unwrap().to_path_buf();
+        let world = World::flat("Borea", Planet::earth(), 8);
+        let (doc, work) = Document::create(world, &cloud, Some(&folders), &files).unwrap();
+        let source = cloud.join("Borea.gpkg");
+        assert_eq!(doc.path.as_deref(), Some(source.as_path()));
+        assert!(source.is_file());
+        let work = work.unwrap();
+        assert_eq!(work.path(), dir.path().join("state/work/Borea.gpkg"));
+        drop((doc, work));
+
+        let (mut doc, work) = Document::open_in(&source, Some(&folders), &files).unwrap();
+        let mut work = work.unwrap();
+        doc.file.as_mut().unwrap().set_name("Cirra").unwrap();
+        assert_eq!(isotherm_store::summary(&source).unwrap().name, "Borea");
+        work.mark_changed(std::time::Instant::now());
+        work.write_back(&files, &IsothermWorld).unwrap();
+        assert_eq!(isotherm_store::summary(&source).unwrap().name, "Cirra");
+
+        let local = Document::new_earth(&dir.path().join("local")).unwrap();
+        let path = local.path.clone().unwrap();
+        let (_, work) = Document::open_in(&path, Some(&folders), &files).unwrap();
+        assert!(work.is_none());
+    }
 
     #[test]
     fn the_sea_level_of_the_sample_spans_the_heights_of_the_earth() {

@@ -100,7 +100,10 @@ fn the_imported_world_draws_land_and_sea() {
     let png = dir.path().join("Halves.png");
     write_png(&png);
     let mut app = IsothermApp::sample(Layout::Pad).unwrap();
-    app.data_dir = Some(dir.path().to_path_buf());
+    app.folders = Some(isotherm_app::worlds::Folders::new(
+        dir.path().to_path_buf(),
+        dir.path().to_path_buf(),
+    ));
     app.import_path(&png);
     let Some(isotherm_app::app::Pending::Scale { name, samples, .. }) = app.pending.take() else {
         panic!("no scale form: {:?}", app.status);

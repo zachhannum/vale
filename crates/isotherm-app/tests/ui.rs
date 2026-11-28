@@ -195,7 +195,10 @@ fn phone_safe_area() -> egui::SafeAreaInsets {
 /// worlds.
 fn app_in(dir: &std::path::Path, workspace: Workspace) -> IsothermApp {
     let mut app = IsothermApp::sample(Layout::Pad).unwrap();
-    app.data_dir = Some(dir.to_path_buf());
+    app.folders = Some(isotherm_app::worlds::Folders::new(
+        dir.to_path_buf(),
+        dir.to_path_buf(),
+    ));
     app.state_dir = Some(dir.to_path_buf());
     app.workspace = workspace;
     app

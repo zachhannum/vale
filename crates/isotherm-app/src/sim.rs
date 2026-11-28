@@ -9,6 +9,10 @@ use std::time::Instant;
 use isotherm_fields::{Means, Output, Period};
 use isotherm_sim::{Grid, Model, RunState, STEPS_PER_MONTH, STEPS_PER_YEAR};
 use isotherm_world::World;
+use vale_shell::files::Files;
+use vale_shell::workcopy::WorkCopy;
+
+use crate::worlds::IsothermWorld;
 
 /// The steps of each frame. The speed changes only how fast a run goes,
 /// not its result.
@@ -304,12 +308,15 @@ pub fn summary(means: &Means) -> Option<(f64, f64)> {
     Some((mean(all), mean(eq) - mean(pole)))
 }
 
-/// The run of the open world, and the world file that a save writes. The
+/// The run of the open world, and the database that a save writes. The
 /// app and the save of the iOS life cycle share it.
 #[derive(Default)]
 pub struct Run {
     pub sim: Option<Simulation>,
+    /// The open database: the world file, or its working copy.
     pub path: Option<PathBuf>,
+    /// The working copy of a world file in iCloud Drive.
+    pub work: Option<WorkCopy>,
 }
 
 impl Run {
@@ -322,7 +329,30 @@ impl Run {
         let state = sim.snapshot()?;
         isotherm_store::RunFile::open(path)
             .and_then(|mut file| file.save_run(&state))
-            .map_err(|e| format!("Could not save the run: {e}."))
+            .map_err(|e| format!("Could not save the run: {e}."))?;
+        self.changed();
+        Ok(())
+    }
+
+    /// Notes a change of the working copy.
+    pub fn changed(&mut self) {
+        if let Some(work) = &mut self.work {
+            work.mark_changed(Instant::now());
+        }
+    }
+
+    /// True if the working copy waits long enough for its write back.
+    pub fn write_back_due(&self) -> bool {
+        self.work.as_ref().is_some_and(|w| w.due(Instant::now()))
+    }
+
+    /// Copies the changed working copy to the world file.
+    pub fn write_back(&mut self, files: &dyn Files) -> Result<(), String> {
+        let Some(work) = &mut self.work else {
+            return Ok(());
+        };
+        work.write_back(files, &IsothermWorld)
+            .map_err(|e| format!("Could not save the world to iCloud Drive: {e}."))
     }
 }
 

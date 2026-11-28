@@ -15,6 +15,7 @@ pub mod thumbnail;
 pub mod worlds;
 
 use eframe::egui;
+use vale_shell::files::Files;
 
 /// Opens the window and runs until it closes.
 pub fn run(args: cli::Args) -> eframe::Result {
@@ -29,8 +30,14 @@ pub fn run(args: cli::Args) -> eframe::Result {
         options,
         Box::new(move |cc| {
             let state = worlds::state_dir();
-            let mut app = app::IsothermApp::from_args(&args, state.as_deref())?;
-            app.data_dir = worlds::default_dir();
+            let folders = worlds::default_dir()
+                .zip(state.clone())
+                .map(|(local, state)| worlds::Folders::new(local, state));
+            #[cfg(target_os = "ios")]
+            let files: Box<dyn Files> = Box::new(vale_shell::cloud::CloudFiles);
+            #[cfg(not(target_os = "ios"))]
+            let files: Box<dyn Files> = Box::new(vale_shell::files::PlainFiles);
+            let mut app = app::IsothermApp::from_args_in(&args, state.as_deref(), folders, files)?;
             app.set_threaded();
             if let Some(render_state) = &cc.wgpu_render_state {
                 app.globe.attach(render_state);
@@ -52,12 +59,28 @@ pub fn run(args: cli::Args) -> eframe::Result {
                 // goes on when they come back. The save runs at two
                 // notifications, so a frame that holds the run at the first
                 // one does not stop the save.
-                let run = app.run.clone();
+                // The system gives the iCloud folder on a worker thread, and
+                // the next frame takes it.
+                let (cloud, ctx) = (app.cloud_dir.clone(), cc.egui_ctx.clone());
+                vale_shell::cloud::watch_container(move |dir| {
+                    if let Ok(mut slot) = cloud.lock() {
+                        *slot = Some(dir);
+                    }
+                    ctx.request_repaint();
+                });
+                let (run, resume) = (app.run.clone(), app.resume.clone());
                 let save = Box::new(move || {
-                    if let Ok(mut run) = run.try_borrow_mut()
-                        && let Err(e) = run.save()
+                    if let Ok(mut run) = run.try_borrow_mut() {
+                        let saved = run.save();
+                        let written = run.write_back(&vale_shell::cloud::CloudFiles);
+                        if let Err(e) = saved.and(written) {
+                            eprintln!("isotherm-app: {e}");
+                        }
+                    }
+                    if let (Some(dir), Ok(resume)) = (&state, resume.try_borrow())
+                        && let Some((path, view)) = &*resume
                     {
-                        eprintln!("isotherm-app: {e}");
+                        let _ = worlds::remember(dir, path, *view);
                     }
                 });
                 app.lifecycle = vale_shell::lifecycle::Observer::new(save);
