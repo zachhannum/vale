@@ -102,7 +102,26 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 
 ## The climate model
 
-The model runs on a cube-sphere grid. A cube sphere is a cube whose six faces are pressed onto the sphere. It has no pole singularity, and its cells are close to equal in area. The default grid has 64 × 64 cells on each face for the live view, and 128 or 256 for a final run. The time step is fixed, and the step count of each year is fixed, so a slow GPU takes longer but gets the same result.
+The model runs on a cube-sphere grid. A cube sphere is a cube whose six faces are pressed onto the sphere. It has no pole singularity, and its cells are close to equal in area. The grid has the layout of the cube map of `vale-terrain`, so a cell of the model is a texel of a cube map of the same size.
+
+### Grid, time step, and memory
+
+The quality setting gives the number of cells on each face of the grid: 32 (Coarse), 64 (Medium), 128 (Fine), or 256 (Finest). A new run uses 32, the grid of the live view. A larger grid is for a final run, which takes longer.
+
+A year has 360 steps, and a month has 30 steps. The time step is the orbital period divided by 360, so a step of the Earth is about 1.01 days. The step is implicit, so it is stable at each grid size and on each orbit. The speed setting changes only the number of steps in each frame. A slow device thus takes longer but gets the same result.
+
+In this version, the CPU version of `isotherm-sim` runs the model on a worker thread. A model year takes about 1.4 s at 32 and 9.8 s at 64 on a desktop CPU. The quality setting offers grids up to 64 on iOS and up to 128 on the desktop. The grids of 128 and 256 on a device need the full step on the GPU, which is later work.
+
+Each grid size has a fixed memory. A unit test counts the bytes that the model allocates at each grid size, and the table gives these counts, in MB of 2²⁰ bytes. The count includes the grid tables, the state, the work buffers of the solver, the monthly and yearly means, one copy of the state while the app saves it, and the temperature layer of the globe.
+
+| Cells on each face | Cells | Memory of a run |
+| --- | --- | --- |
+| 32 | 6,144 | 6.5 MB |
+| 64 | 24,576 | 25.9 MB |
+| 128 | 98,304 | 103.6 MB |
+| 256 | 393,216 | 414.4 MB |
+
+At the start, the app reads the memory that the system still gives it. On iOS, this is the value of `os_proc_available_memory`. On other systems, the app uses a fixed budget of 1 GB. The quality setting offers a grid only if the memory of its run, plus 256 MB for the terrain, the globe, and the rest of the app, fits in that memory. The grid of 32 is always offered. Thus each class of device gets the grids that fit, and the app needs no table of device models. The oldest supported iPhone is the iPhone 8, with 2 GB of memory and iOS 16.
 
 `docs/isotherm/SCIENCE.md` gives the equations of the model and the published source of each part.
 
@@ -237,12 +256,13 @@ The world file is a GeoPackage that only Isotherm writes. It holds the planet re
 
 The Terrain workspace and the Explore workspace have a view card with a Globe and Flat switch and a projection list from `vale-sphere`. The layouts are those of Vale. At 600 points and wider, the panel is a card at the left. Below 600 points, the panel is a bottom sheet.
 
-On iOS, a run stops when the app goes to the background, and the state of the model is saved to the project file. The run continues when the app comes back. The quality setting picks a coarser grid on devices with less memory. The app reads the GPU limits of the device at the start and does not offer a grid that does not fit.
+On iOS, the app saves the state of the model to the world file when the app leaves the foreground. The system stops the frames in the background, and the run continues when the app comes back. A pause also saves the run, and so does the end of the app on the desktop. A change to the planet, the terrain, or the sea level deletes the run. The quality setting offers only the grids that fit, as the section "Grid, time step, and memory" says.
 
 Headless commands run the same crates as the app, as in Vale:
 
 ```sh
 cargo run --release -p isotherm-app -- --project world.gpkg --run-years 30 --export-geojson koppen zones.geojson
+cargo run --release -p isotherm-app -- --project world.gpkg --run-years 30 --grid 64
 cargo run --release -p isotherm-app -- --preset earth --run-years 30 --score-koppen
 cargo run --release -p isotherm-app -- --layout pad --screenshot target/app/pad.png --size 1194x834
 ```
@@ -281,7 +301,7 @@ The Vale repository holds both apps. These rules of the repository apply to Isot
 | Risk | Answer |
 | --- | --- |
 | The model is too slow on an iPhone. | The grid scales from 32 to 256 cells per face. The live view uses a coarse grid, and a final run can take longer. Tier 1 and tier 2 are 2D, and they fit a phone GPU. |
-| iOS memory limits. | Keep each grid in f16 on the GPU where the precision allows. Keep only the monthly means, not each step. Measure on the oldest supported device in phase 2. |
+| iOS memory limits. | Keep each grid in f16 on the GPU where the precision allows. Keep only the monthly means, not each step. A unit test counts the memory of each grid, and the app offers only the grids that fit in the memory that the system gives at the start. |
 | The results are not plausible. | The checks of the Earth preset against observations in CI from phase 2, the Köppen score from phase 3, and a gallery of reference worlds (a desert world, an ocean world, a tidally locked world) with screenshot tests. |
 | The GPU results differ by vendor. | The CPU reference and the tolerance tests. The class maps compare by agreement, not by exact pixels. |
 | A slower CI for both apps. | Path filters, and the existing rule to test only the crates that a change touches. |
