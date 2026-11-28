@@ -6,4 +6,5 @@ pub mod files;
 #[cfg(target_os = "ios")]
 pub mod lifecycle;
 pub mod pad;
+pub mod resume;
 pub mod workcopy;
