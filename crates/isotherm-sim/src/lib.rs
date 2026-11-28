@@ -4,6 +4,7 @@ use std::f64::consts::PI;
 
 pub mod grid;
 pub mod ops;
+pub mod solver;
 pub mod sun;
 
 pub use grid::{Edge, Grid, Vector};

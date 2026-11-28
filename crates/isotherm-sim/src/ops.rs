@@ -60,21 +60,7 @@ impl<'g> Ops<'g> {
     /// is the mean gradient, with its part along the line between the two
     /// centers replaced by the difference of the two values.
     pub fn laplacian(&mut self, q: &[f64], k: Option<&[f64]>, out: &mut [f64]) {
-        let grid = self.grid;
-        gradient(grid, q, &mut self.gradient);
-        let g = &self.gradient;
-        for (i, out) in out.iter_mut().enumerate() {
-            let mut sum = 0.0;
-            for e in grid.edges(i) {
-                let j = e.neighbor as usize;
-                let mean = scale(add(g[i], g[j]), 0.5);
-                let along = (q[j] - q[i]) / e.distance - dot(mean, e.tangent);
-                let g_e = add(mean, scale(e.tangent, along));
-                let k_e = k.map_or(1.0, |k| 0.5 * (k[i] + k[j]));
-                sum += e.length * k_e * dot(g_e, e.normal);
-            }
-            *out = sum / grid.area(i);
-        }
+        laplacian(self.grid, q, k, &mut self.gradient, out);
     }
 
     /// `−∇·(u q)`, with second-order upwind values at the edges. With
@@ -132,6 +118,110 @@ impl<'g> Ops<'g> {
         };
         scale(add(at(i, e.mid_offset), at(j, r_j)), 0.5)
     }
+}
+
+/// The Laplacian of [`Ops::laplacian`], with `g` as scratch space for the
+/// gradient.
+pub fn laplacian(grid: &Grid, q: &[f64], k: Option<&[f64]>, g: &mut [Vector], out: &mut [f64]) {
+    gradient(grid, q, g);
+    for (i, out) in out.iter_mut().enumerate() {
+        let mut sum = 0.0;
+        for e in grid.edges(i) {
+            let j = e.neighbor as usize;
+            let mean = scale(add(g[i], g[j]), 0.5);
+            let along = (q[j] - q[i]) / e.distance - dot(mean, e.tangent);
+            let g_e = add(mean, scale(e.tangent, along));
+            let k_e = k.map_or(1.0, |k| 0.5 * (k[i] + k[j]));
+            sum += e.length * k_e * dot(g_e, e.normal);
+        }
+        *out = sum / grid.area(i);
+    }
+}
+
+/// The entries of each row of a [`Stencil`]: the cell, its 4 neighbors, and
+/// the 8 cells next to those.
+pub const STENCIL_WIDTH: usize = 13;
+
+/// The Laplacian of [`laplacian`] with `k = 1`, as a sparse matrix with a
+/// fixed row width. The row of a cell holds the cell, its neighbors, and
+/// their neighbors. A row with fewer cells has entries of weight 0.
+#[derive(Clone, Debug)]
+pub struct Stencil {
+    columns: Vec<[u32; STENCIL_WIDTH]>,
+    weights: Vec<[f64; STENCIL_WIDTH]>,
+}
+
+impl Stencil {
+    pub fn new(grid: &Grid) -> Stencil {
+        let n = grid.len();
+        let mut columns = Vec::with_capacity(n);
+        let mut weights = Vec::with_capacity(n);
+        let mut row: Vec<(u32, f64)> = Vec::with_capacity(32);
+        fn add(row: &mut Vec<(u32, f64)>, cell: usize, w: f64) {
+            match row.iter_mut().find(|(c, _)| *c as usize == cell) {
+                Some((_, v)) => *v += w,
+                None => row.push((cell as u32, w)),
+            }
+        }
+        // `s` times the gradient of cell `c` dotted with `m`.
+        let add_gradient = |row: &mut Vec<(u32, f64)>, c: usize, m: Vector, s: f64| {
+            for (e, w) in grid.edges(c).iter().zip(grid.lsq(c)) {
+                let coefficient = s * dot(m, *w);
+                add(row, e.neighbor as usize, coefficient);
+                add(row, c, -coefficient);
+            }
+        };
+        for i in 0..n {
+            row.clear();
+            add(&mut row, i, 0.0);
+            let scale_i = 1.0 / grid.area(i);
+            for e in grid.edges(i) {
+                let j = e.neighbor as usize;
+                let nt = dot(e.normal, e.tangent);
+                let m = sub(e.normal, scale(e.tangent, nt));
+                let s = e.length * scale_i;
+                add(&mut row, j, s * nt / e.distance);
+                add(&mut row, i, -s * nt / e.distance);
+                add_gradient(&mut row, i, m, 0.5 * s);
+                add_gradient(&mut row, j, m, 0.5 * s);
+            }
+            assert!(row.len() <= STENCIL_WIDTH, "a row has {} cells", row.len());
+            let mut c = [i as u32; STENCIL_WIDTH];
+            let mut w = [0.0; STENCIL_WIDTH];
+            for (k, &(cell, weight)) in row.iter().enumerate() {
+                c[k] = cell;
+                w[k] = weight;
+            }
+            columns.push(c);
+            weights.push(w);
+        }
+        Stencil { columns, weights }
+    }
+
+    /// `out = ∇²q`.
+    pub fn apply(&self, q: &[f64], out: &mut [f64]) {
+        for ((out, c), w) in out.iter_mut().zip(&self.columns).zip(&self.weights) {
+            let mut sum = 0.0;
+            for k in 0..STENCIL_WIDTH {
+                sum += w[k] * q[c[k] as usize];
+            }
+            *out = sum;
+        }
+    }
+
+    /// The weight of the cell itself in its row. The first entry of a row
+    /// is the cell.
+    pub fn diagonal(&self, i: usize) -> f64 {
+        self.weights[i][0]
+    }
+
+    pub fn heap_bytes(&self) -> u64 {
+        (self.columns.capacity() * size_of::<[u32; STENCIL_WIDTH]>()
+            + self.weights.capacity() * size_of::<[f64; STENCIL_WIDTH]>()) as u64
+    }
+
+    /// The bytes of one row.
+    pub const BYTES_PER_CELL: u64 = (STENCIL_WIDTH * 12) as u64;
 }
 
 /// The least-squares gradient of `q`.

@@ -148,6 +148,20 @@ impl Grid {
         (face * self.n + y) * self.n + x
     }
 
+    /// The bytes that the tables allocate on the heap.
+    pub fn heap_bytes(&self) -> u64 {
+        (self.centers.capacity() * size_of::<Vector>()
+            + self.areas.capacity() * size_of::<f64>()
+            + self.edges.capacity() * size_of::<[Edge; 4]>()
+            + self.lsq.capacity() * size_of::<[Vector; 4]>()) as u64
+    }
+
+    /// The bytes of the tables of one cell.
+    pub fn bytes_per_cell() -> u64 {
+        (size_of::<Vector>() + size_of::<f64>() + size_of::<[Edge; 4]>() + size_of::<[Vector; 4]>())
+            as u64
+    }
+
     /// The face, the column, and the row of a cell.
     pub fn face_xy(&self, i: usize) -> (usize, usize, usize) {
         let n = self.n;
