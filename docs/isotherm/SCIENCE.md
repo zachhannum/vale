@@ -18,6 +18,24 @@ The project must not copy code from these climate models. Their licenses are GPL
 
 ## Tier 1: energy balance
 
+### Grid and operators
+
+The grid is an equiangular cube sphere: each face of a cube is split into `n` by `n` cells of equal angle, and the faces are pressed onto the sphere. The area of a cell is exact. On a face with flat coordinates `a` and `b`, the area between the face center and the point `(a, b)` is `atan(ab / sqrt(1 + a² + b²))`.
+
+Each cell has four neighbors, one through each edge, also at the face edges and at the corners. Values and vectors are on the cell centers. A vector is a 3D tangent vector, so the operators need no basis for each face.
+
+The operators are finite-volume operators.
+
+- The gradient of a cell is a least-squares fit to its four neighbors, in the gnomonic plane (the plane that touches the sphere at the cell center), with weights `1/r²`.
+- A value at an edge is the mean of the two linear reconstructions `q + ∇q · r` from the cells on its two sides. Across a face edge, the two cell centers are not opposite the edge midpoint, so the mean of the two cell values has a large error there.
+- The divergence of `u` is `(1/A) Σ L (u_e · n)`, with `L` the length of an edge, `n` its outward normal, and `u_e` the reconstructed vector at its midpoint.
+- The Laplacian `∇·(k∇q)` takes the mean gradient at each edge and replaces its part along the line between the two centers with `(q_j − q_i) / d`. This is the correction for a grid that is not orthogonal.
+- The advection `−∇·(uq)` takes the reconstructed value of the upwind cell. A Barth–Jespersen limiter can keep each edge value within the values of the cell and its neighbors.
+
+The Laplacian and the advection conserve the total of `q` to rounding. On the unit sphere at `n = 32`, the Laplacian of a spherical harmonic has an RMS error of 1 to 2 %. Its largest error, near 6 %, is at the face edges, and it does not get smaller on a finer grid.
+
+Sources: Ronchi, Iacono, and Paolucci (1996), Rančić, Purser, and Mesinger (1996), Barth and Jespersen (1989), Jasak (1996), Ferziger and Perić (2002).
+
 ### Energy balance of a cell
 
 Each cell has one surface temperature `T`. Its change in each step is the sum of the flows of energy into the cell.
@@ -355,6 +373,8 @@ Adler, R., Wang, J.-J., Sapiano, M., Huffman, G., Chiu, L., Xie, P.-P., Ferraro,
 
 Adler, R. F., Sapiano, M. R. P., Huffman, G. J., Wang, J.-J., Gu, G., Bolvin, D., Chiu, L., Schneider, U., Becker, A., Nelkin, E., Xie, P., Ferraro, R., & Shin, D.-B. (2018). The Global Precipitation Climatology Project (GPCP) monthly analysis (new version 2.3) and a review of 2017 global precipitation. Atmosphere, 9(4), 138. https://doi.org/10.3390/atmos9040138
 
+Barth, T. J., & Jespersen, D. C. (1989). The design and application of upwind schemes on unstructured meshes. AIAA Paper 89-0366. https://doi.org/10.2514/6.1989-366
+
 Beck, H. E., McVicar, T. R., Vergopolan, N., Berg, A., Lutsko, N. J., Dufour, A., Zeng, Z., Jiang, X., van Dijk, A. I. J. M., & Miralles, D. G. (2023). High-resolution (1 km) Köppen-Geiger maps for 1901–2099 based on constrained CMIP6 projections. Scientific Data, 10, 724. https://doi.org/10.1038/s41597-023-02549-6
 
 Berger, A. L. (1978). Long-term variations of daily insolation and Quaternary climatic changes. Journal of the Atmospheric Sciences, 35(12), 2362–2367. https://doi.org/10.1175/1520-0469(1978)035<2362:ltvodi>2.0.co;2
@@ -366,6 +386,8 @@ Budyko, M. I. (1969). The effect of solar radiation variations on the climate of
 Copernicus Climate Change Service. (2019). ERA5 monthly averaged data on single levels from 1940 to present. Copernicus Climate Change Service (C3S) Climate Data Store (CDS). https://doi.org/10.24381/cds.f17050d7
 
 Ekman, V. W. (1905). On the influence of the earth's rotation on ocean-currents. Arkiv för Matematik, Astronomi och Fysik, 2(11), 1–52.
+
+Ferziger, J. H., & Perić, M. (2002). Computational Methods for Fluid Dynamics (3rd ed.). Springer.
 
 Forgan, D. (2014). Assessing circumbinary habitable zones using latitudinal energy balance modelling. Monthly Notices of the Royal Astronomical Society, 437(2), 1352–1361. https://doi.org/10.1093/mnras/stt1964
 
@@ -384,6 +406,8 @@ Hersbach, H., Bell, B., Berrisford, P., Hirahara, S., Horányi, A., Muñoz-Sabat
 Holton, J. R., & Hakim, G. J. (2013). An Introduction to Dynamic Meteorology (5th ed.). Academic Press.
 
 Hwang, Y.-T., & Frierson, D. M. W. (2010). Increasing atmospheric poleward energy transport with global warming. Geophysical Research Letters, 37(24), L24807. https://doi.org/10.1029/2010gl045440
+
+Jasak, H. (1996). Error analysis and estimation for the finite volume method with applications to fluid flows (PhD thesis). Imperial College London.
 
 Jennings, K. S., Winchell, T. S., Livneh, B., & Molotch, N. P. (2018). Spatial variation of the rain–snow temperature threshold across the Northern Hemisphere. Nature Communications, 9, 1148. https://doi.org/10.1038/s41467-018-03629-7
 
@@ -415,7 +439,11 @@ Pierrehumbert, R. T. (2010). Principles of Planetary Climate. Cambridge Universi
 
 Pierrehumbert, R. T. (2011). A palette of climates for Gliese 581g. The Astrophysical Journal Letters, 726(1), L8. https://doi.org/10.1088/2041-8205/726/1/l8
 
+Rančić, M., Purser, R. J., & Mesinger, F. (1996). A global shallow-water model using an expanded spherical cube: Gnomonic versus conformal coordinates. Quarterly Journal of the Royal Meteorological Society, 122(532), 959–982. https://doi.org/10.1002/qj.49712253209
+
 Roe, G. H. (2005). Orographic precipitation. Annual Review of Earth and Planetary Sciences, 33, 645–671. https://doi.org/10.1146/annurev.earth.33.092203.122541
+
+Ronchi, C., Iacono, R., & Paolucci, P. S. (1996). The "cubed sphere": A new method for the solution of partial differential equations in spherical geometry. Journal of Computational Physics, 124(1), 93–114. https://doi.org/10.1006/jcph.1996.0047
 
 Sellers, W. D. (1969). A global climatic model based on the energy balance of the earth-atmosphere system. Journal of Applied Meteorology, 8(3), 392–400. https://doi.org/10.1175/1520-0450(1969)008<0392:agcmbo>2.0.co;2
 
