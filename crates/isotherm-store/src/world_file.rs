@@ -14,11 +14,11 @@ use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, Transaction,
 use crate::tile;
 
 /// The version of the `isotherm_` tables that this code writes.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 /// One step for each format version. Step `n` changes a file of version `n`
 /// to version `n + 1`. A new version adds a step and never changes an old one.
-const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1];
+const MIGRATIONS: &[fn(&Transaction) -> rusqlite::Result<()>] = &[v1, v2];
 
 /// The most undo steps that the file keeps.
 pub const UNDO_STEPS: usize = 100;
@@ -570,57 +570,136 @@ fn v1(tx: &Transaction) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// The mass of the star, the methane, and the sidereal day in place of the
+/// solar day, in the planet and in the planets of the undo log.
+fn v2(tx: &Transaction) -> rusqlite::Result<()> {
+    let old: Option<Vec<f64>> = tx
+        .query_row(
+            "SELECT radius_m, gravity, luminosity_w, temperature_k, semi_major_m,
+               eccentricity, perihelion_deg, day_s, tilt_deg, surface_pressure_pa, co2_ppm
+             FROM isotherm_planet",
+            [],
+            |r| (0..11).map(|i| r.get(i)).collect(),
+        )
+        .optional()?;
+    tx.execute_batch(
+        "ALTER TABLE isotherm_planet ADD COLUMN star_mass_kg REAL NOT NULL DEFAULT 0;
+         ALTER TABLE isotherm_planet ADD COLUMN sidereal_day_s REAL NOT NULL DEFAULT 0;
+         ALTER TABLE isotherm_planet ADD COLUMN ch4_ppm REAL NOT NULL DEFAULT 0;
+         ALTER TABLE isotherm_planet DROP COLUMN day_s;",
+    )?;
+    if let Some(old) = old {
+        let n = numbers_from_v1(&old);
+        tx.execute(
+            "UPDATE isotherm_planet SET star_mass_kg = ?1, sidereal_day_s = ?2, ch4_ppm = ?3",
+            params![n[4], n[8], n[12]],
+        )?;
+    }
+    let blobs: Vec<(i64, Vec<u8>)> = tx
+        .prepare("SELECT id, planet FROM isotherm_undo WHERE planet IS NOT NULL")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    for (id, blob) in blobs {
+        let (head, moons) = split_blob(&blob, 11)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let planet = planet_from_numbers(numbers_from_v1(&head), moons);
+        tx.execute(
+            "UPDATE isotherm_undo SET planet = ?1 WHERE id = ?2",
+            params![planet_blob(&planet), id],
+        )?;
+    }
+    Ok(())
+}
+
 /// The numbers of a planet before its moons, in the order of the columns of
 /// `isotherm_planet`.
-fn planet_numbers(p: &Planet) -> [f64; 11] {
+fn planet_numbers(p: &Planet) -> [f64; PLANET_NUMBERS] {
     [
         p.radius_m,
         p.gravity,
         p.star.luminosity_w,
         p.star.temperature_k,
+        p.star.mass_kg,
         p.orbit.semi_major_m,
         p.orbit.eccentricity,
         p.orbit.perihelion_deg,
-        p.rotation.day_s,
+        p.rotation.sidereal_day_s,
         p.rotation.tilt_deg,
         p.atmosphere.surface_pressure_pa,
         p.atmosphere.co2_ppm,
+        p.atmosphere.ch4_ppm,
     ]
 }
 
-fn planet_from_numbers(n: [f64; 11], moons: Vec<Moon>) -> Planet {
+/// The count of the numbers of `planet_numbers`.
+const PLANET_NUMBERS: usize = 13;
+
+/// The columns of `isotherm_planet` in the order of `planet_numbers`.
+const PLANET_COLUMNS: &str = "radius_m, gravity, luminosity_w, temperature_k, star_mass_kg,
+    semi_major_m, eccentricity, perihelion_deg, sidereal_day_s, tilt_deg,
+    surface_pressure_pa, co2_ppm, ch4_ppm";
+
+fn planet_from_numbers(n: [f64; PLANET_NUMBERS], moons: Vec<Moon>) -> Planet {
     Planet {
         radius_m: n[0],
         gravity: n[1],
         star: Star {
             luminosity_w: n[2],
             temperature_k: n[3],
+            mass_kg: n[4],
         },
         orbit: Orbit {
-            semi_major_m: n[4],
-            eccentricity: n[5],
-            perihelion_deg: n[6],
+            semi_major_m: n[5],
+            eccentricity: n[6],
+            perihelion_deg: n[7],
         },
         rotation: Rotation {
-            day_s: n[7],
-            tilt_deg: n[8],
+            sidereal_day_s: n[8],
+            tilt_deg: n[9],
         },
         atmosphere: Atmosphere {
-            surface_pressure_pa: n[9],
-            co2_ppm: n[10],
+            surface_pressure_pa: n[10],
+            co2_ppm: n[11],
+            ch4_ppm: n[12],
         },
         moons,
     }
+}
+
+/// The numbers of a planet of format version 1, which had the solar day in
+/// place of the sidereal day, and no mass of the star and no methane. The
+/// mass of the star and the methane get the values of the Earth preset.
+fn numbers_from_v1(v1: &[f64]) -> [f64; PLANET_NUMBERS] {
+    let earth = Planet::earth();
+    let mut n = [
+        v1[0],
+        v1[1],
+        v1[2],
+        v1[3],
+        earth.star.mass_kg,
+        v1[4],
+        v1[5],
+        v1[6],
+        0.0,
+        v1[8],
+        v1[9],
+        v1[10],
+        earth.atmosphere.ch4_ppm,
+    ];
+    let year = planet_from_numbers(n, Vec::new()).orbital_period_s();
+    // The sidereal day is shorter than the solar day by one turn each year.
+    n[8] = 1.0 / (1.0 / v1[7] + 1.0 / year);
+    n
 }
 
 fn write_planet(tx: &Transaction, planet: &Planet) -> rusqlite::Result<()> {
     let n = planet_numbers(planet);
     tx.execute("DELETE FROM isotherm_planet", [])?;
     tx.execute(
-        "INSERT INTO isotherm_planet (id, radius_m, gravity, luminosity_w, temperature_k,
-           semi_major_m, eccentricity, perihelion_deg, day_s, tilt_deg,
-           surface_pressure_pa, co2_ppm)
-         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        &format!(
+            "INSERT INTO isotherm_planet (id, {PLANET_COLUMNS})
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
+        ),
         rusqlite::params_from_iter(n),
     )?;
     tx.execute("DELETE FROM isotherm_moon", [])?;
@@ -636,12 +715,10 @@ fn write_planet(tx: &Transaction, planet: &Planet) -> rusqlite::Result<()> {
 fn read_planet(conn: &Connection) -> Result<Planet, StoreError> {
     let numbers = conn
         .query_row(
-            "SELECT radius_m, gravity, luminosity_w, temperature_k, semi_major_m,
-               eccentricity, perihelion_deg, day_s, tilt_deg, surface_pressure_pa, co2_ppm
-             FROM isotherm_planet",
+            &format!("SELECT {PLANET_COLUMNS} FROM isotherm_planet"),
             [],
             |r| {
-                let mut n = [0.0; 11];
+                let mut n = [0.0; PLANET_NUMBERS];
                 for (i, value) in n.iter_mut().enumerate() {
                     *value = r.get(i)?;
                 }
@@ -675,6 +752,15 @@ fn planet_blob(planet: &Planet) -> Vec<u8> {
 }
 
 fn planet_from_blob(blob: &[u8]) -> Result<Planet, StoreError> {
+    let (head, moons) = split_blob(blob, PLANET_NUMBERS)?;
+    Ok(planet_from_numbers(
+        head.try_into().expect("13 numbers"),
+        moons,
+    ))
+}
+
+/// The numbers of a planet blob with a head of `head` numbers, and its moons.
+fn split_blob(blob: &[u8], head: usize) -> Result<(Vec<f64>, Vec<Moon>), StoreError> {
     let bad = || corrupt("a planet of the undo log");
     if !blob.len().is_multiple_of(8) {
         return Err(bad());
@@ -685,10 +771,10 @@ fn planet_from_blob(blob: &[u8]) -> Result<Planet, StoreError> {
         .iter()
         .map(|&b| f64::from_le_bytes(b))
         .collect();
-    if values.len() < 11 || !(values.len() - 11).is_multiple_of(2) {
+    if values.len() < head || !(values.len() - head).is_multiple_of(2) {
         return Err(bad());
     }
-    let (head, moons) = values.split_at(11);
+    let (head, moons) = values.split_at(head);
     let moons = moons
         .as_chunks::<2>()
         .0
@@ -698,10 +784,7 @@ fn planet_from_blob(blob: &[u8]) -> Result<Planet, StoreError> {
             distance_m,
         })
         .collect();
-    Ok(planet_from_numbers(
-        head.try_into().expect("11 numbers"),
-        moons,
-    ))
+    Ok((head.to_vec(), moons))
 }
 
 /// The row of a terrain without its tiles.
@@ -831,4 +914,95 @@ fn read_terrain(conn: &Connection) -> Result<Terrain, StoreError> {
         high_m: row.high_m,
         sea_level_m: row.sea_level_m,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Writes a world file of format version 1, with one planet step in the
+    /// undo log.
+    fn v1_file(path: &Path, current: &Planet, undone: &Planet) {
+        let v1_numbers = |p: &Planet| -> Vec<f64> {
+            let n = planet_numbers(p);
+            vec![
+                n[0],
+                n[1],
+                n[2],
+                n[3],
+                n[5],
+                n[6],
+                n[7],
+                p.solar_day_s(),
+                n[9],
+                n[10],
+                n[11],
+            ]
+        };
+        let mut conn = Connection::open(path).unwrap();
+        let tx = conn.transaction().unwrap();
+        v1(&tx).unwrap();
+        tx.execute_batch(
+            "INSERT INTO isotherm_meta (key, value) VALUES
+               ('format_version', '1'), ('name', 'Old');",
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO isotherm_planet (id, radius_m, gravity, luminosity_w, temperature_k,
+               semi_major_m, eccentricity, perihelion_deg, day_s, tilt_deg,
+               surface_pressure_pa, co2_ppm)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            rusqlite::params_from_iter(v1_numbers(current)),
+        )
+        .unwrap();
+        for (position, moon) in current.moons.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO isotherm_moon (position, mass_kg, distance_m) VALUES (?1, ?2, ?3)",
+                params![position as i64, moon.mass_kg, moon.distance_m],
+            )
+            .unwrap();
+        }
+        let moons = undone.moons.iter().flat_map(|m| [m.mass_kg, m.distance_m]);
+        let blob: Vec<u8> = v1_numbers(undone)
+            .into_iter()
+            .chain(moons)
+            .flat_map(f64::to_le_bytes)
+            .collect();
+        push_step(&tx, "planet", None, Some(&blob)).unwrap();
+        write_terrain(&tx, &Terrain::flat(4, -100.0, 100.0, 7)).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn assert_close(a: &Planet, b: &Planet) {
+        let (a_day, b_day) = (a.rotation.sidereal_day_s, b.rotation.sidereal_day_s);
+        assert!((a_day - b_day).abs() < 1e-3, "{a_day} {b_day}");
+        let mut b = b.clone();
+        b.rotation.sidereal_day_s = a_day;
+        assert_eq!(*a, b);
+    }
+
+    #[test]
+    fn a_version_1_file_gets_the_sidereal_day_and_the_new_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.gpkg");
+        let current = Planet::earth();
+        let mut undone = Planet::earth();
+        undone.rotation.sidereal_day_s = 40_000.0;
+        undone.atmosphere.co2_ppm = 560.0;
+        v1_file(&path, &current, &undone);
+
+        let (mut file, world) = WorldFile::open(&path).unwrap();
+        assert_eq!(world.name, "Old");
+        assert_close(&world.planet, &current);
+        assert!((world.planet.solar_day_s() - 86_400.0).abs() < 1.0);
+        assert_eq!(format_version(&file.conn).unwrap(), FORMAT_VERSION);
+
+        let Some(Restored::Planet(planet)) = file.undo().unwrap() else {
+            panic!("no planet step");
+        };
+        assert_close(&planet, &undone);
+        drop(file);
+        let (_, world) = WorldFile::open(&path).unwrap();
+        assert_close(&world.planet, &undone);
+    }
 }

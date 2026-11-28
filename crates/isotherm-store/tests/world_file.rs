@@ -218,7 +218,7 @@ fn a_newer_format_version_is_refused() {
 }
 
 #[test]
-fn a_file_of_version_one_opens() {
+fn a_new_file_has_the_current_format_version() {
     let dir = tempfile::tempdir().unwrap();
     WorldFile::create(path(&dir), &world()).unwrap();
     let conn = Connection::open(path(&dir)).unwrap();
@@ -229,7 +229,7 @@ fn a_file_of_version_one_opens() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(version, "1");
+    assert_eq!(version, FORMAT_VERSION.to_string());
     drop(conn);
     assert_eq!(reopen(&path(&dir)).1.name, "Tethys");
 }
