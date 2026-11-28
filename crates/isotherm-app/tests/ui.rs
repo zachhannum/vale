@@ -511,7 +511,9 @@ fn check_layout(
     let sheet = app.cards.iter().any(|(name, _)| *name == "sheet");
     assert_eq!(
         sheet,
-        layout == Layout::Pad && size.0 < 600.0 && workspace.has_view(),
+        layout == Layout::Pad
+            && size.0 < 600.0
+            && (workspace.has_view() || workspace == Workspace::Simulate),
         "{what}"
     );
     if layout == Layout::Pad {

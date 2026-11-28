@@ -21,6 +21,7 @@ vale-store.workspace = true
 vale-terrain.workspace = true
 isotherm-fields.workspace = true
 isotherm-import.workspace = true
+isotherm-sim.workspace = true
 isotherm-store.workspace = true
 isotherm-world.workspace = true
 
