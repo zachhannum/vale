@@ -48,11 +48,9 @@ fn draw(ui: &mut egui::Ui, app: &mut IsothermApp) {
 
 /// Renders the UI to an image. The texels of the globe go to the GPU in
 /// the first render, so the second render shows them.
-pub fn screenshot(
-    size: (f32, f32),
-    safe_area: Option<egui::SafeAreaInsets>,
-) -> Result<image::RgbaImage, String> {
-    let mut harness = gpu_harness(size, safe_area);
+pub fn screenshot(args: &crate::cli::Args) -> Result<image::RgbaImage, String> {
+    let mut harness = gpu_harness(args.size, args.safe_area);
+    harness.state_mut().workspace = args.workspace;
     harness.run_steps(4);
     let render = |h: &mut Harness<'_, IsothermApp>| {
         h.render()

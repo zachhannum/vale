@@ -13,15 +13,23 @@ crate-type = ["staticlib", "rlib"]
 [dependencies]
 eframe.workspace = true
 bytemuck.workspace = true
+clap.workspace = true
 vale-shell.workspace = true
 vale-globe.workspace = true
+vale-sphere.workspace = true
 vale-store.workspace = true
 vale-terrain.workspace = true
 isotherm-import.workspace = true
+isotherm-store.workspace = true
+isotherm-world.workspace = true
 
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 egui_kittest.workspace = true
 image.workspace = true
+
+[dev-dependencies]
+png.workspace = true
+tempfile.workspace = true
 
 [[bin]]
 name = "isotherm-app"

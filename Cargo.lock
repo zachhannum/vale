@@ -1917,12 +1917,18 @@ name = "isotherm-app"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "clap",
  "eframe",
  "egui_kittest",
  "image",
  "isotherm-import",
+ "isotherm-store",
+ "isotherm-world",
+ "png",
+ "tempfile",
  "vale-globe",
  "vale-shell",
+ "vale-sphere",
  "vale-store",
  "vale-terrain",
 ]

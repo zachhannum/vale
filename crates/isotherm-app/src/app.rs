@@ -8,7 +8,7 @@ use vale_shell::pad::widgets::{self, Controls, PANEL_ROW};
 
 use crate::globe::{self, Globe};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Workspace {
     Worlds,
     Terrain,
@@ -49,6 +49,26 @@ impl Workspace {
             Workspace::Simulate => Some("The climate model comes in a later version."),
             Workspace::Explore => None,
             Workspace::Export => Some("Export comes in a later version."),
+        }
+    }
+}
+
+/// The arrangement of the controls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum Layout {
+    /// A top bar and a side panel.
+    Desktop,
+    /// The cards of the iPad and the iPhone.
+    Pad,
+}
+
+impl Layout {
+    /// The layout of this platform: pad on iOS, desktop elsewhere.
+    pub fn of_platform() -> Layout {
+        if cfg!(target_os = "ios") {
+            Layout::Pad
+        } else {
+            Layout::Desktop
         }
     }
 }

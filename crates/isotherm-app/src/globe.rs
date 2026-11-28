@@ -27,7 +27,19 @@ const SAMPLE: &[u8] = include_bytes!("../data/earth.png");
 
 /// Reads the sample world into a heightmap.
 pub fn sample() -> Result<Heightmap, String> {
-    isotherm_import::heightmap_png(SAMPLE, FACE_SIZE).map_err(|e| e.to_string())
+    let samples = isotherm_import::read_image("earth.png", SAMPLE).map_err(|e| e.to_string())?;
+    let terrain =
+        isotherm_import::to_terrain(&samples, isotherm_import::Scale::SIGNED_16, FACE_SIZE)
+            .map_err(|e| e.to_string())?;
+    Ok(terrain.heights)
+}
+
+/// The view of the world: the globe, or the whole world in one projection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum WorldView {
+    #[default]
+    Globe,
+    Flat,
 }
 
 pub struct Globe {
