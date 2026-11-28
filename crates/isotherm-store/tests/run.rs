@@ -23,6 +23,7 @@ fn a_run_round_trips_with_its_partial_month() {
     assert_eq!(file.load_run().unwrap(), None);
     let state = model(&world).snapshot();
     assert_eq!(state.means.partial().count, 7);
+    assert!(state.means.fields()[0].filled[0]);
     file.save_run(&state).unwrap();
     drop(file);
     let (file, _) = WorldFile::open(&path).unwrap();

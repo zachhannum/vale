@@ -414,6 +414,11 @@ impl Model {
         let month = (self.step % u64::from(STEPS_PER_YEAR)) as usize / STEPS_PER_MONTH as usize;
         self.means.add(month, &[&self.out_t, &self.out_ice]);
         self.step += 1;
+        // The last step of a month closes it, so a run of whole years has
+        // the mean of each month.
+        if self.step.is_multiple_of(u64::from(STEPS_PER_MONTH)) {
+            self.means.close();
+        }
     }
 
     /// Advances the run by `steps` steps.
