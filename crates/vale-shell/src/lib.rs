@@ -2,4 +2,5 @@
 //! touch widgets of the pad layout, the files of a sync service, the working
 //! copy of a project, the state of the next start, and the iOS life cycle.
 
+pub mod files;
 pub mod pad;
