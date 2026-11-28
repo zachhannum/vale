@@ -250,9 +250,7 @@ impl eframe::App for ValeApp {
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::OpenDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("GeoJSON", &["geojson", "json"])
-                        .pick_files();
+                    let picked = vale_shell::picker::pick_files("GeoJSON", &["geojson", "json"]);
                     if let Some(paths) = picked {
                         state.run_action(Action::OpenFiles(paths));
                     }
@@ -275,54 +273,44 @@ impl eframe::App for ValeApp {
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ImportHeightmapDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("Heightmap", &["png", "tif", "tiff"])
-                        .pick_file();
+                    let picked =
+                        vale_shell::picker::pick_file("Heightmap", &["png", "tif", "tiff"]);
                     if let Some(path) = picked {
                         state.run_action(Action::ImportHeightmap(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::RasterImageDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "tif", "tiff"])
-                        .pick_file();
+                    let picked = vale_shell::picker::pick_file("Image", &["png", "tif", "tiff"]);
                     if let Some(path) = picked {
                         state.run_action(Action::RasterImage(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::AddSymbolDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("SVG", &["svg"])
-                        .pick_file();
+                    let picked = vale_shell::picker::pick_file("SVG", &["svg"]);
                     if let Some(path) = picked {
                         state.run_action(Action::AddSymbol(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ImageLayerDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "tif", "tiff", "psd"])
-                        .pick_file();
+                    let picked =
+                        vale_shell::picker::pick_file("Image", &["png", "tif", "tiff", "psd"]);
                     if let Some(path) = picked {
                         state.run_action(Action::ImportImageLayer(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::GeoJsonDialog => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("GeoJSON", &["geojson", "json"])
-                        .pick_file();
+                    let picked = vale_shell::picker::pick_file("GeoJSON", &["geojson", "json"]);
                     if let Some(path) = picked {
                         state.run_action(Action::ImportGeoJson(path));
                     }
                 }
                 #[cfg(not(target_os = "ios"))]
                 Action::ImportRampDialog(id) => {
-                    let picked = rfd::FileDialog::new()
-                        .add_filter("Image", &["png", "jpg", "jpeg"])
-                        .pick_file();
+                    let picked = vale_shell::picker::pick_file("Image", &["png", "jpg", "jpeg"]);
                     if let Some(path) = picked {
                         state.run_action(Action::ImportRamp(id, path));
                     }

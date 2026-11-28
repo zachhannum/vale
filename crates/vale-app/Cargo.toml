@@ -83,9 +83,7 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIInteraction",
     "UIPencilInteraction",
     "block2",
-    "objc2-uniform-type-identifiers",
     "UIViewController",
-    "UIDocumentPickerViewController",
     "UIFontDescriptor",
     "UIFontPickerViewController",
     "UIFontPickerViewControllerConfiguration",
@@ -96,10 +94,6 @@ objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
     "UIWindow",
     "UIAccessibility",
     "UIContentSizeCategory",
-] }
-objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
-    "std",
-    "UTType",
 ] }
 
 [[bin]]
