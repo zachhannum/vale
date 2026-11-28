@@ -2,18 +2,23 @@
 //!
 //! A stroke keeps its stamps. The growth of a point is 1 minus the product
 //! of 1 minus the weight of each stamp there, so each stamp grows the
-//! plateau under the brush. The edge of the plateau is where the growth
-//! crosses one half, after a seeded warp moves the point. A texel moves
-//! from its level from before the stroke toward the top of the plateau, and
-//! it does not go down. Thus a second stroke over the plateau changes
-//! nothing, and two strokes side by side join.
+//! plateau under the brush. For each stamp, the CPU marks the cells of a
+//! grid around the stamp that are in the plateau and finds the distance of
+//! each cell to the edge. A cell is in the plateau if the fault cell that
+//! holds it has grown, so the edge runs along straight faults. A texel gets
+//! the height of the plateau from that distance, so the slopes are soft and
+//! have no steps. A texel moves from its level from before the stroke
+//! toward the top of the plateau, and it does not go down. Thus a second
+//! stroke over the plateau changes nothing, and two strokes side by side
+//! join.
 
+use std::collections::HashMap;
 use std::f64::consts::FRAC_PI_2;
 
 use crate::cube::{ELEV_MIN, FACES};
 use crate::heightmap::{Heightmap, Limits, TexelRect, brush_rect, hash, noise3};
 use crate::line::{smoothstep, unit};
-use crate::math::{V3, add, cross, dot, length, normalize, scale};
+use crate::math::{V3, add, dot, length, normalize, scale};
 use crate::seamount::{LEVELS_PER_M, gdh1_depth};
 
 /// The default height of the top above the floor when the plateau forms,
@@ -24,16 +29,14 @@ pub const PLATEAU_HEIGHT_RANGE: std::ops::RangeInclusive<f64> = 500.0..=8000.0;
 /// The default age of the plateau in millions of years.
 pub const PLATEAU_AGE_MYR: f64 = 120.0;
 
-/// The number of 32-bit numbers before the stamps in `PlateauPlan::floats`,
-/// and the number for each stamp.
-pub const PLATEAU_HEADER: usize = 16;
-pub const PLATEAU_STAMP_FLOATS: usize = 8;
+/// The number of cells along one side of the distance grid of a plan, at
+/// most.
+pub const PLATEAU_FIELD_CELLS: usize = 160;
 
-/// The largest number of stamps in one plan. The plan fits in a slot of
-/// the volcano buffer of the seamounts brush.
-pub const PLAN_STAMPS: usize = (crate::seamount::PLAN_VOLCANOES * crate::seamount::VOLCANO_FLOATS
-    - PLATEAU_HEADER)
-    / PLATEAU_STAMP_FLOATS;
+/// The number of 32-bit numbers before the grid in `PlateauPlan::floats`,
+/// and the largest number of a plan.
+pub const PLATEAU_HEADER: usize = 24;
+pub const PLATEAU_FLOATS: usize = PLATEAU_HEADER + PLATEAU_FIELD_CELLS * PLATEAU_FIELD_CELLS;
 
 /// The settings of a plateau stroke.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -58,64 +61,72 @@ const KEEP: f64 = 0.2;
 /// The floor is this percentile of the ground in a window of 3 brush radii.
 const FLOOR_PERCENTILE: f64 = 0.1;
 
-/// The warp of the outline: each octave moves a point by up to this part of
+/// The warp of the growth: each octave moves a point by up to this part of
 /// its wavelength. The first wavelength is 2 brush radii, and the last is
-/// 3 texels.
-const WARP: f64 = 0.13;
+/// 3 texels. The warp moves a point by at most `WARP_REACH` brush radii.
+const WARP: f64 = 0.08;
 const WARP_TEXELS: f64 = 3.0;
-/// The warp moves a point by at most this part of the brush radius.
-const WARP_REACH: f64 = 0.9;
+const WARP_REACH: f64 = 0.56;
 
-/// The width of the scarp is this factor times the height of the top, as a
-/// slope of about 9.5 degrees on average. The faults step down in 3 blocks.
-const SCARP: f64 = 6.0;
+/// A cell of the grid is in the plateau if the growth there is above
+/// `GROWN`, and the growth at the center of its fault cell is above
+/// `CELL_GROWN`. A fault cell is a cell of a seeded Voronoi field. Its size
+/// is a part of the brush radius, at least a number of texels and at most a
+/// size in kilometers, and it is this many times as long along a seeded
+/// axis of the world.
+const GROWN: f64 = 0.15;
+const CELL_GROWN: f64 = 0.6;
+const CELL_PART: f64 = 0.45;
+const CELL_TEXELS: f64 = 8.0;
+const CELL_MAX_KM: f64 = 150.0;
+const CELL_STRETCH: f64 = 1.6;
+
+/// The distances are blurred this many times over 3 by 3 cells, so the
+/// corners of the faults are round.
+const BLURS: usize = 3;
+
+/// The edge of the plateau is a foot and a long ramp, as the edges of the
+/// Manihiki Plateau are. The foot rises to `FOOT` of the height over
+/// `SCARP` times the height of the top, and it steps up in 3 fault blocks.
+/// The ramp rises to the top with a length of `RAMP` times the height of
+/// the top, and at most `RAMP_WARP` brush radii, so a small plateau still
+/// reaches its top.
+const SCARP: f64 = 8.0;
+const FOOT: f64 = 0.35;
+const RAMP: f64 = 24.0;
+const RAMP_WARP: f64 = 0.25;
 const FAULTS: [(f64, f64, f64); 3] = [(0.45, 0.0, 0.22), (0.35, 0.4, 0.58), (0.2, 0.8, 0.95)];
-/// The faults move by up to this part of the scarp along the edge, with
+/// The faults move by up to this part of the foot along the edge, with
 /// this wavelength in kilometers.
 const FAULT_SHIFT: f64 = 0.25;
 const FAULT_KM: f64 = 60.0;
 
-/// The slide scars: a cell of this size in kilometers has a scar with this
-/// chance. A scar is a scallop with a radius of a part of the cell, and it
-/// cuts into the edge by up to its radius.
-const SCAR_KM: f64 = 80.0;
-const SCARS: f64 = 0.8;
-const SCAR_RADIUS: (f64, f64) = (0.18, 0.3);
+/// A fractal noise moves the edge, so the outline is uneven at small
+/// scales. The first octave has this wavelength in kilometers, and each
+/// next octave has half the wavelength and `EDGE_GAIN` of the amplitude,
+/// down to 3 texels. The sum of the octaves is at most `EDGE_REACH` brush
+/// radii.
+const EDGE_KM: f64 = 160.0;
+const EDGE_GAIN: f64 = 0.5;
+const EDGE_REACH: f64 = 0.2;
 
-/// The rift basins: a cell of this size in kilometers has a straight rift
-/// with this chance. A rift runs along a seeded axis of the world, turned by
-/// up to an angle, and its half length is a part of the cell. Its half
-/// width is in kilometers, and its floor is a part of the height of the top
-/// below the top. A rift gets narrower and shallower toward its ends.
-const RIFT_KM: f64 = 160.0;
-const RIFTS: f64 = 0.7;
-const RIFT_TURN: f64 = 0.45;
-const RIFT_LENGTH: (f64, f64) = (0.4, 0.9);
-const RIFT_HALF_KM: (f64, f64) = (8.0, 18.0);
-const RIFT_DEPTH: f64 = 0.4;
-
-/// The relief of the top in meters at a height of 2,500 m, with the
-/// wavelength of each octave in kilometers.
-const RELIEF: [(f64, f64); 3] = [(120.0, 200.0), (45.0, 40.0), (18.0, 10.0)];
-const RELIEF_HEIGHT_M: f64 = 2500.0;
-
-/// The volcanoes on the top: a cell of this size in kilometers has a
-/// volcano with this chance. Its radius is a part of the cell, and its
-/// height is a part of the height of the top.
-const VOLCANO_KM: f64 = 150.0;
-const VOLCANOES: f64 = 0.5;
-const VOLCANO_RADIUS: (f64, f64) = (0.08, 0.22);
-const VOLCANO_HEIGHT: (f64, f64) = (0.3, 0.9);
+/// The relief of the top in meters, with the wavelength of each octave in
+/// kilometers.
+const RELIEF: [(f64, f64); 3] = [(300.0, 250.0), (120.0, 60.0), (40.0, 15.0)];
 
 /// The salts of the seeded fields.
 const SALT_WARP: u32 = 0x5a17_0000;
 const SALT_FAULT: u32 = 0x5a17_1000;
-const SALT_SCAR: u32 = 0x5a17_2000;
-const SALT_RIFT: u32 = 0x5a17_3000;
+const SALT_AXIS: u32 = 0x5a17_3000;
 const SALT_RELIEF: u32 = 0x5a17_4000;
-const SALT_VOLCANO: u32 = 0x5a17_5000;
+const SALT_EDGE: u32 = 0x5a17_6000;
+const SALT_CELL: u32 = 0x5a17_7000;
 
-/// The slots of the header of `PlateauPlan::floats`.
+/// The slots of the header of `PlateauPlan::floats`. The grid is on the
+/// plane that touches the sphere at `CENTER`, and `CELL` is the width of a
+/// cell on the plane at distance 1 from the center of the sphere. A cell
+/// holds the signed distance to the edge in kilometers, positive in the
+/// plateau, from `-FAR_KM` to `FAR_KM`, row by row from the south.
 const FLOOR_LEVEL: usize = 0;
 const TOP_LEVEL: usize = 1;
 const TOP_M: usize = 2;
@@ -124,8 +135,13 @@ const SEED_LOW: usize = 4;
 const SEED_HIGH: usize = 5;
 const WARP_KM: usize = 6;
 const TEXEL_KM: usize = 7;
-const COUNT: usize = 8;
-const RIFT_AXIS: usize = 9;
+const SIZE: usize = 8;
+const AXIS: usize = 9;
+const CENTER: usize = 12;
+const EAST: usize = 15;
+const NORTH: usize = 18;
+const CELL: usize = 21;
+const FAR_KM: usize = 22;
 
 /// The height of the top above the floor at an age, for a height when the
 /// plateau formed. The top sinks by the GDH1 curve.
@@ -155,6 +171,14 @@ pub struct PlateauPlan {
     floats: Vec<f32>,
 }
 
+/// The lengths of a stroke in kilometers that set the reach of a stamp.
+struct Reach {
+    top_km: f64,
+    /// The distance from the edge where the height reaches the top, and
+    /// past which the distances of the grid stop.
+    far_km: f64,
+}
+
 impl PlateauStroke {
     /// Starts a stroke on a heightmap with `face_size` texels along one side
     /// of a face.
@@ -177,6 +201,15 @@ impl PlateauStroke {
     /// The floor of the stroke in meters. The first stamp sets it.
     pub fn floor_m(&self) -> Option<f64> {
         self.floor_m
+    }
+
+    fn reach(&self) -> Reach {
+        let top_km = plateau_top_m(self.spec.height_m, self.spec.age_myr) / 1000.0;
+        let ramp_km = (RAMP * top_km).min(RAMP_WARP * self.warp * self.spec.world_km);
+        Reach {
+            top_km,
+            far_km: SCARP * top_km + 3.0 * ramp_km,
+        }
     }
 
     /// Grows the plateau under a brush with its center at unit direction
@@ -217,33 +250,34 @@ impl PlateauStroke {
             hardness.clamp(0.0, 0.999),
             flow,
         ]);
-        // A texel that this stamp changes is at most `far` from its center.
-        // Its warped point is at most `warp` from it, and a stamp reaches
-        // that point if it is less than its radius away.
-        let warp = WARP_REACH * self.warp;
-        let far = radius + warp;
-        plan.rects = std::array::from_fn(|face| brush_rect(n, face, center, far));
-        let mut near: Vec<(f64, usize)> = self
-            .stamps
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (crate::math::angle([s[0], s[1], s[2]], center), i))
-            .filter(|&(a, i)| a < far + warp + self.stamps[i][3])
-            .collect();
-        if near.len() > PLAN_STAMPS {
-            near.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-            near.truncate(PLAN_STAMPS);
-        }
-        // The stamps keep the order of the stroke, so the CPU and the GPU
-        // multiply them in the same order.
-        let mut near: Vec<usize> = near.into_iter().map(|(_, i)| i).collect();
-        near.sort_unstable();
-
-        let top_m = plateau_top_m(self.spec.height_m, self.spec.age_myr);
-        let floor_m = self.floor_m.unwrap_or(0.0);
         let world = self.spec.world_km;
+        let reach = self.reach();
+        // The grid can grow within `grows` of the center of the stamp, and
+        // the edge moves there. A texel within `far` of a moved edge can
+        // change, and its distance needs the grid within `far` of it.
+        let grows = radius + WARP_REACH * self.warp;
+        let far = reach.far_km / world;
+        let edge = (EDGE_REACH * self.warp).max(FAULT_SHIFT * SCARP * reach.top_km / world);
+        // A fault cell that a stamp grows can reach this far from the
+        // place where the growth changes.
+        let cell_reach = 1.5 * CELL_STRETCH * self.fault_km() / world;
+        let changes = grows + cell_reach + far + edge;
+        plan.rects = std::array::from_fn(|face| brush_rect(n, face, center, changes));
+        let half = changes + far;
+        let cell = (2.0 * half / (PLATEAU_FIELD_CELLS - 1) as f64).max(step);
+        let size = ((2.0 * half / cell).ceil() as usize + 1).min(PLATEAU_FIELD_CELLS);
+        let near: Vec<usize> = (0..self.stamps.len())
+            .filter(|&i| {
+                let s = self.stamps[i];
+                chord_angle([s[0], s[1], s[2]], center) < 1.5 * half + s[3] + WARP_REACH * self.warp
+            })
+            .collect();
+
+        let top_m = reach.top_km * 1000.0;
+        let floor_m = self.floor_m.unwrap_or(0.0);
         let seed = self.spec.seed;
-        let axis = rift_axis(seed);
+        let axis = fault_axis(seed);
+        let (east, north) = tangent_frame(center);
         let mut floats = vec![0.0f32; PLATEAU_HEADER];
         floats[FLOOR_LEVEL] = ((floor_m - ELEV_MIN) * LEVELS_PER_M) as f32;
         floats[TOP_LEVEL] = (top_m * LEVELS_PER_M) as f32;
@@ -253,18 +287,285 @@ impl PlateauStroke {
         floats[SEED_HIGH] = (seed >> 16) as f32;
         floats[WARP_KM] = (self.warp * world) as f32;
         floats[TEXEL_KM] = (step * world) as f32;
-        floats[COUNT] = near.len() as f32;
+        floats[SIZE] = size as f32;
+        floats[CELL] = cell as f32;
+        floats[FAR_KM] = reach.far_km as f32;
         for k in 0..3 {
-            floats[RIFT_AXIS + k] = axis[k] as f32;
+            floats[AXIS + k] = axis[k] as f32;
+            floats[CENTER + k] = center[k] as f32;
+            floats[EAST + k] = east[k] as f32;
+            floats[NORTH + k] = north[k] as f32;
         }
-        for i in near {
-            let s = self.stamps[i];
-            floats.extend(s.map(|v| v as f32));
-            floats.extend([0.0, 0.0]);
-        }
+        let distances = self.distances(&near, center, east, north, cell, size, &reach);
+        floats.extend(distances.iter().map(|&d| d as f32));
         plan.floats = floats;
         plan
     }
+
+    /// The size of a fault cell in kilometers.
+    fn fault_km(&self) -> f64 {
+        let world = self.spec.world_km;
+        // A cell is at least a number of texels, even on a coarse map.
+        (CELL_PART * self.warp * world)
+            .min(CELL_MAX_KM)
+            .max(CELL_TEXELS * FRAC_PI_2 / self.face_size as f64 * world)
+    }
+
+    /// The growth at a unit direction, from the stamps in `near`.
+    fn growth(&self, near: &[usize], q: V3) -> f64 {
+        let mut rest = 1.0;
+        for &i in near {
+            let s = self.stamps[i];
+            let k = chord_angle(q, [s[0], s[1], s[2]]) / s[3];
+            if k >= 1.0 {
+                continue;
+            }
+            let (hard, flow) = (s[4], s[5]);
+            let w = if k <= hard {
+                flow
+            } else {
+                let t = (k - hard) / (1.0 - hard);
+                flow * (1.0 - t * t * (3.0 - 2.0 * t))
+            };
+            rest *= 1.0 - w;
+        }
+        1.0 - rest
+    }
+
+    /// The point after the warp of the growth.
+    fn warped(&self, p: V3, cell_km: f64) -> V3 {
+        let world = self.spec.world_km;
+        let seed = self.spec.seed;
+        let mut wavelength = 2.0 * self.warp * world;
+        // The grid does not show the octaves that are shorter than its cells.
+        let last = (WARP_TEXELS * FRAC_PI_2 / self.face_size as f64 * world).max(cell_km);
+        let mut q = p;
+        let mut k = 0;
+        while wavelength >= last && k < 16 {
+            let n = noise3(scale(p, world / wavelength), seed ^ (SALT_WARP + k));
+            q = add(q, scale(n, WARP * wavelength / world));
+            wavelength *= 0.5;
+            k += 1;
+        }
+        normalize(q)
+    }
+
+    /// The signed distances to the edge of the plateau in kilometers, on a
+    /// grid of `size` cells along one side.
+    #[allow(clippy::too_many_arguments)]
+    fn distances(
+        &self,
+        near: &[usize],
+        center: V3,
+        east: V3,
+        north: V3,
+        cell: f64,
+        size: usize,
+        reach: &Reach,
+    ) -> Vec<f64> {
+        let world = self.spec.world_km;
+        let cell_km = cell * world;
+        let middle = (size - 1) as f64 * 0.5;
+        let at = |i: usize, j: usize| {
+            let (x, y) = ((i as f64 - middle) * cell, (j as f64 - middle) * cell);
+            normalize(add(center, add(scale(east, x), scale(north, y))))
+        };
+        // The fault cells, and whether each has grown.
+        let axis = fault_axis(self.spec.seed);
+        let fault_km = self.fault_km();
+        let seed = self.spec.seed ^ SALT_CELL;
+        let mut grown: HashMap<[u32; 3], bool> = HashMap::new();
+        let mut inside = vec![false; size * size];
+        // The stamps in bins of the plane, so a point checks only the stamps
+        // in its bin and the 8 bins around it.
+        let widest = near.iter().map(|&i| self.stamps[i][3]).fold(0.0, f64::max);
+        let bin = widest.max(cell);
+        let bins = ((size as f64 * cell / bin).ceil() as usize + 2).max(1);
+        let place = |q: V3| {
+            let up = dot(q, center).max(1e-9);
+            let x = dot(q, east) / up / bin + bins as f64 * 0.5;
+            let y = dot(q, north) / up / bin + bins as f64 * 0.5;
+            (
+                (x.floor().max(0.0) as usize).min(bins - 1),
+                (y.floor().max(0.0) as usize).min(bins - 1),
+            )
+        };
+        let mut binned = vec![Vec::new(); bins * bins];
+        for &k in near {
+            let s = self.stamps[k];
+            let (x, y) = place([s[0], s[1], s[2]]);
+            binned[y * bins + x].push(k);
+        }
+        let mut local = Vec::new();
+        let mut growth_at = |q: V3| {
+            let (x, y) = place(q);
+            local.clear();
+            for by in y.saturating_sub(1)..(y + 2).min(bins) {
+                for bx in x.saturating_sub(1)..(x + 2).min(bins) {
+                    local.extend_from_slice(&binned[by * bins + bx]);
+                }
+            }
+            // The stamps keep the order of the stroke.
+            local.sort_unstable();
+            self.growth(&local, q)
+        };
+        for j in 0..size {
+            for i in 0..size {
+                let p = at(i, j);
+                if growth_at(self.warped(p, cell_km)) <= GROWN {
+                    continue;
+                }
+                let q = scale(p, world / fault_km);
+                let q = add(q, scale(axis, -dot(q, axis) * (1.0 - 1.0 / CELL_STRETCH)));
+                let (site, place) = nearest_site(q, seed);
+                let grew = match grown.get(&site) {
+                    Some(&grew) => grew,
+                    None => {
+                        let at = add(place, scale(axis, dot(place, axis) * (CELL_STRETCH - 1.0)));
+                        let grew = growth_at(self.warped(normalize(at), cell_km)) > CELL_GROWN;
+                        grown.insert(site, grew);
+                        grew
+                    }
+                };
+                inside[j * size + i] = grew;
+            }
+        }
+        // The distance of each cell to the nearest cell on the other side of
+        // the edge, between the centers of the cells less half a cell.
+        let to_outside = distance_transform(&inside.iter().map(|&x| !x).collect::<Vec<_>>(), size);
+        let to_inside = distance_transform(&inside, size);
+        let mut d: Vec<f64> = (0..size * size)
+            .map(|k| {
+                let cells = if inside[k] {
+                    to_outside[k].sqrt() - 0.5
+                } else {
+                    0.5 - to_inside[k].sqrt()
+                };
+                (cells * cell_km).clamp(-reach.far_km, reach.far_km)
+            })
+            .collect();
+        for _ in 0..BLURS {
+            d = blur(&d, size);
+        }
+        d
+    }
+}
+
+/// The nearest point of a seeded Voronoi field to a point, as the cell of
+/// the lattice that holds it and its place.
+fn nearest_site(q: V3, seed: u32) -> ([u32; 3], V3) {
+    let (cell, _) = cell_of(q);
+    let mut best = (f64::MAX, cell, q);
+    for k in 0..27u32 {
+        let c: [u32; 3] = std::array::from_fn(|i| {
+            cell[i]
+                .wrapping_add((k / 3u32.pow(i as u32)) % 3)
+                .wrapping_sub(1)
+        });
+        let (point, _) = cell_point(c, seed);
+        let at: V3 = std::array::from_fn(|i| f64::from(c[i] as i32) + point[i]);
+        let to = add(q, scale(at, -1.0));
+        let d = dot(to, to);
+        if d < best.0 {
+            best = (d, c, at);
+        }
+    }
+    (best.1, best.2)
+}
+
+/// The squared distance in cells from each cell of a square grid to the
+/// nearest cell that is `true`, by the method of Felzenszwalb and
+/// Huttenlocher (2012). With no such cell, each distance is infinite.
+fn distance_transform(features: &[bool], size: usize) -> Vec<f64> {
+    let mut grid: Vec<f64> = features
+        .iter()
+        .map(|&f| if f { 0.0 } else { f64::INFINITY })
+        .collect();
+    let mut line = vec![0.0; size];
+    let mut out = vec![0.0; size];
+    for j in 0..size {
+        line.copy_from_slice(&grid[j * size..(j + 1) * size]);
+        transform_line(&line, &mut out);
+        grid[j * size..(j + 1) * size].copy_from_slice(&out);
+    }
+    for i in 0..size {
+        for j in 0..size {
+            line[j] = grid[j * size + i];
+        }
+        transform_line(&line, &mut out);
+        for j in 0..size {
+            grid[j * size + i] = out[j];
+        }
+    }
+    grid
+}
+
+/// The squared distance transform of one line.
+fn transform_line(f: &[f64], out: &mut [f64]) {
+    let n = f.len();
+    let mut v = vec![0usize; n];
+    let mut z = vec![0.0; n + 1];
+    let mut k = 0;
+    let first = f.iter().position(|x| x.is_finite());
+    let Some(first) = first else {
+        out.fill(f64::INFINITY);
+        return;
+    };
+    v[0] = first;
+    z[0] = f64::NEG_INFINITY;
+    z[1] = f64::INFINITY;
+    for q in first + 1..n {
+        if !f[q].is_finite() {
+            continue;
+        }
+        loop {
+            let p = v[k];
+            let s = ((f[q] + (q * q) as f64) - (f[p] + (p * p) as f64)) / (2.0 * (q - p) as f64);
+            if s <= z[k] && k > 0 {
+                k -= 1;
+                continue;
+            }
+            if s <= z[k] {
+                v[0] = q;
+                z[0] = f64::NEG_INFINITY;
+                z[1] = f64::INFINITY;
+                break;
+            }
+            k += 1;
+            v[k] = q;
+            z[k] = s;
+            z[k + 1] = f64::INFINITY;
+            break;
+        }
+    }
+    let mut k = 0;
+    for (q, o) in out.iter_mut().enumerate() {
+        while z[k + 1] < q as f64 {
+            k += 1;
+        }
+        let p = v[k];
+        let d = q as f64 - p as f64;
+        *o = d * d + f[p];
+    }
+}
+
+/// The mean of the 3 by 3 cells around each cell of a square grid. A cell at
+/// a side takes the mean of the cells that it has.
+fn blur(d: &[f64], size: usize) -> Vec<f64> {
+    let mut out = vec![0.0; size * size];
+    for j in 0..size {
+        for i in 0..size {
+            let (mut sum, mut count) = (0.0, 0.0);
+            for y in j.saturating_sub(1)..(j + 2).min(size) {
+                for x in i.saturating_sub(1)..(i + 2).min(size) {
+                    sum += d[y * size + x];
+                    count += 1.0;
+                }
+            }
+            out[j * size + i] = sum / count;
+        }
+    }
+    out
 }
 
 /// The floor under a window with a radius in radians around a unit
@@ -300,9 +601,9 @@ fn tangent_frame(center: V3) -> (V3, V3) {
     (east, crate::math::cross(center, east))
 }
 
-/// The axis along which the rifts of a world are long.
-fn rift_axis(seed: u32) -> V3 {
-    let h = |k: u32| 2.0 * unit(hash(k, 0, 0, seed ^ SALT_RIFT)) - 1.0;
+/// The axis along which the fault cells of a world are long.
+fn fault_axis(seed: u32) -> V3 {
+    let h = |k: u32| 2.0 * unit(hash(k, 0, 0, seed ^ SALT_AXIS)) - 1.0;
     let a = [h(1), h(2), h(3)];
     if length(a) < 1e-3 {
         [0.0, 0.0, 1.0]
@@ -311,7 +612,7 @@ fn rift_axis(seed: u32) -> V3 {
     }
 }
 
-/// The angle between two unit vectors, as the shader finds it.
+/// The angle between two unit vectors.
 fn chord_angle(a: V3, b: V3) -> f64 {
     let d = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
     2.0 * (0.5 * length(d)).min(1.0).asin()
@@ -335,12 +636,8 @@ fn cell_point(cell: [u32; 3], seed: u32) -> (V3, [f64; 3]) {
     (point, [h(3), h(4), h(5)])
 }
 
-fn distance(a: V3, b: V3) -> f64 {
-    length([a[0] - b[0], a[1] - b[1], a[2] - b[2]])
-}
-
 impl PlateauPlan {
-    /// The plan as 32-bit numbers: a header and the stamps.
+    /// The plan as 32-bit numbers: a header and the grid.
     pub fn floats(&self) -> &[f32] {
         &self.floats
     }
@@ -354,210 +651,110 @@ impl PlateauPlan {
         f64::from(self.floats[slot])
     }
 
-    /// The number of stamps.
-    pub fn stamps(&self) -> usize {
-        self.floats.len().saturating_sub(PLATEAU_HEADER) / PLATEAU_STAMP_FLOATS
-    }
-
-    fn stamp(&self, i: usize) -> [f64; 6] {
-        let at = PLATEAU_HEADER + i * PLATEAU_STAMP_FLOATS;
-        std::array::from_fn(|k| f64::from(self.floats[at + k]))
+    fn v3(&self, slot: usize) -> V3 {
+        [self.get(slot), self.get(slot + 1), self.get(slot + 2)]
     }
 
     fn seed(&self) -> u32 {
         self.get(SEED_LOW) as u32 | ((self.get(SEED_HIGH) as u32) << 16)
     }
 
-    /// Whether stamp `i` can reach a texel within `far` radians of `p`.
-    pub(crate) fn reaches(&self, i: usize, p: V3, far: f64) -> bool {
-        let s = self.stamp(i);
-        let warp = WARP_REACH * self.get(WARP_KM) / self.get(WORLD_KM);
-        chord_angle([s[0], s[1], s[2]], p) < s[3] + warp + far
-    }
-
     /// The level of a texel at unit direction `p` with level `start` from
     /// before the stroke.
     pub fn level(&self, start: u16, p: V3) -> u16 {
-        let all: Vec<usize> = (0..self.stamps()).collect();
-        self.level_of(&all, start, p)
-    }
-
-    /// `level` with only the stamps in `near`.
-    pub(crate) fn level_of(&self, near: &[usize], start: u16, p: V3) -> u16 {
-        let f = self.part(near, p);
+        let f = self.part(p);
         if f <= 0.0 {
             return start;
         }
+        // The profile rises from the floor, or from the ground where it is
+        // below the floor, to the top. A texel takes the profile where it is
+        // higher, so a stroke that comes again raises nothing.
         let start = f64::from(start);
-        let target = self.target(p);
-        let new = (start + f * (target - start).max(0.0))
+        let base = start.min(self.get(FLOOR_LEVEL));
+        let new = (base + f * (self.target(p) - base))
+            .max(start)
             .round()
             .clamp(0.0, 65535.0);
         self.limits.apply(start, new) as u16
     }
 
-    /// The point after the warp of the outline.
-    fn warped(&self, p: V3) -> V3 {
-        let world = self.get(WORLD_KM);
-        let seed = self.seed();
-        let mut wavelength = 2.0 * self.get(WARP_KM);
-        let last = WARP_TEXELS * self.get(TEXEL_KM);
-        let mut q = p;
-        let mut k = 0;
-        while wavelength >= last && k < 16 {
-            let n = noise3(scale(p, world / wavelength), seed ^ (SALT_WARP + k));
-            q = add(q, scale(n, WARP * wavelength / world));
-            wavelength *= 0.5;
-            k += 1;
+    /// The signed distance to the edge at a texel in kilometers, from the
+    /// grid, between the 4 cells around it.
+    fn distance_at(&self, p: V3) -> f64 {
+        let far = self.get(FAR_KM);
+        let size = self.get(SIZE) as usize;
+        let cell = self.get(CELL);
+        let up = dot(p, self.v3(CENTER));
+        if up <= 0.0 || size < 2 {
+            return -far;
         }
-        normalize(q)
+        let middle = (size - 1) as f64 * 0.5;
+        let x = dot(p, self.v3(EAST)) / up / cell + middle;
+        let y = dot(p, self.v3(NORTH)) / up / cell + middle;
+        let top = (size - 1) as f64;
+        if !(0.0..=top).contains(&x) || !(0.0..=top).contains(&y) {
+            return -far;
+        }
+        let (i, j) = (
+            (x.floor() as usize).min(size - 2),
+            (y.floor() as usize).min(size - 2),
+        );
+        let (tx, ty) = (x - i as f64, y - j as f64);
+        let at = |i: usize, j: usize| f64::from(self.floats[PLATEAU_HEADER + j * size + i]);
+        let low = at(i, j) + (at(i + 1, j) - at(i, j)) * tx;
+        let high = at(i, j + 1) + (at(i + 1, j + 1) - at(i, j + 1)) * tx;
+        low + (high - low) * ty
     }
 
     /// The part of the height of the plateau at a texel, from 0 at the foot
-    /// of the scarp to 1 on the top.
-    fn part(&self, near: &[usize], p: V3) -> f64 {
-        let q = self.warped(p);
-        // The product of 1 minus the weight of each stamp, and its gradient.
-        let mut rest = 1.0;
-        let mut slope = [0.0; 3];
-        for &i in near {
-            let s = self.stamp(i);
-            let c = [s[0], s[1], s[2]];
-            let (radius, hard, flow) = (s[3], s[4], s[5]);
-            let k = chord_angle(q, c) / radius;
-            if k >= 1.0 {
-                continue;
-            }
-            let (w, dw) = if k <= hard {
-                (flow, 0.0)
-            } else {
-                let t = (k - hard) / (1.0 - hard);
-                (
-                    flow * (1.0 - t * t * (3.0 - 2.0 * t)),
-                    -flow * 6.0 * t * (1.0 - t) / ((1.0 - hard) * radius),
-                )
-            };
-            // The direction away from the center of the stamp.
-            let away = add(scale(q, dot(q, c)), scale(c, -1.0));
-            let size = length(away);
-            let away = if size > 1e-12 {
-                scale(away, 1.0 / size)
-            } else {
-                [0.0; 3]
-            };
-            slope = add(scale(slope, 1.0 - w), scale(away, -rest * dw));
-            rest *= 1.0 - w;
-        }
-        let growth = 1.0 - rest;
-        if growth <= 0.0 {
-            return 0.0;
-        }
-        let gradient = length(slope).max(1e-9);
+    /// to 1 on the top.
+    fn part(&self, p: V3) -> f64 {
         let world = self.get(WORLD_KM);
-        let d = (growth - 0.5) / gradient * world - self.scar(p);
-        let width = SCARP * self.get(TOP_M) / 1000.0;
-        let u = d / width;
+        let d = self.distance_at(p) + self.edge_noise(p);
+        let top_km = self.get(TOP_M) / 1000.0;
+        let u = d / (SCARP * top_km);
         if u <= -FAULT_SHIFT {
             return 0.0;
         }
         let n = noise3(scale(p, world / FAULT_KM), self.seed() ^ SALT_FAULT);
-        let mut f = 0.0;
+        let mut foot = 0.0;
+        // The faults move together, and a small part of each move is its
+        // own, so two faults never meet.
         for (k, (h, a, b)) in FAULTS.into_iter().enumerate() {
-            let shift = FAULT_SHIFT * n[k];
-            f += h * smoothstep(a + shift, b + shift, u);
+            let shift = FAULT_SHIFT * (0.8 * n[0] + 0.2 * n[k]);
+            foot += h * smoothstep(a + shift, b + shift, u);
         }
-        f
+        let ramp = (RAMP * top_km).min(RAMP_WARP * self.get(WARP_KM));
+        let rise = 1.0 - (-d.max(0.0) / ramp).exp();
+        FOOT * foot + (1.0 - FOOT) * rise * smoothstep(0.0, 1.0, u)
     }
 
-    /// How far the slide scars cut into the edge at a texel, in kilometers.
-    fn scar(&self, p: V3) -> f64 {
-        let (cell, at) = cell_of(scale(p, self.get(WORLD_KM) / SCAR_KM));
-        let (point, more) = cell_point(cell, self.seed() ^ SALT_SCAR);
-        if more[0] >= SCARS {
-            return 0.0;
+    /// How far the fractal noise moves the edge out at a texel, in
+    /// kilometers.
+    fn edge_noise(&self, p: V3) -> f64 {
+        let world = self.get(WORLD_KM);
+        let last = WARP_TEXELS * self.get(TEXEL_KM);
+        let mut wavelength = EDGE_KM;
+        let mut amplitude = EDGE_REACH * (1.0 - EDGE_GAIN) * self.get(WARP_KM);
+        let mut sum = 0.0;
+        let mut k = 0;
+        while wavelength >= last && k < 12 {
+            let n = noise3(scale(p, world / wavelength), self.seed() ^ (SALT_EDGE + k));
+            sum += amplitude * n[0];
+            wavelength *= 0.5;
+            amplitude *= EDGE_GAIN;
+            k += 1;
         }
-        let r = SCAR_RADIUS.0 + (SCAR_RADIUS.1 - SCAR_RADIUS.0) * more[1];
-        let k = distance(at, point) / r;
-        if k >= 1.0 {
-            return 0.0;
-        }
-        r * SCAR_KM * (1.0 - k * k)
+        sum
     }
 
-    /// The depth of the rifts at a texel, from 0 to 1.
-    fn rift(&self, p: V3) -> f64 {
-        let axis = [
-            self.get(RIFT_AXIS),
-            self.get(RIFT_AXIS + 1),
-            self.get(RIFT_AXIS + 2),
-        ];
-        let radius = self.get(WORLD_KM) / RIFT_KM;
-        let q = scale(p, radius);
-        let (cell, _) = cell_of(q);
-        let seed = self.seed() ^ SALT_RIFT;
-        let mut deepest: f64 = 0.0;
-        for k in 0..27u32 {
-            let c = [0, 1, 2].map(|i| {
-                cell[i]
-                    .wrapping_add((k / 3u32.pow(i as u32)) % 3)
-                    .wrapping_sub(1)
-            });
-            let (point, more) = cell_point(c, seed);
-            if more[0] >= RIFTS {
-                continue;
-            }
-            // The middle of the rift is on the sphere, inside its cell.
-            let at = [0, 1, 2].map(|i| f64::from(c[i] as i32) + point[i]);
-            let up = normalize(at);
-            let middle = scale(up, radius);
-            if cell_of(middle).0 != c {
-                continue;
-            }
-            let along = add(axis, scale(up, -dot(axis, up)));
-            if length(along) < 1e-6 {
-                continue;
-            }
-            let along = normalize(along);
-            let turn = RIFT_TURN * (2.0 * more[1] - 1.0);
-            let (sin, cos) = turn.sin_cos();
-            let along = add(scale(along, cos), scale(cross(up, along), sin));
-            let half = RIFT_LENGTH.0 + (RIFT_LENGTH.1 - RIFT_LENGTH.0) * more[2];
-            let to = add(q, scale(middle, -1.0));
-            let s = dot(to, along);
-            let off = length(add(to, scale(along, -s.clamp(-half, half))));
-            let end = 1.0 - smoothstep(0.5 * half, half, s.abs());
-            let h = unit(hash(c[0], c[1], c[2], seed.wrapping_add(6)));
-            let width = (RIFT_HALF_KM.0 + (RIFT_HALF_KM.1 - RIFT_HALF_KM.0) * h) / RIFT_KM;
-            let width = width * (0.4 + 0.6 * end);
-            deepest = deepest.max(end * (1.0 - smoothstep(0.35 * width, width, off)));
-        }
-        deepest
-    }
-
-    /// The level of the top of the plateau at a texel, with its relief, its
-    /// rifts, and its volcanoes.
+    /// The level of the top of the plateau at a texel, with its low relief.
     fn target(&self, p: V3) -> f64 {
         let world = self.get(WORLD_KM);
-        let seed = self.seed();
-        let top = self.get(TOP_LEVEL);
-        let mut level = self.get(FLOOR_LEVEL) + top;
-        let relief = self.get(TOP_M) / RELIEF_HEIGHT_M * LEVELS_PER_M;
+        let mut level = self.get(FLOOR_LEVEL) + self.get(TOP_LEVEL);
         for (k, (m, km)) in RELIEF.into_iter().enumerate() {
-            let n = noise3(scale(p, world / km), seed ^ (SALT_RELIEF + k as u32));
-            level += relief * m * n[0];
-        }
-        let rift = self.rift(p);
-        level -= RIFT_DEPTH * top * rift;
-        // A volcano and its foot stay inside its cell.
-        let (cell, at) = cell_of(scale(p, world / VOLCANO_KM));
-        let (point, more) = cell_point(cell, seed ^ SALT_VOLCANO);
-        if more[0] < VOLCANOES {
-            let r = VOLCANO_RADIUS.0 + (VOLCANO_RADIUS.1 - VOLCANO_RADIUS.0) * more[1];
-            let h = VOLCANO_HEIGHT.0 + (VOLCANO_HEIGHT.1 - VOLCANO_HEIGHT.0) * more[2];
-            let x = 1.0 - distance(at, point) / r;
-            if x > 0.0 {
-                level += h * top * x * x;
-            }
+            let n = noise3(scale(p, world / km), self.seed() ^ (SALT_RELIEF + k as u32));
+            level += LEVELS_PER_M * m * n[0];
         }
         level
     }
@@ -572,36 +769,16 @@ impl Heightmap {
             self.face_size(),
             "the face size of the plan"
         );
-        const BLOCK: usize = 32;
-        let n = self.face_size();
         let mut changed = 0;
-        let mut near = Vec::new();
         for (face, rect) in plan.rects.into_iter().enumerate() {
             let Some(rect) = rect else { continue };
-            for by in (rect.y0..rect.y1).step_by(BLOCK) {
-                for bx in (rect.x0..rect.x1).step_by(BLOCK) {
-                    let (x1, y1) = ((bx + BLOCK).min(rect.x1), (by + BLOCK).min(rect.y1));
-                    let middle = self.texel_dir(face, (bx + x1) / 2, (by + y1) / 2);
-                    let corners = [(bx, by), (x1 - 1, y1 - 1), (bx, y1 - 1), (x1 - 1, by)];
-                    let far = corners
-                        .map(|(x, y)| chord_angle(middle, self.texel_dir(face, x, y)))
-                        .into_iter()
-                        .fold(0.0, f64::max)
-                        + 2.0 * FRAC_PI_2 / n as f64;
-                    near.clear();
-                    near.extend((0..plan.stamps()).filter(|&i| plan.reaches(i, middle, far)));
-                    if near.is_empty() {
-                        continue;
-                    }
-                    for y in by..y1 {
-                        for x in bx..x1 {
-                            let p = self.texel_dir(face, x, y);
-                            let new = plan.level_of(&near, self.level_before(face, x, y), p);
-                            if new != self.texel(face, x, y) {
-                                self.set(face, x, y, new);
-                                changed += 1;
-                            }
-                        }
+            for y in rect.y0..rect.y1 {
+                for x in rect.x0..rect.x1 {
+                    let p = self.texel_dir(face, x, y);
+                    let new = plan.level(self.level_before(face, x, y), p);
+                    if new != self.texel(face, x, y) {
+                        self.set(face, x, y, new);
+                        changed += 1;
                     }
                 }
             }
@@ -711,31 +888,6 @@ mod tests {
         assert!(part > 0.7, "{part} of the top is level");
     }
 
-    #[test]
-    fn the_top_has_rift_basins_and_a_few_volcanoes() {
-        let mut map = flat();
-        paint(&mut map, spec(), &wide(), RADIUS);
-        // The texels of the plateau, past the foot of the scarp.
-        let top: Vec<f64> = texels(&map, lonlat_to_dir(10.0, 6.0), 0.15)
-            .into_iter()
-            .map(|(_, l)| meters(l) - FLOOR_M)
-            .filter(|&m| m > 1000.0)
-            .collect();
-        let count = top.len() as f64;
-        let rifts = top.iter().filter(|&&m| m > 1200.0 && m < 2300.0).count() as f64;
-        let volcanoes = top.iter().filter(|&&m| m > 3400.0).count() as f64;
-        assert!(
-            rifts / count > 0.01 && rifts / count < 0.25,
-            "rifts {}",
-            rifts / count
-        );
-        assert!(
-            volcanoes > 0.0 && volcanoes / count < 0.1,
-            "volcanoes {}",
-            volcanoes / count
-        );
-    }
-
     /// The distance from the center to the foot of the scarp at an angle,
     /// in radians, and the width of the scarp from 10 to 90 percent of the
     /// height.
@@ -759,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn the_outline_is_uneven_and_the_edges_are_steep_scarps() {
+    fn the_outline_is_uneven() {
         let mut map = flat();
         let center = lonlat_to_dir(10.0, 5.0);
         let radius = 0.15;
@@ -776,10 +928,35 @@ mod tests {
         // differ.
         let rough = reach.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>() / reach.len() as f64;
         assert!(rough > 0.004, "the outline is smooth: {rough}");
-        // The brush falls off over half its radius, but a scarp rises over
-        // about 18 km, 0.018 radians.
-        let width = percentile(edges.iter().map(|e| e.1).collect(), 0.5);
-        assert!(width < 0.03, "the scarp is {width} radians wide");
+    }
+
+    #[test]
+    fn the_slopes_are_soft_and_continuous() {
+        let mut map = flat();
+        paint(&mut map, spec(), &wide(), RADIUS);
+        // A texel is 1.5 km wide, and no slope between two texels is steeper
+        // than 15 degrees.
+        let texel_m = FRAC_PI_2 / N as f64 * spec().world_km * 1000.0;
+        let steepest = texel_m * 15f64.to_radians().tan();
+        let mut changed = 0;
+        for face in 0..FACES {
+            for y in 0..N - 1 {
+                for x in 0..N - 1 {
+                    let here = meters(map.get(face, x as i64, y as i64));
+                    for (dx, dy) in [(1, 0), (0, 1)] {
+                        let there = meters(map.get(face, (x + dx) as i64, (y + dy) as i64));
+                        assert!(
+                            (there - here).abs() < steepest,
+                            "a step of {} m at face {face} x {x} y {y} from {here} m, {:?}",
+                            there - here,
+                            crate::math::dir_to_lonlat(map.texel_dir(face, x, y))
+                        );
+                    }
+                    changed += usize::from(here > FLOOR_M + 1.0);
+                }
+            }
+        }
+        assert!(changed > 10_000, "{changed} texels changed");
     }
 
     #[test]
@@ -831,15 +1008,22 @@ mod tests {
     #[test]
     fn a_second_stroke_does_not_raise_the_plateau_and_a_stroke_next_to_it_joins() {
         let mut map = flat();
-        paint(&mut map, spec(), &line((6.0, 5.0), (10.0, 5.0), 20), RADIUS);
-        let first = map.snapshot();
-        // Over a part of the plateau and past its end.
+        let first = line((6.0, 5.0), (10.0, 5.0), 20);
+        paint(&mut map, spec(), &first, RADIUS);
+        // The same stroke again changes nothing.
+        let once = map.snapshot();
+        paint(&mut map, spec(), &first, RADIUS);
+        assert!(same(&map, &once), "raised again");
+        // A stroke over a part of the plateau and past its end raises no
+        // texel above the top and its relief.
         paint(&mut map, spec(), &line((8.0, 5.0), (14.0, 5.0), 25), RADIUS);
-        for (p, level) in texels(&first, lonlat_to_dir(8.0, 5.0), 0.03) {
-            let now = map.level_at(p);
-            assert!((now - f64::from(level)).abs() <= 1.0, "raised again");
-        }
-        // Along the stroke, the top has no seam where the strokes meet.
+        let highest = texels(&map, lonlat_to_dir(10.0, 5.0), 0.2)
+            .into_iter()
+            .map(|(_, l)| meters(l))
+            .fold(f64::MIN, f64::max);
+        let relief: f64 = RELIEF.iter().map(|r| r.0).sum();
+        assert!(highest < FLOOR_M + 3000.0 + relief, "a top at {highest} m");
+        // Along the strokes, the top has no seam where they meet.
         let along = line((7.0, 5.0), (13.0, 5.0), 400);
         let heights: Vec<f64> = along
             .iter()
@@ -865,5 +1049,34 @@ mod tests {
         assert!(!same(&a, &before));
         assert!(a.undo());
         assert!(same(&a, &before));
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+    use crate::cube::meters_to_level;
+    use crate::math::lonlat_to_dir;
+
+    #[test]
+    #[ignore = "manual"]
+    fn manual_time_of_a_plan() {
+        let map = Heightmap::new(10752, meters_to_level(-5000.0));
+        let spec = Plateau {
+            height_m: 4000.0,
+            age_myr: 120.0,
+            world_km: 6371.0,
+            seed: 7,
+            limits: Limits::default(),
+        };
+        let mut stroke = PlateauStroke::new(spec, 10752);
+        for i in 0..40 {
+            let c = lonlat_to_dir(f64::from(i) * 0.4, 0.0);
+            let t = std::time::Instant::now();
+            let _ = stroke.stamp(&map, c, 100.0 / 6371.0, 0.5, 0.8);
+            if i % 10 == 9 {
+                eprintln!("plan {i}: {:?}", t.elapsed());
+            }
+        }
     }
 }

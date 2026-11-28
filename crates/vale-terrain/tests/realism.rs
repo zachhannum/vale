@@ -7,9 +7,10 @@ use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale}
 use vale_terrain::{
     ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII, HOTSPOT_HEIGHT_M,
     HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine, LINE_SPACING, Limits,
-    Margin, MarginStroke, PACIFIC_FLANK, Patch, Rain, Realism, Reference, Ridge, RidgeLine,
-    SeamountStroke, Seamounts, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
-    hotspot_window, margin_window, meters_to_level, realism,
+    MANIHIKI, Margin, MarginStroke, PACIFIC_FLANK, PLATEAU_AGE_MYR, PLATEAU_HEIGHT_M, Patch,
+    Plateau, PlateauStroke, Rain, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts,
+    US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin, hotspot_window, margin_window,
+    meters_to_level, realism,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -1221,4 +1222,198 @@ fn manual_margin_close_up() {
     let mut image = image::RgbImage::new(512, 512);
     draw(&mut image, &patch.heights, 512, 600.0, [0, 0]);
     image.save(out.with_extension("png")).unwrap();
+}
+
+/// The cell of the Manihiki patch at a direction, if the direction is in
+/// the patch.
+fn patch_place(painted: &Painted, reference: &Reference, i: usize, j: usize) -> V3 {
+    let half = (reference.size as f64 - 1.0) * 0.5;
+    let radius_m = painted.world_km * 1000.0;
+    let east = normalize(cross([0.0, 0.0, 1.0], painted.center));
+    let north = cross(painted.center, east);
+    let x = (i as f64 - half) * reference.cell_m / radius_m;
+    let y = (j as f64 - half) * reference.cell_m / radius_m;
+    normalize(add(painted.center, add(scale(east, x), scale(north, y))))
+}
+
+/// A plateau that traces the Manihiki Plateau in the GEBCO patch, in two
+/// strokes, as a user paints it.
+fn traced_plateau(gebco: &[f32], reference: &Reference) -> Painted {
+    let mut painted = Painted::earth(5300.0);
+    let km = |d: f64| d / EARTH_KM;
+    let hills = AbyssalHills {
+        rate: 60.0,
+        hills: 0.6,
+        fit: true,
+        scale: 1.0,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let fabric: Vec<V3> = (-6..=6)
+        .map(|i| offset(painted.center, 60f64.to_radians(), km(150.0 * f64::from(i))))
+        .collect();
+    paint_abyssal(&mut painted.map, hills, &fabric, 0.15);
+    // The Western Plateaus with a low Height, and then the High Plateau at
+    // the default settings.
+    for (height_m, depth_m) in [(2800.0, -4400.0), (PLATEAU_HEIGHT_M, -3300.0)] {
+        let spec = Plateau {
+            height_m,
+            age_myr: PLATEAU_AGE_MYR,
+            world_km: EARTH_KM,
+            seed: RIDGE_SEED,
+            limits: Limits::default(),
+        };
+        trace_stroke(&mut painted, spec, gebco, reference, depth_m);
+    }
+    painted
+}
+
+/// A plateau stroke with a stamp on each cell of a grid of 40 km where
+/// most of the ground of the GEBCO patch within 50 km is shallower than
+/// `depth_m`.
+fn trace_stroke(
+    painted: &mut Painted,
+    spec: Plateau,
+    gebco: &[f32],
+    reference: &Reference,
+    depth_m: f32,
+) {
+    let n = reference.size;
+    let km = |d: f64| d / EARTH_KM;
+    let step = (40_000.0 / reference.cell_m) as usize;
+    let reach = (50_000.0 / reference.cell_m) as i64;
+    let mut stroke = PlateauStroke::new(spec, painted.map.face_size());
+    painted.map.begin_stroke();
+    for (row, j) in (step / 2..n).step_by(step).enumerate() {
+        let mut columns: Vec<usize> = (step / 2..n).step_by(step).collect();
+        if row % 2 == 1 {
+            columns.reverse();
+        }
+        for i in columns {
+            let (mut inside, mut all) = (0, 0);
+            for dj in -reach..=reach {
+                for di in -reach..=reach {
+                    let (x, y) = (i as i64 + di, j as i64 + dj);
+                    if di * di + dj * dj > reach * reach || x < 0 || y < 0 {
+                        continue;
+                    }
+                    let (x, y) = (x as usize, y as usize);
+                    if x >= n || y >= n {
+                        continue;
+                    }
+                    all += 1;
+                    inside += usize::from(gebco[y * n + x] > depth_m);
+                }
+            }
+            if inside * 10 < all * 8 {
+                continue;
+            }
+            let center = patch_place(painted, reference, i, j);
+            let plan = stroke.stamp(&painted.map, center, km(100.0), 0.5, 0.8);
+            painted.map.plateau(&plan);
+        }
+    }
+    painted.map.end_stroke();
+}
+
+/// Measures of the plateau alone in a patch, over the cells where the
+/// GEBCO patch is shallower than 4,500 m: the 10th, 50th, and 90th
+/// percentiles of the depth, the parts of the cells in depth bins of 500 m
+/// from 2,000 m to 4,500 m, and the slope histogram.
+fn print_plateau_measures(name: &str, heights: &[f32], region: &[f32], n: usize, cell_m: f64) {
+    let inside: Vec<usize> = (0..n * n).filter(|&k| region[k] > -4500.0).collect();
+    let mut depths: Vec<f32> = inside.iter().map(|&k| heights[k]).collect();
+    depths.sort_by(f32::total_cmp);
+    let pct = |p: f64| depths[((depths.len() - 1) as f64 * p) as usize];
+    let mut bins = [0.0; 6];
+    for &d in &depths {
+        let b = ((-d - 2000.0) / 500.0).floor().clamp(-1.0, 5.0);
+        if b >= 0.0 {
+            bins[b as usize] += 1.0;
+        }
+    }
+    let count = depths.len() as f64;
+    let mut slopes = [0.0; 7];
+    for &k in &inside {
+        let (x, y) = (k % n, k / n);
+        if x == 0 || y == 0 || x == n - 1 || y == n - 1 {
+            continue;
+        }
+        let dx = f64::from(heights[k + 1] - heights[k - 1]) / (2.0 * cell_m);
+        let dy = f64::from(heights[k + n] - heights[k - n]) / (2.0 * cell_m);
+        let deg = (dx * dx + dy * dy).sqrt().atan().to_degrees();
+        let bin = vale_terrain::SLOPE_BINS_DEG
+            .iter()
+            .position(|&b| deg < b)
+            .unwrap_or(6);
+        slopes[bin] += 1.0 / count;
+    }
+    eprintln!(
+        "{name}: depth p10 {:.0} p50 {:.0} p90 {:.0} m; bins 2.0-4.5 km {:?}",
+        pct(0.1),
+        pct(0.5),
+        pct(0.9),
+        bins.map(|b| (b / count * 100.0).round() / 100.0)
+    );
+    eprintln!(
+        "  slopes {:?}",
+        slopes.map(|s| (s * 1000.0).round() / 1000.0)
+    );
+}
+
+/// Draws a patch with bands of 500 m and contours, so the depths of the
+/// blocks and the troughs can be read.
+fn draw_banded(image: &mut image::RgbImage, heights: &[f32], n: usize, cell_m: f64, x0: usize) {
+    let at = |x: usize, y: usize| f64::from(heights[y.min(n - 1) * n + x.min(n - 1)]);
+    for y in 0..n {
+        for x in 0..n {
+            let z = at(x, y);
+            let dx = (at(x + 1, y) - at(x.saturating_sub(1), y)) / (2.0 * cell_m);
+            let dy = (at(x, y + 1) - at(x, y.saturating_sub(1))) / (2.0 * cell_m);
+            let shade = ((dx - dy) * 0.707 + 1.0) / (1.0 + dx * dx + dy * dy).sqrt() * 0.707;
+            let band = ((z + 6000.0) / 500.0).floor();
+            let t = ((band - 1.0) / 9.0).clamp(0.0, 1.0);
+            let tint = [
+                20.0 + 220.0 * t,
+                40.0 + 160.0 * t * (1.0 - 0.5 * t),
+                120.0 + 80.0 * (1.0 - t),
+            ];
+            let k = (0.45 + 0.75 * shade).clamp(0.0, 1.3);
+            let contour = [(1, 0), (0, 1)]
+                .iter()
+                .any(|&(ox, oy)| ((at(x + ox, y + oy) + 6000.0) / 500.0).floor() != band);
+            let pixel = if contour {
+                [20, 20, 20]
+            } else {
+                tint.map(|c| (c * k).clamp(0.0, 255.0) as u8)
+            };
+            image.put_pixel((x0 + x) as u32, (n - 1 - y) as u32, image::Rgb(pixel));
+        }
+    }
+}
+
+/// A plateau that traces the outline of the Manihiki Plateau, beside the
+/// GEBCO patch, with bands of 500 m, and the measures of the plateau alone
+/// in each. The reference patch comes from `scripts/gebco-reference.sh
+/// manihiki`.
+#[test]
+#[ignore = "manual"]
+fn manual_traced_plateau_next_to_its_reference() {
+    let reference = Reference::parse(MANIHIKI).unwrap();
+    let gebco = gebco_patch("manihiki");
+    let painted = traced_plateau(&gebco, &reference);
+    let ours = painted.patch(&reference).heights;
+    let n = reference.size;
+    print_plateau_measures("painted", &ours, &gebco, n, reference.cell_m);
+    print_plateau_measures("GEBCO", &gebco, &gebco, n, reference.cell_m);
+    let mut image = image::RgbImage::new(2 * n as u32, n as u32);
+    draw_banded(&mut image, &ours, n, reference.cell_m, 0);
+    draw_banded(&mut image, &gebco, n, reference.cell_m, n);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/manihiki-traced.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
+    save_side_by_side("manihiki-traced-shaded", &painted, &reference, &gebco);
 }

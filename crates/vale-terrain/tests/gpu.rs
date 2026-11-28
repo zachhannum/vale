@@ -4525,7 +4525,7 @@ fn gpu_plateau_matches_cpu_for_one_stamp() {
         "one plateau stamp: {changed} texels, difference {}",
         run.difference
     );
-    assert!(changed > 3000, "{changed} texels changed");
+    assert!(changed > 1000, "{changed} texels changed");
     assert!(run.difference <= PLATEAU_TOLERANCE, "{}", run.difference);
 }
 

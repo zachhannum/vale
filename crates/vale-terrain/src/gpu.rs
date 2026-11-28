@@ -24,7 +24,7 @@ use crate::heightmap::{
 use crate::hotspot::HotspotPlan;
 use crate::line::{LINE_SEGMENTS, LinePlan, REACH};
 use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
-use crate::plateau::{PLAN_STAMPS, PlateauPlan};
+use crate::plateau::{PLATEAU_FLOATS, PlateauPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
@@ -55,6 +55,14 @@ const MARGIN_FIELD_BYTES: u32 = (FIELD_CELLS * FIELD_CELLS * FIELD_FLOATS * 4) a
 
 /// The bytes of the volcanoes of one seamount plan.
 const SEAMOUNT_BYTES: u32 = (PLAN_VOLCANOES * VOLCANO_FLOATS * 4) as u32;
+
+/// The size of a slot of the volcano buffer: a seamounts plan or a plateau
+/// plan.
+const VOLCANO_SLOT_BYTES: u32 = if SEAMOUNT_BYTES > (PLATEAU_FLOATS * 4) as u32 {
+    SEAMOUNT_BYTES
+} else {
+    (PLATEAU_FLOATS * 4) as u32
+};
 
 /// A group stops before the stamp that makes its rectangle on a face larger
 /// than this number of times the largest stamp rectangle on that face. Each
@@ -261,7 +269,7 @@ impl BindParts {
         let mut entries = vec![
             buffer(0, &self.uniforms, size_of::<Uniforms>()),
             buffer(7, &self.ridge_uniforms, size_of::<RidgeUniforms>()),
-            buffer(14, &self.volcanoes, SEAMOUNT_BYTES as usize),
+            buffer(14, &self.volcanoes, VOLCANO_SLOT_BYTES as usize),
             buffer(15, &self.margin_field, MARGIN_FIELD_BYTES as usize),
         ];
         for (i, view) in self.views.iter().enumerate() {
@@ -580,7 +588,7 @@ impl StampPipeline {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: true,
-                        min_binding_size: NonZeroU64::new(u64::from(SEAMOUNT_BYTES)),
+                        min_binding_size: NonZeroU64::new(u64::from(VOLCANO_SLOT_BYTES)),
                     },
                     count: None,
                 },
@@ -771,8 +779,8 @@ impl GpuHeightmap {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let volcano_slot_size =
-            SEAMOUNT_BYTES.next_multiple_of(device.limits().min_storage_buffer_offset_alignment);
+        let volcano_slot_size = VOLCANO_SLOT_BYTES
+            .next_multiple_of(device.limits().min_storage_buffer_offset_alignment);
         let volcanoes = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("seamount volcanoes"),
             size: u64::from(volcano_slot_size * SEAMOUNT_SLOTS),
@@ -1865,7 +1873,7 @@ impl GpuHeightmap {
         plan: &PlateauPlan,
     ) -> bool {
         assert_eq!(plan.face_size as u32, self.face_size, "the face size");
-        assert!(plan.stamps() <= PLAN_STAMPS, "the stamps");
+        assert!(plan.floats().len() <= PLATEAU_FLOATS, "the grid");
         let passes = plan.rects.iter().flatten().count() as u32;
         if passes == 0 {
             return true;

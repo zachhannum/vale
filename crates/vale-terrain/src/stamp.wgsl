@@ -3122,10 +3122,9 @@ fn seamounts_level(at: vec2<i32>) -> f32 {
 }
 
 // The constants of `plateau.rs`, with a `PLATEAU_` prefix. The plan is in
-// the volcano buffer: a header and the stamps.
+// the volcano buffer: a header and the grid of distances to the edge.
 const PLATEAU = 21u;
-const PLATEAU_HEADER = 16u;
-const PLATEAU_STAMP_FLOATS = 8u;
+const PLATEAU_HEADER = 24u;
 const PLATEAU_FLOOR_LEVEL = 0u;
 const PLATEAU_TOP_LEVEL = 1u;
 const PLATEAU_TOP_M = 2u;
@@ -3134,232 +3133,123 @@ const PLATEAU_SEED_LOW = 4u;
 const PLATEAU_SEED_HIGH = 5u;
 const PLATEAU_WARP_KM = 6u;
 const PLATEAU_TEXEL_KM = 7u;
-const PLATEAU_COUNT = 8u;
-const PLATEAU_RIFT_AXIS = 9u;
-const PLATEAU_WARP = 0.13;
+const PLATEAU_SIZE = 8u;
+const PLATEAU_CENTER = 12u;
+const PLATEAU_EAST = 15u;
+const PLATEAU_NORTH = 18u;
+const PLATEAU_CELL = 21u;
+const PLATEAU_FAR_KM = 22u;
 const PLATEAU_WARP_TEXELS = 3.0;
-const PLATEAU_SCARP = 6.0;
+const PLATEAU_SCARP = 8.0;
+const PLATEAU_FOOT = 0.35;
+const PLATEAU_RAMP = 24.0;
+const PLATEAU_RAMP_WARP = 0.25;
 const PLATEAU_FAULT_HEIGHT = vec3<f32>(0.45, 0.35, 0.2);
 const PLATEAU_FAULT_LOW = vec3<f32>(0.0, 0.4, 0.8);
 const PLATEAU_FAULT_HIGH = vec3<f32>(0.22, 0.58, 0.95);
 const PLATEAU_FAULT_SHIFT = 0.25;
 const PLATEAU_FAULT_KM = 60.0;
-const PLATEAU_SCAR_KM = 80.0;
-const PLATEAU_SCARS = 0.8;
-const PLATEAU_SCAR_RADIUS = vec2<f32>(0.18, 0.3);
-const PLATEAU_RIFT_KM = 160.0;
-const PLATEAU_RIFTS = 0.7;
-const PLATEAU_RIFT_TURN = 0.45;
-const PLATEAU_RIFT_LENGTH = vec2<f32>(0.4, 0.9);
-const PLATEAU_RIFT_HALF_KM = vec2<f32>(8.0, 18.0);
-const PLATEAU_RIFT_DEPTH = 0.4;
-const PLATEAU_RELIEF_M = vec3<f32>(120.0, 45.0, 18.0);
-const PLATEAU_RELIEF_KM = vec3<f32>(200.0, 40.0, 10.0);
-const PLATEAU_RELIEF_HEIGHT_M = 2500.0;
-const PLATEAU_VOLCANO_KM = 150.0;
-const PLATEAU_VOLCANOES = 0.5;
-const PLATEAU_VOLCANO_RADIUS = vec2<f32>(0.08, 0.22);
-const PLATEAU_VOLCANO_HEIGHT = vec2<f32>(0.3, 0.9);
-const PLATEAU_SALT_WARP = 0x5a170000u;
+const PLATEAU_EDGE_KM = 160.0;
+const PLATEAU_EDGE_GAIN = 0.5;
+const PLATEAU_EDGE_REACH = 0.2;
+const PLATEAU_RELIEF_M = vec3<f32>(300.0, 120.0, 40.0);
+const PLATEAU_RELIEF_KM = vec3<f32>(250.0, 60.0, 15.0);
 const PLATEAU_SALT_FAULT = 0x5a171000u;
-const PLATEAU_SALT_SCAR = 0x5a172000u;
-const PLATEAU_SALT_RIFT = 0x5a173000u;
 const PLATEAU_SALT_RELIEF = 0x5a174000u;
-const PLATEAU_SALT_VOLCANO = 0x5a175000u;
+const PLATEAU_SALT_EDGE = 0x5a176000u;
 const PLATEAU_LEVELS_PER_M = 65535.0 / (ELEVATION_HIGH - ELEVATION_LOW);
 
 fn plateau(slot: u32) -> f32 {
     return volcanoes[slot];
 }
 
+fn plateau_v3(slot: u32) -> vec3<f32> {
+    return vec3<f32>(plateau(slot), plateau(slot + 1u), plateau(slot + 2u));
+}
+
 fn plateau_seed() -> u32 {
     return u32(plateau(PLATEAU_SEED_LOW)) | (u32(plateau(PLATEAU_SEED_HIGH)) << 16u);
 }
 
-fn plateau_unit(h: u32) -> f32 {
-    return f32(h & 0xffffffu) / 16777216.0;
-}
-
-// The angle between two unit vectors. The steps are those of
-// `chord_angle` in `plateau.rs`.
-fn plateau_angle(a: vec3<f32>, b: vec3<f32>) -> f32 {
-    return 2.0 * asin(min(0.5 * length(a - b), 1.0));
-}
-
-// The point of a cell of a seeded lattice and three more numbers. The
-// steps are those of `cell_point`.
-struct PlateauCell {
-    point: vec3<f32>,
-    more: vec3<f32>,
-}
-
-fn plateau_cell(cell: vec3<u32>, seed: u32) -> PlateauCell {
-    var h = array<f32, 6>();
-    for (var k = 0u; k < 6u; k++) {
-        h[k] = plateau_unit(hash(cell, seed + k));
-    }
-    return PlateauCell(
-        vec3<f32>(0.25 + 0.5 * h[0], 0.25 + 0.5 * h[1], 0.25 + 0.5 * h[2]),
-        vec3<f32>(h[3], h[4], h[5]),
-    );
-}
-
-// The point after the warp of the outline. The steps are those of
-// `PlateauPlan::warped`.
-fn plateau_warped(p: vec3<f32>) -> vec3<f32> {
+// How far the fractal noise moves the edge out, in kilometers. The steps
+// are those of `PlateauPlan::edge_noise`.
+fn plateau_edge_noise(p: vec3<f32>) -> f32 {
     let world = plateau(PLATEAU_WORLD_KM);
-    let seed = plateau_seed();
-    var wavelength = 2.0 * plateau(PLATEAU_WARP_KM);
     let last = PLATEAU_WARP_TEXELS * plateau(PLATEAU_TEXEL_KM);
-    var q = p;
+    var wavelength = PLATEAU_EDGE_KM;
+    var amplitude = PLATEAU_EDGE_REACH * (1.0 - PLATEAU_EDGE_GAIN) * plateau(PLATEAU_WARP_KM);
+    var sum = 0.0;
     var k = 0u;
-    while wavelength >= last && k < 16u {
-        let n = noise3(p * (world / wavelength), seed ^ (PLATEAU_SALT_WARP + k));
-        q += n * (PLATEAU_WARP * wavelength / world);
+    while wavelength >= last && k < 12u {
+        let n = noise3(p * (world / wavelength), plateau_seed() ^ (PLATEAU_SALT_EDGE + k));
+        sum += amplitude * n.x;
         wavelength *= 0.5;
+        amplitude *= PLATEAU_EDGE_GAIN;
         k += 1u;
     }
-    return normalize(q);
+    return sum;
 }
 
-// How far the slide scars cut into the edge, in kilometers.
-fn plateau_scar(p: vec3<f32>) -> f32 {
-    let q = p * (plateau(PLATEAU_WORLD_KM) / PLATEAU_SCAR_KM);
-    let c = floor(q);
-    let cell = plateau_cell(vec3<u32>(vec3<i32>(c)), plateau_seed() ^ PLATEAU_SALT_SCAR);
-    if cell.more.x >= PLATEAU_SCARS {
-        return 0.0;
+// The signed distance to the edge in kilometers, from the grid. The steps
+// are those of `PlateauPlan::distance_at`.
+fn plateau_distance(p: vec3<f32>) -> f32 {
+    let far = plateau(PLATEAU_FAR_KM);
+    let size = u32(plateau(PLATEAU_SIZE));
+    let cell = plateau(PLATEAU_CELL);
+    let up = dot(p, plateau_v3(PLATEAU_CENTER));
+    if up <= 0.0 || size < 2u {
+        return -far;
     }
-    let r = PLATEAU_SCAR_RADIUS.x + (PLATEAU_SCAR_RADIUS.y - PLATEAU_SCAR_RADIUS.x) * cell.more.y;
-    let k = length(q - c - cell.point) / r;
-    if k >= 1.0 {
-        return 0.0;
+    let middle = f32(size - 1u) * 0.5;
+    let x = dot(p, plateau_v3(PLATEAU_EAST)) / up / cell + middle;
+    let y = dot(p, plateau_v3(PLATEAU_NORTH)) / up / cell + middle;
+    let top = f32(size - 1u);
+    if x < 0.0 || x > top || y < 0.0 || y > top {
+        return -far;
     }
-    return r * PLATEAU_SCAR_KM * (1.0 - k * k);
+    let i = min(u32(floor(x)), size - 2u);
+    let j = min(u32(floor(y)), size - 2u);
+    let tx = x - f32(i);
+    let ty = y - f32(j);
+    let a = plateau(PLATEAU_HEADER + j * size + i);
+    let b = plateau(PLATEAU_HEADER + j * size + i + 1u);
+    let c = plateau(PLATEAU_HEADER + (j + 1u) * size + i);
+    let d = plateau(PLATEAU_HEADER + (j + 1u) * size + i + 1u);
+    let low = a + (b - a) * tx;
+    let high = c + (d - c) * tx;
+    return low + (high - low) * ty;
 }
 
 // The part of the height of the plateau. The steps are those of
 // `PlateauPlan::part`.
 fn plateau_part(p: vec3<f32>) -> f32 {
-    let q = plateau_warped(p);
-    var rest = 1.0;
-    var slope = vec3<f32>(0.0);
-    let count = u32(plateau(PLATEAU_COUNT));
-    for (var i = 0u; i < count; i++) {
-        let at = PLATEAU_HEADER + i * PLATEAU_STAMP_FLOATS;
-        let c = vec3<f32>(plateau(at), plateau(at + 1u), plateau(at + 2u));
-        let radius = plateau(at + 3u);
-        let hard = plateau(at + 4u);
-        let flow = plateau(at + 5u);
-        let k = plateau_angle(q, c) / radius;
-        if k >= 1.0 {
-            continue;
-        }
-        var w = flow;
-        var dw = 0.0;
-        if k > hard {
-            let t = (k - hard) / (1.0 - hard);
-            w = flow * (1.0 - t * t * (3.0 - 2.0 * t));
-            dw = -flow * 6.0 * t * (1.0 - t) / ((1.0 - hard) * radius);
-        }
-        var away = q * dot(q, c) - c;
-        let size = length(away);
-        if size > 1e-12 {
-            away /= size;
-        } else {
-            away = vec3<f32>(0.0);
-        }
-        slope = slope * (1.0 - w) - away * (rest * dw);
-        rest *= 1.0 - w;
-    }
-    let growth = 1.0 - rest;
-    if growth <= 0.0 {
-        return 0.0;
-    }
-    let gradient = max(length(slope), 1e-9);
     let world = plateau(PLATEAU_WORLD_KM);
-    let d = (growth - 0.5) / gradient * world - plateau_scar(p);
-    let u = d / (PLATEAU_SCARP * plateau(PLATEAU_TOP_M) / 1000.0);
+    let d = plateau_distance(p) + plateau_edge_noise(p);
+    let top_km = plateau(PLATEAU_TOP_M) / 1000.0;
+    let u = d / (PLATEAU_SCARP * top_km);
     if u <= -PLATEAU_FAULT_SHIFT {
         return 0.0;
     }
     let n = noise3(p * (world / PLATEAU_FAULT_KM), plateau_seed() ^ PLATEAU_SALT_FAULT);
-    var f = 0.0;
+    var foot = 0.0;
     for (var k = 0u; k < 3u; k++) {
-        let shift = PLATEAU_FAULT_SHIFT * n[k];
-        f += PLATEAU_FAULT_HEIGHT[k]
+        let shift = PLATEAU_FAULT_SHIFT * (0.8 * n.x + 0.2 * n[k]);
+        foot += PLATEAU_FAULT_HEIGHT[k]
             * smooth_between(PLATEAU_FAULT_LOW[k] + shift, PLATEAU_FAULT_HIGH[k] + shift, u);
     }
-    return f;
-}
-
-// The depth of the rifts, from 0 to 1. The steps are those of
-// `PlateauPlan::rift`.
-fn plateau_rift(p: vec3<f32>) -> f32 {
-    let axis = vec3<f32>(
-        plateau(PLATEAU_RIFT_AXIS),
-        plateau(PLATEAU_RIFT_AXIS + 1u),
-        plateau(PLATEAU_RIFT_AXIS + 2u),
-    );
-    let radius = plateau(PLATEAU_WORLD_KM) / PLATEAU_RIFT_KM;
-    let q = p * radius;
-    let cell = vec3<i32>(floor(q));
-    let seed = plateau_seed() ^ PLATEAU_SALT_RIFT;
-    var deepest = 0.0;
-    for (var k = 0u; k < 27u; k++) {
-        let c = cell + vec3<i32>(i32(k % 3u), i32((k / 3u) % 3u), i32((k / 9u) % 3u)) - 1;
-        let lattice = plateau_cell(vec3<u32>(c), seed);
-        if lattice.more.x >= PLATEAU_RIFTS {
-            continue;
-        }
-        let up = normalize(vec3<f32>(c) + lattice.point);
-        let middle = up * radius;
-        if any(vec3<i32>(floor(middle)) != c) {
-            continue;
-        }
-        var along = axis - up * dot(axis, up);
-        if length(along) < 1e-6 {
-            continue;
-        }
-        along = normalize(along);
-        let turn = PLATEAU_RIFT_TURN * (2.0 * lattice.more.y - 1.0);
-        along = along * cos(turn) + cross(up, along) * sin(turn);
-        let half = PLATEAU_RIFT_LENGTH.x + (PLATEAU_RIFT_LENGTH.y - PLATEAU_RIFT_LENGTH.x) * lattice.more.z;
-        let to = q - middle;
-        let s = dot(to, along);
-        let off = length(to - along * clamp(s, -half, half));
-        let end = 1.0 - smooth_between(0.5 * half, half, abs(s));
-        let h = plateau_unit(hash(vec3<u32>(c), seed + 6u));
-        var width = (PLATEAU_RIFT_HALF_KM.x + (PLATEAU_RIFT_HALF_KM.y - PLATEAU_RIFT_HALF_KM.x) * h) / PLATEAU_RIFT_KM;
-        width *= 0.4 + 0.6 * end;
-        deepest = max(deepest, end * (1.0 - smooth_between(0.35 * width, width, off)));
-    }
-    return deepest;
+    let ramp = min(PLATEAU_RAMP * top_km, PLATEAU_RAMP_WARP * plateau(PLATEAU_WARP_KM));
+    let rise = 1.0 - exp(-max(d, 0.0) / ramp);
+    return PLATEAU_FOOT * foot + (1.0 - PLATEAU_FOOT) * rise * smooth_between(0.0, 1.0, u);
 }
 
 // The level of the top of the plateau. The steps are those of
 // `PlateauPlan::target`.
 fn plateau_target(p: vec3<f32>) -> f32 {
     let world = plateau(PLATEAU_WORLD_KM);
-    let seed = plateau_seed();
-    let top = plateau(PLATEAU_TOP_LEVEL);
-    var level = plateau(PLATEAU_FLOOR_LEVEL) + top;
-    let relief = plateau(PLATEAU_TOP_M) / PLATEAU_RELIEF_HEIGHT_M * PLATEAU_LEVELS_PER_M;
+    var level = plateau(PLATEAU_FLOOR_LEVEL) + plateau(PLATEAU_TOP_LEVEL);
     for (var k = 0u; k < 3u; k++) {
-        let n = noise3(p * (world / PLATEAU_RELIEF_KM[k]), seed ^ (PLATEAU_SALT_RELIEF + k));
-        level += relief * PLATEAU_RELIEF_M[k] * n.x;
-    }
-    level -= PLATEAU_RIFT_DEPTH * top * plateau_rift(p);
-    let q = p * (world / PLATEAU_VOLCANO_KM);
-    let c = floor(q);
-    let cell = plateau_cell(vec3<u32>(vec3<i32>(c)), seed ^ PLATEAU_SALT_VOLCANO);
-    if cell.more.x < PLATEAU_VOLCANOES {
-        let r = PLATEAU_VOLCANO_RADIUS.x + (PLATEAU_VOLCANO_RADIUS.y - PLATEAU_VOLCANO_RADIUS.x) * cell.more.y;
-        let h = PLATEAU_VOLCANO_HEIGHT.x + (PLATEAU_VOLCANO_HEIGHT.y - PLATEAU_VOLCANO_HEIGHT.x) * cell.more.z;
-        let x = 1.0 - length(q - c - cell.point) / r;
-        if x > 0.0 {
-            level += h * top * x * x;
-        }
+        let n = noise3(p * (world / PLATEAU_RELIEF_KM[k]), plateau_seed() ^ (PLATEAU_SALT_RELIEF + k));
+        level += PLATEAU_LEVELS_PER_M * PLATEAU_RELIEF_M[k] * n.x;
     }
     return level;
 }
@@ -3373,8 +3263,9 @@ fn plateau_level(at: vec2<i32>) -> f32 {
     if f <= 0.0 {
         return start;
     }
-    let target_level = plateau_target(p);
-    return limited(start, clamp(floor(start + f * max(target_level - start, 0.0) + 0.5), 0.0, 65535.0));
+    let base = min(start, plateau(PLATEAU_FLOOR_LEVEL));
+    let next = max(base + f * (plateau_target(p) - base), start);
+    return limited(start, clamp(floor(next + 0.5), 0.0, 65535.0));
 }
 
 // The constants of `hotspot.rs`, with a `HOTSPOT_` prefix.
