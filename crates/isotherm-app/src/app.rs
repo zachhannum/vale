@@ -22,9 +22,15 @@ use vale_sphere::{ProjectionKind, ProjectionSpec};
 
 mod ask;
 mod planet;
+mod start;
 
 pub use ask::{ASK_TEXT, ASK_TITLE, Ask, START_AGAIN};
 pub use planet::*;
+pub use start::{
+    CANCEL, DELETE, DELETE_BUTTON, DELETE_TITLE, DUPLICATE, Dialog, IN_ICLOUD, NAME, NEW_FROM_VALE,
+    NEW_WORLD, NO_WORLDS, OPEN, RENAME, RENAME_BUTTON, RENAME_TITLE, Start, WORLDS, actions_name,
+    delete_text, open_name,
+};
 
 use crate::cli::Args;
 use crate::document::{self, Change, Document, Read};
@@ -74,11 +80,12 @@ impl Workspace {
     /// The empty state of a workspace with no content yet.
     pub fn hint(self) -> Option<&'static str> {
         match self {
-            Workspace::Worlds => Some("Saved worlds come in a later version."),
             Workspace::Export => Some("Export comes in a later version."),
-            Workspace::Terrain | Workspace::Planet | Workspace::Simulate | Workspace::Explore => {
-                None
-            }
+            Workspace::Worlds
+            | Workspace::Terrain
+            | Workspace::Planet
+            | Workspace::Simulate
+            | Workspace::Explore => None,
         }
     }
 
@@ -247,6 +254,8 @@ pub struct IsothermApp {
     pub files: Box<dyn Files>,
     /// The list of the worlds must be read again.
     pub worlds_stale: bool,
+    /// The start screen of the Worlds workspace.
+    pub start: Start,
     /// The folder of the resume file. `None`: the next start does not
     /// open this world.
     pub state_dir: Option<PathBuf>,
@@ -356,6 +365,7 @@ impl IsothermApp {
             folders: None,
             files: Box::new(PlainFiles),
             worlds_stale: true,
+            start: Start::default(),
             state_dir: None,
             pick: None,
             picking: None,
@@ -1052,6 +1062,9 @@ impl IsothermApp {
         };
         let mut controls = Controls::new();
         self.cards.clear();
+        if self.on_start() {
+            self.refresh_worlds();
+        }
         // The cards are glass when the app has a wgpu renderer.
         widgets::set_backdrop(&ctx, self.globe.backdrop());
         match self.layout {
@@ -1064,18 +1077,29 @@ impl IsothermApp {
         } else {
             self.projections = false;
         }
+        if self.on_start() {
+            self.start_menu(&ctx, &mut controls, safe);
+            self.start_dialog(&ctx, &mut controls, safe);
+        } else {
+            self.start.menu = None;
+            self.start.dialog = None;
+        }
         if self.ask.is_some() {
             self.ask_card(&ctx, &mut controls, screen, safe);
         }
         self.controls = controls;
     }
 
-    /// The globe in `rect`, with the canvas below it.
+    /// The globe in `rect`, with the canvas below it. The start screen
+    /// has only the canvas.
     fn canvas(&mut self, ui: &mut egui::Ui, rect: Rect) {
         let bands = self.doc.world.terrain.bands();
         ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
             ui.set_clip_rect(rect);
             ui.painter().rect_filled(rect, 0.0, theme::CANVAS);
+            if self.on_start() {
+                return;
+            }
             let resp = self.globe.show(ui, rect, theme::CANVAS, &bands);
             let at = |pos: Option<egui::Pos2>| pos.and_then(|pos| self.globe.direction_at(pos));
             self.explore.hover = match resp.hovered() && !resp.dragged() {
@@ -1141,11 +1165,21 @@ impl IsothermApp {
                 app.panel_rows(ui, controls, true);
             },
         );
+        if self.on_start() {
+            let area = Rect::from_min_max(
+                pos2(globe.left() + 2.0 * MARGIN, globe.top()),
+                pos2(globe.right() - 2.0 * MARGIN, globe.bottom()),
+            );
+            self.start_screen(ui, controls, area, start::Header::Title);
+        }
         self.readout_card(ui.ctx(), globe.shrink(MARGIN));
     }
 
     /// The readout card at the bottom middle of `area`.
     fn readout_card(&mut self, ctx: &egui::Context, area: Rect) {
+        if self.on_start() {
+            return;
+        }
         if let Some(text) = self.readout() {
             let rect = explore::readout_card(ctx, area, &text);
             self.cards.push((explore::READOUT, rect));
@@ -1199,7 +1233,17 @@ impl IsothermApp {
             pos2(safe.left() + MARGIN, below),
             pos2(safe.right() - MARGIN, safe.bottom() - MARGIN),
         );
-        if class == WidthClass::Compact {
+        if self.on_start() {
+            let area = Rect::from_min_max(
+                pos2(safe.left() + MARGIN, below),
+                pos2(safe.right() - MARGIN, safe.bottom()),
+            );
+            let header = match class {
+                WidthClass::Compact => start::Header::Narrow,
+                _ => start::Header::Wide,
+            };
+            self.start_screen(ui, controls, area, header);
+        } else if class == WidthClass::Compact {
             if self.workspace.has_panel() {
                 self.sheet(&ctx, controls, safe);
             }
@@ -1436,16 +1480,15 @@ impl IsothermApp {
         if self.workspace == Workspace::Planet {
             self.planet_rows(ui, controls);
         }
+        if self.workspace == Workspace::Worlds {
+            self.start_rows(ui, controls);
+        }
         if self.workspace.has_view() {
             self.view_rows(ui, controls);
         }
         if hint && let Some(text) = self.workspace.hint() {
             ui.add_space(8.0);
             wrapped(ui, text, theme::body(), theme::TEXT);
-            if self.workspace == Workspace::Worlds {
-                ui.add_space(4.0);
-                wrapped(ui, &self.build, theme::hint(), theme::MUTE);
-            }
         }
     }
 
@@ -1863,21 +1906,16 @@ impl IsothermApp {
     }
 
     /// The card with the empty state of the workspace, at the bottom of the
-    /// screen. The Worlds workspace also shows which build this is.
+    /// screen.
     fn hint_card(&mut self, ui: &egui::Ui, safe: Rect) {
         let Some(hint) = self.workspace.hint() else {
             return;
         };
-        let build = (self.workspace == Workspace::Worlds).then_some(self.build.as_str());
         let pad = widgets::BODY_PAD;
-        let mut width = widgets::text_width(ui, hint, theme::body());
-        if let Some(build) = build {
-            width = width.max(widgets::text_width(ui, build, theme::hint()));
-        }
+        let width = widgets::text_width(ui, hint, theme::body());
         let width = (width + 2.0 * pad).min(safe.width() - 2.0 * MARGIN);
         let line = 24.0;
-        let lines = if build.is_some() { 2.0 } else { 1.0 };
-        let height = lines * line + 2.0 * 12.0;
+        let height = line + 2.0 * 12.0;
         let rect = Rect::from_min_size(
             pos2(
                 safe.center().x - width / 2.0,
@@ -1901,9 +1939,6 @@ impl IsothermApp {
                     ui.put(rect, egui::Label::new(label).truncate());
                 };
                 text(ui, body.top(), hint, theme::body(), theme::TEXT);
-                if let Some(build) = build {
-                    text(ui, body.top() + line, build, theme::hint(), theme::MUTE);
-                }
             },
         );
     }
