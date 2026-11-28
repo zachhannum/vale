@@ -3,5 +3,6 @@
 pub mod icons;
 pub mod metrics;
 pub mod motion;
+pub mod number;
 pub mod theme;
 pub mod widgets;

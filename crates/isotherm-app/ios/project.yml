@@ -30,6 +30,27 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default Configuration
                 UISceneDelegateClassName: WinitSceneDelegate
+        # The Files app shows the Documents folder, with the world files.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Isotherm world
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Default
+            LSItemContentTypes:
+              - org.opengeospatial.geopackage
+        # Isotherm does not own the GeoPackage format, so the type is imported.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.opengeospatial.geopackage
+            UTTypeDescription: GeoPackage
+            UTTypeConformsTo:
+              - public.database
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - gpkg
+              public.mime-type:
+                - application/geopackage+sqlite3
         UIApplicationSupportsIndirectInputEvents: true
         CADisableMinimumFrameDurationOnPhone: true
         UISupportedInterfaceOrientations~iphone:

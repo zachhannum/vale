@@ -432,9 +432,7 @@ impl LayerRef {
 /// The error of a ramp that would give a layer too many bands.
 pub const TOO_MANY_BANDS: &str = "A layer has at most 32 bands.";
 pub const HEIGHT_NAME: &str = "Height";
-/// The unit of a height layer. A raster layer with this unit has a sea and
-/// rivers.
-pub const HEIGHT_UNIT: &str = "m";
+pub use vale_store::HEIGHT_UNIT;
 
 /// The values of a new raster layer.
 #[derive(Clone, Debug, PartialEq)]
@@ -476,7 +474,7 @@ impl RasterSpec {
 
 /// True if the values of the raster are heights in meters.
 pub fn is_height(raster: &Raster) -> bool {
-    raster.unit == HEIGHT_UNIT
+    raster.is_height()
 }
 
 /// Saves each change that waits as one undo step, and then the picture of

@@ -16,7 +16,7 @@ Isotherm is the working name. A final name must not contain "World Climate Lab" 
 
 - A copy of the code, the text, the names, or the art of World Climate Lab.
 - A research-grade general circulation model (a full 3D model of the atmosphere, as climate scientists use). The model is of intermediate complexity, tuned for speed and for plausible results.
-- A terrain editor or procedural world generation. Vale is the tool for terrain. Isotherm imports a heightmap and its masks, and it sets the sea level.
+- A terrain editor or procedural world generation. Vale is the tool for terrain. Isotherm imports a heightmap, and it sets the sea level.
 
 ## Sources
 
@@ -42,10 +42,10 @@ The iOS app covers iPad and iPhone from phase 1. The layout follows the breakpoi
 
 Version 1 of Isotherm does these things.
 
-- Inputs: a heightmap from PNG, 16-bit TIFF, GeoTIFF, or a Vale project file, with a sea mask and a depression mask. The planet settings are the radius, the gravity, the star or two stars, the orbit, the tilt, the day length, the atmosphere, and the moons.
+- Inputs: one heightmap that holds the land and the sea floor, from PNG, TIFF, GeoTIFF, or a height layer of a Vale project file. The planet settings are the radius, the gravity, the star or two stars, the orbit, the tilt, the day length, the atmosphere, and the moons.
 - Outputs: the grids of the section "Outputs", with twelve monthly values and a yearly value, and the climate classes of the section "The climate model".
 - Views: each output on the globe or on the flat map, with a legend, contour lines, a readout under the pointer, a month slider, and the satellite view.
-- The terrain: import of the heightmap and the masks, and the sea level.
+- The terrain: import of the heightmap, and the sea level.
 - Exports: GeoJSON, GeoPackage, GeoTIFF, PNG maps and posters, animations of a year, and a Vale project file.
 
 ## Architecture
@@ -62,15 +62,15 @@ import ──> world ──> sim ──> fields ──> classify ──> vector 
 
 | Crate | Role |
 | --- | --- |
-| `isotherm-world` | Planet record: radius, gravity, star, orbit, rotation, atmosphere, moons. Heightmap, sea mask, depression mask, and bathymetry on a cube map. |
+| `isotherm-world` | Planet record: radius, gravity, star, orbit, rotation, atmosphere, moons. The heightmap on a cube map, its range in meters, and the sea level. |
 | `isotherm-sim` | The climate model. A CPU reference version of each step, and a schedule of steps. |
 | `isotherm-gpu` | The wgpu compute shaders of each step of `isotherm-sim`. |
 | `isotherm-fields` | The result grids: monthly and yearly means, minimums, and maximums of each output. |
 | `isotherm-classify` | Köppen-Geiger, the classes for slow rotators and tidally locked worlds, vegetation, and habitability. |
 | `isotherm-vector` | Raster to vector: class polygons, contour lines, isobands, streamlines, river lines. |
 | `isotherm-export` | GeoJSON, GeoTIFF, PNG maps and posters, animations, and the Vale project writer. |
-| `isotherm-store` | The project file, a GeoPackage, with an undo log. |
-| `isotherm-import` | Heightmaps and masks from PNG, TIFF, and GeoTIFF, and Vale project files. |
+| `isotherm-store` | The world file, a GeoPackage of its own, with an undo log. |
+| `isotherm-import` | Heightmaps from PNG, TIFF, and GeoTIFF, and height layers from Vale project files. |
 | `isotherm-app` | egui shell, globe and map views, panels, headless commands, and the iOS target. |
 
 ### What comes from Vale
@@ -91,7 +91,7 @@ The table lists the parts that Isotherm uses, and the parts that it copies as a 
 | `vale-terrain` cube map, tiles, and `equirect.rs` | The grid of the model is a cube sphere, so the same cube map holds the terrain and the results. |
 | `vale-terrain` flow network | Rivers and basins from the heightmap. |
 | `vale-import` | PNG, 16-bit TIFF, and GeoTIFF read and write. |
-| `vale-store` GeoPackage and undo log | The project file. The extra tables get the prefix `isotherm_`. |
+| `vale-store` | Reads the height layers of a Vale project for the import. The world file of Isotherm copies the GeoPackage and the undo log of `vale-store` as a pattern. Its tables have the prefix `isotherm_`. |
 | `vale-globe` | The globe renderer, navigation, and the flat view. |
 | `vale-shell` pad module and backdrop | The theme, the touch-size widgets, and the glass cards. Each card, menu, and hint is glass over the globe when the app has a wgpu renderer. The panels of Vale stay in `vale-app`. |
 | `vale-shell` lifecycle, working copy, and resume file | Save on background, the working copy, and the restore of the last session on iOS. Each app gives its own project file and its own view. |
@@ -223,11 +223,19 @@ The UI follows the rules of Vale: iPad first, touch-size controls, the theme of 
 | Workspace | Content |
 | --- | --- |
 | Worlds | The start screen, with a picture of each world, as in Vale |
-| Terrain | Import of the heightmap and the masks, and the sea level slider |
+| Terrain | Import of the heightmap, the heights of black and white, and the sea level slider |
 | Planet | Star, orbit, rotation, atmosphere, and moons, with presets that we design |
 | Simulate | Run, pause, speed, the year counter, the energy flow chart, and the quality setting |
 | Explore | The output layers, the month slider, contours, the readout, and the habitability profile |
 | Export | GeoJSON, GeoPackage, GeoTIFF, PNG maps and posters, animations, and the Vale project |
+
+### The terrain
+
+A world has one heightmap that holds the land and the sea floor. A grey or color image of 8 or 16 bits has no units, so the import asks for the heights of black and of white, with defaults of −8,000 m and 8,000 m. A GeoTIFF with samples in meters keeps its heights. A Vale project file shows its height layers, and you pick one. A project with one height layer needs no pick. The sea level slider runs from the height of black to the height of white, and the globe shows the new coast while you drag. One drag is one undo step.
+
+The world file is a GeoPackage that only Isotherm writes. It holds the planet record, the tiles of the heightmap, the range in meters, the sea level, and the undo log. Isotherm refuses a Vale project as a world file.
+
+The Terrain workspace and the Explore workspace have a view card with a Globe and Flat switch and a projection list from `vale-sphere`. The layouts are those of Vale. At 600 points and wider, the panel is a card at the left. Below 600 points, the panel is a bottom sheet.
 
 On iOS, a run stops when the app goes to the background, and the state of the model is saved to the project file. The run continues when the app comes back. The quality setting picks a coarser grid on devices with less memory. The app reads the GPU limits of the device at the start and does not offer a grid that does not fit.
 

@@ -1917,12 +1917,18 @@ name = "isotherm-app"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "clap",
  "eframe",
  "egui_kittest",
  "image",
  "isotherm-import",
+ "isotherm-store",
+ "isotherm-world",
+ "png",
+ "tempfile",
  "vale-globe",
  "vale-shell",
+ "vale-sphere",
  "vale-store",
  "vale-terrain",
 ]
@@ -1964,7 +1970,10 @@ version = "0.1.0"
 dependencies = [
  "isotherm-world",
  "png",
+ "tempfile",
+ "tiff",
  "vale-import",
+ "vale-store",
  "vale-terrain",
 ]
 
@@ -1980,7 +1989,10 @@ dependencies = [
 name = "isotherm-store"
 version = "0.1.0"
 dependencies = [
+ "flate2",
  "isotherm-world",
+ "rusqlite",
+ "tempfile",
 ]
 
 [[package]]
@@ -4068,7 +4080,6 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation 0.3.2",
  "objc2-ui-kit 0.3.2",
- "objc2-uniform-type-identifiers 0.3.2",
  "rfd",
  "rusqlite",
  "serde_json",
@@ -4167,6 +4178,9 @@ dependencies = [
  "image",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
+ "objc2-ui-kit 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
+ "rfd",
  "tempfile",
 ]
 

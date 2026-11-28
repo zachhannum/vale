@@ -13,13 +13,28 @@ bytemuck.workspace = true
 [target.'cfg(not(target_os = "ios"))'.dependencies]
 egui_kittest.workspace = true
 image.workspace = true
+rfd.workspace = true
 
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6.5"
 objc2-foundation = { version = "0.3.2", default-features = false, features = [
     "std",
+    "NSArray",
     "NSNotification",
     "NSString",
+    "NSURL",
+] }
+objc2-ui-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-uniform-type-identifiers",
+    "UIResponder",
+    "UIViewController",
+    "UIDocumentPickerViewController",
+] }
+objc2-uniform-type-identifiers = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "UTType",
 ] }
 
 [dev-dependencies]

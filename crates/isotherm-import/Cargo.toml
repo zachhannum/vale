@@ -9,7 +9,10 @@ license.workspace = true
 [dependencies]
 isotherm-world.workspace = true
 vale-import.workspace = true
+vale-store.workspace = true
 vale-terrain.workspace = true
+tiff.workspace = true
 
 [dev-dependencies]
 png.workspace = true
+tempfile.workspace = true
