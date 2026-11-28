@@ -2,6 +2,12 @@
 
 use std::f64::consts::PI;
 
+pub mod grid;
+pub mod ops;
+
+pub use grid::{Edge, Grid, Vector};
+pub use ops::Ops;
+
 /// The mean flux of the star over one day at the top of the atmosphere, in
 /// W/m², with `s0` the flux at the distance of the planet. The latitude and
 /// the declination are in radians.
