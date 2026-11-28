@@ -100,9 +100,13 @@ jobs:
         shell: bash
         run: |
           vcpkg install "sqlite3[tool]:x64-windows-static-md"
-          root="$VCPKG_INSTALLATION_ROOT/installed/x64-windows-static-md"
-          echo "CMAKE_PREFIX_PATH=$root" >> "$GITHUB_ENV"
-          echo "$root/tools/sqlite3" >> "$GITHUB_PATH"
+          root="$(cygpath -u "$VCPKG_INSTALLATION_ROOT")/installed/x64-windows-static-md"
+          # CMake looks for programs in the `bin` folder of each prefix.
+          mkdir -p "$root/bin"
+          find "$root" -iname sqlite3.exe -exec cp {} "$root/bin/" \;
+          test -f "$root/bin/sqlite3.exe"
+          echo "CMAKE_PREFIX_PATH=$(cygpath -m "$root")" >> "$GITHUB_ENV"
+          cygpath -w "$root/bin" >> "$GITHUB_PATH"
 
       - uses: Swatinem/rust-cache@v2
 
