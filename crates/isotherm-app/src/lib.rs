@@ -1,12 +1,13 @@
-//! The Isotherm app: the workspace switch and the globe with the sample
-//! world.
+//! The Isotherm app: the workspaces, the open world, and the globe.
 
 pub mod app;
 pub mod build;
 pub mod cli;
+pub mod document;
 pub mod globe;
 #[cfg(not(target_os = "ios"))]
 pub mod headless;
+pub mod worlds;
 
 use eframe::egui;
 
@@ -21,13 +22,27 @@ pub fn run(args: cli::Args) -> eframe::Result {
     eframe::run_native(
         "Isotherm",
         options,
-        Box::new(|cc| {
-            let mut app = app::IsothermApp::new()?;
-            app.workspace = args.workspace;
+        Box::new(move |cc| {
+            let dir = worlds::default_dir();
+            let mut app = app::IsothermApp::from_args(&args, dir.as_deref())?;
+            app.data_dir = dir;
             if let Some(render_state) = &cc.wgpu_render_state {
                 app.globe.attach(render_state);
             }
             app::setup(&cc.egui_ctx);
+            #[cfg(target_os = "ios")]
+            {
+                use eframe::wgpu::rwh::{HasWindowHandle as _, RawWindowHandle};
+                let handle = cc.window_handle().map(|handle| handle.as_raw());
+                if let Ok(RawWindowHandle::UiKit(handle)) = handle {
+                    let (picked, ctx) = (app.picked.clone(), cc.egui_ctx.clone());
+                    let exports = vale_shell::picker::ExportQueue::default();
+                    app.picker = handle.ui_view_controller.and_then(|controller| {
+                        let wake = move || ctx.request_repaint();
+                        vale_shell::picker::Picker::new(controller, picked, exports, wake)
+                    });
+                }
+            }
             Ok(Box::new(app))
         }),
     )

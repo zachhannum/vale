@@ -26,7 +26,7 @@ fn a_tap_on_terrain_opens_the_terrain_workspace() {
     harness.get_by_label("Terrain").click();
     harness.run_steps(2);
     assert_eq!(harness.state().workspace, Workspace::Terrain);
-    harness.get_by_label("Heightmap import comes in a later version.");
+    harness.get_by_label(isotherm_app::app::IMPORT);
 }
 
 #[test]
