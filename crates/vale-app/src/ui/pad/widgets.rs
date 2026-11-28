@@ -6,12 +6,9 @@ use eframe::egui_wgpu::wgpu;
 
 use super::geometry::{self, CELL, PAD, ROW, Rects, TOUCH};
 use super::icons::{self, Icon};
-use super::{motion, theme};
+use super::theme;
 
 pub use vale_shell::pad::widgets::*;
-
-const THUMB: f32 = 26.0;
-
 /// The color of the icon of a tool cell: `color`, or its `CELL_OFF` part
 /// while the cell is off.
 fn fade_cell(color: Color32, enabled: bool) -> Color32 {
@@ -297,75 +294,6 @@ pub fn icon_cell(
     let color = fade_cell(if active { theme::TEXT } else { theme::MUTE }, enabled);
     icons::paint(ui.painter(), rect, icon, ICON, color);
     resp
-}
-
-/// The size of the track of a switch.
-const SWITCH: egui::Vec2 = vec2(50.0, 30.0);
-
-/// A switch in a row of a panel: the name at the left, and the track with
-/// its thumb at the right. `label` is the name on screen. A tap on the row
-/// changes `on`. Returns true if the user changed it.
-pub fn switch_row(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    label: &str,
-    on: &mut bool,
-) -> bool {
-    switch_row_enabled(ui, controls, name, label, on, true)
-}
-
-/// A `switch_row` that is dim and does not change while `enabled` is
-/// false.
-pub fn switch_row_enabled(
-    ui: &mut egui::Ui,
-    controls: &mut Controls,
-    name: &str,
-    label: &str,
-    on: &mut bool,
-    enabled: bool,
-) -> bool {
-    let size = vec2(ui.available_width(), PANEL_ROW);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
-    let resp = hit(ui, controls, rect, name, Sense::click(), enabled, Some(*on));
-    let changed = resp.clicked();
-    if changed {
-        *on = !*on;
-    }
-    let y = rect.center().y;
-    let mut track = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-    if !enabled {
-        track.multiply_opacity(theme::OFF);
-    }
-    paint_switch(&track, resp.id, pos2(rect.right(), y), *on);
-    let at = pos2(rect.left(), y);
-    let color = fade(theme::TEXT, enabled);
-    ui.painter()
-        .text(at, Align2::LEFT_CENTER, label, theme::body(), color);
-    changed
-}
-
-/// The width of the track of a switch.
-pub const SWITCH_WIDTH: f32 = SWITCH.x;
-
-/// The track and the thumb of a switch, with the middle of its right edge
-/// at `right`. The thumb of the switch `id` slides on a spring.
-pub fn paint_switch(ui: &egui::Ui, id: egui::Id, right: Pos2, on: bool) {
-    let y = right.y;
-    let track = Rect::from_min_size(pos2(right.x - SWITCH.x, y - SWITCH.y / 2.0), SWITCH);
-    let reach = (SWITCH.x - SWITCH.y) / 2.0;
-    let t = motion::toggle(ui.ctx(), id.with("switch"), on);
-    let color = theme::raise().lerp_to_gamma(theme::ACCENT, t.clamp(0.0, 1.0));
-    let x = track.center().x - reach + 2.0 * reach * t;
-    let painter = ui.painter();
-    painter.rect_filled(track, SWITCH.y / 2.0, theme::track());
-    painter.rect_filled(track, SWITCH.y / 2.0, color);
-    painter.circle_filled(
-        pos2(x, y + 1.0),
-        THUMB / 2.0 + 1.0,
-        Color32::from_black_alpha(70),
-    );
-    painter.circle_filled(pos2(x, y), THUMB / 2.0, theme::TEXT);
 }
 
 /// What the user did on the title row of a panel.
