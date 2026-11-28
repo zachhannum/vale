@@ -256,6 +256,38 @@ fn the_contours_draw_lines_on_the_globe_and_the_flat_map() {
     }
 }
 
+/// The count of the pixels near the color of the coastline in the canvas.
+fn coast_pixels(image: &image::RgbaImage, app: &IsothermApp) -> usize {
+    let r = app.globe.rect * PIXELS_PER_POINT;
+    let [cr, cg, cb] = isotherm_app::globe::COAST_COLOR.map(i32::from);
+    let mut count = 0;
+    for y in r.top() as u32..r.bottom() as u32 {
+        for x in r.left() as u32..r.right() as u32 {
+            let p = image.get_pixel(x, y).0.map(i32::from);
+            if (p[0] - cr).abs() < 30 && (p[1] - cg).abs() < 30 && (p[2] - cb).abs() < 40 {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+#[test]
+#[ignore = "gpu"]
+fn the_coastline_draws_in_blue_over_the_temperature() {
+    for view in [WorldView::Globe, WorldView::Flat] {
+        let (on, app) = render_app(explore_app(view, false));
+        let mut off = explore_app(view, false);
+        off.globe.coastline = false;
+        let (off, _) = render_app(off);
+        let (lines, none) = (coast_pixels(&on, &app), coast_pixels(&off, &app));
+        assert!(
+            lines > none + 500,
+            "{view:?}: {lines} with the coastline, {none} without"
+        );
+    }
+}
+
 /// Saves pictures of the Explore workspace on an iPad, an iPhone, and the
 /// desktop to `target/isotherm` when `VALE_SCREENSHOTS` is set.
 #[test]

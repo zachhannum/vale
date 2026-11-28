@@ -15,7 +15,7 @@ use vale_globe::nav::{Nav, Painting};
 use vale_globe::preview;
 use vale_globe::view::GlobeView;
 use vale_store::{RasterDisplay, RasterId};
-use vale_terrain::{Bands, FACES, TexelRect};
+use vale_terrain::{Bands, FACES, MAX_BANDS, TexelRect};
 
 /// The opacity of the overlay. The terrain shows a little below it.
 const OVERLAY_OPACITY: f32 = 0.9;
@@ -53,6 +53,15 @@ pub struct Overlay {
 /// The layer of the overlay on the GPU.
 const OVERLAY_LAYER: LayerKey = LayerKey::Raster(RasterId(1));
 
+/// The pass of the coastline over the overlay. It reads the heightmap.
+const COAST_LAYER: LayerKey = LayerKey::Raster(RasterId(2));
+
+/// The color of the coastline over the overlay.
+pub const COAST_COLOR: [u8; 3] = [24, 72, 200];
+
+/// The width of the coastline, in points.
+const COAST_WEIGHT: f32 = 1.5;
+
 pub struct Globe {
     link: Link,
     key: MapKey,
@@ -61,6 +70,8 @@ pub struct Globe {
     overlay_uploads: u64,
     /// The overlay shows the lines of its stops.
     pub contours: bool,
+    /// The coastline shows over the overlay.
+    pub coastline: bool,
     /// The format of the render target. `None`: the app has no wgpu
     /// renderer, and the globe draws nothing.
     format: Option<wgpu::TextureFormat>,
@@ -93,6 +104,7 @@ impl Globe {
             overlay: None,
             overlay_uploads: 0,
             contours: true,
+            coastline: true,
             format: None,
             nav,
             waiting: 2,
@@ -254,6 +266,7 @@ impl Globe {
             extent: None,
             flat: flat.then(|| self.flat.mesh()),
             epoch: 0,
+            line_layers: vec![COAST_LAYER],
         });
         let ppp = ui.ctx().pixels_per_point();
         let uniforms = self.uniforms(ppp, background, bands, self.key, RasterDisplay::Bands);
@@ -295,6 +308,18 @@ impl Globe {
                 uniforms,
                 ..layer
             });
+            if self.coastline {
+                let mut uniforms =
+                    self.uniforms(ppp, background, bands, self.key, RasterDisplay::Bands);
+                uniforms.lines = coast_lines(bands, ppp);
+                uniforms.layer[1] = 1.0;
+                draws.push(Draw {
+                    pass: Pass::Layer(COAST_LAYER),
+                    lines: true,
+                    uniforms,
+                    ..layer
+                });
+            }
         }
         // The flat view has no rim.
         if !flat {
@@ -350,4 +375,16 @@ impl Globe {
             ..bytemuck::Zeroable::zeroed()
         }
     }
+}
+
+/// The line uniforms with only the line of the coast stop of `bands`.
+fn coast_lines(bands: &Bands, ppp: f32) -> [preview::LineUniform; MAX_BANDS + 1] {
+    let mut out = [[[0.0; 4]; 2]; MAX_BANDS + 1];
+    let index = bands.stops().iter().position(|stop| stop.value == COAST);
+    if let Some(slot) = index.and_then(|i| out.get_mut(i)) {
+        let [r, g, b] = COAST_COLOR.map(|c| f32::from(c) / 255.0);
+        let at = f32::from(bands.level(COAST)) / 65535.0;
+        *slot = [[r, g, b, 0.5 * COAST_WEIGHT * ppp], [at, 0.0, 0.0, 0.0]];
+    }
+    out
 }
