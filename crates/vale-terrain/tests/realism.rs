@@ -7,10 +7,12 @@ use vale_terrain::math::{V3, add, angle, cross, lonlat_to_dir, normalize, scale}
 use vale_terrain::{
     ATLANTIC_RIDGE, AbyssalHills, AbyssalStroke, EPR_RIDGE, Erosion, HAWAII, HOTSPOT_HEIGHT_M,
     HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, Heightmap, Hotspot, HotspotLine, LINE_SPACING, Limits,
-    MANIHIKI, Margin, MarginStroke, PACIFIC_FLANK, PLATEAU_AGE_MYR, PLATEAU_HEIGHT_M, Patch,
-    Plateau, PlateauStroke, Rain, Realism, Reference, Ridge, RidgeLine, SeamountStroke, Seamounts,
-    US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin, hotspot_window, margin_window,
-    meters_to_level, realism,
+    MANIHIKI, MANIHIKI_SCARP, Margin, MarginStroke, PACIFIC_FLANK, PLATEAU_AGE_MYR,
+    PLATEAU_HEIGHT_M, PROFILE_STEP_KM, Patch, Plateau, PlateauStroke, Rain, Realism, Reference,
+    Ridge, RidgeLine, SMOOTHSTEP_10_90, Scarp, ScarpProfile, ScarpReference, ScarpStroke,
+    SeamountStroke, Seamounts, US_EAST_MARGIN, WindowHeights, erode_hotspot, erode_margin,
+    hotspot_window, level_to_meters, margin_window, median, meters_to_level, realism,
+    scarp_profile,
 };
 
 /// The radius of the test world. A texel of the heightmap is near a GEBCO
@@ -1416,4 +1418,188 @@ fn manual_traced_plateau_next_to_its_reference() {
     image.save(&out).unwrap();
     eprintln!("wrote {}", out.display());
     save_side_by_side("manihiki-traced-shaded", &painted, &reference, &gebco);
+}
+
+/// The depth of the top of the painted scarp, near the top of the Manihiki
+/// Scarp south of 10.5 S.
+const SCARP_TOP_M: f64 = 2700.0;
+
+/// The brush radius of the scarp test, in kilometers.
+const SCARP_BRUSH_KM: f64 = 200.0;
+
+/// The latitudes of a stroke that runs north along the meridian 0, in
+/// degrees. The ground on the right, to the east, goes down.
+const SCARP_STROKE_DEG: f64 = 7.0;
+
+/// The number of painted profiles, as many as 3 runs of the profiles of
+/// the reference. The field of the scarp changes over 1 brush radius, so 1
+/// run is too short for a median that does not depend on the seed.
+const SCARP_RUNS: usize = 3;
+
+/// The kilometers of a painted profile west and east of the stroke.
+const SCARP_PROFILE_KM: f64 = 200.0;
+
+/// A scarp stroke with the median drop and width of the Manihiki Scarp, on a
+/// flat top on a world of the size of the Earth.
+fn earth_scarp(reference: &ScarpReference) -> Painted {
+    earth_scarp_with_steps(reference, 1)
+}
+
+fn earth_scarp_with_steps(reference: &ScarpReference, steps: u32) -> Painted {
+    let mut painted = Painted::earth(SCARP_TOP_M);
+    let spec = Scarp {
+        drop_m: median(reference.profiles.iter().map(|p| p.drop_m)),
+        width_km: median(reference.profiles.iter().map(|p| p.width_km)) / SMOOTHSTEP_10_90,
+        steps,
+        scars: true,
+        world_km: EARTH_KM,
+        seed: RIDGE_SEED,
+        limits: Limits::default(),
+    };
+    let points: Vec<V3> = (0..=64)
+        .map(|i| {
+            lonlat_to_dir(
+                0.0,
+                -SCARP_STROKE_DEG + SCARP_STROKE_DEG * f64::from(i) / 32.0,
+            )
+        })
+        .collect();
+    let mut stroke = ScarpStroke::new(spec, painted.map.face_size());
+    painted.map.begin_stroke();
+    for plan in stroke.stamps(&points, SCARP_BRUSH_KM / EARTH_KM, 0.95, 1.0) {
+        painted.map.scarp(&plan);
+    }
+    painted.map.end_stroke();
+    painted
+}
+
+/// Profiles east along latitudes near the middle of the stroke, as far
+/// apart as the profiles of the reference.
+fn scarp_profiles(painted: &Painted, reference: &ScarpReference) -> Vec<ScarpProfile> {
+    let count = SCARP_RUNS * reference.profiles.len();
+    let spacing = reference.spacing_km / EARTH_KM;
+    let samples = (2.0 * SCARP_PROFILE_KM / PROFILE_STEP_KM) as usize;
+    (0..count)
+        .map(|n| {
+            let lat = (n as f64 - (count - 1) as f64 / 2.0) * spacing;
+            let z: Vec<f64> = (0..=samples)
+                .map(|i| {
+                    let east = (i as f64 * PROFILE_STEP_KM - SCARP_PROFILE_KM) / EARTH_KM;
+                    let d = lonlat_to_dir(east.to_degrees() / lat.cos(), lat.to_degrees());
+                    level_to_meters(painted.map.sample(d))
+                })
+                .collect();
+            scarp_profile(&z)
+        })
+        .collect()
+}
+
+/// The ratio of the standard deviation to the mean.
+fn variation(values: &[f64]) -> f64 {
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / values.len() as f64;
+    var.sqrt() / mean
+}
+
+/// The standard deviation of the traces about their line of best fit, in
+/// kilometers. It measures the bends of the trace.
+fn bend_km(profiles: &[ScarpProfile]) -> f64 {
+    let n = profiles.len() as f64;
+    let xs: Vec<f64> = (0..profiles.len()).map(|i| i as f64).collect();
+    let ys: Vec<f64> = profiles.iter().map(|p| p.trace_km).collect();
+    let (mx, my) = (xs.iter().sum::<f64>() / n, ys.iter().sum::<f64>() / n);
+    let sxy: f64 = xs.iter().zip(&ys).map(|(x, y)| (x - mx) * (y - my)).sum();
+    let sxx: f64 = xs.iter().map(|x| (x - mx).powi(2)).sum();
+    let k = sxy / sxx;
+    let var = xs
+        .iter()
+        .zip(&ys)
+        .map(|(x, y)| (y - my - k * (x - mx)).powi(2))
+        .sum::<f64>()
+        / n;
+    var.sqrt()
+}
+
+/// The mean of the normal shapes of the profiles.
+fn mean_shape(profiles: &[ScarpProfile]) -> Vec<f64> {
+    let n = profiles.len() as f64;
+    (0..profiles[0].shape.len())
+        .map(|i| profiles.iter().map(|p| p.shape[i]).sum::<f64>() / n)
+        .collect()
+}
+
+/// The measures of a list of profiles: the median drop, the median width,
+/// the variation of the drop, and the bend of the trace. The variation and
+/// the bend are means over runs of `run` profiles.
+fn print_scarp_measures(name: &str, profiles: &[ScarpProfile], run: usize) -> [f64; 4] {
+    let runs: Vec<&[ScarpProfile]> = profiles.chunks_exact(run).collect();
+    let mean = |f: &dyn Fn(&[ScarpProfile]) -> f64| {
+        runs.iter().map(|r| f(r)).sum::<f64>() / runs.len() as f64
+    };
+    let m = [
+        median(profiles.iter().map(|p| p.drop_m)),
+        median(profiles.iter().map(|p| p.width_km)),
+        mean(&|r| variation(&r.iter().map(|p| p.drop_m).collect::<Vec<_>>())),
+        mean(&bend_km),
+    ];
+    println!(
+        "{name}: drop {:.0} m, width {:.1} km, drop variation {:.3}, bend {:.1} km",
+        m[0], m[1], m[2], m[3]
+    );
+    m
+}
+
+#[test]
+fn a_scarp_is_near_the_manihiki_scarp() {
+    let reference = ScarpReference::parse(MANIHIKI_SCARP).unwrap();
+    let painted = earth_scarp(&reference);
+    let ours = scarp_profiles(&painted, &reference);
+    let run = reference.profiles.len();
+    let theirs = print_scarp_measures("GEBCO", &reference.profiles, run);
+    let mine = print_scarp_measures("painted", &ours, run);
+    let ratio = |i: usize| mine[i] / theirs[i];
+    assert!(
+        (ratio(0) - 1.0).abs() < 0.15,
+        "the drop is far from the reference"
+    );
+    assert!(
+        (ratio(1) - 1.0).abs() < 0.3,
+        "the width is far from the reference"
+    );
+    assert!(
+        (0.5..2.0).contains(&ratio(2)),
+        "the drop varies too much or too little"
+    );
+    assert!(
+        (0.5..2.0).contains(&ratio(3)),
+        "the trace bends too much or too little"
+    );
+    let (a, b) = (mean_shape(&ours), mean_shape(&reference.profiles));
+    let rms = (a.iter().zip(&b).map(|(x, y)| (x - y).powi(2)).sum::<f64>() / a.len() as f64).sqrt();
+    println!("rms of the shape: {rms:.3}");
+    assert!(rms < 0.1, "the shape is far from the reference");
+}
+
+/// The test scarp with 1 step and with 3 steps, beside the GEBCO patch of
+/// the Manihiki Plateau, with the Manihiki Scarp on its east side. The patch
+/// comes from `scripts/gebco-reference.sh manihiki`.
+#[test]
+#[ignore = "manual"]
+fn manual_scarp_next_to_the_manihiki_scarp() {
+    let scarp = ScarpReference::parse(MANIHIKI_SCARP).unwrap();
+    let reference = Reference::parse(MANIHIKI).unwrap();
+    let gebco = gebco_patch("manihiki");
+    let n = reference.size;
+    let mut image = image::RgbImage::new(3 * n as u32, n as u32);
+    for (i, steps) in [1, 3].into_iter().enumerate() {
+        let painted = earth_scarp_with_steps(&scarp, steps);
+        let heights = painted.patch(&reference).heights;
+        draw(&mut image, &heights, n, reference.cell_m, [i * n, 0]);
+    }
+    draw(&mut image, &gebco, n, reference.cell_m, [2 * n, 0]);
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = root.join("target/realism/scarp.png");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+    image.save(&out).unwrap();
+    eprintln!("wrote {}", out.display());
 }

@@ -20,7 +20,7 @@ use crate::strip::{self, Pins};
 const TOOLS_FILE: &str = "tools.txt";
 
 /// The brush modes, with their names in the file.
-const MODES: [(Mode, &str); 24] = [
+const MODES: [(Mode, &str); 25] = [
     (Mode::Raise, "raise"),
     (Mode::Lower, "lower"),
     (Mode::Smooth, "smooth"),
@@ -45,6 +45,7 @@ const MODES: [(Mode, &str); 24] = [
     (Mode::Margin, "margin"),
     (Mode::Hotspot, "hotspot_track"),
     (Mode::Plateau, "plateau"),
+    (Mode::Scarp, "scarp"),
 ];
 
 /// The tools, with their names in the file.
@@ -71,7 +72,7 @@ const POLYGON_MODES: [(PolygonMode, &str); 3] = [
 type Field<T> = (&'static str, fn(&mut BrushSettings) -> &mut T);
 
 /// The brush settings that one mode uses and all modes share.
-const FLOATS: [Field<f64>; 40] = [
+const FLOATS: [Field<f64>; 42] = [
     ("noise_raise_m", |b| &mut b.noise_raise_m),
     ("noise_lower_m", |b| &mut b.noise_lower_m),
     ("talus_deg", |b| &mut b.talus_deg),
@@ -104,6 +105,8 @@ const FLOATS: [Field<f64>; 40] = [
     ("hotspot_age_myr", |b| &mut b.hotspot_age_myr),
     ("plateau_height_m", |b| &mut b.plateau_height_m),
     ("plateau_age_myr", |b| &mut b.plateau_age_myr),
+    ("scarp_drop_m", |b| &mut b.scarp_drop_m),
+    ("scarp_width_km", |b| &mut b.scarp_width_km),
     ("channel_km", |b| &mut b.channel_km),
     ("floodplain_km", |b| &mut b.floodplain_km),
     ("floor_m", |b| &mut b.floor_m),
@@ -114,7 +117,7 @@ const FLOATS: [Field<f64>; 40] = [
     ("paint_opacity", |b| &mut b.opacity),
 ];
 
-const BOOLS: [Field<bool>; 7] = [
+const BOOLS: [Field<bool>; 8] = [
     ("noise_ridged", |b| &mut b.noise_ridged),
     ("noise_inverted", |b| &mut b.noise_inverted),
     ("floor_on", |b| &mut b.floor_on),
@@ -122,6 +125,7 @@ const BOOLS: [Field<bool>; 7] = [
     ("ridge_fit", |b| &mut b.ridge_fit),
     ("abyssal_fit", |b| &mut b.abyssal_fit),
     ("hotspot_reefs", |b| &mut b.hotspot_reefs),
+    ("scarp_scars", |b| &mut b.scarp_scars),
 ];
 
 /// A tool of the tool strip. Each brush mode is a tool.
@@ -389,6 +393,7 @@ impl Tools {
             .map_or("none".to_string(), |l| l.to_string());
         lines.push(format!("flatten_level {flatten_level}"));
         lines.push(format!("paint_level {}", brush.paint_level));
+        lines.push(format!("scarp_steps {}", brush.scarp_steps));
         let smoothing = tools.smoothing.map(|s| s.unwrap_or(line.smoothing));
         lines.push(format!(
             "smoothing {} {} {}",
@@ -469,6 +474,9 @@ impl Tools {
         }
         if let Some(level) = value("paint_level").and_then(|v| v.parse::<u16>().ok()) {
             brush.paint_level = level;
+        }
+        if let Some(steps) = value("scarp_steps").and_then(|v| v.parse::<u32>().ok()) {
+            brush.scarp_steps = steps;
         }
         if let Some(settings) = self.mode(brush.mode) {
             settings.apply(brush);
@@ -772,6 +780,10 @@ mod tests {
         globe.brush.hotspot_age_myr = 30.0;
         globe.brush.plateau_height_m = 2500.0;
         globe.brush.plateau_age_myr = 40.0;
+        globe.brush.scarp_drop_m = 800.0;
+        globe.brush.scarp_width_km = 45.0;
+        globe.brush.scarp_steps = 3;
+        globe.brush.scarp_scars = true;
         globe.brush.branching = 0.8;
         globe.choose(Choice::Tool(Tool::Line));
         globe.line.smoothing = 0.1;
@@ -823,6 +835,10 @@ mod tests {
         assert_eq!(next.brush.hotspot_age_myr, 30.0);
         assert_eq!(next.brush.plateau_height_m, 2500.0);
         assert_eq!(next.brush.plateau_age_myr, 40.0);
+        assert_eq!(next.brush.scarp_drop_m, 800.0);
+        assert_eq!(next.brush.scarp_width_km, 45.0);
+        assert_eq!(next.brush.scarp_steps, 3);
+        assert!(next.brush.scarp_scars);
         assert_eq!(next_snap, snap);
         assert!(next.line.fit);
         assert_eq!(next.line.brush_size, 24.0);

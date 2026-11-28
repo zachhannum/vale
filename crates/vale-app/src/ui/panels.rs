@@ -25,8 +25,9 @@ use crate::globe::brush::{
     EROSION, FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, OPACITY as BRUSH_OPACITY, PLATEAU_HEIGHT,
     RANGE_SPACING_KM, RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM,
-    RIDGE_SPREAD_MM, SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M,
-    TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    RIDGE_SPREAD_MM, SCALE_KM, SCARP_DROP, SCARP_STEP_COUNT, SCARP_WIDTH, SEAMOUNT_DENSITY,
+    SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height,
+    shape_text,
 };
 use crate::globe::combine::PolygonMode;
 use crate::globe::sweep;
@@ -53,6 +54,12 @@ pub const MARGIN_HINT: &str = "Paint over a rough shelf.";
 pub const HOTSPOT: &str = "Hotspot track";
 /// The name of the plateau mode of the brush.
 pub const PLATEAU: &str = "Plateau";
+/// The name of the scarp mode of the brush.
+pub const SCARP: &str = "Scarp";
+/// The hint of the scarp mode.
+pub const SCARP_HINT: &str = "The ground on the right of the stroke drops.";
+/// The label of the switch of the slide scars of the scarp mode.
+pub const SLIDE_SCARS: &str = "Slide scars";
 /// The hint of the hotspot track mode.
 pub const HOTSPOT_HINT: &str = "Draw the track toward the hotspot.";
 /// The hint of the basin mode before the outline.
@@ -1487,6 +1494,7 @@ fn brush_modes(ui: &mut egui::Ui, current: &mut Mode, height: bool) {
             (Mode::Margin, MARGIN),
             (Mode::Hotspot, HOTSPOT),
             (Mode::Plateau, PLATEAU),
+            (Mode::Scarp, SCARP),
         ] {
             let button = egui::Button::selectable(*current == mode, name);
             if ui
@@ -1545,11 +1553,13 @@ pub(super) fn strength_name(mode: Mode) -> &'static str {
     match mode {
         Mode::Uplift => "Uplift",
         Mode::Range | Mode::Basin | Mode::Seamounts | Mode::Hotspot | Mode::Plateau => "Height",
+        Mode::Scarp => "Drop",
         _ => "Strength",
     }
 }
 
-/// The hint of the ocean ridge, basin, margin, and hotspot track modes.
+/// The hint of the ocean ridge, basin, margin, hotspot track, and scarp
+/// modes.
 fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
     match globe.brush.mode {
         Mode::Basin => ui.label(basin_hint(globe)),
@@ -1557,6 +1567,7 @@ fn held_rows(ui: &mut egui::Ui, globe: &crate::globe::Globe) {
         Mode::OceanRidge => ui.label(RIDGE_HINT),
         Mode::Margin => ui.label(MARGIN_HINT),
         Mode::Hotspot => ui.label(HOTSPOT_HINT),
+        Mode::Scarp => ui.label(SCARP_HINT),
         _ => return,
     };
 }
@@ -1769,6 +1780,23 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             number::slider("Age", &mut brush.plateau_age_myr, FLOOR_AGE_MYR)
                 .suffix(" Myr")
                 .show(ui);
+        } else if brush.mode == Mode::Scarp {
+            number::slider("Drop", &mut brush.scarp_drop_m, SCARP_DROP)
+                .log()
+                .smallest(10.0)
+                .factor(scale)
+                .format(text)
+                .show(ui);
+            number::slider("Width", &mut brush.scarp_width_km, SCARP_WIDTH)
+                .log()
+                .suffix(" km")
+                .show(ui);
+            number::stepper("Steps", &mut brush.scarp_steps)
+                .range(SCARP_STEP_COUNT)
+                .step(1.0)
+                .decimals(0)
+                .show(ui);
+            ui.checkbox(&mut brush.scarp_scars, SLIDE_SCARS);
         } else if crate::strip::sliders(brush.mode, true).contains(&crate::strip::Slider::Strength)
         {
             let name = strength_name(brush.mode);
@@ -1823,7 +1851,10 @@ fn brush_size(ui: &mut egui::Ui, state: &mut AppState) {
             .show(ui);
         seed(ui, state);
     }
-    if matches!(state.globe.brush.mode, Mode::Seamounts | Mode::Plateau) {
+    if matches!(
+        state.globe.brush.mode,
+        Mode::Seamounts | Mode::Plateau | Mode::Scarp
+    ) {
         seed(ui, state);
     }
     let globe = &mut state.globe;

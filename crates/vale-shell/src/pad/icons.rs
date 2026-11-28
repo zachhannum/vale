@@ -37,6 +37,9 @@ pub enum Icon {
     Hotspot,
     /// A flat-topped plateau with stepped sides, under the sea.
     Plateau,
+    /// Ground that steps down across two faults, with an arrow down on the
+    /// right.
+    Scarp,
     More,
     Move,
     /// An open hand, for the Pan tool.
@@ -191,6 +194,7 @@ impl Icon {
                  M2 20c0 -0.55 0.45 -1 1 -1s1 0.45 1 1s-0.45 1 -1 1s-1 -0.45 -1 -1"
             }
             Icon::Plateau => "M3 5c3-2 6 2 9 0s6-2 9 0M2 20l2-4h2l2-5h8l2 5h2l2 4",
+            Icon::Scarp => "M2 7h8l1 5h3l1 6h7M18 4v7M16 9l2 2l2-2",
             Icon::More => "",
             Icon::Move => {
                 "M12 3v18M3 12h18M12 3l-3 3M12 3l3 3M12 21l-3-3M12 21l3-3\
@@ -617,6 +621,7 @@ mod tests {
             Icon::Margin,
             Icon::Hotspot,
             Icon::Plateau,
+            Icon::Scarp,
             Icon::More,
             Icon::Move,
             Icon::Hand,

@@ -3139,6 +3139,117 @@ fn the_plateau_mode_fits_on_the_smallest_ipad() {
 }
 
 #[test]
+fn the_scarp_mode_is_in_the_terrain_cell_and_has_its_settings() {
+    let mut h = pad(BOARDS[0]);
+    tap(&mut h, "Brush settings");
+    choose_mode(&mut h, "Scarp");
+    let s = h.state();
+    assert_eq!(
+        (s.globe.tool, s.globe.brush.mode),
+        (Tool::Brush, Mode::Scarp)
+    );
+    assert_eq!(toggled(&h, TERRAIN), Some(true));
+    let brush = s.globe.brush;
+    assert_eq!((brush.scarp_drop_m, brush.scarp_width_km), (2000.0, 20.0));
+    assert_eq!((brush.scarp_steps, brush.scarp_scars), (1, false));
+    // The strip has Size and Drop.
+    assert!(control(&h, "Strip size").is_some());
+    assert!(control(&h, "Strip drop").is_some());
+    let label = vale_app::ui::pad::slider_label(Mode::Scarp, vale_app::strip::Slider::Strength);
+    assert_eq!(label, "Drop");
+    assert!(h.query_by_label(vale_app::ui::panels::SCARP_HINT).is_some());
+    // The panel has the size, the hardness, the flow, the drop, the width,
+    // the steps, the slide scars, and the seed.
+    for row in [
+        "Brush size",
+        "Brush hardness",
+        "Brush flow",
+        "Brush strength",
+        "Brush width",
+        "Brush steps value",
+        "Brush slide scars",
+        "Brush seed value",
+    ] {
+        assert!(control(&h, row).is_some(), "{row}");
+    }
+    for row in ["Brush age", "Brush density", "Brush erosion", "Apply"] {
+        assert!(control(&h, row).is_none(), "{row}");
+    }
+    // A typed value past an end gives the end.
+    for (row, text, value) in [
+        ("Brush strength", "10", 50.0),
+        ("Brush strength", "90000", 6000.0),
+        ("Brush strength", "800", 800.0),
+        ("Brush width", "0", 1.0),
+        ("Brush width", "900", 300.0),
+        ("Brush width", "45", 45.0),
+        ("Brush steps", "0", 1.0),
+        ("Brush steps", "9", 5.0),
+        ("Brush steps", "3", 3.0),
+    ] {
+        type_value(&mut h, row, text);
+        let brush = h.state().globe.brush;
+        let got = match row {
+            "Brush width" => brush.scarp_width_km,
+            "Brush steps" => f64::from(brush.scarp_steps),
+            _ => brush.scarp_drop_m,
+        };
+        assert!((got - value).abs() < 1e-6, "{row} {text}: {got}");
+    }
+    step(&mut h, "Brush steps", true);
+    assert_eq!(h.state().globe.brush.scarp_steps, 4);
+    tap(&mut h, "Brush slide scars");
+    assert!(h.state().globe.brush.scarp_scars);
+    // The drop and the width do not change the other modes.
+    let defaults = BrushSettings::default();
+    let brush = h.state().globe.brush;
+    assert_eq!(brush.strength_m, defaults.strength_m);
+    assert_eq!(brush.plateau_height_m, defaults.plateau_height_m);
+    assert_eq!(brush.range_spacing_km, defaults.range_spacing_km);
+    // The seed stepper sets the seed of the world.
+    let seed = h.state().doc.project.world.seed;
+    step(&mut h, "Brush seed", true);
+    assert_eq!(h.state().doc.project.world.seed, seed + 1);
+    check_controls(&h, "the Scarp mode");
+    screenshot::save(&mut h, "pad-scarp");
+}
+
+#[test]
+fn the_scarp_mode_fits_on_the_smallest_ipad() {
+    for board in [(1133.0, 744.0), (1194.0, 834.0)] {
+        let mut h = pad(board);
+        open_group(&mut h, ModeGroup::Terrain);
+        let menu = h.state().pad.flyouts.rect.unwrap();
+        let screen = h.state().pad.rects.unwrap().screen;
+        assert!(screen.contains_rect(menu), "{menu:?}");
+        // The flyout scrolls to its last row.
+        let from = menu.center();
+        drag(&mut h, from, from - vec2(0.0, menu.height()), None);
+        let row = control(&h, "Scarp").unwrap();
+        assert!(menu.contains_rect(row), "{row:?}");
+        screenshot::save(&mut h, &format!("pad-scarp-modes-{}", board.1));
+        tap(&mut h, "Scarp");
+        assert_eq!(h.state().globe.brush.mode, Mode::Scarp);
+        tap(&mut h, "Brush settings");
+        let (_, panel) = h.state().pad.panels[0];
+        assert!(screen.contains_rect(panel), "{panel:?}");
+        for row in [
+            "Brush strength",
+            "Brush width",
+            "Brush steps value",
+            "Brush slide scars",
+            "Brush seed value",
+        ] {
+            let rect = control(&h, row).unwrap_or_else(|| panic!("no control `{row}`"));
+            assert!(panel.contains_rect(rect), "{row}: {rect:?} in {panel:?}");
+        }
+        let name = format!("{} high with the Scarp panel", board.1);
+        check_controls(&h, &name);
+        screenshot::save(&mut h, &format!("pad-scarp-{}", board.1));
+    }
+}
+
+#[test]
 fn the_abyssal_hills_mode_is_in_the_terrain_cell_and_has_its_sliders() {
     let mut h = pad(BOARDS[0]);
     tap(&mut h, "Brush settings");

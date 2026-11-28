@@ -9,7 +9,8 @@ use vale_terrain::{
     ELEV_MAX, ELEV_MIN, FLOODPLAIN_KM, FLOODPLAINS_KM, GROUP_STAMPS, HOTSPOT_HEIGHT_M,
     HOTSPOT_HEIGHT_RANGE, HOTSPOT_RADIUS_KM, HOTSPOT_SPEED_MM, HOTSPOT_SPEED_RANGE, Hotspot,
     LINE_SPACING, Limits, MAX_BRUSH_RADIUS, MAX_RIDGE_RADIUS, Margin, Mode, PLATEAU_AGE_MYR,
-    PLATEAU_HEIGHT_M, PLATEAU_HEIGHT_RANGE, Plateau, Rain, RangeSpec, Ridge, SHELF_DEPTH_RANGE,
+    PLATEAU_HEIGHT_M, PLATEAU_HEIGHT_RANGE, Plateau, Rain, RangeSpec, Ridge, SCARP_DROP_M,
+    SCARP_DROP_RANGE, SCARP_STEPS, SCARP_WIDTH_KM, SCARP_WIDTH_RANGE, SHELF_DEPTH_RANGE, Scarp,
     Seamounts, Stamp, StampPlan, meters_to_level, talus_levels,
 };
 
@@ -92,6 +93,12 @@ pub const HOTSPOT_HEIGHT: std::ops::RangeInclusive<f64> =
     HOTSPOT_HEIGHT_RANGE.0..=HOTSPOT_HEIGHT_RANGE.1;
 /// The limits of the height of the plateau mode, in meters.
 pub const PLATEAU_HEIGHT: std::ops::RangeInclusive<f64> = PLATEAU_HEIGHT_RANGE;
+/// The limits of the drop of the scarp mode, in meters.
+pub const SCARP_DROP: std::ops::RangeInclusive<f64> = SCARP_DROP_RANGE;
+/// The limits of the width of the scarp mode, in kilometers.
+pub const SCARP_WIDTH: std::ops::RangeInclusive<f64> = SCARP_WIDTH_RANGE;
+/// The limits of the number of faults of the scarp mode.
+pub const SCARP_STEP_COUNT: std::ops::RangeInclusive<u32> = SCARP_STEPS;
 /// The limits of the full spreading rate of the abyssal hills mode, in
 /// millimeters per year.
 pub const ABYSSAL_RATE_MM: std::ops::RangeInclusive<f64> = 10.0..=200.0;
@@ -245,6 +252,15 @@ pub struct BrushSettings {
     pub plateau_height_m: f64,
     /// The age of the plateau of the plateau mode, in millions of years.
     pub plateau_age_myr: f64,
+    /// The drop of the ground on the right side of a scarp stroke, in
+    /// meters.
+    pub scarp_drop_m: f64,
+    /// The width of the scarp across the fault, in kilometers.
+    pub scarp_width_km: f64,
+    /// The number of parallel faults of the scarp mode.
+    pub scarp_steps: u32,
+    /// Whether slide scars cut the face of the scarp.
+    pub scarp_scars: bool,
     /// The width of the channel of a river that drains
     /// `vale_terrain::REFERENCE_AREA_KM2`, in kilometers.
     pub channel_km: f64,
@@ -316,6 +332,10 @@ impl Default for BrushSettings {
             hotspot_age_myr: 90.0,
             plateau_height_m: PLATEAU_HEIGHT_M,
             plateau_age_myr: PLATEAU_AGE_MYR,
+            scarp_drop_m: SCARP_DROP_M,
+            scarp_width_km: SCARP_WIDTH_KM,
+            scarp_steps: 1,
+            scarp_scars: false,
             channel_km: CHANNEL_WIDTH_KM,
             floodplain_km: FLOODPLAIN_KM,
             floor_on: false,
@@ -362,6 +382,7 @@ pub fn needs_height(mode: Mode) -> bool {
             | Margin
             | Hotspot
             | Plateau
+            | Scarp
     )
 }
 
@@ -574,6 +595,23 @@ impl BrushSettings {
         }
     }
 
+    /// The settings of a scarp stroke. `world_km` is the radius of the
+    /// world.
+    pub fn scarp_spec(&self, world_km: f64, seed: u32) -> Scarp {
+        let (low, high) = (*SCARP_DROP.start(), *SCARP_DROP.end());
+        let (narrow, wide) = (*SCARP_WIDTH.start(), *SCARP_WIDTH.end());
+        let (fewest, most) = (*SCARP_STEP_COUNT.start(), *SCARP_STEP_COUNT.end());
+        Scarp {
+            drop_m: self.scarp_drop_m.clamp(low, high),
+            width_km: self.scarp_width_km.clamp(narrow, wide),
+            steps: self.scarp_steps.clamp(fewest, most),
+            scars: self.scarp_scars,
+            world_km,
+            seed,
+            limits: self.limits(),
+        }
+    }
+
     /// The settings of an abyssal hills stroke. `world_km` is the radius of
     /// the world.
     pub fn abyssal_spec(&self, world_km: f64, seed: u32) -> AbyssalHills {
@@ -767,7 +805,8 @@ impl Tip<'_> {
                 | Mode::Seamounts
                 | Mode::AbyssalHills
                 | Mode::Margin
-                | Mode::Plateau => flow,
+                | Mode::Plateau
+                | Mode::Scarp => flow,
                 // The flow of a mouse gives the full height of the ridge, and
                 // the full change of the paint mode.
                 Mode::OceanRidge | Mode::Range | Mode::Basin | Mode::Paint | Mode::Hotspot => {
@@ -1002,6 +1041,7 @@ fn stamp_cost(plan: &StampPlan) -> usize {
         | Mode::Margin
         | Mode::Hotspot
         | Mode::Plateau
+        | Mode::Scarp
         | Mode::Noise => 1,
     }
 }
@@ -1592,6 +1632,26 @@ mod tests {
         brush.plateau_age_myr = 30.0;
         let spec = brush.plateau_spec(6371.0, 7);
         assert_eq!((spec.height_m, spec.age_myr), (8000.0, 30.0));
+    }
+
+    #[test]
+    fn the_scarp_spec_carries_its_settings() {
+        let mut brush = BrushSettings {
+            mode: Mode::Scarp,
+            ..BrushSettings::default()
+        };
+        assert!(needs_height(Mode::Scarp));
+        let spec = brush.scarp_spec(6371.0, 7);
+        assert_eq!((spec.drop_m, spec.width_km), (SCARP_DROP_M, SCARP_WIDTH_KM));
+        assert_eq!((spec.steps, spec.scars), (1, false));
+        assert_eq!((spec.world_km, spec.seed), (6371.0, 7));
+        brush.scarp_drop_m = 1e6;
+        brush.scarp_width_km = 0.0;
+        brush.scarp_steps = 9;
+        brush.scarp_scars = true;
+        let spec = brush.scarp_spec(6371.0, 7);
+        assert_eq!((spec.drop_m, spec.width_km), (6000.0, 1.0));
+        assert_eq!((spec.steps, spec.scars), (5, true));
     }
 
     #[test]

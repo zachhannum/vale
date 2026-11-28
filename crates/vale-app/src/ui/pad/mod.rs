@@ -21,8 +21,8 @@ use crate::globe::brush::{
     FLATTEN_RATE, FLOODPLAIN_WIDTH_KM, FLOOR_AGE_MYR, FLOW, HILL_SCALE, HOTSPOT_HEIGHT,
     HOTSPOT_SPEED, MARGIN_SHELF_M, NOISE_GRAIN, NOISE_M, PLATEAU_HEIGHT, RANGE_SPACING_KM,
     RIDGE_CREST_M, RIDGE_HILLS, RIDGE_MAGMA, RIDGE_OFFSET_KM, RIDGE_SEGMENT_KM, RIDGE_SPREAD_MM,
-    SCALE_KM, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED, SHAPE, STRENGTH_M, TALUS_DEG,
-    TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
+    SCALE_KM, SCARP_DROP, SCARP_STEP_COUNT, SCARP_WIDTH, SEAMOUNT_DENSITY, SEAMOUNT_HEIGHT_M, SEED,
+    SHAPE, STRENGTH_M, TALUS_DEG, TERRACE_STEP_M, WARP_KM, needs_height, shape_text,
 };
 use crate::globe::brush::{BrushSettings, brush_radius};
 use crate::globe::combine::PolygonMode;
@@ -232,7 +232,7 @@ pub const SCULPT_MODES: [(&str, Icon, Mode); 8] = [
     ("Noise", Icon::Noise, Mode::Noise),
 ];
 /// The modes of the Terrain cell.
-pub const TERRAIN_MODES: [(&str, Icon, Mode); 16] = [
+pub const TERRAIN_MODES: [(&str, Icon, Mode); 17] = [
     ("Carve", Icon::Carve, Mode::Carve),
     ("Ridge", Icon::Ridge, Mode::Ridge),
     ("Deposit", Icon::Deposit, Mode::Deposit),
@@ -253,6 +253,7 @@ pub const TERRAIN_MODES: [(&str, Icon, Mode); 16] = [
     (panels::MARGIN, Icon::Margin, Mode::Margin),
     (panels::HOTSPOT, Icon::Hotspot, Mode::Hotspot),
     (panels::PLATEAU, Icon::Plateau, Mode::Plateau),
+    (panels::SCARP, Icon::Scarp, Mode::Scarp),
 ];
 
 /// A cell of the tool strip that chooses the brush, and the group of the
@@ -3186,6 +3187,9 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
     if mode == Mode::Hotspot {
         hint_rows(ui, panels::HOTSPOT_HINT);
     }
+    if mode == Mode::Scarp {
+        hint_rows(ui, panels::SCARP_HINT);
+    }
     // The outline sets the size of a basin.
     if mode == Mode::Basin {
         basin_rows(ui, &state.globe);
@@ -3312,6 +3316,21 @@ fn tool_rows(ui: &mut egui::Ui, state: &mut AppState, controls: &mut Controls) {
         row(ui, controls, state, Slider::Age);
         seed_stepper(ui, controls, &mut state.doc.project.world.seed);
     }
+    if mode == Mode::Scarp {
+        row(ui, controls, state, Slider::Width);
+        let brush = &mut state.globe.brush;
+        let range = f64::from(*SCARP_STEP_COUNT.start())..=f64::from(*SCARP_STEP_COUNT.end());
+        let number = Number::new(SCARP_STEPS, f64::from(brush.scarp_steps), range)
+            .label("Steps")
+            .step(1.0)
+            .default(f64::from(BrushSettings::default().scarp_steps));
+        if let Some(value) = number.stepper(ui, controls) {
+            brush.scarp_steps = value.round() as u32;
+        }
+        let scars = &mut brush.scarp_scars;
+        widgets::switch_row(ui, controls, SCARP_SCARS, panels::SLIDE_SCARS, scars);
+        seed_stepper(ui, controls, &mut state.doc.project.world.seed);
+    }
     if mode == Mode::Basin {
         for slider in [Slider::Density, Slider::Age, Slider::Lakes] {
             row(ui, controls, state, slider);
@@ -3431,6 +3450,7 @@ pub fn slider_name(slider: Slider) -> &'static str {
         Slider::RainShadow => "Brush rain shadow",
         Slider::Magma => "Brush magma",
         Slider::Hills => "Brush hills",
+        Slider::Width => "Brush width",
     }
 }
 
@@ -3460,6 +3480,7 @@ pub fn slider_label(mode: Mode, slider: Slider) -> &'static str {
         Slider::RainShadow => "Rain shadow",
         Slider::Magma => "Magma",
         Slider::Hills => "Hills",
+        Slider::Width => "Width",
     }
 }
 
@@ -3538,6 +3559,12 @@ pub(super) fn brush_slider(
                     .log()
                     .default(defaults.plateau_height_m);
                 set(number, &mut brush.plateau_height_m);
+            }
+            Slider::Strength if mode == Mode::Scarp => {
+                let number = meters(brush.scarp_drop_m, SCARP_DROP)
+                    .log()
+                    .default(defaults.scarp_drop_m);
+                set(number, &mut brush.scarp_drop_m);
             }
             Slider::Strength if mode == Mode::Seamounts => {
                 let number = meters(brush.seamount_height_m, SEAMOUNT_HEIGHT_M)
@@ -3692,6 +3719,12 @@ pub(super) fn brush_slider(
                 let number = fraction(brush.ridge_hills, RIDGE_HILLS).default(defaults.ridge_hills);
                 set(number, &mut brush.ridge_hills);
             }
+            Slider::Width => {
+                let number = km(brush.scarp_width_km, SCARP_WIDTH)
+                    .log()
+                    .default(defaults.scarp_width_km);
+                set(number, &mut brush.scarp_width_km);
+            }
         }
     }
     if toggled {
@@ -3801,6 +3834,10 @@ pub const MARGIN_SHELF: &str = "Brush shelf depth";
 pub const HOTSPOT_SPEED_NAME: &str = "Brush plate speed";
 /// The name of the reefs switch of the hotspot track mode.
 pub const HOTSPOT_REEFS: &str = "Brush reefs";
+/// The name of the stepper of the faults of the scarp mode.
+pub const SCARP_STEPS: &str = "Brush steps";
+/// The name of the switch of the slide scars of the scarp mode.
+pub const SCARP_SCARS: &str = "Brush slide scars";
 
 /// The hint of a held ocean ridge. The panel of the ridge has no room for a
 /// hint before the stroke on the smallest iPad.

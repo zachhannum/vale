@@ -9,9 +9,9 @@ use vale_terrain::{
     GpuHeightmap, GpuPyramid, GpuTiles, Heightmap, Hotspot, HotspotLine, HotspotPlan,
     LINE_SEGMENTS, LINE_SPACING, Limits, LinePlan, Margin, MarginStroke, Mode, OuterFlow, Plateau,
     PlateauStroke, Pyramid, RIDGE_SLOTS, RangeLine, RangePlan, RangeSpec, Readback, Ridge,
-    RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, SeamountStroke, Seamounts, Stamp, StampPlan,
-    TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window, WindowHeights, channel_map,
-    pyramid_layout, tiles_layout, window_channels,
+    RidgeLine, RidgePlan, SEAMOUNT_SLOTS, STAMP_SLOTS, Scarp, ScarpStroke, SeamountStroke,
+    Seamounts, Stamp, StampPlan, TILE_SIZE, TILES_WGSL, TexelRect, WINDOW_CELLS, Window,
+    WindowHeights, channel_map, pyramid_layout, tiles_layout, window_channels,
 };
 
 /// The largest difference between a GPU level and a CPU level after raise,
@@ -4700,6 +4700,123 @@ fn gpu_abyssal_hills_match_cpu_across_a_face_edge() {
         run.changed
     );
     assert!(run.difference <= ABYSSAL_TOLERANCE, "{}", run.difference);
+}
+
+/// The largest difference between a GPU level and a CPU level after a
+/// scarp stroke. The face of the scarp is steep, so a small 32-bit error of
+/// the place across the line moves a level by more than a step.
+const SCARP_TOLERANCE: u16 = 2;
+
+/// The settings of the scarp of the GPU tests.
+fn scarp_spec(steps: u32, scars: bool) -> Scarp {
+    Scarp {
+        drop_m: 1500.0,
+        width_km: 30.0,
+        steps,
+        scars,
+        world_km: 1000.0,
+        seed: 6,
+        limits: Limits::default(),
+    }
+}
+
+/// Paints a scarp at stamp centers on `start`, on the CPU and on the GPU,
+/// as one stroke. One `ScarpStroke` makes the plans for both.
+fn scarp_run(start: &Heightmap, spec: Scarp, centers: &[V3], radius: f64) -> AbyssalRun {
+    let gpu = gpu();
+    let n = start.face_size();
+    let mut cpu = start.snapshot();
+    let map = gpu.copy_of(start);
+    let mut stroke = ScarpStroke::new(spec, n);
+    map.begin_stroke(&gpu.queue);
+    cpu.begin_stroke();
+    let mut enc = gpu.encoder();
+    let mut batches = 1;
+    for &center in centers {
+        let plan = stroke.stamp(center, radius, 0.4, 0.8);
+        cpu.scarp(&plan);
+        if !map.scarp(&gpu.queue, &mut enc, &plan) {
+            gpu.submit(std::mem::replace(&mut enc, gpu.encoder()));
+            map.begin_batch();
+            batches += 1;
+            assert!(map.scarp(&gpu.queue, &mut enc, &plan));
+        }
+    }
+    gpu.submit(enc);
+    map.begin_batch();
+    cpu.end_stroke();
+    let faces = gpu.read_all(&map);
+    let mut changed = [0; FACES];
+    for (face, count) in changed.iter_mut().enumerate() {
+        let (mut after, mut before) = (Vec::new(), Vec::new());
+        cpu.read_rect(face, full(n), &mut after);
+        start.read_rect(face, full(n), &mut before);
+        *count = after.iter().zip(&before).filter(|(a, b)| a != b).count();
+    }
+    AbyssalRun {
+        difference: max_difference(&cpu, &faces),
+        changed,
+        batches,
+    }
+}
+
+/// One plan: a line of two points on a slope.
+#[test]
+#[ignore = "gpu"]
+fn gpu_scarp_matches_cpu_for_one_plan() {
+    let start = sea_slope(1024, 10.0, 5.0);
+    let centers = [lonlat_to_dir(8.0, 5.0), lonlat_to_dir(12.0, 5.0)];
+    let run = scarp_run(&start, scarp_spec(1, false), &centers, 0.05);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "one scarp plan: {changed} texels, difference {}",
+        run.difference
+    );
+    assert!(changed > 800, "{changed} texels changed");
+    assert!(run.difference <= SCARP_TOLERANCE, "{}", run.difference);
+}
+
+/// A curved stroke of more plans than one batch holds, with steps and slide
+/// scars, on flat floor.
+#[test]
+#[ignore = "gpu"]
+fn gpu_scarp_matches_cpu_for_a_curved_stroke_with_steps_and_scars() {
+    let start = Heightmap::new(1024, vale_terrain::meters_to_level(-2000.0));
+    let centers: Vec<V3> = (0..=60)
+        .map(|i| {
+            let t = f64::from(i) * 3.0_f64.to_radians();
+            lonlat_to_dir(10.0 + 6.0 * t.cos(), 5.0 + 6.0 * t.sin())
+        })
+        .collect();
+    let run = scarp_run(&start, scarp_spec(3, true), &centers, 0.04);
+    let changed: usize = run.changed.iter().sum();
+    eprintln!(
+        "scarp curved stroke: {changed} texels, {} batches, difference {}",
+        run.batches, run.difference
+    );
+    assert!(run.batches > 1, "{} batches", run.batches);
+    assert!(changed > 6000, "{changed} texels changed");
+    assert!(run.difference <= SCARP_TOLERANCE, "{}", run.difference);
+}
+
+/// A stroke from face 0 to face 2. The edge between them is at 45 degrees
+/// of longitude.
+#[test]
+#[ignore = "gpu"]
+fn gpu_scarp_matches_cpu_across_a_face_edge() {
+    let start = sea_slope(512, 45.0, 5.0);
+    let centers = seamount_line((42.0, 4.0), (48.0, 6.0), 30);
+    let run = scarp_run(&start, scarp_spec(2, true), &centers, 0.04);
+    eprintln!(
+        "scarp across a face edge: {:?}, difference {}",
+        run.changed, run.difference
+    );
+    assert!(
+        run.changed[0] > 300 && run.changed[2] > 300,
+        "{:?}",
+        run.changed
+    );
+    assert!(run.difference <= SCARP_TOLERANCE, "{}", run.difference);
 }
 
 /// The largest difference between a GPU level and a CPU level of a hotspot
