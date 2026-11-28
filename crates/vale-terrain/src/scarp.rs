@@ -42,6 +42,10 @@ const DROP_CHANGE: f64 = 0.4;
 const STEP_CHANGE: f64 = 0.3;
 /// The narrowest scarp, in texel steps.
 const MIN_WIDTH_TEXELS: f64 = 4.0;
+/// The radius of the line of a stroke, as a part of the brush radius. The
+/// line then reaches 2 brush radii, so the dropped ground goes back up over
+/// the brush radius past the brush.
+pub(crate) const LINE_RADIUS: f64 = 2.0 / REACH;
 
 /// The salts of the hashes of the field.
 const SALT_BEND: u32 = 0x5ca7_0001;
@@ -173,9 +177,9 @@ impl ScarpStroke {
         let n = self.face_size;
         let step = FRAC_PI_2 / n as f64;
         if self.line.is_none() {
-            let radius = radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / REACH);
+            let radius = radius.max(4.0 * step).min(MAX_BRUSH_RADIUS / 2.0);
             self.hardness = hardness.clamp(0.0, 0.999);
-            self.line = Some(StrokeLine::new(radius, n));
+            self.line = Some(StrokeLine::new(radius * LINE_RADIUS, n));
             self.seed = place_seed(self.spec.seed, crate::math::normalize(center));
         }
         let line = self.line.as_mut().expect("the line is there");
@@ -187,7 +191,7 @@ impl ScarpStroke {
         let line = self.line.as_ref().expect("a stamp makes the line");
         let plan = line.plan(self.from);
         self.from = plan.end;
-        let radius = line.radius();
+        let radius = line.radius() / LINE_RADIUS;
         let step = FRAC_PI_2 / self.face_size as f64;
         let width = (self.spec.width_km / self.spec.world_km)
             .max(MIN_WIDTH_TEXELS * step)
@@ -295,21 +299,23 @@ impl ScarpPlan {
         total
     }
 
-    /// The drop of the ground at a place on the line, in 16-bit steps.
+    /// The drop of the ground at a place on the line, in 16-bit steps. Past
+    /// the ends of the line, the drop tapers with the falloff of the brush.
+    /// The dropped ground stays down to the edge of the brush, and it goes
+    /// back up to the old ground over the next brush radius.
     pub(crate) fn change(&self, at: LinePoint) -> f64 {
         let r = self.radius;
-        let c = 0.5 * self.width;
-        let ur = at.u / r;
-        let (bend, drop) = self.field(ur);
-        let s = bend - at.across;
-        let e = at.past.hypot((s.abs() - c).max(0.0)) / (r - c);
-        if e >= 1.0 {
+        if at.past >= r {
             return 0.0;
         }
-        let weight = at.flow * falloff(e, self.hardness);
+        let side = 1.0 - smoothstep(r, 2.0 * r, at.across.abs());
+        let weight = at.flow * falloff(at.past / r, self.hardness) * side;
         if weight <= 0.0 {
             return 0.0;
         }
+        let ur = at.u / r;
+        let (bend, drop) = self.field(ur);
+        let s = bend - at.across;
         let profile = self.profile(ur, s);
         weight * (drop * profile + self.scars(ur, s, drop, profile))
     }
@@ -522,7 +528,7 @@ mod tests {
                 end: 0.0,
                 ..at(&plan, ur, s)
             };
-            let e = past.hypot(s - c) / (RADIUS - c);
+            let e = past / RADIUS;
             let want = if e < 1.0 { drop * falloff(e, 0.5) } else { 0.0 };
             let now = plan.change(place);
             assert!((now - want).abs() < 1e-6, "{now} for {want} at {past}");
@@ -531,6 +537,44 @@ mod tests {
             assert!(bend.abs() <= BEND * RADIUS);
         }
         assert_eq!(last, 0.0);
+    }
+
+    #[test]
+    fn the_dropped_ground_goes_back_up_more_gently_than_the_face() {
+        let plan = plan(Scarp {
+            width_km: 20.0,
+            ..spec()
+        });
+        let ur = 2.0;
+        let bend = plan.field(ur).0;
+        let change = |across: f64| {
+            let place = LinePoint {
+                across,
+                ..at(&plan, ur, 0.0)
+            };
+            plan.change(place)
+        };
+        let step = 0.002 * RADIUS;
+        let slope = |from: f64, to: f64| {
+            let mut most = 0.0f64;
+            let mut a = from;
+            while a < to {
+                most = most.max((change(a) - change(a - step)).abs() / step);
+                a += step;
+            }
+            most
+        };
+        let drop = plan.field(ur).1;
+        // The ground stays down to the edge of the brush, at any hardness.
+        assert!((change(-RADIUS) - drop).abs() < 1e-6 * drop);
+        assert_eq!(change(-2.0 * RADIUS), 0.0);
+        let c = 0.5 * plan.width;
+        let face = slope(bend - c, bend + c);
+        let back = slope(-2.0 * RADIUS, -RADIUS);
+        assert!(
+            back < 0.5 * face,
+            "{back} on the far side and {face} on the face"
+        );
     }
 
     #[test]

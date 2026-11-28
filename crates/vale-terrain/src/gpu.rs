@@ -27,7 +27,7 @@ use crate::margin::{FIELD_CELLS, FIELD_FLOATS, MARGIN_CELLS, MarginPlan};
 use crate::plateau::{PLATEAU_FLOATS, PlateauPlan};
 use crate::range::RangePlan;
 use crate::ridge::{GUIDE_EXCLUDED, GUIDE_SAMPLES, MAX_RIDGE_GUIDES, RidgePlan};
-use crate::scarp::ScarpPlan;
+use crate::scarp::{LINE_RADIUS, ScarpPlan};
 use crate::seamount::{PLAN_VOLCANOES, SeamountPlan, VOLCANO_FLOATS};
 use crate::tiles::{Pool, TILES_WGSL, tiles_layout};
 
@@ -342,7 +342,8 @@ struct RidgeUniforms {
     /// and the stamp in the first two segments. A scarp pass has its
     /// hardness as the height, the number of steps as the spacing, the
     /// number of slide scars along one brush radius as the piece length,
-    /// the width as `crest`, and the drop as `level`.
+    /// the width as `crest`, and the drop as `level`. Its `radius` is the
+    /// radius of the line, and its `segment` is the brush radius.
     range_height: f32,
     range_spacing: f32,
     range_piece: f32,
@@ -2002,10 +2003,10 @@ impl GpuHeightmap {
                 length_cell as f32,
                 (plan.length - length_cell * cell) as f32,
             ],
-            radius: plan.radius as f32,
+            radius: (plan.radius * LINE_RADIUS) as f32,
             segment: cell as f32,
             texel: (2.0 * FRAC_PI_4 / f64::from(self.face_size)) as f32,
-            sin_reach: (REACH * plan.radius).sin() as f32,
+            sin_reach: (REACH * LINE_RADIUS * plan.radius).sin() as f32,
             seed: plan.seed,
             crest: plan.width as f32,
             level: plan.drop_levels() as f32,

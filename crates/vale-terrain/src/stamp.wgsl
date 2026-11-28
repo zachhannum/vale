@@ -1594,9 +1594,10 @@ const SALT_SCARP_SCAR = 0x5ca70004u;
 // the stroke. The steps are those of `ScarpPlan::level`. The pass has the
 // width as `crest`, the drop as `level`, the number of steps as
 // `range_spacing`, the number of slide scars along one brush radius as
-// `range_piece`, and the hardness as `range_height`.
+// `range_piece`, the hardness as `range_height`, and the brush radius as
+// `segment`.
 fn scarp_level(at: RidgePoint, old: f32) -> f32 {
-    let r = ridge.radius;
+    let r = ridge.segment;
     let width = ridge.crest;
     let c = 0.5 * width;
     let seed = ridge.seed;
@@ -1607,18 +1608,18 @@ fn scarp_level(at: RidgePoint, old: f32) -> f32 {
     let drop = ridge.level * (1.0 + SCARP_DROP_CHANGE * (0.6 * noise1(ur, 0u, SALT_SCARP_DROP, seed).x
         + 0.4 * noise1(4.0 * ur, 1u, SALT_SCARP_DROP, seed).x));
     let s = bend - at.across;
-    let off = max(abs(s) - c, 0.0);
-    let e = sqrt(at.past2 + off * off) / (r - c);
-    if e >= 1.0 {
+    if at.past2 >= r * r {
         return old;
     }
+    let e = sqrt(at.past2) / r;
     let hard = ridge.range_height;
     var envelope = 1.0;
     if e > hard {
         let k = (e - hard) / (1.0 - hard);
         envelope = 1.0 - k * k * (3.0 - 2.0 * k);
     }
-    let weight = at.flow * envelope;
+    let side = 1.0 - smooth_between(r, 2.0 * r, abs(at.across));
+    let weight = at.flow * envelope * side;
     if weight <= 0.0 {
         return old;
     }
