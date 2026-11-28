@@ -4063,6 +4063,7 @@ dependencies = [
  "vale-import",
  "vale-labeler",
  "vale-render",
+ "vale-shell",
  "vale-sphere",
  "vale-store",
  "vale-style",
@@ -4138,6 +4139,16 @@ dependencies = [
  "vello",
  "vello_cpu 0.3.0",
  "wgpu",
+]
+
+[[package]]
+name = "vale-shell"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "objc2 0.6.5",
+ "objc2-foundation 0.3.2",
+ "tempfile",
 ]
 
 [[package]]

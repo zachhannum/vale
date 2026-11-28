@@ -4,16 +4,14 @@ use eframe::egui::{self, CornerRadius, Pos2, Rangef, Rect, pos2, vec2};
 
 use crate::reserved::Regions;
 
+pub use vale_shell::pad::metrics::{PAD, TOUCH, WidthClass};
+
 /// The space from a card to the edge of the screen.
 pub const MARGIN: f32 = 16.0;
 /// The space between two cards in a column.
 pub const GAP: f32 = 12.0;
 /// The space between two panels in a row.
 pub const PANEL_GAP: f32 = 8.0;
-/// The padding of a bar, a strip, and a segmented list.
-pub const PAD: f32 = 4.0;
-/// The smallest side of a control.
-pub const TOUCH: f32 = 44.0;
 /// The height of the top row and of the title row of a panel.
 pub const ROW: f32 = TOUCH + 2.0 * PAD;
 /// The size of one cell of the tool strip.
@@ -156,29 +154,6 @@ pub fn set_regions(ctx: &egui::Context, regions: Regions) {
 /// The reserved regions of this frame.
 pub fn regions(ctx: &egui::Context) -> Regions {
     ctx.data(|d| d.get_temp(regions_id())).unwrap_or_default()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WidthClass {
-    /// 1,000 points or more. The globe and the page fit beside the dock.
-    Wide,
-    /// From 600 points. The dock floats over the canvas.
-    Medium,
-    /// Less than 600 points. The workspace switch is a menu button, and a
-    /// panel is a sheet.
-    Compact,
-}
-
-impl WidthClass {
-    pub fn of(width: f32) -> WidthClass {
-        if width >= 1000.0 {
-            WidthClass::Wide
-        } else if width >= 600.0 {
-            WidthClass::Medium
-        } else {
-            WidthClass::Compact
-        }
-    }
 }
 
 /// The contents of the tool column.
@@ -1328,15 +1303,6 @@ mod tests {
         input.column.cells = 1;
         let r = layout(&input);
         assert_eq!(r.column_content, tools + COLUMN_CELL + COLUMN_DIVIDER);
-    }
-
-    #[test]
-    fn the_width_classes_change_at_1000_and_at_600_points() {
-        assert_eq!(WidthClass::of(1194.0), WidthClass::Wide);
-        assert_eq!(WidthClass::of(1000.0), WidthClass::Wide);
-        assert_eq!(WidthClass::of(999.0), WidthClass::Medium);
-        assert_eq!(WidthClass::of(600.0), WidthClass::Medium);
-        assert_eq!(WidthClass::of(599.0), WidthClass::Compact);
     }
 
     #[test]
