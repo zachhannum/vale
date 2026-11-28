@@ -74,7 +74,7 @@ impl Planet {
             star: Star {
                 luminosity_w: 3.828e26,
                 temperature_k: 5772.0,
-                mass_kg: 1.989e30,
+                mass_kg: 1.988_4e30,
             },
             orbit: Orbit {
                 semi_major_m: 1.495_978_707e11,
