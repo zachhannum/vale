@@ -45,6 +45,8 @@ vale-import = { path = "crates/vale-import", version = "0.1.0" }
 vale-globe = { path = "crates/vale-globe", version = "0.1.0" }
 isotherm-world = { path = "crates/isotherm-world", version = "0.1.0" }
 isotherm-import = { path = "crates/isotherm-import", version = "0.1.0" }
+isotherm-fields = { path = "crates/isotherm-fields", version = "0.1.0" }
+isotherm-sim = { path = "crates/isotherm-sim", version = "0.1.0" }
 
 [profile.dev.package.png]
 opt-level = 3
