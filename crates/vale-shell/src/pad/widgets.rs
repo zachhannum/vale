@@ -1,11 +1,13 @@
 //! The controls of the pad layout that each app uses. Each one is at least
 //! 44 points on each side.
 
-use eframe::egui::{self, Align2, Color32, CornerRadius, Rect, Response, Sense, pos2, vec2};
+use eframe::egui::{self, Align2, Color32, CornerRadius, Pos2, Rect, Response, Sense, pos2, vec2};
+use eframe::egui_wgpu::wgpu;
 
 use super::icons::{self, Icon};
 use super::metrics::{PAD, TOUCH};
 use super::{motion, theme};
+use crate::backdrop::{card_shape, marker, paint_rect};
 
 /// A control that a finger can hit, as the last frame drew it.
 #[derive(Clone, Debug, PartialEq)]
@@ -514,41 +516,366 @@ pub fn button_row_in(
     press_end(ui, &resp, start);
     resp
 }
-/// A floating card with a shadow and the fill of a card, with no glass. A
-/// touch on the card does not go to the canvas below it.
-pub fn plain_card(
+/// A floating card. A touch on the card does not go to the canvas below it.
+/// `backdrop`: the card is glass, with a copy of the canvas in a texture of
+/// this format.
+pub fn card(
     ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
     id: &str,
     rect: Rect,
     order: egui::Order,
     radius: CornerRadius,
-    add: impl FnOnce(&mut egui::Ui),
+    add_contents: impl FnOnce(&mut egui::Ui),
 ) {
-    let radius = card_radius(rect, radius);
+    split_card(ctx, backdrop, id, rect, None, order, radius, add_contents);
+}
+
+/// A `card` that grows from `origin` and fades in when it appears, as a
+/// menu grows from its control.
+#[allow(clippy::too_many_arguments)]
+pub fn card_from(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    order: egui::Order,
+    radius: CornerRadius,
+    origin: Pos2,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let grow = grow(ctx, egui::LayerId::new(order, egui::Id::new(id)), origin);
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        Some(grow),
+        None,
+        add_contents,
+    );
+}
+
+/// The growth of a card that appears: its opacity and its transform. The
+/// transform goes on `layer`, so touches follow the card.
+#[derive(Clone, Copy)]
+pub struct Grow {
+    pub opacity: f32,
+    pub transform: egui::emath::TSTransform,
+}
+
+/// Grows the layer of a card from `origin` while the card appears.
+pub fn grow(ctx: &egui::Context, layer: egui::LayerId, origin: Pos2) -> Grow {
+    let t = motion::appear(ctx, layer.id.with("appear"));
+    let transform = if t == 1.0 {
+        egui::emath::TSTransform::IDENTITY
+    } else {
+        motion::about(
+            motion::APPEAR_SCALE + (1.0 - motion::APPEAR_SCALE) * t,
+            origin,
+        )
+    };
+    ctx.set_transform_layer(layer, transform);
+    motion::keep(ctx, layer, origin);
+    Grow {
+        opacity: t.clamp(0.0, 1.0),
+        transform,
+    }
+}
+
+/// A form card over a dark fill that takes each touch, in the foreground.
+/// The card grows from its middle and fades in, and a `sheet` slides up
+/// from the bottom edge of `screen`. The fill fades in. After the form
+/// closes, the card shrinks and fades out, or the sheet slides down, and
+/// the fill fades out.
+#[allow(clippy::too_many_arguments)]
+pub fn form_card(
+    ctx: &egui::Context,
+    id: &str,
+    screen: Rect,
+    rect: Rect,
+    radius: CornerRadius,
+    sheet: bool,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let order = egui::Order::Foreground;
+    let scrim_id = egui::Id::new(id).with("scrim");
+    let scrim = egui::LayerId::new(order, scrim_id);
+    let shade = motion::appear_on(ctx, scrim_id.with("appear"), motion::SNAPPY).clamp(0.0, 1.0);
+    motion::under_fill(ctx);
+    // The fill covers the whole screen, also the safe area.
+    let whole = ctx.viewport_rect().union(screen);
+    motion::keep_with(ctx, scrim, whole.min, motion::Exit::Fade);
+    egui::Area::new(scrim_id)
+        .order(order)
+        .fixed_pos(whole.min)
+        .constrain_to(whole)
+        .constrain(false)
+        .fade_in(false)
+        .show(ctx, |ui| {
+            let (rect, _) = ui.allocate_exact_size(whole.size(), Sense::click_and_drag());
+            ui.multiply_opacity(shade);
+            ui.painter()
+                .rect_filled(rect, 0.0, Color32::from_black_alpha(120));
+        });
+    let layer = egui::LayerId::new(order, egui::Id::new(id));
+    let grow = if sheet {
+        let t = motion::appear_on(ctx, layer.id.with("appear"), motion::SNAPPY);
+        let distance = screen.bottom() - rect.top();
+        let transform = egui::emath::TSTransform::from_translation(vec2(0.0, (1.0 - t) * distance));
+        ctx.set_transform_layer(layer, transform);
+        motion::keep_with(ctx, layer, rect.center(), motion::Exit::Slide(distance));
+        Grow {
+            opacity: 1.0,
+            transform,
+        }
+    } else {
+        grow(ctx, layer, rect.center())
+    };
+    any_card(
+        ctx,
+        backdrop(ctx),
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        Some(grow),
+        None,
+        add_contents,
+    );
+    // The dark fill is above the chrome, and the card is above the fill.
+    ctx.move_to_top(scrim);
+    ctx.move_to_top(layer);
+}
+
+/// A `card` that a capsule joins with a smooth outline when the cards are
+/// glass, such as the dock and its handle.
+#[allow(clippy::too_many_arguments)]
+pub fn card_with_blob(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    order: egui::Order,
+    radius: CornerRadius,
+    blob: Option<Rect>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        None,
+        order,
+        radius,
+        None,
+        blob,
+        add_contents,
+    );
+}
+
+/// A `card` in two parts, one above `gap` and one below it. The gap is
+/// not a part of the card, and it takes no touch.
+#[allow(clippy::too_many_arguments)]
+pub fn split_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    order: egui::Order,
+    radius: CornerRadius,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    any_card(
+        ctx,
+        backdrop,
+        id,
+        rect,
+        gap,
+        order,
+        radius,
+        None,
+        None,
+        add_contents,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn any_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    gap: Option<egui::Rangef>,
+    order: egui::Order,
+    radius: CornerRadius,
+    grow: Option<Grow>,
+    blob: Option<Rect>,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    let gap = gap.filter(|g| g.min > rect.top() && g.max < rect.bottom());
+    let shape = |part: Rect| card_radius(part, radius);
     egui::Area::new(egui::Id::new(id))
         .order(order)
         .fixed_pos(rect.min)
+        // A drag on the card goes to its controls, and the card stays in
+        // its place.
         .movable(false)
+        // A sheet paints past the safe area, to the bottom of the screen.
+        // `constrain_to` also turns on the constraint, which moves the card
+        // by the change of its size during a drag of the sheet.
         .constrain_to(ctx.viewport_rect())
         .constrain(false)
         .fade_in(false)
         .sizing_pass(false)
         .show(ctx, |ui| {
-            let (rect, _) = ui.allocate_exact_size(rect.size(), Sense::click_and_drag());
-            ui.painter().add(theme::shadow().as_shape(rect, radius));
-            ui.painter().rect_filled(rect, radius, theme::card());
+            let sense = match gap {
+                Some(_) => Sense::hover(),
+                None => Sense::click_and_drag(),
+            };
+            let (rect, _) = ui.allocate_exact_size(rect.size(), sense);
+            if let Some(grow) = grow {
+                ui.multiply_opacity(grow.opacity);
+            }
+            // The glass shows what the frame drew below this order, without
+            // the shadow.
+            if backdrop.is_some() {
+                ui.painter().add(marker(order, rect));
+            }
+            let parts = match gap {
+                Some(g) => vec![
+                    Rect::from_x_y_ranges(rect.x_range(), rect.top()..=g.min),
+                    Rect::from_x_y_ranges(rect.x_range(), g.max..=rect.bottom()),
+                ],
+                None => vec![rect],
+            };
+            for (i, &part) in parts.iter().enumerate() {
+                if gap.is_some() {
+                    ui.interact(part, ui.id().with(("part", i)), Sense::click_and_drag());
+                }
+                ui.painter()
+                    .add(theme::shadow().as_shape(part, shape(part)));
+            }
+            for &part in &parts {
+                if let Some(format) = backdrop {
+                    // The glass draws at the place of the card after the
+                    // transform of its layer. egui moves the rect of the
+                    // callback with the layer.
+                    let place = grow.map_or(part, |g| g.transform * part);
+                    let pixels = ctx.pixels_per_point();
+                    let mut callback = card_shape(format, place, shape(part), pixels, blob);
+                    callback.rect = paint_rect(part, blob);
+                    ui.painter().add(callback);
+                }
+                ui.painter()
+                    .rect_filled(part, shape(part), card_fill(backdrop.is_some()));
+            }
             let layout = egui::Layout::top_down(egui::Align::Min);
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(layout));
             ui.set_clip_rect(rect);
             theme::apply(&mut ui);
-            add(&mut ui);
+            add_contents(&mut ui);
         });
+}
+
+/// A card for a menu, with rows from the top, that grows from `origin`.
+/// The rows are `menu_inset` inside the card.
+pub fn menu_card(
+    ctx: &egui::Context,
+    backdrop: Option<wgpu::TextureFormat>,
+    id: &str,
+    rect: Rect,
+    origin: Pos2,
+    contents: impl FnOnce(&mut egui::Ui),
+) {
+    let radius = theme::CARD_RADIUS.into();
+    let order = egui::Order::Foreground;
+    card_from(ctx, backdrop, id, rect, order, radius, origin, |ui| {
+        let inner = rect.shrink2(menu_inset());
+        let layout = egui::Layout::top_down(egui::Align::Min);
+        let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(layout));
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        contents(&mut ui);
+    });
+}
+
+/// True if the cards are glass.
+pub fn is_glass(ctx: &egui::Context) -> bool {
+    backdrop(ctx).is_some()
+}
+
+fn backdrop_id() -> egui::Id {
+    egui::Id::new("pad-backdrop")
+}
+
+/// Keeps the texture format of the glass for this frame, for the
+/// cards that controls open, or `None` with no glass.
+pub fn set_backdrop(ctx: &egui::Context, format: Option<wgpu::TextureFormat>) {
+    ctx.data_mut(|data| data.insert_temp(backdrop_id(), format));
+}
+
+/// The fill of a card. `backdrop`: the card is glass.
+pub fn card_fill(backdrop: bool) -> Color32 {
+    match backdrop {
+        true => theme::glass(),
+        false => theme::card(),
+    }
+}
+
+/// Paints a card at `rect` with `painter`, whose layer has `order`: the
+/// shadow, the glass if the cards are glass, and the fill. It is for a card
+/// with no area of its own, such as a bubble. `transform`: the transform of
+/// the layer, which the glass follows.
+pub fn paint_card(
+    painter: &egui::Painter,
+    order: egui::Order,
+    rect: Rect,
+    radius: impl Into<CornerRadius>,
+    transform: egui::emath::TSTransform,
+) {
+    let radius = radius.into();
+    let backdrop = backdrop(painter.ctx());
+    if backdrop.is_some() {
+        painter.add(marker(order, rect));
+    }
+    painter.add(theme::shadow().as_shape(rect, radius));
+    if let Some(format) = backdrop {
+        let pixels = painter.ctx().pixels_per_point();
+        let mut callback = card_shape(format, transform * rect, radius, pixels, None);
+        callback.rect = rect;
+        painter.add(callback);
+    }
+    painter.rect_filled(rect, radius, card_fill(backdrop.is_some()));
+}
+
+/// Paints a lifted row at `rect` as a glass card on the layer of
+/// `painter`. It hides the rows below it.
+pub fn paint_lifted(painter: &egui::Painter, rect: Rect, radius: impl Into<CornerRadius>) {
+    let layer = painter.layer_id();
+    let transform = painter.ctx().layer_transform_to_global(layer);
+    paint_card(
+        painter,
+        layer.order,
+        rect,
+        radius,
+        transform.unwrap_or_default(),
+    );
+}
+
+/// The texture format of the glass, as `set_backdrop` keeps it.
+pub fn backdrop(ctx: &egui::Context) -> Option<wgpu::TextureFormat> {
+    ctx.data(|data| data.get_temp(backdrop_id())).flatten()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use eframe::egui::Pos2;
 
     #[test]
     fn a_card_has_round_cells_and_an_even_inset() {
@@ -622,15 +949,23 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_card_takes_the_touches_on_it() {
+    fn a_card_with_no_glass_takes_the_touches_on_it() {
         let ctx = egui::Context::default();
         let rect = Rect::from_min_size(pos2(10.0, 10.0), vec2(200.0, 100.0));
         let mut inner = Rect::NOTHING;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             let radius = CornerRadius::same(14);
-            plain_card(ui.ctx(), "card", rect, egui::Order::Middle, radius, |ui| {
-                inner = ui.max_rect();
-            });
+            card(
+                ui.ctx(),
+                None,
+                "card",
+                rect,
+                egui::Order::Middle,
+                radius,
+                |ui| {
+                    inner = ui.max_rect();
+                },
+            );
         });
         out.textures_delta.clear();
         assert_eq!(inner, rect);
