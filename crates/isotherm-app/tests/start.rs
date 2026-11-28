@@ -206,3 +206,25 @@ fn the_picture_of_the_open_world_follows_the_globe_on_the_start_screen() {
     assert!(after.is_some());
     assert!(before != after, "the picture did not change");
 }
+
+#[test]
+fn a_tap_on_the_open_world_goes_back_to_its_workspace_and_view() {
+    let dir = tempfile::tempdir().unwrap();
+    create(dir.path(), "A");
+    let mut h = start(dir.path());
+    h.get_by_label(&open_name("A")).click();
+    h.run_steps(3);
+    h.state_mut().workspace = Workspace::Planet;
+    h.state_mut().globe.view = vale_globe::view::GlobeView::centered(150.0, -60.0);
+    h.run_steps(2);
+    let view = h.state().globe.view;
+    h.get_by_label(isotherm_app::app::ALL_WORLDS).click();
+    h.run_steps(3);
+    assert_eq!(h.state().workspace, Workspace::Worlds);
+    // The next start opens the world, not the start screen.
+    assert_eq!(h.state().view().workspace, Workspace::Planet);
+    h.get_by_label(&open_name("A")).click();
+    h.run_steps(3);
+    assert_eq!(h.state().workspace, Workspace::Planet);
+    assert_eq!(h.state().globe.view, view);
+}

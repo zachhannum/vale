@@ -66,6 +66,16 @@ impl Workspace {
         Workspace::Export,
     ];
 
+    /// The workspaces of the switch of an open world. The start screen is
+    /// not one of them.
+    pub const SWITCH: [Workspace; 5] = [
+        Workspace::Terrain,
+        Workspace::Planet,
+        Workspace::Simulate,
+        Workspace::Explore,
+        Workspace::Export,
+    ];
+
     pub fn name(self) -> &'static str {
         match self {
             Workspace::Worlds => "Worlds",
@@ -151,6 +161,8 @@ pub enum Pending {
     },
 }
 
+/// The button that goes from an open world to the start screen.
+pub const ALL_WORLDS: &str = "All worlds";
 /// The name of the button of the workspace menu on a compact screen.
 pub const WORKSPACE_MENU: &str = "Workspace";
 pub const IMPORT: &str = "Import heightmap…";
@@ -256,6 +268,9 @@ pub struct IsothermApp {
     pub worlds_stale: bool,
     /// The workspace of the last frame.
     shown_workspace: Workspace,
+    /// The last workspace of the open world. A tap on the card of the open
+    /// world goes back to it.
+    world_workspace: Workspace,
     /// The start screen of the Worlds workspace.
     pub start: Start,
     /// The folder of the resume file. `None`: the next start does not
@@ -368,6 +383,7 @@ impl IsothermApp {
             files: Box::new(PlainFiles),
             worlds_stale: true,
             shown_workspace: Workspace::Explore,
+            world_workspace: Workspace::Explore,
             start: Start::default(),
             state_dir: None,
             pick: None,
@@ -605,9 +621,15 @@ impl IsothermApp {
     }
 
     /// The view of the open world.
+    /// The view of the open world. On the start screen, the workspace is
+    /// the last workspace of the world, so the next start opens the world.
     pub fn view(&self) -> View {
+        let workspace = match self.workspace {
+            Workspace::Worlds => self.world_workspace,
+            workspace => workspace,
+        };
         View {
-            workspace: self.workspace,
+            workspace,
             world_view: self.globe.world_view,
             globe: self.globe.view,
             flat_spec: self.globe.flat.spec(),
@@ -619,6 +641,9 @@ impl IsothermApp {
     /// Puts back a view of the world.
     pub fn apply_view(&mut self, view: &View) {
         self.workspace = view.workspace;
+        if view.workspace != Workspace::Worlds {
+            self.world_workspace = view.workspace;
+        }
         self.globe.world_view = view.world_view;
         self.globe.view = view.globe;
         self.globe.flat.set_spec(view.flat_spec);
@@ -744,14 +769,18 @@ impl IsothermApp {
     /// workspace.
     pub fn open_world(&mut self, path: &Path) {
         self.status = None;
-        if self.doc.path.as_deref() != Some(path) {
-            self.flush();
-            match Document::open_in(path, self.folders.as_ref(), &*self.files) {
-                Ok((doc, work)) => self.install(doc, work),
-                Err(e) => {
-                    self.status = Some(e);
-                    return;
-                }
+        if self.doc.path.as_deref() == Some(path) {
+            // The open world comes back as the user left it.
+            self.workspace = self.world_workspace;
+            self.remember();
+            return;
+        }
+        self.flush();
+        match Document::open_in(path, self.folders.as_ref(), &*self.files) {
+            Ok((doc, work)) => self.install(doc, work),
+            Err(e) => {
+                self.status = Some(e);
+                return;
             }
         }
         self.enter();
@@ -1048,6 +1077,9 @@ impl IsothermApp {
             self.worlds_stale = true;
         }
         self.shown_workspace = self.workspace;
+        if self.workspace != Workspace::Worlds {
+            self.world_workspace = self.workspace;
+        }
         if self.run.borrow().write_back_due() {
             self.write_back();
         } else {
@@ -1148,16 +1180,40 @@ impl IsothermApp {
         painter.hline(bar.x_range(), bar.bottom(), line);
         painter.vline(side.right(), side.y_range(), line);
 
-        let names = Workspace::ALL.map(Workspace::name);
-        let width = widgets::segments_width(ui, &names);
         let row = TOUCH + 2.0 * PAD;
-        let switch = Rect::from_center_size(
-            pos2(safe.center().x, safe.top() + BAR / 2.0),
-            vec2(width, row),
-        );
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(switch));
-        self.switch_segments(&mut child, controls);
-        self.cards.push(("workspace-switch", switch));
+        if self.on_start() {
+            let title = pos2(safe.left() + 20.0, safe.top() + BAR / 2.0);
+            let font = theme::title();
+            painter.text(title, Align2::LEFT_CENTER, "Isotherm", font, theme::TEXT);
+        } else {
+            let names = Workspace::SWITCH.map(Workspace::name);
+            let width = widgets::segments_width(ui, &names);
+            let switch = Rect::from_center_size(
+                pos2(safe.center().x, safe.top() + BAR / 2.0),
+                vec2(width, row),
+            );
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(switch));
+            self.switch_segments(&mut child, controls);
+            self.cards.push(("workspace-switch", switch));
+            let back = Rect::from_min_size(
+                pos2(safe.left() + 8.0, safe.top() + (BAR - TOUCH) / 2.0),
+                vec2(TOUCH, TOUCH),
+            );
+            self.cards.push(("all-worlds", back));
+            if widgets::icon_button_at(
+                ui,
+                controls,
+                back,
+                ALL_WORLDS,
+                Icon::LayoutGrid,
+                false,
+                true,
+            )
+            .clicked()
+            {
+                self.workspace = Workspace::Worlds;
+            }
+        }
 
         let body = Rect::from_min_max(
             pos2(side.left() + 8.0, side.top() + CARD_PAD),
@@ -1214,6 +1270,48 @@ impl IsothermApp {
         // the screen.
         self.canvas(ui, screen);
 
+        if self.on_start() {
+            // The start screen has no workspace switch. A world opens from
+            // its card.
+            let area = Rect::from_min_max(
+                pos2(safe.left() + MARGIN, top),
+                pos2(safe.right() - MARGIN, safe.bottom()),
+            );
+            let header = match class {
+                WidthClass::Compact => start::Header::Narrow,
+                _ => start::Header::Wide,
+            };
+            self.start_screen(ui, controls, area, header);
+            self.menu = false;
+            return;
+        }
+        let row = TOUCH + 2.0 * PAD;
+        let back = Rect::from_min_size(pos2(safe.left() + MARGIN, top), vec2(row, row));
+        self.cards.push(("all-worlds", back));
+        widgets::card(
+            &ctx,
+            self.globe.backdrop(),
+            "all-worlds",
+            back,
+            egui::Order::Middle,
+            CornerRadius::same(255),
+            |ui| {
+                let button = Rect::from_center_size(back.center(), vec2(TOUCH, TOUCH));
+                if widgets::icon_button_at(
+                    ui,
+                    controls,
+                    button,
+                    ALL_WORLDS,
+                    Icon::LayoutGrid,
+                    false,
+                    true,
+                )
+                .clicked()
+                {
+                    self.workspace = Workspace::Worlds;
+                }
+            },
+        );
         let switch = self.switch_rect(ui, safe, class, top);
         let backdrop = self.globe.backdrop();
         let current = self.workspace;
@@ -1243,17 +1341,7 @@ impl IsothermApp {
             pos2(safe.left() + MARGIN, below),
             pos2(safe.right() - MARGIN, safe.bottom() - MARGIN),
         );
-        if self.on_start() {
-            let area = Rect::from_min_max(
-                pos2(safe.left() + MARGIN, below),
-                pos2(safe.right() - MARGIN, safe.bottom()),
-            );
-            let header = match class {
-                WidthClass::Compact => start::Header::Narrow,
-                _ => start::Header::Wide,
-            };
-            self.start_screen(ui, controls, area, header);
-        } else if class == WidthClass::Compact {
+        if class == WidthClass::Compact {
             if self.workspace.has_panel() {
                 self.sheet(&ctx, controls, safe);
             }
@@ -1306,10 +1394,10 @@ impl IsothermApp {
 
     /// The segmented list of the workspaces, in the max rect of `ui`.
     fn switch_segments(&mut self, ui: &mut egui::Ui, controls: &mut Controls) {
-        let items: Vec<(&str, bool)> = Workspace::ALL.iter().map(|w| (w.name(), true)).collect();
-        let active = Workspace::ALL.iter().position(|&w| w == self.workspace);
+        let items: Vec<(&str, bool)> = Workspace::SWITCH.iter().map(|w| (w.name(), true)).collect();
+        let active = Workspace::SWITCH.iter().position(|&w| w == self.workspace);
         if let Some(index) = widgets::segments(ui, controls, &items, active.unwrap_or(0)) {
-            self.workspace = Workspace::ALL[index];
+            self.workspace = Workspace::SWITCH[index];
         }
     }
 
@@ -1871,10 +1959,12 @@ impl IsothermApp {
     fn switch_rect(&self, ui: &egui::Ui, safe: Rect, class: WidthClass, top: f32) -> Rect {
         let row = TOUCH + 2.0 * PAD;
         if class == WidthClass::Compact {
+            // The menu button is right of the button of all worlds.
             let width = widgets::menu_button_width(ui, self.workspace.name());
-            return Rect::from_min_size(pos2(safe.left() + MARGIN, top), vec2(width, row));
+            let left = safe.left() + MARGIN + row + 8.0;
+            return Rect::from_min_size(pos2(left, top), vec2(width, row));
         }
-        let names = Workspace::ALL.map(Workspace::name);
+        let names = Workspace::SWITCH.map(Workspace::name);
         let width = widgets::segments_width(ui, &names);
         Rect::from_min_size(pos2(safe.center().x - width / 2.0, top), vec2(width, row))
     }
@@ -1882,7 +1972,7 @@ impl IsothermApp {
     /// The menu of the workspaces below the menu button.
     fn workspace_menu(&mut self, ctx: &egui::Context, controls: &mut Controls, button: Rect) {
         let inset = widgets::menu_inset();
-        let height = 2.0 * inset.y + Workspace::ALL.len() as f32 * PANEL_ROW;
+        let height = 2.0 * inset.y + Workspace::SWITCH.len() as f32 * PANEL_ROW;
         let at = pos2(button.left(), button.bottom() + 8.0);
         let rect = Rect::from_min_size(at, vec2(MENU_WIDTH, height));
         let pressed = ctx.input(|i| {
@@ -1901,7 +1991,7 @@ impl IsothermApp {
         let origin = button.center().clamp(rect.min, rect.max);
         let backdrop = widgets::backdrop(ctx);
         widgets::menu_card(ctx, backdrop, "workspace-menu", rect, origin, |ui| {
-            for workspace in Workspace::ALL {
+            for workspace in Workspace::SWITCH {
                 let on = workspace == current;
                 let name = workspace.name();
                 if widgets::text_row(ui, controls, name, 0.0, on, true).clicked() {

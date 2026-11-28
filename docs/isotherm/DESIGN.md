@@ -241,7 +241,6 @@ The UI follows the rules of Vale: iPad first, touch-size controls, the theme of 
 
 | Workspace | Content |
 | --- | --- |
-| Worlds | The start screen, with a picture of each world, as in Vale |
 | Terrain | Import of the heightmap, the heights of black and white, and the sea level slider |
 | Planet | Star, orbit, rotation, atmosphere, and moons, with presets that we design |
 | Simulate | Run, pause, speed, the year counter, the energy flow chart, and the quality setting |
@@ -250,7 +249,7 @@ The UI follows the rules of Vale: iPad first, touch-size controls, the theme of 
 
 ### The worlds
 
-The Worlds workspace is the start screen. It shows a card for each world file, with a picture of the globe, the name, and the date of the last change. A tap on a card opens the world. The actions of a card rename, duplicate, and delete the world. The buttons of the header make a new world from the built-in Earth, make a new world from a Vale project, and open a world file from another folder.
+The start screen is a separate screen, as in Vale, and it has no workspace switch. The "All worlds" button at the left of the top row of a world opens it. The start screen shows a card for each world file, with a picture of the globe, the name, and the date of the last change. A tap on a card opens the world. A tap on the card of the open world goes back to the world as you left it. The actions of a card rename, duplicate, and delete the world. The buttons of the header make a new world from the built-in Earth, make a new world from a Vale project, and open a world file from another folder.
 
 A new world from a Vale project takes the first height layer, the radius, and the name of the Vale world. The app only reads the Vale file.
 

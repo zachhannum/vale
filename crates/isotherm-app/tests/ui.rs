@@ -2,21 +2,53 @@
 
 use eframe::egui;
 use egui_kittest::kittest::Queryable;
-use isotherm_app::app::{WORKSPACE_MENU, Workspace};
+use isotherm_app::app::{ALL_WORLDS, WORKSPACE_MENU, Workspace};
 use isotherm_app::headless::harness;
 
-const NAMES: [&str; 6] = [
-    "Worlds", "Terrain", "Planet", "Simulate", "Explore", "Export",
-];
+const NAMES: [&str; 5] = ["Terrain", "Planet", "Simulate", "Explore", "Export"];
 
 #[test]
-fn the_ipad_switch_shows_all_six_workspaces() {
+fn the_ipad_switch_shows_the_five_workspaces_of_a_world() {
     let mut harness = harness((1194.0, 834.0));
     harness.run_steps(2);
     for name in NAMES {
         harness.get_by_label(name);
     }
+    assert!(harness.query_by_label("Worlds").is_none());
     assert!(harness.query_by_label(WORKSPACE_MENU).is_none());
+}
+
+#[test]
+fn the_start_screen_has_no_workspace_switch() {
+    for (size, layout) in [
+        ((1194.0, 834.0), Layout::Pad),
+        ((393.0, 852.0), Layout::Pad),
+        ((1440.0, 900.0), Layout::Desktop),
+    ] {
+        let mut app = isotherm_app::app::IsothermApp::sample(layout).unwrap();
+        app.workspace = Workspace::Worlds;
+        let mut harness = isotherm_app::headless::harness_with(size, app);
+        harness.run_steps(2);
+        for name in NAMES.iter().chain(&[WORKSPACE_MENU, ALL_WORLDS]) {
+            assert!(harness.query_by_label(name).is_none(), "{name} at {size:?}");
+        }
+    }
+}
+
+#[test]
+fn all_worlds_opens_the_start_screen_in_each_layout() {
+    for (size, layout) in [
+        ((1194.0, 834.0), Layout::Pad),
+        ((393.0, 852.0), Layout::Pad),
+        ((1440.0, 900.0), Layout::Desktop),
+    ] {
+        let app = isotherm_app::app::IsothermApp::sample(layout).unwrap();
+        let mut harness = isotherm_app::headless::harness_with(size, app);
+        harness.run_steps(2);
+        harness.get_by_label(ALL_WORLDS).click();
+        harness.run_steps(2);
+        assert_eq!(harness.state().workspace, Workspace::Worlds, "{size:?}");
+    }
 }
 
 #[test]
@@ -49,7 +81,7 @@ fn the_phone_switch_is_one_menu_button() {
 fn the_worlds_workspace_shows_the_build() {
     let mut harness = harness((1194.0, 834.0));
     harness.run_steps(2);
-    harness.get_by_label("Worlds").click();
+    harness.get_by_label(ALL_WORLDS).click();
     harness.run_steps(2);
     harness.get_by_label(&isotherm_app::build::label());
 }
