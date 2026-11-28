@@ -216,7 +216,7 @@ Each output is a grid of the cube map, with twelve monthly values and a yearly v
 | Life | Vegetation cover, soil water, habitability |
 | Satellite | A true-color view with clouds, a night side, and plants tinted by the light of the star |
 
-The view shows any output on the globe or on the flat map, with a legend, contour lines, a readout under the pointer, and a month slider.
+The view shows any output on the globe or on the flat map, with a legend, contour lines, the coastline in blue, a readout under the pointer, and a month slider.
 
 ## GeoJSON export
 
@@ -254,7 +254,7 @@ A world has one heightmap that holds the land and the sea floor. A grey or color
 
 The world file is a GeoPackage that only Isotherm writes. It holds the planet record, the tiles of the heightmap, the range in meters, the sea level, and the undo log. Isotherm refuses a Vale project as a world file.
 
-The Terrain workspace and the Explore workspace have a view card with a Globe and Flat switch and a projection list from `vale-sphere`. The layouts are those of Vale. At 600 points and wider, the panel is a card at the left. Below 600 points, the panel is a bottom sheet.
+The Terrain workspace and the Explore workspace have a view card with a Globe and Flat switch and a projection list from `vale-sphere`. The layouts are those of Vale. At 600 points and wider, the panel is a card at the left. Below 600 points, the panel is a bottom sheet. A tap or a drag on the header of the sheet collapses it to the title of the workspace, and a second tap or a drag up opens it again.
 
 On iOS, the app saves the state of the model to the world file when the app leaves the foreground. The system stops the frames in the background, and the run continues when the app comes back. A pause also saves the run, and so does the end of the app on the desktop. A change to the planet, the terrain, or the sea level deletes the run. The quality setting offers only the grids that fit, as the section "Grid, time step, and memory" says.
 
