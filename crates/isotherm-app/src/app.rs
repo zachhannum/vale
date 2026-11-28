@@ -110,21 +110,20 @@ impl IsothermApp {
         // The cards are glass when the app has a wgpu renderer.
         let backdrop = self.globe.backdrop();
         widgets::set_backdrop(&ctx, backdrop);
-        ctx.layer_painter(egui::LayerId::background())
-            .with_clip_rect(screen)
-            .rect_filled(screen, 0.0, theme::CANVAS);
-
         let top = safe.top()
             + if safe.top() > screen.top() {
                 TOP_GAP
             } else {
                 TOP_MARGIN
             };
-        // The globe fills the screen, also the bands outside the safe area,
-        // and the glass of the cards shows it below them. The cards stay
-        // in the safe area.
+        // The canvas and the globe fill the screen, also the bands outside
+        // the safe area, and the glass of the cards shows them below the
+        // cards. The cards stay in the safe area. A layer painter clips to
+        // the safe area, so the canvas paints in this ui, which clips to
+        // the screen.
         ui.scope_builder(egui::UiBuilder::new().max_rect(screen), |ui| {
             ui.set_clip_rect(screen);
+            ui.painter().rect_filled(screen, 0.0, theme::CANVAS);
             self.globe.show(ui, screen, theme::CANVAS);
         });
 
