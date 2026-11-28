@@ -4391,6 +4391,153 @@ fn a_plateau_stroke_gives_the_levels_of_the_cpu_stroke() {
     assert!(worst.unwrap() <= 2, "{worst:?}");
 }
 
+/// A harness in the scarp mode on the empty world. The hillshade shows
+/// the scarp, which the colors of the deep floor do not show.
+fn scarp_harness(seed: u32) -> Harness<'static, AppState> {
+    let mut h = uplift_harness();
+    let id = brush_layer(&h);
+    set_hillshade(&mut h, id, true, 1.0);
+    let state = h.state_mut();
+    state.doc.project.world.seed = seed;
+    state.globe.brush.mode = Mode::Scarp;
+    h.run_steps(2);
+    h
+}
+
+#[test]
+fn the_brush_panel_has_the_scarp_mode_and_its_settings() {
+    use vale_app::ui::panels::{SCARP, SCARP_HINT, SLIDE_SCARS};
+    let mut h = harness();
+    h.state_mut().globe.tool = Tool::Brush;
+    h.run_steps(2);
+    assert!(h.query_all_by_label(SLIDE_SCARS).next().is_none());
+    h.get_by_label(SCARP).click();
+    h.run_steps(2);
+    let brush = &h.state().globe.brush;
+    assert_eq!(brush.mode, Mode::Scarp);
+    assert_eq!((brush.scarp_drop_m, brush.scarp_width_km), (2000.0, 20.0));
+    assert_eq!((brush.scarp_steps, brush.scarp_scars), (1, false));
+    for name in [
+        SCARP_HINT,
+        "Radius",
+        "Hardness",
+        "Flow",
+        "Drop",
+        "Width",
+        "Steps",
+        SLIDE_SCARS,
+        "Seed",
+    ] {
+        assert!(h.query_all_by_label(name).next().is_some(), "{name}");
+    }
+    for name in ["Strength", "Height", "Age", "Erosion", "Apply", "Discard"] {
+        assert!(h.query_all_by_label(name).next().is_none(), "{name}");
+    }
+    h.get_by_label(SLIDE_SCARS).click();
+    h.run_steps(2);
+    assert!(h.state().globe.brush.scarp_scars);
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_scarp_shows_while_you_paint_and_one_undo_puts_back_the_ground() {
+    let _gpu = one_gpu_test();
+    let mut h = scarp_harness(7);
+    let before = all_levels(&h);
+    // The same part of a stroke with a ceiling below the ground, which
+    // changes nothing.
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.ceiling_on, brush.ceiling_m) = (true, vale_terrain::ELEV_MIN);
+    uplift_part(&mut h, 12);
+    let flat = canvas_with_pointer(&mut h);
+    assert!(uplift_stroke_end(&mut h) == before);
+    assert!(!h.state().globe.can_undo());
+    let before_image = canvas_image(&mut h);
+
+    // While the button is down, the scarp shows.
+    h.state_mut().globe.brush.ceiling_on = false;
+    uplift_part(&mut h, 12);
+    assert!(h.state().globe.busy());
+    let part = canvas_with_pointer(&mut h);
+    let changed = part.pixels().zip(flat.pixels()).filter(|(a, b)| a != b);
+    let changed = changed.count();
+    assert!(changed > 100, "{changed}");
+    let after = uplift_stroke_end(&mut h);
+    let lowered = after.iter().zip(&before).filter(|(a, b)| a < b).count();
+    assert!(lowered > 100, "{lowered}");
+    // With no slide scars, the scarp does not raise the ground.
+    assert!(after.iter().zip(&before).all(|(a, b)| a <= b));
+    let after_image = canvas_image(&mut h);
+    assert!(after_image.as_raw() != before_image.as_raw());
+
+    // One undo step puts back the ground from before the stroke.
+    assert!(h.state_mut().globe.undo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == before);
+    assert!(!h.state().globe.can_undo());
+    let image = canvas_image(&mut h);
+    assert!(image.as_raw() == before_image.as_raw(), "the render");
+    assert!(h.state_mut().globe.redo());
+    h.run_steps(2);
+    assert!(all_levels(&h) == after);
+    assert!(
+        canvas_image(&mut h).as_raw() == after_image.as_raw(),
+        "the render"
+    );
+}
+
+#[test]
+#[ignore = "gpu"]
+fn a_scarp_stroke_gives_the_levels_of_the_cpu_stroke() {
+    use vale_app::globe::brush::Stroke;
+    use vale_terrain::{Heightmap, ScarpStroke};
+    let _gpu = one_gpu_test();
+    let mut h = scarp_harness(7);
+    let brush = &mut h.state_mut().globe.brush;
+    (brush.scarp_steps, brush.scarp_scars) = (3, true);
+    let before = all_levels(&h);
+    let samples = ridge_samples_of(0.08);
+    h.state_mut().globe.pen_down();
+    for &sample in &samples {
+        let globe = &mut h.state_mut().globe;
+        globe.pen_sample(sample, std::time::Instant::now());
+        h.step();
+    }
+    h.state_mut().globe.pen_up();
+    h.step();
+    settle(&mut h);
+    let app = all_levels(&h);
+
+    // The same stroke on the CPU.
+    let globe = &h.state().globe;
+    let (brush, n) = (globe.brush, globe.map.face_size());
+    let mut stamps = Vec::new();
+    let mut stroke = Stroke::default();
+    for &sample in &samples {
+        stroke.add_sample(&brush, n, sample, |_| 0, &mut stamps);
+    }
+    stroke.finish(&brush, n, &mut stamps);
+    let spec = brush.scarp_spec(globe.world_km, globe.world_seed);
+    assert_eq!((spec.seed, spec.steps, spec.scars), (7, 3, true));
+    let mut cpu = Heightmap::new(n, globe.map.base());
+    let mut scarp = ScarpStroke::new(spec, n);
+    cpu.begin_stroke();
+    for s in &stamps {
+        let plan = scarp.stamp(s.center, s.radius, s.hardness, s.flow);
+        cpu.scarp(&plan);
+    }
+    cpu.end_stroke();
+
+    let texels = (0..6 * n * n).map(|i| (i / (n * n), i % n, i / n % n));
+    let cpu: Vec<u16> = texels
+        .map(|(face, x, y)| cpu.get(face, x as i64, y as i64))
+        .collect();
+    let lowered = cpu.iter().zip(&before).filter(|(a, b)| a < b).count();
+    assert!(lowered > 100, "{lowered}");
+    let worst = app.iter().zip(&cpu).map(|(a, b)| a.abs_diff(*b)).max();
+    assert!(worst.unwrap() <= 2, "{worst:?}");
+}
+
 /// A harness in the abyssal hills mode on the empty world. The hillshade
 /// shows the hills, which are too low for the colors.
 fn abyssal_harness(seed: u32) -> Harness<'static, AppState> {

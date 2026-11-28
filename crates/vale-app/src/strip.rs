@@ -32,10 +32,11 @@ pub enum Slider {
     RainShadow,
     Magma,
     Hills,
+    Width,
 }
 
 /// The sliders, with their names in the file of the tools.
-pub const NAMES: [(Slider, &str); 23] = [
+pub const NAMES: [(Slider, &str); 24] = [
     (Slider::Size, "size"),
     (Slider::Hardness, "hardness"),
     (Slider::Flow, "flow"),
@@ -59,6 +60,7 @@ pub const NAMES: [(Slider, &str); 23] = [
     (Slider::RainShadow, "rain_shadow"),
     (Slider::Magma, "magma"),
     (Slider::Hills, "hills"),
+    (Slider::Width, "width"),
 ];
 
 /// The most sliders that the strip shows.
@@ -120,6 +122,7 @@ pub fn sliders(mode: Mode, height: bool) -> Vec<Slider> {
         Mode::Basin => out.extend([Density, Age, Lakes]),
         Mode::Seamounts => out.extend([Density, Age]),
         Mode::Hotspot | Mode::Plateau => out.push(Age),
+        Mode::Scarp => out.push(Width),
         _ => {}
     }
     if matches!(
@@ -275,6 +278,7 @@ mod tests {
             (Mode::Margin, [Size, Flow]),
             (Mode::Hotspot, [Size, Strength]),
             (Mode::Plateau, [Size, Strength]),
+            (Mode::Scarp, [Size, Strength]),
         ] {
             assert_eq!(pins.strip(mode, true), pair, "{mode:?}");
         }
