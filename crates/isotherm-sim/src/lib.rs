@@ -7,7 +7,9 @@ use std::f64::consts::PI;
 /// the declination are in radians.
 pub fn daily_mean_insolation(s0: f64, lat_rad: f64, declination_rad: f64) -> f64 {
     // The hour angle of sunset. 0 is polar night, and π is polar day.
-    let h0 = (-lat_rad.tan() * declination_rad.tan()).clamp(-1.0, 1.0).acos();
+    let h0 = (-lat_rad.tan() * declination_rad.tan())
+        .clamp(-1.0, 1.0)
+        .acos();
     s0 / PI
         * (h0 * lat_rad.sin() * declination_rad.sin()
             + lat_rad.cos() * declination_rad.cos() * h0.sin())
