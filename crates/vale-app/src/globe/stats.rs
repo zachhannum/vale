@@ -93,6 +93,7 @@ fn mode_name(mode: Mode) -> &'static str {
         Mode::Margin => "margin",
         Mode::Hotspot => "hotspot track",
         Mode::Plateau => "plateau",
+        Mode::Scarp => "scarp",
     }
 }
 
