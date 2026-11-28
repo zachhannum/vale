@@ -1,0 +1,15 @@
+[package]
+name = "isotherm-import"
+description = "Heightmap import for Isotherm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+isotherm-world.workspace = true
+vale-import.workspace = true
+vale-terrain.workspace = true
+
+[dev-dependencies]
+png.workspace = true
