@@ -91,3 +91,62 @@ fn a_change_of_the_sea_level_deletes_the_run() {
     let (file, _) = WorldFile::open(&path).unwrap();
     assert_eq!(file.load_run().unwrap(), None);
 }
+
+#[test]
+fn the_app_opens_the_last_world_at_its_last_view() {
+    use isotherm_app::cli::Args;
+    use isotherm_app::globe::WorldView;
+    use vale_sphere::{ProjectionKind, ProjectionSpec};
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("world.gpkg");
+    WorldFile::create(&path, &World::flat("Last", Planet::earth(), 16)).unwrap();
+    let mut first = app(&path);
+    first.state_dir = Some(dir.path().to_path_buf());
+    first.workspace = Workspace::Planet;
+    first.globe.world_view = WorldView::Flat;
+    first.globe.view = vale_globe::view::GlobeView::centered(-40.0, 25.0);
+    first.globe.view.zoom = 2.5;
+    let spec = ProjectionSpec::new(ProjectionKind::Mercator, 0.0, 0.0);
+    first.globe.flat.set_spec(spec);
+    first.globe.flat.zoom = 3.0;
+    first.remember();
+    let view = first.view();
+
+    let next = IsothermApp::from_args(&Args::none(), Some(dir.path())).unwrap();
+    assert_eq!(next.doc.path.as_deref(), Some(path.as_path()));
+    assert_eq!(next.doc.world.name, "Last");
+    assert_eq!(next.workspace, Workspace::Planet);
+    let got = next.view();
+    assert_eq!(got.world_view, WorldView::Flat);
+    assert_eq!(got.flat_spec, view.flat_spec);
+    assert_eq!(got.flat_zoom, 3.0);
+    assert_eq!(got.globe.zoom, 2.5);
+    for (a, b) in got
+        .globe
+        .rot
+        .0
+        .iter()
+        .flatten()
+        .zip(view.globe.rot.0.iter().flatten())
+    {
+        assert!((a - b).abs() < 1e-9);
+    }
+}
+
+#[test]
+fn with_no_last_world_the_app_opens_the_start_screen() {
+    use isotherm_app::cli::Args;
+
+    let dir = tempfile::tempdir().unwrap();
+    let app = IsothermApp::from_args(&Args::none(), Some(dir.path())).unwrap();
+    assert_eq!(app.workspace, Workspace::Worlds);
+    assert!(app.doc.file.is_none());
+    // A world of the last run whose file is gone also opens the start
+    // screen.
+    let gone = dir.path().join("gone.gpkg");
+    let view = app.view();
+    isotherm_app::worlds::remember(dir.path(), &gone, view).unwrap();
+    let app = IsothermApp::from_args(&Args::none(), Some(dir.path())).unwrap();
+    assert_eq!(app.workspace, Workspace::Worlds);
+}

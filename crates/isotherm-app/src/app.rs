@@ -30,6 +30,7 @@ use crate::document::{self, Change, Document, Read};
 use crate::explore::{self, Explore, Layer};
 use crate::globe::{Globe, Overlay, WorldView};
 use crate::memory;
+use crate::resume::View;
 use crate::sim::{Run, Simulation, Speed};
 use crate::worlds;
 
@@ -222,6 +223,9 @@ pub struct IsothermApp {
     /// The folder of the world files. `None`: an import can only replace
     /// the terrain of an open world file.
     pub data_dir: Option<PathBuf>,
+    /// The folder of the resume file. `None`: the next start does not
+    /// open this world.
+    pub state_dir: Option<PathBuf>,
     /// The user asked for the file picker. The app shows it after the
     /// frame.
     pub pick: bool,
@@ -320,6 +324,7 @@ impl IsothermApp {
             ask: None,
             orbit_pick: None,
             data_dir: None,
+            state_dir: None,
             pick: false,
             controls: Controls::new(),
             cards: Vec::new(),
@@ -502,21 +507,55 @@ impl IsothermApp {
     }
 
     /// The app that the arguments ask for. With no `--project`, the app
-    /// opens the last world in `resume`, or else the sample world.
-    pub fn from_args(args: &Args, resume: Option<&Path>) -> Result<IsothermApp, String> {
-        let last = resume.and_then(worlds::last_world);
-        let doc = match (&args.project, last) {
-            (Some(path), _) => Document::open(path)?,
-            (None, Some(path)) => Document::open(&path).or_else(|_| Document::sample())?,
-            (None, None) => Document::sample()?,
+    /// opens the last world in the state folder `state`, at its last view.
+    /// With no last world, it opens the start screen over the sample world.
+    pub fn from_args(args: &Args, state: Option<&Path>) -> Result<IsothermApp, String> {
+        let last = state.and_then(worlds::last_world);
+        let (doc, view) = match (&args.project, last) {
+            (Some(path), _) => (Document::open(path)?, None),
+            (None, Some((path, view))) => match Document::open(&path) {
+                Ok(doc) => (doc, view),
+                Err(_) => (Document::sample()?, None),
+            },
+            (None, None) => (Document::sample()?, None),
         };
+        let start_screen = state.is_some() && args.project.is_none() && doc.file.is_none();
         let mut app = IsothermApp::new(doc, args.layout());
+        app.state_dir = state.map(Path::to_path_buf);
         app.workspace = args.workspace;
         app.sheet_collapsed = args.sheet_detent == crate::cli::SheetDetent::Title;
         app.globe.world_view = args.view;
         app.globe.flat.set_spec(args.flat_spec());
         app.safe_area = args.safe_area;
+        if let Some(view) = view {
+            app.apply_view(&view);
+        }
+        if start_screen {
+            app.workspace = Workspace::Worlds;
+        }
         Ok(app)
+    }
+
+    /// The view of the open world.
+    pub fn view(&self) -> View {
+        View {
+            workspace: self.workspace,
+            world_view: self.globe.world_view,
+            globe: self.globe.view,
+            flat_spec: self.globe.flat.spec(),
+            flat_center: self.globe.flat.center,
+            flat_zoom: self.globe.flat.zoom,
+        }
+    }
+
+    /// Puts back a view of the world.
+    pub fn apply_view(&mut self, view: &View) {
+        self.workspace = view.workspace;
+        self.globe.world_view = view.world_view;
+        self.globe.view = view.globe;
+        self.globe.flat.set_spec(view.flat_spec);
+        self.globe.flat.center = view.flat_center;
+        self.globe.flat.zoom = view.flat_zoom;
     }
 
     /// Reads an import file. A heightmap in meters and a Vale project with
@@ -557,10 +596,10 @@ impl IsothermApp {
     }
 
     /// Keeps the open world file as the world of the next start.
-    fn remember(&self) {
-        if let (Some(dir), Some(path)) = (&self.data_dir, &self.doc.path) {
-            // The next start opens the sample world if this fails.
-            let _ = worlds::remember(dir, path);
+    pub fn remember(&self) {
+        if let (Some(dir), Some(path)) = (&self.state_dir, &self.doc.path) {
+            // The next start opens the start screen if this fails.
+            let _ = worlds::remember(dir, path, self.view());
         }
     }
 
@@ -1652,6 +1691,7 @@ impl eframe::App for IsothermApp {
     }
 
     fn on_exit(&mut self) {
+        self.remember();
         if let Err(e) = self.save_run() {
             eprintln!("isotherm-app: {e}");
         }

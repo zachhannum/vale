@@ -9,6 +9,7 @@ pub mod globe;
 #[cfg(not(target_os = "ios"))]
 pub mod headless;
 pub mod memory;
+pub mod resume;
 pub mod sim;
 pub mod worlds;
 
@@ -26,9 +27,9 @@ pub fn run(args: cli::Args) -> eframe::Result {
         "Isotherm",
         options,
         Box::new(move |cc| {
-            let dir = worlds::default_dir();
-            let mut app = app::IsothermApp::from_args(&args, dir.as_deref())?;
-            app.data_dir = dir;
+            let state = worlds::state_dir();
+            let mut app = app::IsothermApp::from_args(&args, state.as_deref())?;
+            app.data_dir = worlds::default_dir();
             app.set_threaded();
             if let Some(render_state) = &cc.wgpu_render_state {
                 app.globe.attach(render_state);
