@@ -56,8 +56,8 @@ Isotherm lives in the Vale repository, in the same Rust workspace. Its crates ar
                app (egui shell, panels, globe and map views, iOS host)
 
 import ──> world ──> sim ──> fields ──> classify ──> vector ──> export
-                      │                                 ^
-                      └── gpu (wgpu compute) ───────────┘
+                      │        ^
+                      └─> gpu ─┘  (wgpu compute)
 ```
 
 | Crate | Role |
