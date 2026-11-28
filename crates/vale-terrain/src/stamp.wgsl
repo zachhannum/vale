@@ -115,6 +115,7 @@ const SEAMOUNTS = 17u;
 const ABYSSAL = 18u;
 const MARGIN = 19u;
 const HOTSPOT = 20u;
+const SCARP = 22u;
 
 // The same number as `WARP_MARGIN` in `heightmap.rs`.
 const WARP_MARGIN = 3.0;
@@ -1578,6 +1579,90 @@ fn abyssal_level(at: RidgePoint, p: vec3<f32>, old: f32) -> f32 {
         - ridge.hill_mean * area.x * area.y;
     let change = height * ridge.level * weight;
     return clamp(old + floor(change + 0.5), 0.0, 65535.0);
+}
+
+// The numbers of `scarp.rs`.
+const SCARP_BEND = 0.15;
+const SCARP_DROP_CHANGE = 0.25;
+const SCARP_STEP_CHANGE = 0.3;
+const SALT_SCARP_BEND = 0x5ca70001u;
+const SALT_SCARP_DROP = 0x5ca70002u;
+const SALT_SCARP_STEP = 0x5ca70003u;
+const SALT_SCARP_SCAR = 0x5ca70004u;
+
+// The level of a texel after a scarp pass, from its level `old` from before
+// the stroke. The steps are those of `ScarpPlan::level`. The pass has the
+// width as `crest`, the drop as `level`, the number of steps as
+// `range_spacing`, the number of slide scars along one brush radius as
+// `range_piece`, and the hardness as `range_height`.
+fn scarp_level(at: RidgePoint, old: f32) -> f32 {
+    let r = ridge.radius;
+    let width = ridge.crest;
+    let c = 0.5 * width;
+    let seed = ridge.seed;
+    let ur = at.cell + at.rest / r;
+    let bend = SCARP_BEND * r * (0.7 * noise1(0.5 * ur, 0u, SALT_SCARP_BEND, seed).x
+        + 0.3 * noise1(2.0 * ur, 1u, SALT_SCARP_BEND, seed).x);
+    let drop = ridge.level * (1.0 + SCARP_DROP_CHANGE * noise1(ur / 3.0, 0u, SALT_SCARP_DROP, seed).x);
+    let s = bend - at.across;
+    let off = max(abs(s) - c, 0.0);
+    let e = sqrt(at.past2 + off * off) / (r - c);
+    if e >= 1.0 {
+        return old;
+    }
+    let hard = ridge.range_height;
+    var envelope = 1.0;
+    if e > hard {
+        let k = (e - hard) / (1.0 - hard);
+        envelope = 1.0 - k * k * (3.0 - 2.0 * k);
+    }
+    let weight = at.flow * envelope;
+    if weight <= 0.0 {
+        return old;
+    }
+    // The faults of the steps, each with a seeded share of the drop.
+    let n = u32(ridge.range_spacing);
+    let w = width / f32(2u * n - 1u);
+    var total = 0.0;
+    var part = 0.0;
+    for (var i = 0u; i < n; i++) {
+        let share = 1.0 + SCARP_STEP_CHANGE * noise1(0.5 * ur, i, SALT_SCARP_STEP, seed).x;
+        let center = -c + 0.5 * w + 2.0 * f32(i) * w;
+        total += share;
+        part += share * smooth_between(center - 0.5 * w, center + 0.5 * w, s);
+    }
+    let profile = part / total;
+    // The slide scars, as in `ScarpPlan::scars`.
+    var scars = 0.0;
+    let m = ridge.range_piece;
+    if m > 0.0 {
+        let v = at.cell * m + at.rest * m / r;
+        let j = i32(floor(v));
+        let apron = min(0.6 * width, 0.5 * (r - c));
+        for (var k = j - 1; k <= j + 1; k++) {
+            let h0 = unit(hash(vec3<u32>(bitcast<u32>(k), SALT_SCARP_SCAR, 0u), seed));
+            if h0 >= 0.5 {
+                continue;
+            }
+            let h1 = unit(hash(vec3<u32>(bitcast<u32>(k), SALT_SCARP_SCAR, 1u), seed));
+            let h2 = unit(hash(vec3<u32>(bitcast<u32>(k), SALT_SCARP_SCAR, 2u), seed));
+            let h3 = unit(hash(vec3<u32>(bitcast<u32>(k), SALT_SCARP_SCAR, 3u), seed));
+            let dv = v - (f32(k) + 0.25 + 0.5 * h1);
+            let half = 0.25 + 0.15 * h2;
+            let depth = (0.25 + 0.25 * h3) * drop;
+            let q = dv / half;
+            let head = -c + 0.15 * width - 0.5 * width * (1.0 - q * q);
+            let cut = bump(q) * smooth_between(head, head + 0.12 * width, s) * (1.0 - profile);
+            let a = q / 1.2;
+            let b = (s - c - 0.5 * apron) / (0.5 * apron);
+            scars += depth * (cut - 0.45 * bump(sqrt(a * a + b * b)));
+        }
+    }
+    let change = weight * (drop * profile + scars);
+    if change == 0.0 {
+        return old;
+    }
+    return clamp(old + floor(0.5 - change), 0.0, 65535.0);
 }
 
 // The lowest and the highest elevation of a level, as in `cube.rs`.
@@ -3434,6 +3519,16 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
         value = start;
         if point.on {
             value = limited(start, abyssal_level(point, p, start));
+        }
+        return vec4<u32>(u32(value), 0u, 0u, 0u);
+    }
+    if group.mode == SCARP {
+        // The pass lays the scarp on the ground from before the stroke.
+        let start = f32(tile_level_of(i32(group.face), at, tiles.levels));
+        let point = ridge_place(normalize(texel_dir(group.face, at)));
+        value = start;
+        if point.on {
+            value = limited(start, scarp_level(point, start));
         }
         return vec4<u32>(u32(value), 0u, 0u, 0u);
     }
