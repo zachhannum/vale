@@ -1,5 +1,6 @@
 //! The workspace switch, with no GPU.
 
+use eframe::egui;
 use egui_kittest::kittest::Queryable;
 use isotherm_app::app::{WORKSPACE_MENU, Workspace};
 use isotherm_app::headless::harness;
@@ -51,4 +52,80 @@ fn the_worlds_workspace_shows_the_build() {
     harness.get_by_label("Worlds").click();
     harness.run_steps(2);
     harness.get_by_label(&isotherm_app::build::label());
+}
+
+type H = egui_kittest::Harness<'static, isotherm_app::app::IsothermApp>;
+
+fn touch(h: &mut H, phase: egui::TouchPhase, pos: egui::Pos2) {
+    h.event(egui::Event::Touch {
+        device_id: egui::TouchDeviceId(0),
+        id: egui::TouchId(1),
+        phase,
+        pos,
+        force: None,
+    });
+    h.event(egui::Event::PointerMoved(pos));
+    if phase != egui::TouchPhase::Move {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: phase == egui::TouchPhase::Start,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    if phase == egui::TouchPhase::End {
+        h.event(egui::Event::PointerGone);
+    }
+}
+
+/// Drags from the middle of the globe to the right, with a finger or with the mouse.
+fn drag_globe(finger: bool) -> bool {
+    let mut h = harness((1194.0, 834.0));
+    h.run_steps(2);
+    let before = h.state().globe.view.rot.0;
+    let from = h.state().globe.rect.center();
+    let to = from + egui::vec2(150.0, 0.0);
+    if finger {
+        touch(&mut h, egui::TouchPhase::Start, from);
+    } else {
+        h.event(egui::Event::PointerMoved(from));
+        h.event(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.step();
+    for i in 1..=6 {
+        let pos = from.lerp(to, i as f32 / 6.0);
+        if finger {
+            touch(&mut h, egui::TouchPhase::Move, pos);
+        } else {
+            h.event(egui::Event::PointerMoved(pos));
+        }
+        h.step();
+    }
+    if finger {
+        touch(&mut h, egui::TouchPhase::End, to);
+    } else {
+        h.event(egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    h.run_steps(3);
+    h.state().globe.view.rot.0 != before
+}
+
+#[test]
+fn one_finger_turns_the_globe() {
+    assert!(drag_globe(true));
+}
+
+#[test]
+fn the_mouse_turns_the_globe() {
+    assert!(drag_globe(false));
 }
