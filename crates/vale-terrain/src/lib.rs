@@ -34,6 +34,7 @@ mod reduce;
 mod ridge;
 mod route;
 mod scarp;
+mod scarp_profile;
 mod seamount;
 mod smooth;
 mod swatch;
@@ -101,6 +102,10 @@ pub use route::{MAX_GRADE, RouteSpec, fit_route, is_water};
 pub use scarp::{
     SCARP_DROP_M, SCARP_DROP_RANGE, SCARP_STEPS, SCARP_WIDTH_KM, SCARP_WIDTH_RANGE, Scarp,
     ScarpPlan, ScarpStroke,
+};
+pub use scarp_profile::{
+    MANIHIKI_SCARP, PROFILE_HALF_KM, PROFILE_STEP_KM, SHAPE_SAMPLES, SMOOTHSTEP_10_90,
+    ScarpProfile, ScarpReference, median, scarp_profile,
 };
 pub use seamount::{
     FABRIC_COHERENCE, PLAN_VOLCANOES, SeaFloor, SeamountPlan, SeamountStroke, Seamounts,

@@ -8,6 +8,30 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 region=${1:-pacific-flank}
+
+# The profiles across the Manihiki Scarp, from the grid of the Manihiki patch.
+# The profiles run east from 163 W to 159 W, 12 of them from 10.5 S to 13.25 S.
+# North of 10.5 S, seamounts and troughs break up the scarp.
+if [ "$region" = manihiki-scarp ]; then
+	grid=target/gebco/manihiki.asc
+	[ -f "$grid" ] || "$0" manihiki
+	out=crates/vale-terrain/data/gebco/manihiki-scarp.txt
+	values=$(cargo run --release -q -p vale-terrain --example gebco_profiles -- \
+		"$grid" -13.25 -10.5 12 -163 -159)
+	{
+		echo "# The profiles across the Manihiki Scarp, 10.5 S to 13.25 S."
+		echo "# Data: GEBCO Compilation Group (2020) GEBCO 2020 Grid, doi:10.5285/a29c5465-b138-234d-e053-6c86abc040b9"
+		echo "# Source: https://coastwatch.pfeg.noaa.gov/erddap/griddap/GEBCO_2020"
+		echo "# Each profile runs east along one latitude, from 163 W to 159 W."
+		echo "# profile = drop_m, width_km, trace_km, then the shape."
+		echo "# Made by: scripts/gebco-reference.sh $region"
+		echo
+		echo "$values"
+	} >"$out"
+	echo "wrote $out" >&2
+	exit 0
+fi
+
 case "$region" in
 pacific-flank)
 	title="East Pacific Rise west flank, 11.6 N"
