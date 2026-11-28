@@ -11,6 +11,7 @@ pub mod headless;
 pub mod memory;
 pub mod resume;
 pub mod sim;
+pub mod thumbnail;
 pub mod worlds;
 
 use eframe::egui;
