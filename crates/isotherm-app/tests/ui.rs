@@ -326,8 +326,8 @@ fn a_higher_sea_covers_more_of_the_world() {
     let app = IsothermApp::sample(Layout::Pad).unwrap();
     let mut terrain = app.doc.world.terrain;
     let sea = terrain.sea_fraction();
-    terrain.sea_level_m = terrain.clamp_sea(7000.0);
-    assert_eq!(terrain.sea_level_m, 7000.0);
+    terrain.sea_level_m = terrain.clamp_sea(5000.0);
+    assert_eq!(terrain.sea_level_m, 5000.0);
     assert!(terrain.sea_fraction() > sea + 0.2, "{sea}");
 }
 

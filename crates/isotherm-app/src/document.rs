@@ -56,7 +56,8 @@ impl Document {
     pub fn sample() -> Result<Document, String> {
         let samples =
             isotherm_import::read_image("earth.png", SAMPLE).map_err(|e| e.to_string())?;
-        let terrain = isotherm_import::to_terrain(&samples, Scale::SIGNED_16, SAMPLE_FACE_SIZE)
+        let samples = stretch_signed_16(samples);
+        let terrain = isotherm_import::to_terrain(&samples, Scale::default(), SAMPLE_FACE_SIZE)
             .map_err(|e| e.to_string())?;
         Ok(Document {
             world: World {
@@ -264,9 +265,54 @@ pub fn reduced(map: Heightmap, max: usize) -> Heightmap {
     out
 }
 
+/// Heights in meters from the levels of a signed 16-bit heightmap, where a
+/// level minus 32,768 is the height. The range of the heights is that of the
+/// data, so the sea level slider spans only the heights of the world.
+fn stretch_signed_16(samples: Samples) -> Samples {
+    let Samples::Levels {
+        width,
+        height,
+        levels,
+    } = samples
+    else {
+        return samples;
+    };
+    let low = levels.iter().copied().min().unwrap_or(0);
+    let high = levels.iter().copied().max().unwrap_or(0).max(low + 1);
+    let span = f64::from(high - low);
+    let levels = levels
+        .iter()
+        .map(|&l| (f64::from(l - low) / span * 65535.0).round() as u16)
+        .collect();
+    let meters = |l: u16| f64::from(i32::from(l) - 32768);
+    Samples::Meters {
+        width,
+        height,
+        levels,
+        low_m: meters(low),
+        high_m: meters(high),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_sea_level_of_the_sample_spans_the_heights_of_the_earth() {
+        let terrain = Document::sample().unwrap().world.terrain;
+        assert!(
+            (-12_000.0..-9_000.0).contains(&terrain.low_m),
+            "{}",
+            terrain.low_m
+        );
+        assert!(
+            (5_000.0..9_000.0).contains(&terrain.high_m),
+            "{}",
+            terrain.high_m
+        );
+        assert!(terrain.sea_level_m.abs() < 1.0);
+    }
 
     #[test]
     fn a_large_heightmap_is_reduced_to_the_largest_face_size() {
