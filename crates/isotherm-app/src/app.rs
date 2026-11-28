@@ -254,6 +254,8 @@ pub struct IsothermApp {
     pub files: Box<dyn Files>,
     /// The list of the worlds must be read again.
     pub worlds_stale: bool,
+    /// The workspace of the last frame.
+    shown_workspace: Workspace,
     /// The start screen of the Worlds workspace.
     pub start: Start,
     /// The folder of the resume file. `None`: the next start does not
@@ -365,6 +367,7 @@ impl IsothermApp {
             folders: None,
             files: Box::new(PlainFiles),
             worlds_stale: true,
+            shown_workspace: Workspace::Explore,
             start: Start::default(),
             state_dir: None,
             pick: None,
@@ -1038,6 +1041,13 @@ impl IsothermApp {
             folders.set_cloud(dir);
             self.worlds_stale = true;
         }
+        // The card of the open world shows the view of the globe when the
+        // start screen opens.
+        if self.workspace == Workspace::Worlds && self.shown_workspace != Workspace::Worlds {
+            self.save_thumbnail();
+            self.worlds_stale = true;
+        }
+        self.shown_workspace = self.workspace;
         if self.run.borrow().write_back_due() {
             self.write_back();
         } else {

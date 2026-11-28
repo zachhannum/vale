@@ -186,3 +186,23 @@ fn no_worlds_shows_the_empty_state() {
     let h = start(dir.path());
     h.get_by_label(NO_WORLDS);
 }
+
+#[test]
+fn the_picture_of_the_open_world_follows_the_globe_on_the_start_screen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("A.gpkg");
+    let mut world = isotherm_app::document::Document::sample().unwrap().world;
+    world.name = "A".into();
+    isotherm_store::WorldFile::create(&path, &world).unwrap();
+    let mut h = start(dir.path());
+    h.get_by_label(&open_name("A")).click();
+    h.run_steps(3);
+    assert_ne!(h.state().workspace, Workspace::Worlds);
+    let before = isotherm_store::summary(&path).unwrap().thumbnail;
+    h.state_mut().globe.view = vale_globe::view::GlobeView::centered(150.0, -60.0);
+    h.state_mut().workspace = Workspace::Worlds;
+    h.run_steps(3);
+    let after = isotherm_store::summary(&path).unwrap().thumbnail;
+    assert!(after.is_some());
+    assert!(before != after, "the picture did not change");
+}
