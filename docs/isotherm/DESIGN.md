@@ -117,9 +117,9 @@ Each grid size has a fixed memory. A unit test counts the bytes that the model a
 | Cells on each face | Cells | Memory of a run |
 | --- | --- | --- |
 | 32 | 6,144 | 6.6 MB |
-| 64 | 24,576 | 26.3 MB |
-| 128 | 98,304 | 105.1 MB |
-| 256 | 393,216 | 420.4 MB |
+| 64 | 24,576 | 26.5 MB |
+| 128 | 98,304 | 105.8 MB |
+| 256 | 393,216 | 423.4 MB |
 
 At the start, the app reads the memory that the system still gives it. On iOS, this is the value of `os_proc_available_memory`. On other systems, the app uses a fixed budget of 1 GB. The quality setting offers a grid only if the memory of its run, plus 256 MB for the terrain, the globe, and the rest of the app, fits in that memory. The grid of 32 is always offered. Thus each class of device gets the grids that fit, and the app needs no table of device models. The oldest supported iPhone is the iPhone 8, with 2 GB of memory and iOS 16.
 

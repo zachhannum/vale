@@ -85,7 +85,7 @@ mod tests {
     fn the_memory_of_a_run_is_the_table_of_the_design() {
         // The table "Memory of a run" in `docs/isotherm/DESIGN.md`, in MB of
         // 2^20 bytes.
-        let table = [(32, 6.6), (64, 26.3), (128, 105.1), (256, 420.4)];
+        let table = [(32, 6.6), (64, 26.5), (128, 105.8), (256, 423.4)];
         for (n, mb) in table {
             let got = run_bytes(n) as f64 / f64::from(1 << 20);
             assert!((got - mb).abs() < 0.05, "{n}: {got:.2} MB");
