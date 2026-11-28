@@ -44,7 +44,7 @@ impl Workspace {
     pub fn hint(self) -> Option<&'static str> {
         match self {
             Workspace::Worlds => Some("Saved worlds come in a later version."),
-            Workspace::Terrain => Some("The terrain tools come in a later version."),
+            Workspace::Terrain => Some("Heightmap import comes in a later version."),
             Workspace::Planet => Some("The planet settings come in a later version."),
             Workspace::Simulate => Some("The climate model comes in a later version."),
             Workspace::Explore => None,
